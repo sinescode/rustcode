@@ -12,19 +12,20 @@
 //!
 //! In Rust:
 //! - [`Env`] is a single directory's mutable env state — seeded from OS vars.
-//! - [`EnvStore`] maps directory paths → [`Env`], matching InstanceState isolation.
+//! - [`EnvStore`] maps directory paths → [`Env`] via [`Arc`], matching
+//!   InstanceState isolation.
 //!
 //! ```text
 //! EnvStore
-//!   ├── global: Env           (initialized from std::env::vars())
-//!   └── instances: {          (per-directory, lazily created)
-//!         "/home/user/proj1": Env,
-//!         "/home/user/proj2": Env,
+//!   ├── global: Arc<Env>           (initialized from std::env::vars())
+//!   └── instances: {              (per-directory, lazily created)
+//!         "/home/user/proj1": Arc<Env>,
+//!         "/home/user/proj2": Arc<Env>,
 //!       }
 //! ```
 
 use std::collections::HashMap;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 // ---------------------------------------------------------------------------
 // Env — per-directory mutable env state
@@ -124,7 +125,7 @@ impl Default for Env {
 ///
 /// This mirrors the TS `InstanceState` pattern used by the Env service:
 /// the first access for a directory creates a fresh copy of OS env vars;
-/// subsequent accesses return the same instance.
+/// subsequent accesses return the same instance (shared via [`Arc`]).
 ///
 /// # Source
 /// Ported from `packages/opencode/src/env/index.ts` line 22:
@@ -150,9 +151,9 @@ impl Default for Env {
 /// ```
 pub struct EnvStore {
     /// Per-directory env instances, keyed by absolute directory path.
-    instances: RwLock<HashMap<String, Env>>,
+    instances: RwLock<HashMap<String, Arc<Env>>>,
     /// The global/shared env instance.
-    global: Env,
+    global: Arc<Env>,
 }
 
 impl EnvStore {
@@ -160,39 +161,38 @@ impl EnvStore {
     pub fn new() -> Self {
         Self {
             instances: RwLock::new(HashMap::new()),
-            global: Env::new(),
+            global: Arc::new(Env::new()),
         }
     }
 
-    /// Return a reference to the global env (no directory context).
+    /// Return a handle to the global env (no directory context).
     ///
     /// Use this when no working directory is associated with the current
     /// operation — e.g. during CLI boot or global config loading.
-    pub fn global(&self) -> &Env {
-        &self.global
+    pub fn global(&self) -> EnvHandle {
+        EnvHandle {
+            inner: Arc::clone(&self.global),
+        }
     }
 
-    /// Get or create the [`Env`] for a specific working directory.
+    /// Get or create the environment for a specific working directory.
     ///
     /// The directory path acts as the cache key. The first call for a given
     /// directory clones the global OS environment into a new [`Env`];
-    /// subsequent calls return the same instance.
+    /// subsequent calls return a handle sharing the same instance.
     ///
     /// # Source
     /// Ported from `packages/opencode/src/effect/instance-state.ts`
     /// `InstanceState.get()` — scoped cache lookup.
-    pub fn for_directory(&self, dir: &str) -> EnvHandle<'_> {
-        // Ensure an entry exists for this directory (lazy init).
-        {
+    pub fn for_directory(&self, dir: &str) -> EnvHandle {
+        let inner = {
             let mut instances = self.instances.write().expect("EnvStore lock poisoned");
-            if !instances.contains_key(dir) {
-                instances.insert(dir.to_owned(), Env::new());
-            }
-        }
-        EnvHandle {
-            store: self,
-            dir: Some(dir.to_owned()),
-        }
+            instances
+                .entry(dir.to_owned())
+                .or_insert_with(|| Arc::new(Env::new()))
+                .clone()
+        };
+        EnvHandle { inner }
     }
 
     /// Invalidate the cached env for a directory, forcing a fresh copy on
@@ -228,72 +228,53 @@ impl Default for EnvStore {
 }
 
 // ---------------------------------------------------------------------------
-// EnvHandle — borrowed reference to a directory-scoped or global Env
+// EnvHandle — handle to a directory-scoped or global Env
 // ---------------------------------------------------------------------------
 
 /// A handle that dispatches env operations to either a directory-scoped
-/// [`Env`] or the global fallback.
+/// [`Env`] or the global instance, sharing state via [`Arc`].
 ///
-/// Created by [`EnvStore::for_directory`].
-pub struct EnvHandle<'a> {
-    store: &'a EnvStore,
-    dir: Option<String>,
+/// Created by [`EnvStore::for_directory`] or [`EnvStore::global`].
+#[derive(Clone)]
+pub struct EnvHandle {
+    inner: Arc<Env>,
 }
 
-impl EnvHandle<'_> {
+impl EnvHandle {
     /// Get a single variable.
     pub fn get(&self, key: &str) -> Option<String> {
-        self.resolve().get(key)
+        self.inner.get(key)
     }
 
     /// Get with fallback default.
     pub fn get_or(&self, key: &str, default: &str) -> String {
-        self.resolve().get_or(key, default)
+        self.inner.get_or(key, default)
     }
 
     /// Check whether a variable is set.
     pub fn has(&self, key: &str) -> bool {
-        self.resolve().has(key)
+        self.inner.has(key)
     }
 
     /// Return a snapshot of all variables.
     pub fn all(&self) -> HashMap<String, String> {
-        self.resolve().all()
+        self.inner.all()
     }
 
     /// Set (or overwrite) a variable.
     pub fn set(&self, key: &str, value: &str) {
-        self.resolve().set(key, value);
+        self.inner.set(key, value);
     }
 
-    /// Remove a variable.
+    /// Remove a variable. No-op if the key does not exist.
     pub fn remove(&self, key: &str) {
-        self.resolve().remove(key);
-    }
-
-    /// Resolve to the correct [`Env`] — directory-scoped if available,
-    /// otherwise global.
-    fn resolve(&self) -> &Env {
-        match &self.dir {
-            Some(dir) => {
-                let instances = self
-                    .store
-                    .instances
-                    .read()
-                    .expect("EnvStore lock poisoned");
-                // Safety: for_directory() guarantees the key exists
-                instances.get(dir).unwrap_or(&self.store.global)
-            }
-            None => &self.store.global,
-        }
+        self.inner.remove(key);
     }
 }
 
-impl std::fmt::Debug for EnvHandle<'_> {
+impl std::fmt::Debug for EnvHandle {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("EnvHandle")
-            .field("dir", &self.dir)
-            .finish_non_exhaustive()
+        f.debug_struct("EnvHandle").finish_non_exhaustive()
     }
 }
 
@@ -457,10 +438,7 @@ mod tests {
         assert!(store.for_directory("/tmp/b").get("X").is_none());
         // Global is untouched
         store.global().set("GLOBAL_ONLY", "survives");
-        assert_eq!(
-            store.global().get("GLOBAL_ONLY").unwrap(),
-            "survives"
-        );
+        assert_eq!(store.global().get("GLOBAL_ONLY").unwrap(), "survives");
     }
 
     #[test]
