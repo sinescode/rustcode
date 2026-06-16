@@ -140,10 +140,6 @@ impl EventBus {
         self.sender.receiver_count()
     }
 
-    /// Number of events sent.
-    pub fn send_count(&self) -> u64 {
-        self.sender.send_count()
-    }
 }
 
 impl Default for EventBus {
@@ -197,10 +193,6 @@ impl SharedBus {
         self.inner.receiver_count()
     }
 
-    /// Number of events sent.
-    pub fn send_count(&self) -> u64 {
-        self.inner.send_count()
-    }
 }
 
 impl Default for SharedBus {
@@ -444,17 +436,6 @@ mod tests {
         // ...receive on the other's subscription
         let received = sub.recv().await.unwrap();
         assert_eq!(received.payload["type"], "shared");
-    }
-
-    #[tokio::test]
-    async fn shared_bus_send_count_tracks_all_publishes() {
-        let bus = SharedBus::new(16);
-        let _sub = bus.subscribe();
-
-        assert_eq!(bus.send_count(), 0);
-        bus.publish(GlobalEvent::new(json!({"n": 1}))).unwrap();
-        bus.publish(GlobalEvent::new(json!({"n": 2}))).unwrap();
-        assert_eq!(bus.send_count(), 2);
     }
 
     #[tokio::test]
