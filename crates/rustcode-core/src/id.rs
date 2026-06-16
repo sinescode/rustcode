@@ -130,8 +130,7 @@ pub fn descending(prefix: IdPrefix, given: Option<&str>) -> Result<String, IdErr
 pub fn timestamp(id: &str) -> Result<i64, IdError> {
     let (_prefix, rest) = id.split_once('_').ok_or(IdError::Malformed)?;
     let hex_part = rest.get(..12).ok_or(IdError::Malformed)?;
-    let encoded =
-        u64::from_str_radix(hex_part, 16).map_err(|_| IdError::Malformed)?;
+    let encoded = u64::from_str_radix(hex_part, 16).map_err(|_| IdError::Malformed)?;
     Ok((encoded / TIMESTAMP_MULTIPLIER) as i64)
 }
 
@@ -219,8 +218,7 @@ fn now_ms() -> i64 {
 /// # Source
 /// Ported from `packages/core/src/id/id.ts` lines 41–49.
 fn random_base62(length: usize) -> String {
-    const CHARS: &[u8] =
-        b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+    const CHARS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
 
     let mut buf = vec![0u8; length];
     rand::rngs::OsRng.fill_bytes(&mut buf);
@@ -339,8 +337,7 @@ mod tests {
 
     #[test]
     fn given_wrong_prefix_errors() {
-        let err = ascending(IdPrefix::Session, Some("msg_badprefixhere"))
-            .unwrap_err();
+        let err = ascending(IdPrefix::Session, Some("msg_badprefixhere")).unwrap_err();
         match err {
             IdError::InvalidPrefix { expected, given } => {
                 assert_eq!(expected, "ses");

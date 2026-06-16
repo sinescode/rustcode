@@ -184,7 +184,7 @@ impl SessionProcessor {
     /// Add a user message.
     pub fn add_user_message(&mut self, content: String) -> &mut Self {
         self.messages.push(Message::User(UserMessage {
-            id: id::ascending("msg"),
+            id: id::ascending(id::IdPrefix::Message, None).expect("id generation should not fail"),
             session_id: self.session.id.clone(),
             content,
             time: chrono::Utc::now().timestamp_millis() as u64,
