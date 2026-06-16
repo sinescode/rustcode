@@ -352,8 +352,7 @@ mod tests {
         let event = GlobalEvent::new(json!({"id": "my-custom-id", "type": "has-id"}));
         let original_id = event.id().unwrap().to_owned();
 
-        bus.publish(event)
-            .unwrap();
+        bus.publish(event).unwrap();
 
         let received = sub.recv().await.unwrap();
         assert_eq!(received.id().unwrap(), original_id);
@@ -375,8 +374,7 @@ mod tests {
             }
         }));
 
-        bus.publish(event)
-            .unwrap();
+        bus.publish(event).unwrap();
 
         let received = sub.recv().await.unwrap();
         // The ID should be the syncEvent.id, not a generated evt_ ID
