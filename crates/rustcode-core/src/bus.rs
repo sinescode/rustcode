@@ -436,7 +436,8 @@ mod tests {
         let mut sub = bus.subscribe();
 
         // Publish on one handle...
-        bus2.publish(GlobalEvent::new(json!({ "type": "shared" }))).unwrap();
+        bus2.publish(GlobalEvent::new(json!({ "type": "shared" })))
+            .unwrap();
 
         // ...receive on the other's subscription
         let received = sub.recv().await.unwrap();
