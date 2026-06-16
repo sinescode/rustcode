@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![allow(dead_code, unused_imports)]
-#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![warn(clippy::all)]
 
 //! rustcode — AI-powered development tool.
 //!

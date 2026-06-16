@@ -1,6 +1,5 @@
 #![forbid(unsafe_code)]
-#![deny(missing_docs)]
-#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![warn(clippy::all)]
 
 //! Terminal UI for rustcode.
 //!

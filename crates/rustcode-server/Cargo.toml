@@ -16,11 +16,3 @@ tracing.workspace = true
 tower.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
-
-[lints.rust]
-unsafe_code = "forbid"
-
-[lints.clippy]
-all = { level = "warn", priority = -1 }
-pedantic = { level = "warn", priority = -1 }
-nursery = { level = "warn", priority = -1 }

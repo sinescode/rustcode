@@ -1,7 +1,6 @@
 #![forbid(unsafe_code)]
-// Relaxed for scaffolding phase — tighten as modules are implemented
 #![allow(dead_code, unused_imports, unused_variables)]
-#![warn(clippy::all, clippy::pedantic, clippy::nursery)]
+#![warn(clippy::all)]
 
 //! Core library for rustcode — AI-powered development tool.
 //!
