@@ -58,9 +58,8 @@ impl Storage {
     pub fn read<T: serde::de::DeserializeOwned>(&self, key: &[&str]) -> Result<T> {
         let path = self.key_path(key);
         let content = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&content).map_err(|e| {
-            Error::Config(format!("storage read error at {}: {e}", path.display()))
-        })
+        serde_json::from_str(&content)
+            .map_err(|e| Error::Config(format!("storage read error at {}: {e}", path.display())))
     }
 
     /// Write a value by key path.
@@ -74,9 +73,8 @@ impl Storage {
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        let content = serde_json::to_string_pretty(value).map_err(|e| {
-            Error::Config(format!("storage serialization error: {e}"))
-        })?;
+        let content = serde_json::to_string_pretty(value)
+            .map_err(|e| Error::Config(format!("storage serialization error: {e}")))?;
         std::fs::write(&path, content)?;
         Ok(())
     }
@@ -112,7 +110,10 @@ impl Storage {
     /// Returns file names (without `.json` extension) in the directory
     /// corresponding to the prefix.
     pub fn list(&self, prefix: &[&str]) -> Result<Vec<String>> {
-        let dir = self.key_path(prefix);
+        let mut dir = self.dir.clone();
+        for part in prefix {
+            dir.push(part);
+        }
         if !dir.exists() {
             return Ok(Vec::new());
         }
@@ -189,7 +190,10 @@ impl Database {
 
         let db_url = format!("sqlite:{}?mode=rwc", path.display());
         let pool = sqlx::SqlitePool::connect(&db_url).await.map_err(|e| {
-            Error::Config(format!("failed to open database at {}: {e}", path.display()))
+            Error::Config(format!(
+                "failed to open database at {}: {e}",
+                path.display()
+            ))
         })?;
 
         // Set PRAGMAs
@@ -234,11 +238,10 @@ impl Database {
     pub async fn run_migrations(&self, migrations: &[Migration]) -> Result<()> {
         // Get the set of already-applied migration IDs
         let completed: std::collections::HashSet<String> = {
-            let rows: Vec<(String,)> =
-                sqlx::query_as("SELECT id FROM _migration ORDER BY id")
-                    .fetch_all(&self.pool)
-                    .await
-                    .map_err(|e| Error::Config(format!("migration query error: {e}")))?;
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM _migration ORDER BY id")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| Error::Config(format!("migration query error: {e}")))?;
             rows.into_iter().map(|(id,)| id).collect()
         };
 
@@ -247,9 +250,10 @@ impl Database {
                 continue;
             }
 
-            let mut tx = self.pool.begin().await.map_err(|e| {
-                Error::Config(format!("migration transaction start error: {e}"))
-            })?;
+            let mut tx =
+                self.pool.begin().await.map_err(|e| {
+                    Error::Config(format!("migration transaction start error: {e}"))
+                })?;
 
             // Execute the migration SQL
             for statement in migration.sql.split(';') {
@@ -257,16 +261,13 @@ impl Database {
                 if trimmed.is_empty() {
                     continue;
                 }
-                sqlx::query(trimmed)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| {
-                        Error::Config(format!(
-                            "migration `{}` error at `{}`: {e}",
-                            migration.id,
-                            &trimmed[..trimmed.len().min(80)]
-                        ))
-                    })?;
+                sqlx::query(trimmed).execute(&mut *tx).await.map_err(|e| {
+                    Error::Config(format!(
+                        "migration `{}` error at `{}`: {e}",
+                        migration.id,
+                        &trimmed[..trimmed.len().min(80)]
+                    ))
+                })?;
             }
 
             // Record the migration
@@ -281,9 +282,9 @@ impl Database {
                 .await
                 .map_err(|e| Error::Config(format!("migration record error: {e}")))?;
 
-            tx.commit().await.map_err(|e| {
-                Error::Config(format!("migration commit error: {e}"))
-            })?;
+            tx.commit()
+                .await
+                .map_err(|e| Error::Config(format!("migration commit error: {e}")))?;
 
             tracing::info!("Applied migration: {}", migration.id);
         }
@@ -324,8 +325,8 @@ impl std::fmt::Debug for Database {
 /// Ported from `packages/core/src/database/database.ts` lines 43–55
 /// (`Database.path`).
 pub fn default_db_path() -> Result<PathBuf> {
-    let data_dir = dirs::data_dir()
-        .ok_or_else(|| Error::Config("Cannot determine data directory".into()))?;
+    let data_dir =
+        dirs::data_dir().ok_or_else(|| Error::Config("Cannot determine data directory".into()))?;
     Ok(data_dir.join("opencode").join("opencode.db"))
 }
 
@@ -595,12 +596,11 @@ mod tests {
         .unwrap();
 
         // Query the session
-        let (title,): (String,) =
-            sqlx::query_as("SELECT title FROM session WHERE id = ?1")
-                .bind("sess-1")
-                .fetch_one(db.pool())
-                .await
-                .unwrap();
+        let (title,): (String,) = sqlx::query_as("SELECT title FROM session WHERE id = ?1")
+            .bind("sess-1")
+            .fetch_one(db.pool())
+            .await
+            .unwrap();
         assert_eq!(title, "Test Session");
 
         let _ = std::fs::remove_dir_all(&dir);
