@@ -65,7 +65,11 @@ impl Env {
     /// Ported from `packages/opencode/src/env/index.ts` line 9
     /// (`Effect.fn("Env.get")`).
     pub fn get(&self, key: &str) -> Option<String> {
-        self.vars.read().expect("Env lock poisoned").get(key).cloned()
+        self.vars
+            .read()
+            .expect("Env lock poisoned")
+            .get(key)
+            .cloned()
     }
 
     /// Get a variable, returning `default` when absent.
@@ -75,7 +79,10 @@ impl Env {
 
     /// Check whether a variable is set.
     pub fn has(&self, key: &str) -> bool {
-        self.vars.read().expect("Env lock poisoned").contains_key(key)
+        self.vars
+            .read()
+            .expect("Env lock poisoned")
+            .contains_key(key)
     }
 
     /// Return a snapshot of all variables.
@@ -412,7 +419,10 @@ mod tests {
             .for_directory("/tmp/ephemeral")
             .set("EPHEMERAL", "value");
         assert_eq!(
-            store.for_directory("/tmp/ephemeral").get("EPHEMERAL").unwrap(),
+            store
+                .for_directory("/tmp/ephemeral")
+                .get("EPHEMERAL")
+                .unwrap(),
             "value"
         );
 
