@@ -1009,7 +1009,7 @@ pub fn discover_config_files(
         current = dir.parent().map(|p| p.to_path_buf());
 
         // Stop at filesystem root
-        if current.as_ref().map_or(true, |p| p.as_path() == dir_path) {
+        if current.as_ref().is_none_or(|p| p.as_path() == dir_path) {
             break;
         }
     }
@@ -1045,7 +1045,7 @@ pub fn discover_opencode_dirs(
 
         let dir_path = dir.as_path();
         current = dir.parent().map(|p| p.to_path_buf());
-        if current.as_ref().map_or(true, |p| p.as_path() == dir_path) {
+        if current.as_ref().is_none_or(|p| p.as_path() == dir_path) {
             break;
         }
     }
@@ -1064,7 +1064,10 @@ pub fn discover_opencode_dirs(
 /// # Source
 /// Ported from `packages/opencode/src/config/parse.ts` lines 8–33
 /// (`ConfigParse.jsonc`).
-pub fn parse_jsonc(text: &str, _filepath: &std::path::Path) -> crate::error::Result<serde_json::Value> {
+pub fn parse_jsonc(
+    text: &str,
+    _filepath: &std::path::Path,
+) -> crate::error::Result<serde_json::Value> {
     let cleaned = strip_jsonc_comments(text);
     serde_json::from_str(&cleaned).map_err(|e| {
         crate::error::Error::Config(format!(
@@ -1300,9 +1303,9 @@ pub fn substitute_variables(
         }
 
         // Resolve the file path
-        let resolved = if file_path_str.starts_with("~/") {
+        let resolved = if let Some(stripped) = file_path_str.strip_prefix("~/") {
             if let Some(home) = dirs::home_dir() {
-                home.join(&file_path_str[2..])
+                home.join(stripped)
             } else {
                 return Err(crate::error::Error::Config(
                     "Cannot determine home directory for {file:...} substitution".into(),
@@ -1357,7 +1360,7 @@ pub fn substitute_variables(
 pub fn merge_info(target: &mut Info, source: &Info) {
     // Instructions — concatenate and deduplicate
     if !source.instructions.is_empty() {
-        let mut combined: Vec<String> = target.instructions.iter().cloned().collect();
+        let mut combined: Vec<String> = target.instructions.to_vec();
         for inst in &source.instructions {
             if !combined.contains(inst) {
                 combined.push(inst.clone());
@@ -1392,10 +1395,7 @@ pub fn merge_info(target: &mut Info, source: &Info) {
 
     // Merge MCP configs
     for (key, mcp) in &source.mcp {
-        target
-            .mcp
-            .entry(key.clone())
-            .or_insert_with(|| mcp.clone());
+        target.mcp.entry(key.clone()).or_insert_with(|| mcp.clone());
     }
 
     // Merge deprecated mode → agent
