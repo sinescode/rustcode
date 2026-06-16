@@ -700,17 +700,20 @@ fn home_dir() -> String {
 /// # Source
 /// Ported from `packages/opencode/src/permission/index.ts` lines 189–195.
 fn expand_pattern(pattern: &str, home: &str) -> String {
+    // TS: `pattern.startsWith("~/")` strips only the `~`, keeping the `/`.
+    // We use `strip_prefix` for `$HOME` cases where prefix length = slice offset.
     if pattern.starts_with("~/") {
+        // pattern.slice(1) — strip only the `~`, keep the `/` after it
         return home.to_string() + &pattern[1..];
     }
     if pattern == "~" {
         return home.to_string();
     }
-    if pattern.starts_with("$HOME/") {
-        return home.to_string() + &pattern[5..];
+    if let Some(rest) = pattern.strip_prefix("$HOME/") {
+        return home.to_string() + rest;
     }
-    if pattern.starts_with("$HOME") {
-        return home.to_string() + &pattern[5..];
+    if let Some(rest) = pattern.strip_prefix("$HOME") {
+        return home.to_string() + rest;
     }
     pattern.to_string()
 }
@@ -1621,5 +1624,130 @@ mod tests {
         assert_eq!(PermissionAction::Allow.to_string(), "allow");
         assert_eq!(PermissionAction::Deny.to_string(), "deny");
         assert_eq!(PermissionAction::Ask.to_string(), "ask");
+    }
+
+    // ── PermissionService integration tests ────────────────────────────────
+
+    fn make_service() -> PermissionService {
+        PermissionService::new(crate::bus::SharedBus::new(16))
+    }
+
+    fn make_ruleset(action: PermissionAction) -> PermissionRuleset {
+        vec![PermissionRule {
+            permission: "bash".into(),
+            pattern: "*".into(),
+            action,
+        }]
+    }
+
+    fn make_ask_input(ruleset: PermissionRuleset) -> AskInput {
+        AskInput {
+            id: None,
+            session_id: "ses_test".into(),
+            permission: "bash".into(),
+            patterns: vec!["echo hello".into()],
+            metadata: serde_json::Value::Null,
+            always: vec![],
+            tool: None,
+            ruleset,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_ask_allow() {
+        let svc = make_service();
+        let ruleset = make_ruleset(PermissionAction::Allow);
+        let input = make_ask_input(ruleset);
+        let result = svc.ask(input).await.unwrap();
+        assert_eq!(result, PermissionAction::Allow);
+    }
+
+    #[tokio::test]
+    async fn test_service_ask_deny() {
+        let svc = make_service();
+        let ruleset = make_ruleset(PermissionAction::Deny);
+        let input = make_ask_input(ruleset);
+        let result = svc.ask(input).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::Error::Permission(PermissionError::Denied) => {}
+            other => panic!("expected Denied error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_ask_needs_approval() {
+        let svc = make_service();
+        let ruleset = make_ruleset(PermissionAction::Ask);
+        let input = make_ask_input(ruleset);
+        let result = svc.ask(input).await.unwrap();
+        assert_eq!(result, PermissionAction::Ask);
+        // No pending entries since ask() doesn't store oneshots
+        assert!(svc.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_service_ask_with_approved_rules() {
+        let svc = make_service();
+        {
+            let mut approved = svc.approved.write().await;
+            approved.push(PermissionRule {
+                permission: "bash".into(),
+                pattern: "*".into(),
+                action: PermissionAction::Allow,
+            });
+        }
+        let ruleset = make_ruleset(PermissionAction::Ask);
+        let input = make_ask_input(ruleset);
+        let result = svc.ask(input).await.unwrap();
+        assert_eq!(result, PermissionAction::Allow);
+    }
+
+    #[tokio::test]
+    async fn test_service_assert_allow() {
+        let svc = make_service();
+        let ruleset = make_ruleset(PermissionAction::Allow);
+        let input = make_ask_input(ruleset);
+        svc.assert(input).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn test_service_assert_deny() {
+        let svc = make_service();
+        let ruleset = make_ruleset(PermissionAction::Deny);
+        let input = make_ask_input(ruleset);
+        let result = svc.assert(input).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_service_reply_not_found() {
+        let svc = make_service();
+        let reply = ReplyInput {
+            request_id: "per_nonexistent".into(),
+            reply: PermissionReply::Once,
+            message: None,
+        };
+        let result = svc.reply(reply).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            crate::error::Error::Permission(PermissionError::NotFound { request_id }) => {
+                assert_eq!(request_id, "per_nonexistent");
+            }
+            other => panic!("expected NotFound error, got: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_service_list_empty() {
+        let svc = make_service();
+        assert!(svc.list().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_service_approved_rules_initially_empty() {
+        let svc = make_service();
+        let rules = svc.approved_rules().await;
+        assert!(rules.is_empty());
     }
 }
