@@ -981,7 +981,7 @@ pub fn discover_config_files(
     while let Some(dir) = current {
         // Stop at the worktree boundary
         if let Some(stop) = stop_dir {
-            if dir.as_path() == *stop {
+            if dir.as_path() == stop {
                 break;
             }
         }
@@ -993,10 +993,11 @@ pub fn discover_config_files(
             }
         }
 
+        let dir_path = dir.as_path();
         current = dir.parent().map(|p| p.to_path_buf());
 
         // Stop at filesystem root
-        if current.as_ref().map_or(true, |p| p == dir) {
+        if current.as_ref().map_or(true, |p| p.as_path() == dir_path) {
             break;
         }
     }
@@ -1020,7 +1021,7 @@ pub fn discover_opencode_dirs(
 
     while let Some(dir) = current {
         if let Some(stop) = stop_dir {
-            if dir.as_path() == *stop {
+            if dir.as_path() == stop {
                 break;
             }
         }
@@ -1030,8 +1031,9 @@ pub fn discover_opencode_dirs(
             dirs.push(opencode_dir);
         }
 
+        let dir_path = dir.as_path();
         current = dir.parent().map(|p| p.to_path_buf());
-        if current.as_ref().map_or(true, |p| p == dir) {
+        if current.as_ref().map_or(true, |p| p.as_path() == dir_path) {
             break;
         }
     }
