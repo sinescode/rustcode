@@ -10,7 +10,7 @@
 //! - `packages/core/src/v1/config/permission.ts`
 //! - `packages/core/src/v1/permission.ts`
 //! - `packages/core/src/util/wildcard.ts`
-//! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
+//!   OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 //!
 //! ## Architecture
 //!
