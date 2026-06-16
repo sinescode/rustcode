@@ -981,7 +981,7 @@ pub fn discover_config_files(
     while let Some(dir) = current {
         // Stop at the worktree boundary
         if let Some(stop) = stop_dir {
-            if dir == stop {
+            if &dir == stop {
                 break;
             }
         }
@@ -1020,7 +1020,7 @@ pub fn discover_opencode_dirs(
 
     while let Some(dir) = current {
         if let Some(stop) = stop_dir {
-            if dir == stop {
+            if &dir == stop {
                 break;
             }
         }
