@@ -119,7 +119,10 @@ impl EventBus {
     ///
     /// # Errors
     /// Returns [`broadcast::error::SendError`] if there are no receivers.
-    pub fn publish(&self, event: GlobalEvent) -> Result<usize, broadcast::error::SendError<GlobalEvent>> {
+    pub fn publish(
+        &self,
+        event: GlobalEvent,
+    ) -> Result<usize, broadcast::error::SendError<GlobalEvent>> {
         let mut event = event;
         ensure_event_id(&mut event);
         self.sender.send(event)
@@ -139,7 +142,6 @@ impl EventBus {
     pub fn receiver_count(&self) -> usize {
         self.sender.receiver_count()
     }
-
 }
 
 impl Default for EventBus {
@@ -179,7 +181,10 @@ impl SharedBus {
     ///
     /// # Errors
     /// Returns [`broadcast::error::SendError`] if there are no receivers.
-    pub fn publish(&self, event: GlobalEvent) -> Result<usize, broadcast::error::SendError<GlobalEvent>> {
+    pub fn publish(
+        &self,
+        event: GlobalEvent,
+    ) -> Result<usize, broadcast::error::SendError<GlobalEvent>> {
         self.inner.publish(event)
     }
 
