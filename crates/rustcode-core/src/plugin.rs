@@ -25,7 +25,9 @@ pub struct PluginManager {
 impl PluginManager {
     /// Create a new plugin manager.
     pub fn new() -> Self {
-        Self { plugins: Vec::new() }
+        Self {
+            plugins: Vec::new(),
+        }
     }
 
     /// List all loaded plugins.

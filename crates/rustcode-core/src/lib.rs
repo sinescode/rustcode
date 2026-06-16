@@ -9,24 +9,24 @@
 //! Source: `packages/opencode/src/` and `packages/core/src/`
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
-pub mod error;
-pub mod id;
+pub mod agent;
 pub mod bus;
 pub mod config;
-pub mod provider;
-pub mod tool;
-pub mod session;
-pub mod permission;
-pub mod storage;
+pub mod env;
+pub mod error;
+pub mod format;
 pub mod git;
-pub mod snapshot;
+pub mod id;
+pub mod image;
 pub mod lsp;
 pub mod mcp;
-pub mod worktree;
-pub mod agent;
+pub mod permission;
 pub mod plugin;
-pub mod skill;
+pub mod provider;
 pub mod question;
-pub mod format;
-pub mod image;
-pub mod env;
+pub mod session;
+pub mod skill;
+pub mod snapshot;
+pub mod storage;
+pub mod tool;
+pub mod worktree;

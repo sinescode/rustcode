@@ -145,9 +145,17 @@ pub enum StreamChunk {
     /// Tool call input ended
     ToolInputEnd { id: String },
     /// Tool call with parsed input
-    ToolCall { id: String, name: String, input: serde_json::Value },
+    ToolCall {
+        id: String,
+        name: String,
+        input: serde_json::Value,
+    },
     /// Tool result
-    ToolResult { id: String, name: String, output: String },
+    ToolResult {
+        id: String,
+        name: String,
+        output: String,
+    },
     /// Step started
     StepStart,
     /// Step finished
@@ -223,7 +231,9 @@ pub trait Provider: Send + Sync {
         model: &Model,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> crate::error::Result<Box<dyn futures::Stream<Item = crate::error::Result<StreamChunk>> + Send + Unpin>>;
+    ) -> crate::error::Result<
+        Box<dyn futures::Stream<Item = crate::error::Result<StreamChunk>> + Send + Unpin>,
+    >;
 
     /// Non-streaming completion.
     async fn complete(

@@ -12,7 +12,11 @@ use std::path::PathBuf;
 
 /// AI-powered development tool
 #[derive(Parser)]
-#[command(name = "rustcode", version, about = "AI-powered development tool — Rust port of OpenCode")]
+#[command(
+    name = "rustcode",
+    version,
+    about = "AI-powered development tool — Rust port of OpenCode"
+)]
 struct Cli {
     /// Print logs to stderr
     #[arg(long)]

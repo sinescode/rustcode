@@ -133,8 +133,9 @@ impl Config {
 
     /// Get the path to the config file.
     fn config_path() -> crate::error::Result<PathBuf> {
-        let config_dir = dirs::config_dir()
-            .ok_or_else(|| crate::error::Error::Config("Cannot determine config directory".into()))?;
+        let config_dir = dirs::config_dir().ok_or_else(|| {
+            crate::error::Error::Config("Cannot determine config directory".into())
+        })?;
         Ok(config_dir.join("opencode").join("config.toml"))
     }
 

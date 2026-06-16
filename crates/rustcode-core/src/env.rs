@@ -23,7 +23,7 @@ impl Env {
     }
 
     /// Get an environment variable with a default.
-    pub fn get_or(&self, key: &str, default: &str) -> &str {
+    pub fn get_or<'a>(&'a self, key: &str, default: &'a str) -> &'a str {
         self.get(key).unwrap_or(default)
     }
 

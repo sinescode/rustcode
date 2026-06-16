@@ -37,7 +37,10 @@ impl EventBus {
     ///
     /// # Errors
     /// Returns an error if there are no receivers.
-    pub fn publish(&self, event: GlobalEvent) -> Result<(), broadcast::error::SendError<GlobalEvent>> {
+    pub fn publish(
+        &self,
+        event: GlobalEvent,
+    ) -> Result<usize, broadcast::error::SendError<GlobalEvent>> {
         self.sender.send(event)
     }
 
@@ -71,7 +74,10 @@ impl SharedBus {
     ///
     /// # Errors
     /// Returns an error if there are no receivers.
-    pub fn publish(&self, event: GlobalEvent) -> Result<(), broadcast::error::SendError<GlobalEvent>> {
+    pub fn publish(
+        &self,
+        event: GlobalEvent,
+    ) -> Result<usize, broadcast::error::SendError<GlobalEvent>> {
         self.inner.publish(event)
     }
 

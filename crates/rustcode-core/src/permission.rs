@@ -32,11 +32,18 @@ pub type PermissionRuleset = Vec<PermissionRule>;
 ///
 /// # Source
 /// Ported from `packages/opencode/src/permission/evaluate.ts`.
-pub fn evaluate(tool: &str, patterns: &[String], ruleset: &PermissionRuleset) -> EvaluatedPermission {
+pub fn evaluate(
+    tool: &str,
+    patterns: &[String],
+    ruleset: &PermissionRuleset,
+) -> EvaluatedPermission {
     for rule in ruleset {
         if matches_pattern(tool, &rule.tool) {
             if let Some(ref rule_patterns) = rule.patterns {
-                if patterns.iter().any(|p| rule_patterns.iter().any(|rp| matches_pattern(p, rp))) {
+                if patterns
+                    .iter()
+                    .any(|p| rule_patterns.iter().any(|rp| matches_pattern(p, rp)))
+                {
                     return EvaluatedPermission {
                         action: rule.action.clone(),
                         reason: Some(format!("Matched rule for tool '{}'", rule.tool)),

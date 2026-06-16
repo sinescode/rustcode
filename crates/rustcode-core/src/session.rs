@@ -133,7 +133,10 @@ pub enum ToolState {
     #[serde(rename = "pending")]
     Pending { input: serde_json::Value },
     #[serde(rename = "running")]
-    Running { input: serde_json::Value, start: u64 },
+    Running {
+        input: serde_json::Value,
+        start: u64,
+    },
     #[serde(rename = "completed")]
     Completed {
         input: serde_json::Value,
