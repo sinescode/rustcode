@@ -93,7 +93,7 @@ fn main() -> anyhow::Result<()> {
             println!("Server mode on port {port} — not yet implemented.");
         }
         Some(Commands::Session { all }) => {
-            let config = Config::load().unwrap_or_default();
+            let _config = Config::load().unwrap_or_default();
             let data_dir = Config::data_dir().unwrap_or_else(|_| PathBuf::from("."));
             println!("Sessions directory: {:?}", data_dir.join("storage"));
             println!("Show all: {all}");
