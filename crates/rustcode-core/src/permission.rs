@@ -271,10 +271,14 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
 
 /// Escape special regex characters in a string.
 ///
+/// Only escapes the characters in the TS character class:
+/// `[.+^${}()|[\]\\]` — notably does NOT escape `*` or `?`.
+///
 /// # Source
 /// Ported from `packages/core/src/util/wildcard.ts` line 8:
 /// `.replace(/[.+^${}()|[\]\\]/g, "\\$&")`
 fn regex_escape(s: &str) -> String {
+    // The exact set from the TS regex character class (12 characters).
     let special = [
         '.', '+', '^', '$', '{', '}', '(', ')', '|', '[', ']', '\\',
     ];
@@ -809,6 +813,16 @@ impl SavedPermissions {
 // Permission Service (Stateful — ask / reply / list / assert)
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// A pending permission request awaiting user reply.
+///
+/// # Source
+/// Ported from `packages/opencode/src/permission/index.ts` lines 29–32.
+struct PendingEntry {
+    request: PermissionRequest,
+    /// Oneshot sender — resolved when the user replies.
+    tx: tokio::sync::oneshot::Sender<Result<(), PermissionError>>,
+}
+
 /// The permission service manages pending permission requests and evaluates
 /// permission checks against configured and saved rules.
 ///
@@ -818,6 +832,8 @@ impl SavedPermissions {
 pub struct PermissionService {
     bus: SharedBus,
     approved: Arc<tokio::sync::RwLock<PermissionRuleset>>,
+    pending: Arc<dashmap::DashMap<String, PendingEntry>>,
+    saved: Option<SavedPermissions>,
 }
 
 impl PermissionService {
@@ -826,6 +842,18 @@ impl PermissionService {
         Self {
             bus,
             approved: Arc::new(tokio::sync::RwLock::new(PermissionRuleset::new())),
+            pending: Arc::new(dashmap::DashMap::new()),
+            saved: None,
+        }
+    }
+
+    /// Create a new permission service with saved-permission database support.
+    pub fn with_saved(bus: SharedBus, saved: SavedPermissions) -> Self {
+        Self {
+            bus,
+            approved: Arc::new(tokio::sync::RwLock::new(PermissionRuleset::new())),
+            pending: Arc::new(dashmap::DashMap::new()),
+            saved: Some(saved),
         }
     }
 
@@ -863,11 +891,8 @@ impl PermissionService {
             return Ok(PermissionAction::Allow);
         }
 
-        // Needs user input — create pending request and publish event.
-        let id = input
-            .id
-            .clone()
-            .unwrap_or_else(|| permission_id(None));
+        // Create a pending request (no oneshot — ask() is non-blocking).
+        let id = input.id.clone().unwrap_or_else(|| permission_id(None));
 
         let request = PermissionRequest {
             id: id.clone(),
@@ -891,25 +916,150 @@ impl PermissionService {
 
     /// Block until permission is granted (or return error if denied).
     ///
-    /// This is the V2 `assert` method — it blocks on a oneshot channel
-    /// until `reply()` is called.
+    /// Evaluates the permission, creates a pending entry with a oneshot
+    /// channel, and blocks until `reply()` resolves it.
     ///
     /// # Source
     /// Ported from `packages/core/src/permission.ts` lines 223–243.
-    pub async fn assert(&self, _input: AskInput) -> Result<()> {
-        // STUB: full implementation requires oneshot-based blocking + pending state.
-        // For now, delegates to ask() and returns Ok if allowed.
-        todo!("PermissionService::assert — requires pending state with oneshot channels")
+    pub async fn assert(&self, input: AskInput) -> Result<()> {
+        let approved = self.approved.read().await;
+        let combined = merge_rulesets(&[input.ruleset.clone(), approved.clone()]);
+
+        for pattern in &input.patterns {
+            let result = evaluate(&input.permission, pattern, &[&combined]);
+            match result.action {
+                PermissionAction::Deny => {
+                    return Err(Error::Permission(PermissionError::Denied));
+                }
+                PermissionAction::Allow => continue,
+                PermissionAction::Ask => {}
+            }
+        }
+
+        // If all patterns allowed, return immediately.
+        let all_allow = input
+            .patterns
+            .iter()
+            .all(|p| evaluate(&input.permission, p, &[&combined]).action == PermissionAction::Allow);
+        if all_allow {
+            return Ok(());
+        }
+
+        // Create pending entry with a oneshot channel.
+        let id = input.id.clone().unwrap_or_else(|| permission_id(None));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        let request = PermissionRequest {
+            id: id.clone(),
+            session_id: input.session_id,
+            permission: input.permission,
+            patterns: input.patterns,
+            metadata: input.metadata,
+            always: input.always,
+            tool: input.tool,
+        };
+
+        // Publish the "asked" event.
+        let payload = serde_json::to_value(&request).unwrap_or_default();
+        let event = crate::bus::GlobalEvent::new(payload);
+        let _ = self.bus.publish(event);
+
+        self.pending.insert(id.clone(), PendingEntry { request, tx });
+
+        tracing::info!(%id, "permission asserted, blocking until reply");
+
+        // Block until the oneshot is resolved.
+        match rx.await {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(Error::Permission(e)),
+            Err(_) => {
+                // Sender dropped without replying — treat as rejected.
+                self.pending.remove(&id);
+                Err(Error::Permission(PermissionError::Rejected))
+            }
+        }
     }
 
     /// Reply to a pending permission request.
     ///
+    /// Handles the full lifecycle: resolves or rejects the pending entry,
+    /// publishes a `permission.replied` event, and cascades to other pending
+    /// entries in the same session (reject cascades fail them all; always
+    /// cascades auto-approves newly-matching entries).
+    ///
+    /// If `reply` is `Always` and a `SavedPermissions` store is configured,
+    /// the approved patterns are persisted to the database.
+    ///
     /// # Source
-    /// Ported from `packages/opencode/src/permission/index.ts` lines 120–178.
-    pub async fn reply(&self, _input: ReplyInput) -> Result<()> {
-        // STUB: full implementation requires pending state map.
-        // For now, returns NotFound to indicate no active pending state.
-        todo!("PermissionService::reply — requires pending state with DashMap")
+    /// Ported from `packages/opencode/src/permission/index.ts` lines 120–178
+    /// and `packages/core/src/permission.ts` lines 245–309.
+    pub async fn reply(&self, input: ReplyInput) -> Result<()> {
+        // Resolve the specific pending entry.
+        let existing = self
+            .pending
+            .remove(&input.request_id)
+            .map(|(_, entry)| entry)
+            .ok_or_else(|| {
+                Error::Permission(PermissionError::NotFound {
+                    request_id: input.request_id.clone(),
+                })
+            })?;
+
+        let session_id = existing.request.session_id.clone();
+
+        // Publish replied event.
+        self.publish_replied(&session_id, &input.request_id, &input.reply);
+
+        if input.reply == PermissionReply::Reject {
+            // Fail the specific deferred.
+            let err = match &input.message {
+                Some(msg) => PermissionError::Corrected {
+                    feedback: msg.clone(),
+                },
+                None => PermissionError::Rejected,
+            };
+            let _ = existing.tx.send(Err(err));
+
+            // Cascade: fail ALL pending for the same session.
+            self.cascade_reject(&session_id);
+            return Ok(());
+        }
+
+        // Succeed the specific deferred.
+        let _ = existing.tx.send(Ok(()));
+
+        if input.reply == PermissionReply::Once {
+            return Ok(());
+        }
+
+        // "Always" — save approved patterns for future auto-approval.
+        if !existing.request.always.is_empty() {
+            let mut approved = self.approved.write().await;
+            for pattern in &existing.request.always {
+                approved.push(PermissionRule {
+                    permission: existing.request.permission.clone(),
+                    pattern: pattern.clone(),
+                    action: PermissionAction::Allow,
+                });
+            }
+
+            // Persist to database if configured.
+            if let Some(ref saved) = self.saved {
+                // We need a project_id — for now use empty string as placeholder.
+                // The full integration will wire this through the session.
+                let add_input = AddSavedInput {
+                    project_id: String::new(),
+                    action: existing.request.permission.clone(),
+                    resources: existing.request.always.clone(),
+                };
+                let _ = saved.add(&add_input).await;
+            }
+        }
+
+        // Cascade: auto-approve other pending entries that now match.
+        self.cascade_always(&session_id).await;
+
+        Ok(())
     }
 
     /// List all pending permission requests.
@@ -917,13 +1067,81 @@ impl PermissionService {
     /// # Source
     /// Ported from `packages/opencode/src/permission/index.ts` lines 180–183.
     pub fn list(&self) -> Vec<PermissionRequest> {
-        // STUB: full implementation requires pending state map.
-        vec![]
+        self.pending
+            .iter()
+            .map(|entry| entry.request.clone())
+            .collect()
     }
 
     /// Get the list of approved (remembered) rules.
     pub async fn approved_rules(&self) -> PermissionRuleset {
         self.approved.read().await.clone()
+    }
+
+    // ── Internal helpers ──────────────────────────────────────────────────
+
+    /// Publish a `permission.replied` event on the bus.
+    fn publish_replied(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        reply: &PermissionReply,
+    ) {
+        let payload = serde_json::json!({
+            "type": "permission.replied",
+            "sessionID": session_id,
+            "requestID": request_id,
+            "reply": reply,
+        });
+        let event = crate::bus::GlobalEvent::new(payload);
+        let _ = self.bus.publish(event);
+    }
+
+    /// Fail all pending entries for the given session with `RejectedError`.
+    fn cascade_reject(&self, session_id: &str) {
+        let to_remove: Vec<String> = self
+            .pending
+            .iter()
+            .filter(|entry| entry.request.session_id == session_id)
+            .map(|entry| entry.request.id.clone())
+            .collect();
+
+        for id in to_remove {
+            if let Some((_, entry)) = self.pending.remove(&id) {
+                self.publish_replied(session_id, &id, &PermissionReply::Reject);
+                let _ = entry.tx.send(Err(PermissionError::Rejected));
+            }
+        }
+    }
+
+    /// Auto-approve pending entries that are now allowed by the updated rules.
+    async fn cascade_always(&self, session_id: &str) {
+        let approved = self.approved.read().await.clone();
+
+        // Two-phase: collect matching IDs, then remove and resolve.
+        // DashMap doesn't support extracting owned values through iteration.
+        let matching_ids: Vec<String> = {
+            let approved_ref = &approved;
+            self.pending
+                .iter()
+                .filter(|entry| entry.request.session_id == session_id)
+                .filter(|entry| {
+                    entry.request.patterns.iter().all(|pattern| {
+                        evaluate(&entry.request.permission, pattern, &[approved_ref])
+                            .action
+                            == PermissionAction::Allow
+                    })
+                })
+                .map(|entry| entry.request.id.clone())
+                .collect()
+        };
+
+        for id in matching_ids {
+            if let Some((_, entry)) = self.pending.remove(&id) {
+                self.publish_replied(session_id, &id, &PermissionReply::Always);
+                let _ = entry.tx.send(Ok(()));
+            }
+        }
     }
 }
 
@@ -966,7 +1184,8 @@ mod tests {
     #[test]
     fn test_wildcard_middle_match() {
         assert!(wildcard_match("foo/bar/baz", "foo/*/baz"));
-        assert!(!wildcard_match("foo/bar/other/baz", "foo/*/baz"));
+        // * matches any characters including / (with dotall 's' flag in TS)
+        assert!(wildcard_match("foo/bar/other/baz", "foo/*/baz"));
     }
 
     #[test]
@@ -999,13 +1218,16 @@ mod tests {
 
     #[test]
     fn test_wildcard_trailing_space_star() {
-        // Trailing " .*" in a pattern is treated as optional
         // TS: if (escaped.endsWith(" .*")) escaped = escaped.slice(0, -3) + "( .*)?"
-        // This means a pattern like "foo .*" matches "foo" and "foo anything"
-        let pattern = "foo .*";
+        // After `*` → `.*`, a pattern like "foo *" becomes "foo .*",
+        // and the trailing " .*" is converted to optional "( .*)?"
+        // So "foo *" matches both "foo" and "foo anything".
+        let pattern = "foo *";
         assert!(wildcard_match("foo", pattern));
         assert!(wildcard_match("foo bar", pattern));
         assert!(wildcard_match("foo bar baz", pattern));
+        // But does NOT match a completely different prefix
+        assert!(!wildcard_match("bar", pattern));
     }
 
     #[test]
