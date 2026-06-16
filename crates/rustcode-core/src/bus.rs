@@ -436,8 +436,7 @@ mod tests {
         let mut sub = bus.subscribe();
 
         // Publish on one handle...
-        bus2.publish(GlobalEvent::new(json!({ "type": "shared" })))
-            .unwrap();
+        bus2.publish(GlobalEvent::new(json!({ "type": "shared" }))).unwrap();
 
         // ...receive on the other's subscription
         let received = sub.recv().await.unwrap();
@@ -482,8 +481,7 @@ mod tests {
         let bus = EventBus::new(16);
         let mut sub = bus.subscribe();
 
-        bus.publish(GlobalEvent::new(json!([1, 2, 3])))
-            .unwrap();
+        bus.publish(GlobalEvent::new(json!([1, 2, 3]))).unwrap();
 
         let received = sub.recv().await.unwrap();
         assert_eq!(received.payload, json!([1, 2, 3]));
@@ -497,8 +495,7 @@ mod tests {
         let mut sub = bus.subscribe();
 
         for i in 0..10 {
-            bus.publish(GlobalEvent::new(json!({"seq": i})))
-                .unwrap();
+            bus.publish(GlobalEvent::new(json!({"seq": i}))).unwrap();
         }
 
         for expected in 0..10 {
