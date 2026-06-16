@@ -769,7 +769,9 @@ pub enum LspConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum LspEntry {
-    Disabled { disabled: bool },
+    Disabled {
+        disabled: bool,
+    },
     Config {
         command: Vec<String>,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -889,10 +891,7 @@ impl Config {
     /// Ported from `packages/opencode/src/config/config.ts` line 605
     /// (`Config.get()`).
     pub fn get(&self) -> Info {
-        self.info
-            .read()
-            .expect("Config lock poisoned")
-            .clone()
+        self.info.read().expect("Config lock poisoned").clone()
     }
 
     /// Load configuration from the global config directory.
@@ -1142,7 +1141,9 @@ fn strip_jsonc_comments(text: &str) -> String {
         if chars[i] == ',' {
             // Look ahead past whitespace for ] or }
             let mut j = i + 1;
-            while j < chars.len() && (chars[j] == ' ' || chars[j] == '\t' || chars[j] == '\n' || chars[j] == '\r') {
+            while j < chars.len()
+                && (chars[j] == ' ' || chars[j] == '\t' || chars[j] == '\n' || chars[j] == '\r')
+            {
                 j += 1;
             }
             if j < chars.len() && (chars[j] == ']' || chars[j] == '}') {
@@ -1367,35 +1368,56 @@ pub fn merge_info(target: &mut Info, source: &Info) {
 
     // Merge commands
     for (key, cmd) in &source.command {
-        target.command.entry(key.clone()).or_insert_with(|| cmd.clone());
+        target
+            .command
+            .entry(key.clone())
+            .or_insert_with(|| cmd.clone());
     }
 
     // Merge agents
     for (key, agent) in &source.agent {
-        target.agent.entry(key.clone()).or_insert_with(|| agent.clone());
+        target
+            .agent
+            .entry(key.clone())
+            .or_insert_with(|| agent.clone());
     }
 
     // Merge providers
     for (key, provider) in &source.provider {
-        target.provider.entry(key.clone()).or_insert_with(|| provider.clone());
+        target
+            .provider
+            .entry(key.clone())
+            .or_insert_with(|| provider.clone());
     }
 
     // Merge MCP configs
     for (key, mcp) in &source.mcp {
-        target.mcp.entry(key.clone()).or_insert_with(|| mcp.clone());
+        target
+            .mcp
+            .entry(key.clone())
+            .or_insert_with(|| mcp.clone());
     }
 
     // Merge deprecated mode → agent
     for (key, mode_cfg) in &source.mode {
-        target.mode.entry(key.clone()).or_insert_with(|| mode_cfg.clone());
+        target
+            .mode
+            .entry(key.clone())
+            .or_insert_with(|| mode_cfg.clone());
     }
 
     // Merge references
     for (key, ref_entry) in &source.references {
-        target.references.entry(key.clone()).or_insert_with(|| ref_entry.clone());
+        target
+            .references
+            .entry(key.clone())
+            .or_insert_with(|| ref_entry.clone());
     }
     for (key, ref_entry) in &source.reference {
-        target.reference.entry(key.clone()).or_insert_with(|| ref_entry.clone());
+        target
+            .reference
+            .entry(key.clone())
+            .or_insert_with(|| ref_entry.clone());
     }
 
     // Merge plugin specs (concatenate, don't replace)
@@ -1404,29 +1426,75 @@ pub fn merge_info(target: &mut Info, source: &Info) {
     }
 
     // Scalar and optional fields — source wins if Some
-    if source.schema.is_some() { target.schema = source.schema.clone(); }
-    if source.shell.is_some() { target.shell = source.shell.clone(); }
-    if source.log_level.is_some() { target.log_level = source.log_level; }
-    if source.server.is_some() { target.server = source.server.clone(); }
-    if source.skills.is_some() { target.skills = source.skills.clone(); }
-    if source.watcher.is_some() { target.watcher = source.watcher.clone(); }
-    if source.snapshot.is_some() { target.snapshot = source.snapshot; }
-    if source.share.is_some() { target.share = source.share; }
-    if source.autoshare.is_some() { target.autoshare = source.autoshare; }
-    if source.autoupdate.is_some() { target.autoupdate = source.autoupdate.clone(); }
-    if source.model.is_some() { target.model = source.model.clone(); }
-    if source.small_model.is_some() { target.small_model = source.small_model.clone(); }
-    if source.default_agent.is_some() { target.default_agent = source.default_agent.clone(); }
-    if source.username.is_some() { target.username = source.username.clone(); }
-    if source.formatter.is_some() { target.formatter = source.formatter.clone(); }
-    if source.lsp.is_some() { target.lsp = source.lsp.clone(); }
-    if source.layout.is_some() { target.layout = source.layout.clone(); }
-    if source.permission.is_some() { target.permission = source.permission.clone(); }
-    if source.attachment.is_some() { target.attachment = source.attachment.clone(); }
-    if source.enterprise.is_some() { target.enterprise = source.enterprise.clone(); }
-    if source.tool_output.is_some() { target.tool_output = source.tool_output.clone(); }
-    if source.compaction.is_some() { target.compaction = source.compaction.clone(); }
-    if source.experimental.is_some() { target.experimental = source.experimental.clone(); }
+    if source.schema.is_some() {
+        target.schema = source.schema.clone();
+    }
+    if source.shell.is_some() {
+        target.shell = source.shell.clone();
+    }
+    if source.log_level.is_some() {
+        target.log_level = source.log_level;
+    }
+    if source.server.is_some() {
+        target.server = source.server.clone();
+    }
+    if source.skills.is_some() {
+        target.skills = source.skills.clone();
+    }
+    if source.watcher.is_some() {
+        target.watcher = source.watcher.clone();
+    }
+    if source.snapshot.is_some() {
+        target.snapshot = source.snapshot;
+    }
+    if source.share.is_some() {
+        target.share = source.share;
+    }
+    if source.autoshare.is_some() {
+        target.autoshare = source.autoshare;
+    }
+    if source.autoupdate.is_some() {
+        target.autoupdate = source.autoupdate.clone();
+    }
+    if source.model.is_some() {
+        target.model = source.model.clone();
+    }
+    if source.small_model.is_some() {
+        target.small_model = source.small_model.clone();
+    }
+    if source.default_agent.is_some() {
+        target.default_agent = source.default_agent.clone();
+    }
+    if source.username.is_some() {
+        target.username = source.username.clone();
+    }
+    if source.formatter.is_some() {
+        target.formatter = source.formatter.clone();
+    }
+    if source.lsp.is_some() {
+        target.lsp = source.lsp.clone();
+    }
+    if source.layout.is_some() {
+        target.layout = source.layout.clone();
+    }
+    if source.permission.is_some() {
+        target.permission = source.permission.clone();
+    }
+    if source.attachment.is_some() {
+        target.attachment = source.attachment.clone();
+    }
+    if source.enterprise.is_some() {
+        target.enterprise = source.enterprise.clone();
+    }
+    if source.tool_output.is_some() {
+        target.tool_output = source.tool_output.clone();
+    }
+    if source.compaction.is_some() {
+        target.compaction = source.compaction.clone();
+    }
+    if source.experimental.is_some() {
+        target.experimental = source.experimental.clone();
+    }
 
     // Merge tools maps
     for (key, val) in &source.tools {
@@ -1450,9 +1518,8 @@ pub fn merge_info(target: &mut Info, source: &Info) {
 /// Ported from `packages/opencode/src/config/config.ts` lines 263–276
 /// (legacy config migration block).
 fn migrate_legacy_toml(content: &str) -> crate::error::Result<Info> {
-    let value: toml::Value = toml::from_str(content).map_err(|e| {
-        crate::error::Error::Config(format!("Legacy TOML parse error: {e}"))
-    })?;
+    let value: toml::Value = toml::from_str(content)
+        .map_err(|e| crate::error::Error::Config(format!("Legacy TOML parse error: {e}")))?;
 
     let mut info = Info::default();
 
@@ -1592,14 +1659,15 @@ mod tests {
 
     #[test]
     fn test_substitute_env_var() {
-        std::env::set_var("RUSTCODE_TEST_VAR", "test_value");
+        std::env::set_var("RUSTCODE_CFG_TEST_SUBST_VAR", "test_value");
         let result = substitute_variables(
-            "prefix {env:RUSTCODE_TEST_VAR} suffix",
+            "prefix {env:RUSTCODE_CFG_TEST_SUBST_VAR} suffix",
             std::path::Path::new("."),
             None,
         )
         .unwrap();
         assert_eq!(result, "prefix test_value suffix");
+        std::env::remove_var("RUSTCODE_CFG_TEST_SUBST_VAR");
     }
 
     #[test]
@@ -1672,7 +1740,12 @@ mod tests {
         });
         let cfg: McpConfig = serde_json::from_value(json).unwrap();
         match cfg {
-            McpConfig::Local { command, enabled, timeout, .. } => {
+            McpConfig::Local {
+                command,
+                enabled,
+                timeout,
+                ..
+            } => {
                 assert_eq!(command, vec!["node", "server.js"]);
                 assert_eq!(enabled, Some(true));
                 assert_eq!(timeout, Some(10000));
