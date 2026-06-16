@@ -197,7 +197,6 @@ impl SharedBus {
     pub fn receiver_count(&self) -> usize {
         self.inner.receiver_count()
     }
-
 }
 
 impl Default for SharedBus {
@@ -265,9 +264,7 @@ fn ensure_event_id(event: &mut GlobalEvent) {
                 .and_then(|id| id.as_str())
                 .map(String::from);
 
-            let id = sync_id.unwrap_or_else(|| {
-                id::create("evt", Direction::Ascending, None)
-            });
+            let id = sync_id.unwrap_or_else(|| id::create("evt", Direction::Ascending, None));
 
             map.insert("id".to_owned(), serde_json::Value::String(id));
         }
@@ -339,7 +336,12 @@ mod tests {
         assert!(id.starts_with("evt_"), "expected evt_ prefix, got: {id}");
 
         // Format: evt_ + 12 hex + 14 base62 = evt_ + 26 chars
-        assert_eq!(id.len(), 4 + 26, "expected 30-char ID, got len {}: {id}", id.len());
+        assert_eq!(
+            id.len(),
+            4 + 26,
+            "expected 30-char ID, got len {len}: {id}",
+            len = id.len()
+        );
     }
 
     #[tokio::test]
@@ -434,9 +436,7 @@ mod tests {
         let mut sub = bus.subscribe();
 
         // Publish on one handle...
-        bus2
-            .publish(GlobalEvent::new(json!({"type": "shared"})))
-            .unwrap();
+        bus2.publish(GlobalEvent::new(json!({ "type": "shared" }))).unwrap();
 
         // ...receive on the other's subscription
         let received = sub.recv().await.unwrap();
@@ -463,12 +463,17 @@ mod tests {
         let mut sub = bus.subscribe();
 
         // Publish a string payload (not an object)
-        bus.publish(GlobalEvent::new(serde_json::Value::String("plain text".into())))
-            .unwrap();
+        bus.publish(GlobalEvent::new(serde_json::Value::String(
+            "plain text".into(),
+        )))
+        .unwrap();
 
         let received = sub.recv().await.unwrap();
         // Non-object payloads remain unchanged — no id injection
-        assert_eq!(received.payload, serde_json::Value::String("plain text".into()));
+        assert_eq!(
+            received.payload,
+            serde_json::Value::String("plain text".into())
+        );
     }
 
     #[tokio::test]
