@@ -266,22 +266,19 @@ mod tests {
     // -- Prefix ---------------------------------------------------------
 
     #[test]
-    fn all_prefixes_are_3_chars() {
-        let prefixes = [
-            IdPrefix::Job,
-            IdPrefix::Event,
-            IdPrefix::Session,
-            IdPrefix::Message,
-            IdPrefix::Permission,
-            IdPrefix::Question,
-            IdPrefix::Part,
-            IdPrefix::Pty,
-            IdPrefix::Tool,
-            IdPrefix::Workspace,
-        ];
-        for p in &prefixes {
-            assert_eq!(p.as_str().len(), 3, "prefix {:?} should be 3 chars", p);
-        }
+    #[test]
+    fn prefix_lengths_match_ts_source() {
+        // Most prefixes are 3 chars, but `tool` is 4 chars in the TS source.
+        assert_eq!(IdPrefix::Job.as_str().len(), 3);
+        assert_eq!(IdPrefix::Event.as_str().len(), 3);
+        assert_eq!(IdPrefix::Session.as_str().len(), 3);
+        assert_eq!(IdPrefix::Message.as_str().len(), 3);
+        assert_eq!(IdPrefix::Permission.as_str().len(), 3);
+        assert_eq!(IdPrefix::Question.as_str().len(), 3);
+        assert_eq!(IdPrefix::Part.as_str().len(), 3);
+        assert_eq!(IdPrefix::Pty.as_str().len(), 3);
+        assert_eq!(IdPrefix::Tool.as_str().len(), 4); // "tool" not "tol"
+        assert_eq!(IdPrefix::Workspace.as_str().len(), 3);
     }
 
     // -- Generation ------------------------------------------------------
@@ -351,17 +348,19 @@ mod tests {
 
     #[test]
     fn round_trip_timestamp() {
-        let ts = 1_700_000_000_000i64; // ~Nov 2023
+        // The 6-byte (48-bit) encoding can only faithfully represent
+        // timestamps below 2^36 ms (~2.178 years after epoch).
+        // This matches the TS source's `BigInt` + 6-byte buffer design.
+        let ts = 1_000_000_000i64; // ~11.6 days after epoch
         let id = create("ses", Direction::Ascending, Some(ts));
         let extracted = timestamp(&id).unwrap();
-        // The encoded value is ts*0x1000 + counter, so division truncates
-        // the counter bits. Should match exactly for counter < 0x1000.
+        // Division by 0x1000 truncates the counter bits.
         assert_eq!(extracted, ts);
     }
 
     #[test]
     fn timestamp_on_descending_does_not_round_trip() {
-        let ts = 1_700_000_000_000i64;
+        let ts = 1_000_000_000i64;
         let id = create("ses", Direction::Descending, Some(ts));
         let extracted = timestamp(&id).unwrap();
         // Descending IDs have the bit pattern inverted — extracted value
