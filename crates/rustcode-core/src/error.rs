@@ -788,15 +788,22 @@ mod tests {
             method: "stream".into(),
             reason: Box::new(reason),
         };
-        assert_eq!(err.to_string(), "anthropic.stream: rate limited: too many requests");
+        assert_eq!(
+            err.to_string(),
+            "anthropic.stream: rate limited: too many requests"
+        );
     }
 
     #[test]
     fn test_context_overflow_detection() {
         assert!(is_context_overflow("prompt is too long"));
-        assert!(is_context_overflow("This input exceeds the context window of the model"));
+        assert!(is_context_overflow(
+            "This input exceeds the context window of the model"
+        ));
         assert!(is_context_overflow("context_length_exceeded"));
-        assert!(is_context_overflow("Maximum context length is 128000 tokens"));
+        assert!(is_context_overflow(
+            "Maximum context length is 128000 tokens"
+        ));
         assert!(is_context_overflow("Request entity too large"));
         assert!(is_context_overflow("model_context_window_exceeded"));
         assert!(!is_context_overflow("everything is fine"));
