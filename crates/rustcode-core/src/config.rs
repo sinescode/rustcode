@@ -940,12 +940,25 @@ impl Config {
         Ok(info)
     }
 
-    /// Load configuration from the default location and merge into self.
+    /// Load configuration from the default location.
+    ///
+    /// Convenience wrapper around [`Config::load_global`] for the CLI.
+    ///
+    /// # Errors
+    /// Returns an error if the config directory cannot be determined
+    /// or the config file cannot be read or parsed.
+    pub fn load() -> crate::error::Result<Info> {
+        Self::load_global()
+    }
+
+    /// Load configuration from the default location into this instance.
     ///
     /// # Errors
     /// Returns an error if the config directory cannot be determined.
-    pub fn load(&self) -> crate::error::Result<Info> {
-        Self::load_global()
+    pub fn refresh(&self) -> crate::error::Result<()> {
+        let info = Self::load_global()?;
+        *self.info.write().expect("Config lock poisoned") = info;
+        Ok(())
     }
 
     /// Get the global config directory path.
