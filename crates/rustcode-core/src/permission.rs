@@ -432,7 +432,7 @@ fn arity_map() -> &'static HashMap<&'static str, usize> {
 /// // Unknown command — returns first token
 /// assert_eq!(bash_arity_prefix(&["myapp", "arg1"]), ["myapp"]);
 /// ```
-pub fn bash_arity_prefix<'a>(tokens: &[&'a str]) -> &'a [&'a str] {
+pub fn bash_arity_prefix<'a>(tokens: &'a [&'a str]) -> &'a [&'a str] {
     // TS: for (let len = tokens.length; len > 0; len--) { ... }
     let arity = arity_map();
     for len in (1..=tokens.len()).rev() {
@@ -733,12 +733,10 @@ impl SavedPermissions {
             .await
             .map_err(|e| Error::Database(format!("permission list query: {e}")))?
         } else {
-            sqlx::query_as(
-                "SELECT id, project_id, action, resource FROM permission ORDER BY id",
-            )
-            .fetch_all(self.db.pool())
-            .await
-            .map_err(|e| Error::Database(format!("permission list query: {e}")))?
+            sqlx::query_as("SELECT id, project_id, action, resource FROM permission ORDER BY id")
+                .fetch_all(self.db.pool())
+                .await
+                .map_err(|e| Error::Database(format!("permission list query: {e}")))?
         };
 
         Ok(rows
@@ -772,7 +770,9 @@ impl SavedPermissions {
         for resource in &input.resources {
             let id = id::ascending(IdPrefix::Permission, None)
                 .map(|s| s.replace("per_", "psv_"))
-                .map_err(|e| Error::Internal(format!("failed to generate saved permission ID: {e}")))?;
+                .map_err(|e| {
+                    Error::Internal(format!("failed to generate saved permission ID: {e}"))
+                })?;
             sqlx::query(
                 "INSERT OR IGNORE INTO permission (id, project_id, action, resource, time_created, time_updated) \
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -834,7 +834,7 @@ impl PermissionService {
     ///
     /// # Source
     /// Ported from `packages/opencode/src/permission/index.ts` lines 78–118.
-    pub async fn ask(&self, input: AskInput) -> Result<PermissionAction, Error> {
+    pub async fn ask(&self, input: AskInput) -> Result<PermissionAction> {
         let approved = self.approved.read().await;
         let combined = merge_rulesets(&[input.ruleset.clone(), approved.clone()]);
         let mut needs_ask = false;
@@ -896,7 +896,7 @@ impl PermissionService {
     ///
     /// # Source
     /// Ported from `packages/core/src/permission.ts` lines 223–243.
-    pub async fn assert(&self, _input: AskInput) -> Result<(), Error> {
+    pub async fn assert(&self, _input: AskInput) -> Result<()> {
         // STUB: full implementation requires oneshot-based blocking + pending state.
         // For now, delegates to ask() and returns Ok if allowed.
         todo!("PermissionService::assert — requires pending state with oneshot channels")
@@ -906,7 +906,7 @@ impl PermissionService {
     ///
     /// # Source
     /// Ported from `packages/opencode/src/permission/index.ts` lines 120–178.
-    pub async fn reply(&self, _input: ReplyInput) -> Result<(), Error> {
+    pub async fn reply(&self, _input: ReplyInput) -> Result<()> {
         // STUB: full implementation requires pending state map.
         // For now, returns NotFound to indicate no active pending state.
         todo!("PermissionService::reply — requires pending state with DashMap")
