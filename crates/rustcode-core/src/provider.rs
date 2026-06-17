@@ -1013,9 +1013,8 @@ pub fn sanitize_surrogates(content: &str) -> String {
         if (0xD800..=0xDBFF).contains(&unit) {
             if i + 1 < len && (0xDC00..=0xDFFF).contains(&utf16[i + 1]) {
                 // Valid surrogate pair: decode to a char
-                if let Some(ch) = char::decode_utf16([unit, utf16[i + 1]]).next()
-                    && let Ok(ch) = ch
-                {
+                let decoded = char::decode_utf16([unit, utf16[i + 1]]).next();
+                if let Some(Ok(ch)) = decoded {
                     result.push(ch);
                 } else {
                     result.push('\u{FFFD}');
