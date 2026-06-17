@@ -1105,4 +1105,323 @@ mod tests {
         assert_eq!(parsed.additions, 10);
         assert_eq!(parsed.deletions, 3);
     }
+
+    // ── Status porcelain parsing edge cases ───────────────────────────────
+
+    #[test]
+    fn test_kind_from_code_all_porcelain_codes() {
+        // Ignored: "!!" -> Modified
+        assert_eq!(kind_from_code("!!"), Kind::Modified);
+        // Added in index: "A " -> Added
+        assert_eq!(kind_from_code("A "), Kind::Added);
+        // Modified in worktree: " M" -> Modified
+        assert_eq!(kind_from_code(" M"), Kind::Modified);
+        // Modified in both: "MM" -> Modified
+        assert_eq!(kind_from_code("MM"), Kind::Modified);
+        // Deleted in worktree: " D" -> Deleted
+        assert_eq!(kind_from_code(" D"), Kind::Deleted);
+        // Deleted in index: "D " -> Deleted
+        assert_eq!(kind_from_code("D "), Kind::Deleted);
+        // Renamed in index: "R " -> Modified (falls through to default)
+        assert_eq!(kind_from_code("R "), Kind::Modified);
+        // Added + Modified: "AM" -> Added (contains A, no D)
+        assert_eq!(kind_from_code("AM"), Kind::Added);
+        // Added then Deleted: "AD" -> Modified (contains both A and D)
+        assert_eq!(kind_from_code("AD"), Kind::Modified);
+        // Type change in worktree: " T" -> Modified
+        assert_eq!(kind_from_code(" T"), Kind::Modified);
+    }
+
+    #[test]
+    fn test_kind_from_code_unmerged_status() {
+        // Unmerged, both deleted: "DD" -> Deleted (contains D, no A)
+        assert_eq!(kind_from_code("DD"), Kind::Deleted);
+        // Unmerged, added by us: "AU" -> Modified (contains U)
+        assert_eq!(kind_from_code("AU"), Kind::Modified);
+        // Unmerged, deleted by them: "UD" -> Modified (contains U)
+        assert_eq!(kind_from_code("UD"), Kind::Modified);
+        // Unmerged, added by them: "UA" -> Modified (contains U)
+        assert_eq!(kind_from_code("UA"), Kind::Modified);
+        // Unmerged, deleted by us: "DU" -> Modified (contains U)
+        assert_eq!(kind_from_code("DU"), Kind::Modified);
+        // Unmerged, both added: "AA" -> Added (contains A, no D)
+        assert_eq!(kind_from_code("AA"), Kind::Added);
+        // Unmerged, both modified: "UU" -> Modified (contains U)
+        assert_eq!(kind_from_code("UU"), Kind::Modified);
+    }
+
+    #[test]
+    fn test_item_struct_creation() {
+        let item = Item {
+            file: "src/main.rs".into(),
+            code: "M ".into(),
+            status: Kind::Modified,
+        };
+        assert_eq!(item.file, "src/main.rs");
+        assert_eq!(item.code, "M ");
+        assert_eq!(item.status, Kind::Modified);
+
+        let item = Item {
+            file: "new_file.txt".into(),
+            code: "??".into(),
+            status: Kind::Added,
+        };
+        assert_eq!(item.file, "new_file.txt");
+        assert_eq!(item.code, "??");
+        assert_eq!(item.status, Kind::Added);
+
+        let item = Item {
+            file: "removed.rs".into(),
+            code: "D ".into(),
+            status: Kind::Deleted,
+        };
+        assert_eq!(item.file, "removed.rs");
+        assert_eq!(item.code, "D ");
+        assert_eq!(item.status, Kind::Deleted);
+    }
+
+    // ── Diff parsing edge cases ───────────────────────────────────────────
+
+    #[test]
+    fn test_item_diff_output_single_char_code() {
+        // git diff --name-status uses single-character codes like "M", "A", "D"
+        let item = Item {
+            file: "src/main.rs".into(),
+            code: "M".into(),
+            status: Kind::Modified,
+        };
+        assert_eq!(item.file, "src/main.rs");
+        assert_eq!(item.code, "M");
+        assert_eq!(item.status, Kind::Modified);
+
+        let item = Item {
+            file: "lib/util.ts".into(),
+            code: "A".into(),
+            status: Kind::Added,
+        };
+        // kind_from_code("A") returns Added (contains A, no D)
+        assert_eq!(kind_from_code("A"), Kind::Added);
+        assert_eq!(item.status, Kind::Added);
+    }
+
+    #[test]
+    fn test_stat_binary_file_dash_values() {
+        // Binary files: additions and deletions are reported as "-"
+        let stat = Stat {
+            file: "binary.bin".into(),
+            additions: 0,
+            deletions: 0,
+        };
+        assert_eq!(stat.file, "binary.bin");
+        assert_eq!(stat.additions, 0);
+        assert_eq!(stat.deletions, 0);
+    }
+
+    #[test]
+    fn test_stat_with_valid_numbers() {
+        let stat = Stat {
+            file: "src/lib.rs".into(),
+            additions: 150,
+            deletions: 42,
+        };
+        assert_eq!(stat.file, "src/lib.rs");
+        assert_eq!(stat.additions, 150);
+        assert_eq!(stat.deletions, 42);
+
+        let stat = Stat {
+            file: "Cargo.toml".into(),
+            additions: 3,
+            deletions: 1,
+        };
+        assert_eq!(stat.file, "Cargo.toml");
+        assert_eq!(stat.additions, 3);
+        assert_eq!(stat.deletions, 1);
+    }
+
+    // ── Patch untracked binary handling ───────────────────────────────────
+
+    #[test]
+    fn test_patch_with_truncated_flag() {
+        // Binary content patches may be truncated
+        let patch = Patch {
+            text: String::new(),
+            truncated: true,
+        };
+        assert!(patch.text.is_empty());
+        assert!(patch.truncated);
+
+        let patch = Patch {
+            text: "diff --git a/file b/file\n...".into(),
+            truncated: false,
+        };
+        assert!(!patch.text.is_empty());
+        assert!(!patch.truncated);
+    }
+
+    #[test]
+    fn test_patch_options_custom_values() {
+        let opts = PatchOptions {
+            context: Some(5),
+            max_output_bytes: Some(1024 * 1024),
+        };
+        assert_eq!(opts.context, Some(5));
+        assert_eq!(opts.max_output_bytes, Some(1024 * 1024));
+
+        let opts = PatchOptions {
+            context: None,
+            max_output_bytes: None,
+        };
+        assert_eq!(opts.context, None);
+        assert_eq!(opts.max_output_bytes, None);
+
+        let opts = PatchOptions {
+            context: Some(0),
+            max_output_bytes: Some(512),
+        };
+        assert_eq!(opts.context, Some(0));
+        assert_eq!(opts.max_output_bytes, Some(512));
+    }
+
+    // ── Branch listing ────────────────────────────────────────────────────
+
+    #[test]
+    fn test_base_serde_roundtrip() {
+        let base = Base {
+            name: "main".into(),
+            ref_name: "origin/main".into(),
+        };
+        let json = serde_json::to_string(&base).expect("serialize Base");
+        // The ref_name field should be serialized as "ref"
+        assert!(json.contains("\"ref\""));
+        assert!(json.contains("origin/main"));
+        assert!(json.contains("main"));
+
+        let parsed: Base = serde_json::from_str(&json).expect("deserialize Base");
+        assert_eq!(parsed.name, "main");
+        assert_eq!(parsed.ref_name, "origin/main");
+    }
+
+    // ── Merge base ────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_repo_struct_fields() {
+        let repo = Repo {
+            directory: PathBuf::from("/home/user/project"),
+            store: PathBuf::from("/home/user/project/.git"),
+        };
+        assert_eq!(repo.directory, PathBuf::from("/home/user/project"));
+        assert_eq!(repo.store, PathBuf::from("/home/user/project/.git"));
+    }
+
+    #[test]
+    fn test_git_result_non_zero_exit() {
+        let result = GitResult {
+            exit_code: 1,
+            stdout: vec![],
+            stderr: b"error: something went wrong\n".to_vec(),
+            truncated: false,
+        };
+        assert_eq!(result.exit_code, 1);
+        assert_eq!(result.stderr_text(), "error: something went wrong\n");
+        assert_eq!(result.text(), "");
+    }
+
+    // ── Capture patch binary-safe ─────────────────────────────────────────
+
+    #[test]
+    fn test_git_result_with_binary_stdout() {
+        // Binary data in stdout should be preserved as raw bytes
+        let result = GitResult {
+            exit_code: 0,
+            stdout: vec![0x00, 0x01, 0x02, 0x80, 0xFF],
+            stderr: vec![],
+            truncated: false,
+        };
+        assert_eq!(result.exit_code, 0);
+        assert_eq!(result.stdout, vec![0x00, 0x01, 0x02, 0x80, 0xFF]);
+        assert_eq!(result.stdout.len(), 5);
+    }
+
+    #[test]
+    fn test_git_result_text_lossy_conversion() {
+        // Non-UTF8 bytes should use lossy conversion in text()
+        let result = GitResult {
+            exit_code: 0,
+            stdout: vec![0x48, 0x65, 0x6C, 0x6C, 0x6F, 0xFF, 0xFE, 0x21],
+            stderr: vec![],
+            truncated: false,
+        };
+        let text = result.text();
+        // Should contain the valid parts with replacement characters for invalid bytes
+        assert!(text.starts_with("Hello"));
+        assert!(text.contains('�'));
+    }
+
+    // ── Additional edge case tests ────────────────────────────────────────
+
+    #[test]
+    fn test_kind_from_code_edge_cases() {
+        // Empty code -> Modified (doesn't match any branch, falls through to default)
+        assert_eq!(kind_from_code(""), Kind::Modified);
+        // Unknown code -> Modified
+        assert_eq!(kind_from_code("XY"), Kind::Modified);
+        // Single space -> Modified
+        assert_eq!(kind_from_code("  "), Kind::Modified);
+        // Code with only digits -> Modified
+        assert_eq!(kind_from_code("12"), Kind::Modified);
+    }
+
+    #[test]
+    fn test_patch_options_context_edge_values() {
+        // Zero context (no surrounding lines)
+        let opts = PatchOptions {
+            context: Some(0),
+            max_output_bytes: None,
+        };
+        assert_eq!(opts.context, Some(0));
+
+        // Large context
+        let opts = PatchOptions {
+            context: Some(100),
+            max_output_bytes: None,
+        };
+        assert_eq!(opts.context, Some(100));
+
+        // No context specified (None, different from Default which is Some(3))
+        let opts = PatchOptions {
+            context: None,
+            max_output_bytes: None,
+        };
+        assert_eq!(opts.context, None);
+
+        // Default has context=Some(3)
+        let opts = PatchOptions::default();
+        assert_eq!(opts.context, Some(3));
+    }
+
+    #[test]
+    fn test_item_serde_roundtrip() {
+        let item = Item {
+            file: "src/parser.rs".into(),
+            code: "MM".into(),
+            status: Kind::Modified,
+        };
+        let json = serde_json::to_string(&item).expect("serialize Item");
+        let parsed: Item = serde_json::from_str(&json).expect("deserialize Item");
+        assert_eq!(parsed.file, "src/parser.rs");
+        assert_eq!(parsed.code, "MM");
+        assert_eq!(parsed.status, Kind::Modified);
+
+        // Test with Added status
+        let item = Item {
+            file: "new_file.txt".into(),
+            code: "A ".into(),
+            status: Kind::Added,
+        };
+        let json = serde_json::to_string(&item).expect("serialize Item");
+        let parsed: Item = serde_json::from_str(&json).expect("deserialize Item");
+        assert_eq!(parsed.file, "new_file.txt");
+        assert_eq!(parsed.code, "A ");
+        assert_eq!(parsed.status, Kind::Added);
+    }
 }

@@ -1750,4 +1750,259 @@ mod tests {
         let rules = svc.approved_rules().await;
         assert!(rules.is_empty());
     }
+
+    // ── Wildcard edge cases ────────────────────────────────────────────────
+
+    #[test]
+    fn test_wildcard_deep_matching_double_star() {
+        // ** in patterns should match any depth (since * matches anything including /)
+        assert!(wildcard_match("a/b/c/d", "a/**/d"));
+        assert!(wildcard_match("a/b/c/d/e", "a/**"));
+        assert!(wildcard_match("deeply/nested/path/file.ts", "**/*.ts"));
+    }
+
+    #[test]
+    fn test_wildcard_exact_empty_pattern() {
+        assert!(wildcard_match("", ""));
+        assert!(!wildcard_match("a", ""));
+        assert!(wildcard_match("", "*"));
+    }
+
+    #[test]
+    fn test_wildcard_multiple_stars() {
+        assert!(wildcard_match("foo/bar/baz.ts", "*/*.ts"));
+        assert!(wildcard_match("foo/bar/baz", "*/*/baz"));
+        assert!(!wildcard_match("foo/bar/baz/qux", "*/*/baz"));
+    }
+
+    #[test]
+    fn test_wildcard_complex_patterns() {
+        // Pattern with mix of * and ?
+        assert!(wildcard_match("test_file.rs", "test?file*"));
+        // Literal dots and extensions
+        assert!(wildcard_match("config.json", "*.json"));
+        assert!(!wildcard_match("config.jsonc", "*.json"));
+        // Multiple question marks
+        assert!(wildcard_match("abc", "???"));
+        assert!(!wildcard_match("ab", "???"));
+    }
+
+    #[test]
+    fn test_wildcard_unicode() {
+        assert!(wildcard_match("café.txt", "*.txt"));
+        assert!(wildcard_match("résumé.md", "résumé.*"));
+        assert!(!wildcard_match("cafe.txt", "café.*"));
+    }
+
+    #[test]
+    fn test_wildcard_pattern_with_spaces() {
+        assert!(wildcard_match("hello world", "hello*"));
+        assert!(wildcard_match("hello world", "hello world"));
+        assert!(wildcard_match("hello world", "*world"));
+    }
+
+    // ── Bash arity edge cases ──────────────────────────────────────────────
+
+    #[test]
+    fn test_bash_arity_single_token() {
+        // Just the command name, no arguments
+        assert_eq!(bash_arity_prefix(&["ls"]), ["ls"]);
+        assert_eq!(bash_arity_prefix(&["git"]), ["git"]);
+    }
+
+    #[test]
+    fn test_bash_arity_command_with_flags() {
+        // Flags should not affect the arity prefix
+        assert_eq!(
+            bash_arity_prefix(&["cargo", "build", "--release", "--target", "x86_64"]),
+            ["cargo", "build"]
+        );
+        assert_eq!(
+            bash_arity_prefix(&["git", "--no-pager", "log", "--oneline"]),
+            ["git", "--no-pager"]
+        );
+    }
+
+    #[test]
+    fn test_bash_arity_longest_match_wins() {
+        // "docker compose" (3 tokens) should beat "docker" (2 tokens)
+        assert_eq!(
+            bash_arity_prefix(&["docker", "compose", "up", "-d"]),
+            ["docker", "compose", "up"]
+        );
+        // "npm run" should match
+        assert_eq!(
+            bash_arity_prefix(&["npm", "run", "build"]),
+            ["npm", "run", "build"]
+        );
+        // "npm exec" should match
+        assert_eq!(
+            bash_arity_prefix(&["npm", "exec", "jest", "--coverage"]),
+            ["npm", "exec", "jest"]
+        );
+    }
+
+    #[test]
+    fn test_bash_arity_with_sudo() {
+        // sudo is not in the arity map, so it defaults to first token
+        assert_eq!(bash_arity_prefix(&["sudo", "apt", "install", "curl"]), ["sudo"]);
+    }
+
+    #[test]
+    fn test_bash_arity_with_pipe_operators() {
+        // Pipe characters are separate tokens in shell parsing
+        assert_eq!(bash_arity_prefix(&["cat", "file.txt", "|", "grep", "error"]), ["cat"]);
+    }
+
+    // ── Merge rulesets edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn test_merge_rulesets_overlapping() {
+        let r1: PermissionRuleset = vec![
+            PermissionRule {
+                permission: "bash".into(),
+                pattern: "*".into(),
+                action: PermissionAction::Deny,
+            },
+        ];
+        let r2: PermissionRuleset = vec![
+            PermissionRule {
+                permission: "bash".into(),
+                pattern: "*".into(),
+                action: PermissionAction::Allow,
+            },
+        ];
+        // r1's deny comes first, r2's allow comes last — last wins
+        let merged = merge_rulesets(&[r1, r2]);
+        assert_eq!(merged.len(), 2);
+        // Evaluate against the merged ruleset: last rule (allow) should win
+        let result = evaluate("bash", "echo hello", &[&merged]);
+        assert_eq!(result.action, PermissionAction::Allow);
+    }
+
+    #[test]
+    fn test_merge_rulesets_multiple_overlapping() {
+        let r1: PermissionRuleset = vec![PermissionRule {
+            permission: "read".into(),
+            pattern: "*.ts".into(),
+            action: PermissionAction::Allow,
+        }];
+        let r2: PermissionRuleset = vec![PermissionRule {
+            permission: "read".into(),
+            pattern: "*.ts".into(),
+            action: PermissionAction::Deny,
+        }];
+        let r3: PermissionRuleset = vec![PermissionRule {
+            permission: "read".into(),
+            pattern: "*.ts".into(),
+            action: PermissionAction::Ask,
+        }];
+        // r3 last → Ask wins
+        let merged = merge_rulesets(&[r1, r2, r3]);
+        assert_eq!(merged.len(), 3);
+        let result = evaluate("read", "src/main.ts", &[&merged]);
+        assert_eq!(result.action, PermissionAction::Ask);
+    }
+
+    #[test]
+    fn test_merge_rulesets_single_ruleset_is_identity() {
+        let rules: PermissionRuleset = vec![PermissionRule {
+            permission: "edit".into(),
+            pattern: "*.md".into(),
+            action: PermissionAction::Allow,
+        }];
+        let merged = merge_rulesets(&[rules.clone()]);
+        assert_eq!(merged, rules);
+    }
+
+    // ── Disabled tools edge cases ─────────────────────────────────────────
+
+    #[test]
+    fn test_disabled_tools_empty_ruleset() {
+        let ruleset: PermissionRuleset = vec![];
+        let tools = vec!["bash".into(), "read".into(), "edit".into()];
+        let disabled = disabled_tools(&tools, &ruleset);
+        assert!(disabled.is_empty());
+    }
+
+    #[test]
+    fn test_disabled_tools_empty_tools_list() {
+        let ruleset: PermissionRuleset = vec![PermissionRule {
+            permission: "bash".into(),
+            pattern: "*".into(),
+            action: PermissionAction::Deny,
+        }];
+        let tools: Vec<String> = vec![];
+        let disabled = disabled_tools(&tools, &ruleset);
+        assert!(disabled.is_empty());
+    }
+
+    #[test]
+    fn test_disabled_tools_wildcard_permission() {
+        // A deny rule for "*" should not affect specific tools
+        // because the permission field "*" doesn't match tool names
+        let ruleset: PermissionRuleset = vec![PermissionRule {
+            permission: "*".into(),
+            pattern: "*".into(),
+            action: PermissionAction::Deny,
+        }];
+        let tools = vec!["bash".into(), "read".into()];
+        let disabled = disabled_tools(&tools, &ruleset);
+        // "*" wildcard permission should match any tool name
+        assert!(disabled.contains("bash"));
+        assert!(disabled.contains("read"));
+    }
+
+    #[test]
+    fn test_disabled_tools_last_wins_for_deny_then_allow() {
+        // deny first, allow last → tool is NOT disabled
+        let ruleset: PermissionRuleset = vec![
+            PermissionRule {
+                permission: "bash".into(),
+                pattern: "*".into(),
+                action: PermissionAction::Deny,
+            },
+            PermissionRule {
+                permission: "bash".into(),
+                pattern: "*".into(),
+                action: PermissionAction::Allow,
+            },
+        ];
+        let tools = vec!["bash".into()];
+        let disabled = disabled_tools(&tools, &ruleset);
+        assert!(!disabled.contains("bash"));
+    }
+
+    #[test]
+    fn test_disabled_tools_ask_does_not_disable() {
+        // An "ask" rule with pattern "*" should NOT disable the tool
+        let ruleset: PermissionRuleset = vec![PermissionRule {
+            permission: "bash".into(),
+            pattern: "*".into(),
+            action: PermissionAction::Ask,
+        }];
+        let tools = vec!["bash".into()];
+        let disabled = disabled_tools(&tools, &ruleset);
+        assert!(!disabled.contains("bash"));
+    }
+
+    // ── Evaluate edge cases ───────────────────────────────────────────────
+
+    #[test]
+    fn test_evaluate_empty_rulesets_slice() {
+        let result = evaluate("bash", "cmd", &[]);
+        assert_eq!(result.action, PermissionAction::Ask);
+        assert!(result.matched_permission.is_none());
+    }
+
+    #[test]
+    fn test_evaluate_permission_wildcard_matches_tool_name() {
+        let ruleset: PermissionRuleset = vec![PermissionRule {
+            permission: "*".into(),
+            pattern: "*".into(),
+            action: PermissionAction::Deny,
+        }];
+        let result = evaluate("any_tool_at_all", "/any/path", &[&ruleset]);
+        assert_eq!(result.action, PermissionAction::Deny);
+    }
 }

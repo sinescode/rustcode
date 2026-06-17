@@ -71,7 +71,7 @@ impl IdPrefix {
 }
 
 /// Sort direction for generated IDs.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Direction {
     /// Oldest-first (chronological).
     Ascending,
@@ -266,7 +266,6 @@ mod tests {
     // -- Prefix ---------------------------------------------------------
 
     #[test]
-    #[test]
     fn prefix_lengths_match_ts_source() {
         // Most prefixes are 3 chars, but `tool` is 4 chars in the TS source.
         assert_eq!(IdPrefix::Job.as_str().len(), 3);
@@ -409,5 +408,127 @@ mod tests {
         let b = create("wrk", Direction::Ascending, ts);
         // Same timestamp + counter → different IDs
         assert_ne!(a, b);
+    }
+
+    // -- All prefix strings ----------------------------------------------
+
+    #[test]
+    fn test_all_id_prefix_strings() {
+        // Verify all 10 IdPrefix variants produce correct prefix strings
+        assert_eq!(IdPrefix::Job.as_str(), "job");
+        assert_eq!(IdPrefix::Event.as_str(), "evt");
+        assert_eq!(IdPrefix::Session.as_str(), "ses");
+        assert_eq!(IdPrefix::Message.as_str(), "msg");
+        assert_eq!(IdPrefix::Permission.as_str(), "per");
+        assert_eq!(IdPrefix::Question.as_str(), "que");
+        assert_eq!(IdPrefix::Part.as_str(), "prt");
+        assert_eq!(IdPrefix::Pty.as_str(), "pty");
+        assert_eq!(IdPrefix::Tool.as_str(), "tool");
+        assert_eq!(IdPrefix::Workspace.as_str(), "wrk");
+    }
+
+    // -- Collision resistance --------------------------------------------
+
+    #[test]
+    fn collision_resistance_1000_ids() {
+        let mut seen = std::collections::HashSet::new();
+        for _ in 0..1000 {
+            let id = ascending(IdPrefix::Session, None).unwrap();
+            assert!(seen.insert(id), "duplicate ID generated in 1000-iteration collision test");
+        }
+        assert_eq!(seen.len(), 1000);
+    }
+
+    // -- Timestamp ordering ----------------------------------------------
+
+    #[test]
+    fn ascending_ids_are_monotonically_increasing() {
+        let ids: Vec<String> = (0..10)
+            .map(|_| ascending(IdPrefix::Job, None).unwrap())
+            .collect();
+        for w in ids.windows(2) {
+            assert!(w[0] <= w[1], "ascending IDs must be non-decreasing: {} > {}", w[0], w[1]);
+        }
+    }
+
+    #[test]
+    fn timestamp_extraction_preserves_ordering() {
+        let a = create("evt", Direction::Ascending, Some(1000));
+        let b = create("evt", Direction::Ascending, Some(2000));
+        let c = create("evt", Direction::Ascending, Some(3000));
+
+        let ta = timestamp(&a).unwrap();
+        let tb = timestamp(&b).unwrap();
+        let tc = timestamp(&c).unwrap();
+
+        assert!(ta < tb);
+        assert!(tb < tc);
+    }
+
+    // -- Direction serde round-trip --------------------------------------
+
+    #[test]
+    fn direction_serde_round_trip() {
+        let ascending = Direction::Ascending;
+        let json = serde_json::to_string(&ascending).unwrap();
+        let back: Direction = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Direction::Ascending);
+
+        let descending = Direction::Descending;
+        let json = serde_json::to_string(&descending).unwrap();
+        let back: Direction = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, Direction::Descending);
+    }
+
+    #[test]
+    fn direction_serde_invalid_value() {
+        let result = serde_json::from_str::<Direction>("\"sideways\"");
+        assert!(result.is_err());
+    }
+
+    // -- All prefix ID generation ----------------------------------------
+
+    #[test]
+    fn all_prefixes_generate_valid_ids() {
+        let prefixes = [
+            IdPrefix::Job,
+            IdPrefix::Event,
+            IdPrefix::Session,
+            IdPrefix::Message,
+            IdPrefix::Permission,
+            IdPrefix::Question,
+            IdPrefix::Part,
+            IdPrefix::Pty,
+            IdPrefix::Tool,
+            IdPrefix::Workspace,
+        ];
+        for prefix in prefixes {
+            let id = ascending(prefix, None).unwrap();
+            let expected_prefix = format!("{}_", prefix.as_str());
+            assert!(
+                id.starts_with(&expected_prefix),
+                "ID {id:?} should start with {expected_prefix:?}"
+            );
+            assert_eq!(
+                id.len(),
+                prefix.as_str().len() + 1 + 26,
+                "ID {id:?} has wrong length for prefix {prefix:?}"
+            );
+        }
+    }
+
+    // -- Descending IDs are larger lexicographically ---------------------
+
+    #[test]
+    fn descending_ids_are_larger_than_ascending() {
+        // At the same timestamp, a descending ID should sort AFTER an ascending ID
+        // because the bits are inverted (bitwise NOT makes it a very large number)
+        let ts = Some(1_000_000_000i64);
+        let asc = create("ses", Direction::Ascending, ts);
+        let desc = create("ses", Direction::Descending, ts);
+        assert!(
+            asc < desc,
+            "ascending {asc} should be < descending {desc}"
+        );
     }
 }

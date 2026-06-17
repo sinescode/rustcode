@@ -1028,6 +1028,544 @@ pub fn is_existing_install(tables: &[&str]) -> bool {
     tables.contains(&"session")
 }
 
+// ── Database service — session/message/part CRUD helpers ─────────────────
+
+use std::sync::Arc;
+
+/// Error type for database service operations.
+///
+/// # Source
+/// Ported from error handling patterns in the TS database layer.
+#[derive(Debug, thiserror::Error)]
+pub enum DatabaseServiceError {
+    /// A database query or execution error.
+    #[error("database error: {0}")]
+    Database(String),
+
+    /// The requested entity was not found.
+    #[error("not found: {0}")]
+    NotFound(String),
+
+    /// A constraint violation occurred.
+    #[error("constraint violation: {0}")]
+    ConstraintViolation(String),
+}
+
+/// High-level database service providing CRUD operations for core tables.
+///
+/// Wraps a `sqlx::SqlitePool` (obtained from `crate::storage::Database::pool()`)
+/// and provides typed INSERT, UPDATE, DELETE, and SELECT helpers for the
+/// session, message, and part tables.
+///
+/// # Source
+/// Ported from the drizzle-orm query patterns in the TS codebase.
+#[derive(Clone)]
+pub struct DatabaseService {
+    pool: sqlx::SqlitePool,
+}
+
+impl DatabaseService {
+    /// Create a new DatabaseService from an existing pool.
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Get a reference to the connection pool.
+    pub fn pool(&self) -> &sqlx::SqlitePool {
+        &self.pool
+    }
+
+    // ── Migration status ─────────────────────────────────────────────
+
+    /// Query the migration journal and return the list of applied migrations.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/database/migration.ts` lines 43–51
+    /// (`applyOnly` — reading `SELECT id FROM migration`).
+    pub async fn migration_status(
+        &self,
+    ) -> Result<Vec<MigrationMeta>, DatabaseServiceError> {
+        let rows: Vec<(String, i64)> =
+            sqlx::query_as("SELECT id, time_completed FROM migration ORDER BY time_completed")
+                .fetch_all(&self.pool)
+                .await
+                .map_err(|e| DatabaseServiceError::Database(format!("migration status query: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(|(id, time_completed)| MigrationMeta {
+                id,
+                time_completed,
+            })
+            .collect())
+    }
+
+    /// Check whether a specific migration has been applied.
+    pub async fn is_migration_applied(
+        &self,
+        migration_id: &str,
+    ) -> Result<bool, DatabaseServiceError> {
+        let result: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM migration WHERE id = ?1")
+                .bind(migration_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| DatabaseServiceError::Database(format!("migration check: {e}")))?;
+
+        Ok(result.is_some())
+    }
+
+    /// Return the count of applied migrations.
+    pub async fn migration_count(&self) -> Result<i64, DatabaseServiceError> {
+        let (count,): (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM migration")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(|e| DatabaseServiceError::Database(format!("migration count: {e}")))?;
+
+        Ok(count)
+    }
+
+    // ── Session CRUD ─────────────────────────────────────────────────
+
+    /// Insert a new session row.
+    pub async fn insert_session(
+        &self,
+        id: &str,
+        project_id: &str,
+        workspace_id: Option<&str>,
+        slug: &str,
+        directory: &str,
+        title: &str,
+        version: &str,
+        time_created: i64,
+        time_updated: i64,
+        agent: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO session (id, project_id, workspace_id, slug, directory, title, version, time_created, time_updated, agent, model)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(workspace_id)
+        .bind(slug)
+        .bind(directory)
+        .bind(title)
+        .bind(version)
+        .bind(time_created)
+        .bind(time_updated)
+        .bind(agent)
+        .bind(model)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert session: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a session's time_updated and optional fields.
+    pub async fn update_session(
+        &self,
+        id: &str,
+        time_updated: i64,
+        title: Option<&str>,
+        cost: Option<f64>,
+        tokens_input: Option<i64>,
+        tokens_output: Option<i64>,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "UPDATE session SET time_updated = ?2, title = COALESCE(?3, title),
+             cost = COALESCE(?4, cost), tokens_input = COALESCE(?5, tokens_input),
+             tokens_output = COALESCE(?6, tokens_output) WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(time_updated)
+        .bind(title)
+        .bind(cost)
+        .bind(tokens_input)
+        .bind(tokens_output)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update session: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a session by ID.
+    pub async fn delete_session(&self, id: &str) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM session WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete session: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
+
+    /// Query sessions for a project, ordered by most recently updated.
+    pub async fn list_sessions(
+        &self,
+        project_id: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<SessionRow>, DatabaseServiceError> {
+        let limit = limit.unwrap_or(50) as i64;
+        let rows: Vec<SessionRowRaw> = sqlx::query_as(
+            "SELECT id, project_id, workspace_id, slug, directory, title, version, time_created, time_updated, cost, tokens_input, tokens_output, agent, model
+             FROM session WHERE project_id = ?1 ORDER BY time_updated DESC LIMIT ?2",
+        )
+        .bind(project_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list sessions: {e}")))?;
+
+        Ok(rows.into_iter().map(SessionRowRaw::into_row).collect())
+    }
+
+    // ── Message CRUD (legacy) ────────────────────────────────────────
+
+    /// Insert a message record.
+    pub async fn insert_message(
+        &self,
+        id: &str,
+        session_id: &str,
+        data: &str,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO message (id, session_id, data, time_created, time_updated) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(id)
+        .bind(session_id)
+        .bind(data)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert message: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Query messages for a session, ordered by time_created.
+    pub async fn list_messages(
+        &self,
+        session_id: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<MessageRow>, DatabaseServiceError> {
+        let limit = limit.unwrap_or(100) as i64;
+        let rows: Vec<MessageRowRaw> = sqlx::query_as(
+            "SELECT id, session_id, data, time_created, time_updated
+             FROM message WHERE session_id = ?1 ORDER BY time_created ASC LIMIT ?2",
+        )
+        .bind(session_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list messages: {e}")))?;
+
+        Ok(rows.into_iter().map(MessageRowRaw::into_row).collect())
+    }
+
+    /// Delete a message by ID.
+    pub async fn delete_message(&self, id: &str) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM message WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete message: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("message {id}")));
+        }
+        Ok(())
+    }
+
+    // ── Part CRUD (legacy) ───────────────────────────────────────────
+
+    /// Insert a part record.
+    pub async fn insert_part(
+        &self,
+        id: &str,
+        message_id: &str,
+        session_id: &str,
+        data: &str,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO part (id, message_id, session_id, data, time_created, time_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(id)
+        .bind(message_id)
+        .bind(session_id)
+        .bind(data)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert part: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Query parts for a message, ordered by time_created.
+    pub async fn list_parts(
+        &self,
+        message_id: &str,
+    ) -> Result<Vec<PartRow>, DatabaseServiceError> {
+        let rows: Vec<PartRowRaw> = sqlx::query_as(
+            "SELECT id, message_id, session_id, data, time_created, time_updated
+             FROM part WHERE message_id = ?1 ORDER BY time_created ASC",
+        )
+        .bind(message_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list parts: {e}")))?;
+
+        Ok(rows.into_iter().map(PartRowRaw::into_row).collect())
+    }
+
+    /// Delete parts for a message.
+    pub async fn delete_parts_for_message(
+        &self,
+        message_id: &str,
+    ) -> Result<u64, DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM part WHERE message_id = ?1")
+            .bind(message_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete parts: {e}")))?;
+
+        Ok(rows.rows_affected())
+    }
+
+    // ── Session message CRUD ─────────────────────────────────────────
+
+    /// Insert a session_message record.
+    pub async fn insert_session_message(
+        &self,
+        id: &str,
+        session_id: &str,
+        msg_type: &str,
+        seq: i64,
+        data: &str,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO session_message (id, session_id, type, seq, data, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(id)
+        .bind(session_id)
+        .bind(msg_type)
+        .bind(seq)
+        .bind(data)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert session_message: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Query session messages ordered by seq.
+    pub async fn list_session_messages(
+        &self,
+        session_id: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<SessionMessageRow>, DatabaseServiceError> {
+        let limit = limit.unwrap_or(200) as i64;
+        let rows: Vec<SessionMessageRowRaw> = sqlx::query_as(
+            "SELECT id, session_id, type, seq, data, time_created, time_updated
+             FROM session_message WHERE session_id = ?1 ORDER BY seq ASC LIMIT ?2",
+        )
+        .bind(session_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list session_messages: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(SessionMessageRowRaw::into_row)
+            .collect())
+    }
+}
+
+// ── Row types for CRUD results ────────────────────────────────────────────
+
+/// A row from the session table (query result).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionRow {
+    pub id: String,
+    pub project_id: String,
+    pub workspace_id: Option<String>,
+    pub slug: String,
+    pub directory: String,
+    pub title: String,
+    pub version: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+    pub cost: f64,
+    pub tokens_input: i64,
+    pub tokens_output: i64,
+    pub agent: Option<String>,
+    pub model: Option<String>,
+}
+
+/// A row from the message table (query result).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MessageRow {
+    pub id: String,
+    pub session_id: String,
+    pub data: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+/// A row from the part table (query result).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartRow {
+    pub id: String,
+    pub message_id: String,
+    pub session_id: String,
+    pub data: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+/// A row from the session_message table (query result).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionMessageRow {
+    pub id: String,
+    pub session_id: String,
+    pub msg_type: String,
+    pub seq: i64,
+    pub data: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+// ── sqlx::FromRow compatible raw types ────────────────────────────────────
+
+#[derive(sqlx::FromRow)]
+struct SessionRowRaw {
+    id: String,
+    project_id: String,
+    workspace_id: Option<String>,
+    slug: String,
+    directory: String,
+    title: String,
+    version: String,
+    time_created: i64,
+    time_updated: i64,
+    cost: f64,
+    tokens_input: i64,
+    tokens_output: i64,
+    agent: Option<String>,
+    model: Option<String>,
+}
+
+impl SessionRowRaw {
+    fn into_row(self) -> SessionRow {
+        SessionRow {
+            id: self.id,
+            project_id: self.project_id,
+            workspace_id: self.workspace_id,
+            slug: self.slug,
+            directory: self.directory,
+            title: self.title,
+            version: self.version,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+            cost: self.cost,
+            tokens_input: self.tokens_input,
+            tokens_output: self.tokens_output,
+            agent: self.agent,
+            model: self.model,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct MessageRowRaw {
+    id: String,
+    session_id: String,
+    data: String,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl MessageRowRaw {
+    fn into_row(self) -> MessageRow {
+        MessageRow {
+            id: self.id,
+            session_id: self.session_id,
+            data: self.data,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct PartRowRaw {
+    id: String,
+    message_id: String,
+    session_id: String,
+    data: String,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl PartRowRaw {
+    fn into_row(self) -> PartRow {
+        PartRow {
+            id: self.id,
+            message_id: self.message_id,
+            session_id: self.session_id,
+            data: self.data,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionMessageRowRaw {
+    id: String,
+    session_id: String,
+    #[sqlx(rename = "type")]
+    msg_type: String,
+    seq: i64,
+    data: String,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl SessionMessageRowRaw {
+    fn into_row(self) -> SessionMessageRow {
+        SessionMessageRow {
+            id: self.id,
+            session_id: self.session_id,
+            msg_type: self.msg_type,
+            seq: self.seq,
+            data: self.data,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -1229,5 +1767,515 @@ mod tests {
         assert_eq!(set.len(), 2);
         assert!(!set.is_empty());
         assert_eq!(set.ids(), vec!["a", "b"]);
+    }
+
+    // ── Database service tests ───────────────────────────────────────
+
+    /// Helper: create an in-memory SQLite database with schema and service.
+    async fn setup_test_db() -> (sqlx::SqlitePool, DatabaseService) {
+        use sqlx::SqlitePool;
+
+        let pool = SqlitePool::connect("sqlite::memory:").await.expect("connect in-memory");
+        // Enable WAL + FK
+        sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&pool).await.unwrap();
+        sqlx::query("PRAGMA synchronous = NORMAL").execute(&pool).await.unwrap();
+        sqlx::query("PRAGMA busy_timeout = 5000").execute(&pool).await.unwrap();
+
+        // Create migration tracking table
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS migration (
+                id TEXT PRIMARY KEY,
+                time_completed INTEGER NOT NULL
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Create core tables
+        for sql in ALL_CREATE_TABLES {
+            sqlx::query(sql).execute(&pool).await.unwrap();
+        }
+
+        let svc = DatabaseService::new(pool.clone());
+        (pool, svc)
+    }
+
+    #[tokio::test]
+    async fn test_migration_status_empty() {
+        let (_pool, svc) = setup_test_db().await;
+        let status = svc.migration_status().await.expect("migration status");
+        assert!(status.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_migration_status_populated() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Insert some migration records
+        sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
+            .bind("20260101000000_test_a")
+            .bind(now)
+            .execute(svc.pool())
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
+            .bind("20260102000000_test_b")
+            .bind(now + 1000)
+            .execute(svc.pool())
+            .await
+            .unwrap();
+
+        let status = svc.migration_status().await.expect("migration status");
+        assert_eq!(status.len(), 2);
+        assert_eq!(status[0].id, "20260101000000_test_a");
+        assert_eq!(status[1].id, "20260102000000_test_b");
+    }
+
+    #[tokio::test]
+    async fn test_is_migration_applied() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
+            .bind("20260101000000_done")
+            .bind(now)
+            .execute(svc.pool())
+            .await
+            .unwrap();
+
+        assert!(svc.is_migration_applied("20260101000000_done").await.unwrap());
+        assert!(!svc.is_migration_applied("20260101000000_pending").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_migration_count() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        assert_eq!(svc.migration_count().await.unwrap(), 0);
+
+        sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
+            .bind("20260101000000_a")
+            .bind(now)
+            .execute(svc.pool())
+            .await
+            .unwrap();
+
+        assert_eq!(svc.migration_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_insert_and_list_sessions() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Need to insert a project first (FK constraint)
+        sqlx::query(
+            "INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind("proj-1")
+        .bind("/home/proj")
+        .bind("git")
+        .bind("test-project")
+        .bind(now)
+        .bind(now)
+        .bind("[]")
+        .execute(svc.pool())
+        .await
+        .unwrap();
+
+        // Insert sessions
+        svc.insert_session(
+            "sess-1", "proj-1", None, "my-session", "/home/proj",
+            "Test Session", "1.0", now, now, Some("build"), Some("claude"),
+        )
+        .await
+        .expect("insert session");
+
+        svc.insert_session(
+            "sess-2", "proj-1", None, "other-session", "/home/proj",
+            "Other Session", "1.0", now + 1, now + 1, None, None,
+        )
+        .await
+        .expect("insert session 2");
+
+        let sessions = svc.list_sessions("proj-1", None).await.expect("list sessions");
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].id, "sess-2"); // Most recently updated first
+        assert_eq!(sessions[0].title, "Other Session");
+        assert_eq!(sessions[1].id, "sess-1");
+    }
+
+    #[tokio::test]
+    async fn test_update_session() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        sqlx::query(
+            "INSERT INTO project (id, worktree, vcs, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind("proj-1")
+        .bind("/home/proj")
+        .bind("git")
+        .bind("test-project")
+        .bind(now)
+        .bind(now)
+        .bind("[]")
+        .execute(svc.pool())
+        .await
+        .unwrap();
+
+        svc.insert_session(
+            "sess-1", "proj-1", None, "slug", "/dir", "Old Title", "1.0", now, now, None, None,
+        )
+        .await
+        .unwrap();
+
+        svc.update_session("sess-1", now + 100, Some("New Title"), Some(0.05), Some(100), Some(50))
+            .await
+            .unwrap();
+
+        let sessions = svc.list_sessions("proj-1", None).await.unwrap();
+        assert_eq!(sessions[0].title, "New Title");
+        assert!((sessions[0].cost - 0.05).abs() < f64::EPSILON);
+        assert_eq!(sessions[0].tokens_input, 100);
+        assert_eq!(sessions[0].tokens_output, 50);
+    }
+
+    #[tokio::test]
+    async fn test_delete_session() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        sqlx::query(
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("proj-1")
+        .bind("/proj")
+        .bind("p")
+        .bind(now)
+        .bind(now)
+        .bind("[]")
+        .execute(svc.pool())
+        .await
+        .unwrap();
+
+        svc.insert_session("sess-1", "proj-1", None, "s", "/d", "T", "1", now, now, None, None)
+            .await
+            .unwrap();
+
+        svc.delete_session("sess-1").await.expect("delete session");
+        let sessions = svc.list_sessions("proj-1", None).await.unwrap();
+        assert!(sessions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_not_found() {
+        let (_pool, svc) = setup_test_db().await;
+        let result = svc.delete_session("nonexistent").await;
+        assert!(matches!(result, Err(DatabaseServiceError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_message_crud() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Need session FK
+        sqlx::query(
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("proj-1").bind("/p").bind("p").bind(now).bind(now).bind("[]")
+        .execute(svc.pool()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind("sess-1").bind("proj-1").bind("s").bind("/d").bind("T").bind("1").bind(now).bind(now)
+        .execute(svc.pool()).await.unwrap();
+
+        // Insert messages
+        let data1 = r#"{"role":"user","content":"hello"}"#;
+        svc.insert_message("msg-1", "sess-1", data1, now, now).await.unwrap();
+        let data2 = r#"{"role":"assistant","content":"hi there"}"#;
+        svc.insert_message("msg-2", "sess-1", data2, now + 1, now + 1).await.unwrap();
+
+        let messages = svc.list_messages("sess-1", None).await.unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].id, "msg-1");
+        assert!(messages[0].data.contains("hello"));
+
+        // Delete
+        svc.delete_message("msg-1").await.unwrap();
+        let messages = svc.list_messages("sess-1", None).await.unwrap();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, "msg-2");
+    }
+
+    #[tokio::test]
+    async fn test_part_crud() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Setup FK chain
+        sqlx::query(
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("proj-1").bind("/p").bind("p").bind(now).bind(now).bind("[]")
+        .execute(svc.pool()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind("sess-1").bind("proj-1").bind("s").bind("/d").bind("T").bind("1").bind(now).bind(now)
+        .execute(svc.pool()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO message (id, session_id, data, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind("msg-1").bind("sess-1").bind("{}").bind(now).bind(now)
+        .execute(svc.pool()).await.unwrap();
+
+        // Insert parts
+        svc.insert_part("part-1", "msg-1", "sess-1", r#"{"type":"text","content":"a"}"#, now, now)
+            .await.unwrap();
+        svc.insert_part("part-2", "msg-1", "sess-1", r#"{"type":"text","content":"b"}"#, now + 1, now + 1)
+            .await.unwrap();
+
+        let parts = svc.list_parts("msg-1").await.unwrap();
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0].id, "part-1");
+
+        let deleted = svc.delete_parts_for_message("msg-1").await.unwrap();
+        assert_eq!(deleted, 2);
+        let parts = svc.list_parts("msg-1").await.unwrap();
+        assert!(parts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_session_message_crud() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        sqlx::query(
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("proj-1").bind("/p").bind("p").bind(now).bind(now).bind("[]")
+        .execute(svc.pool()).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind("sess-1").bind("proj-1").bind("s").bind("/d").bind("T").bind("1").bind(now).bind(now)
+        .execute(svc.pool()).await.unwrap();
+
+        svc.insert_session_message(
+            "sm-1", "sess-1", "user", 1, r#"{"role":"user","content":"hi"}"#, now, now,
+        )
+        .await.unwrap();
+        svc.insert_session_message(
+            "sm-2", "sess-1", "assistant", 2, r#"{"role":"assistant","content":"hello"}"#, now + 1, now + 1,
+        )
+        .await.unwrap();
+
+        let msgs = svc.list_session_messages("sess-1", None).await.unwrap();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].msg_type, "user");
+        assert_eq!(msgs[0].seq, 1);
+        assert_eq!(msgs[1].msg_type, "assistant");
+        assert_eq!(msgs[1].seq, 2);
+    }
+
+    #[tokio::test]
+    async fn test_migration_idempotency() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        // Apply a migration
+        sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
+            .bind("20260101000000_test")
+            .bind(now)
+            .execute(svc.pool())
+            .await
+            .unwrap();
+
+        // Check it's applied
+        assert!(svc.is_migration_applied("20260101000000_test").await.unwrap());
+
+        // Try inserting again — should fail (PK constraint)
+        let result = sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
+            .bind("20260101000000_test")
+            .bind(now + 1)
+            .execute(svc.pool())
+            .await;
+
+        assert!(result.is_err(), "duplicate migration insert should fail");
+
+        // Count should still be 1
+        assert_eq!(svc.migration_count().await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_access_multiple_connections() {
+        // Open multiple pools to the same in-memory DB isn't possible.
+        // Use a file-based DB instead.
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("concurrent.db");
+
+        let url1 = format!("sqlite:{}?mode=rwc", db_path.display());
+        let url2 = format!("sqlite:{}?mode=rwc", db_path.display());
+
+        let pool1 = sqlx::SqlitePool::connect(&url1).await.expect("connect pool1");
+        let pool2 = sqlx::SqlitePool::connect(&url2).await.expect("connect pool2");
+
+        // Set PRAGMAs on both
+        for pool in [&pool1, &pool2] {
+            sqlx::query("PRAGMA journal_mode = WAL").execute(pool).await.unwrap();
+            sqlx::query("PRAGMA foreign_keys = ON").execute(pool).await.unwrap();
+            sqlx::query("PRAGMA busy_timeout = 5000").execute(pool).await.unwrap();
+        }
+
+        // Create tables on pool1
+        for sql in ALL_CREATE_TABLES {
+            sqlx::query(sql).execute(&pool1).await.unwrap();
+        }
+
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("proj-1").bind("/p").bind("p").bind(now).bind(now).bind("[]")
+        .execute(&pool1).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind("sess-1").bind("proj-1").bind("s").bind("/d").bind("T").bind("1").bind(now).bind(now)
+        .execute(&pool1).await.unwrap();
+
+        // Insert from pool2 concurrently
+        let pool2_clone = pool2.clone();
+        let handle = tokio::spawn(async move {
+            let svc2 = DatabaseService::new(pool2_clone);
+            svc2.insert_session(
+                "sess-2", "proj-1", None, "slug2", "/dir2", "Title2", "1.0",
+                now + 1, now + 1, None, None,
+            )
+            .await
+        });
+
+        // Insert from pool1 simultaneously
+        let svc1 = DatabaseService::new(pool1.clone());
+        svc1.insert_session(
+            "sess-3", "proj-1", None, "slug3", "/dir3", "Title3", "1.0",
+            now + 2, now + 2, None, None,
+        )
+        .await
+        .expect("insert from pool1");
+
+        handle.await.expect("join").expect("insert from pool2");
+
+        // Both inserts should have succeeded
+        let sessions = svc1.list_sessions("proj-1", None).await.unwrap();
+        assert_eq!(sessions.len(), 3); // sess-1, sess-2, sess-3
+    }
+
+    #[tokio::test]
+    async fn test_wal_checkpoint_behavior() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let db_path = dir.path().join("wal_test.db");
+
+        let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=rwc", db_path.display()))
+            .await
+            .expect("connect");
+
+        // Enable WAL
+        sqlx::query("PRAGMA journal_mode = WAL").execute(&pool).await.unwrap();
+        sqlx::query("PRAGMA foreign_keys = ON").execute(&pool).await.unwrap();
+
+        // Create a table and insert data
+        sqlx::query("CREATE TABLE IF NOT EXISTS wal_test (id INTEGER PRIMARY KEY, value TEXT)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        for i in 0..50 {
+            sqlx::query("INSERT INTO wal_test (id, value) VALUES (?1, ?2)")
+                .bind(i)
+                .bind(format!("value-{i}"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // Verify WAL is in use
+        let mode: (String,) = sqlx::query_as("PRAGMA journal_mode")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mode.0.to_lowercase(), "wal");
+
+        // Run a passive checkpoint
+        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)").execute(&pool).await.unwrap();
+
+        // Data should still be intact
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM wal_test")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(count.0, 50);
+
+        // Verify we can still read and write after checkpoint
+        sqlx::query("INSERT INTO wal_test (id, value) VALUES (?1, ?2)")
+            .bind(100)
+            .bind("after-checkpoint")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let (val,): (String,) = sqlx::query_as("SELECT value FROM wal_test WHERE id = 100")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(val, "after-checkpoint");
+    }
+
+    #[tokio::test]
+    async fn test_session_list_with_limit() {
+        let (_pool, svc) = setup_test_db().await;
+        let now = chrono::Utc::now().timestamp_millis();
+
+        sqlx::query(
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind("proj-1").bind("/p").bind("p").bind(now).bind(now).bind("[]")
+        .execute(svc.pool()).await.unwrap();
+
+        for i in 0..5 {
+            svc.insert_session(
+                &format!("sess-{i}"), "proj-1", None, &format!("slug-{i}"),
+                "/d", &format!("Title {i}"), "1", now + i, now + i, None, None,
+            )
+            .await.unwrap();
+        }
+
+        let sessions = svc.list_sessions("proj-1", Some(3)).await.unwrap();
+        assert_eq!(sessions.len(), 3);
     }
 }

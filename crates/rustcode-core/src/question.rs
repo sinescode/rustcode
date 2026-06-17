@@ -30,7 +30,10 @@
 //! - Error types for rejection and not-found conditions
 
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::sync::Mutex;
 
 // ---------------------------------------------------------------------------
 // Question ID
@@ -525,6 +528,131 @@ pub struct QuestionNotFoundError {
 }
 
 // ---------------------------------------------------------------------------
+// QuestionService — pending questions with async reply/reject
+// ---------------------------------------------------------------------------
+
+/// Pending question entry — stored while waiting for user response.
+#[derive(Debug)]
+struct PendingEntry {
+    request: QuestionRequest,
+    sender: tokio::sync::oneshot::Sender<Result<Vec<QuestionAnswer>, QuestionRejectedError>>,
+}
+
+/// Service for asking questions and receiving answers.
+///
+/// # Source
+/// Ported from `packages/opencode/src/question/index.ts` `Question` object.
+///
+/// Maintains an in-memory map of pending question requests. When `ask()` is
+/// called, a [`QuestionRequest`] is stored and a oneshot channel is created.
+/// The caller awaits the receiver. When the user replies (via `reply()`) or
+/// dismisses (via `reject()`), the corresponding sender is resolved.
+pub struct QuestionService {
+    pending: Arc<Mutex<HashMap<QuestionId, PendingEntry>>>,
+}
+
+impl QuestionService {
+    /// Create a new empty question service.
+    pub fn new() -> Self {
+        Self {
+            pending: Arc::new(Mutex::new(HashMap::new())),
+        }
+    }
+
+    /// Ask one or more questions. Returns the answers when the user replies,
+    /// or a [`QuestionRejectedError`] if the user dismisses the question.
+    pub async fn ask(
+        &self,
+        session_id: impl Into<String>,
+        questions: Vec<QuestionInfo>,
+        tool: Option<QuestionTool>,
+    ) -> Result<Vec<QuestionAnswer>, QuestionRejectedError> {
+        let id = QuestionId::ascending(None);
+        let request = QuestionRequest {
+            id: id.clone(),
+            session_id: session_id.into(),
+            questions,
+            tool,
+        };
+
+        let (tx, rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut pending = self.pending.lock().await;
+            pending.insert(
+                id.clone(),
+                PendingEntry {
+                    request,
+                    sender: tx,
+                },
+            );
+        }
+
+        match rx.await {
+            Ok(result) => result,
+            Err(_) => Err(QuestionRejectedError),
+        }
+    }
+
+    /// Reply to a pending question with answers.
+    pub async fn reply(
+        &self,
+        request_id: &QuestionId,
+        answers: Vec<QuestionAnswer>,
+    ) -> Result<(), QuestionNotFoundError> {
+        let entry = {
+            let mut pending = self.pending.lock().await;
+            pending.remove(request_id)
+        };
+
+        match entry {
+            Some(entry) => {
+                let _ = entry.sender.send(Ok(answers));
+                Ok(())
+            }
+            None => Err(QuestionNotFoundError {
+                request_id: request_id.clone(),
+            }),
+        }
+    }
+
+    /// Reject/dismiss a pending question.
+    pub async fn reject(&self, request_id: &QuestionId) -> Result<(), QuestionNotFoundError> {
+        let entry = {
+            let mut pending = self.pending.lock().await;
+            pending.remove(request_id)
+        };
+
+        match entry {
+            Some(entry) => {
+                let _ = entry.sender.send(Err(QuestionRejectedError));
+                Ok(())
+            }
+            None => Err(QuestionNotFoundError {
+                request_id: request_id.clone(),
+            }),
+        }
+    }
+
+    /// List all pending question requests.
+    pub async fn list(&self) -> Vec<QuestionRequest> {
+        let pending = self.pending.lock().await;
+        pending.values().map(|e| e.request.clone()).collect()
+    }
+
+    /// Returns the number of pending questions.
+    pub async fn pending_count(&self) -> usize {
+        self.pending.lock().await.len()
+    }
+}
+
+impl Default for QuestionService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -829,5 +957,311 @@ mod tests {
     fn test_tool_description_is_set() {
         assert!(QUESTION_TOOL_DESCRIPTION.contains("ask the user questions"));
         assert!(QUESTION_TOOL_DESCRIPTION.contains("Usage notes"));
+    }
+
+    // -- QuestionService ----------------------------------------------------
+
+    #[tokio::test]
+    async fn test_question_service_ask_and_reply() {
+        let svc = QuestionService::new();
+        let questions = vec![QuestionInfo::new("Color?", "Pick Color")
+            .with_options(vec![QuestionOption::new("Red", "The red one")])];
+
+        // Ask a question concurrently
+        let handle = {
+            let svc = &svc;
+            let questions = questions.clone();
+            tokio::spawn(async move {
+                svc.ask("ses_test", questions, None).await
+            })
+        };
+
+        // Give the ask a moment to register
+        tokio::task::yield_now().await;
+
+        // List should show one pending
+        let pending = svc.list().await;
+        assert_eq!(pending.len(), 1);
+        assert_eq!(svc.pending_count().await, 1);
+
+        let request_id = pending[0].id.clone();
+
+        // Reply to it
+        let answer = QuestionAnswer::new(vec!["Red".into()]);
+        svc.reply(&request_id, vec![answer])
+            .await
+            .expect("reply should succeed");
+
+        // The ask should resolve with the answer
+        let result = handle.await.expect("task should complete").expect("ask should succeed");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].labels(), &["Red"]);
+
+        // Pending should be empty now
+        assert_eq!(svc.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_question_service_reject() {
+        let svc = QuestionService::new();
+        let questions = vec![QuestionInfo::new("Confirm?", "Confirm")];
+
+        let handle = {
+            let svc = &svc;
+            let questions = questions.clone();
+            tokio::spawn(async move { svc.ask("ses_test", questions, None).await })
+        };
+
+        tokio::task::yield_now().await;
+
+        let pending = svc.list().await;
+        let request_id = pending[0].id.clone();
+
+        svc.reject(&request_id)
+            .await
+            .expect("reject should succeed");
+
+        let result = handle.await.expect("task should complete");
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "the user dismissed this question"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_question_service_reply_to_unknown() {
+        let svc = QuestionService::new();
+        let unknown_id = QuestionId::new_unchecked("que_nonexistent");
+        let answer = QuestionAnswer::new(vec!["X".into()]);
+
+        let err = svc
+            .reply(&unknown_id, vec![answer])
+            .await
+            .expect_err("reply to unknown ID should fail");
+        assert!(err.to_string().contains("que_nonexistent"));
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_question_service_reject_unknown() {
+        let svc = QuestionService::new();
+        let unknown_id = QuestionId::new_unchecked("que_ghost");
+
+        let err = svc
+            .reject(&unknown_id)
+            .await
+            .expect_err("reject unknown ID should fail");
+        assert!(err.to_string().contains("que_ghost"));
+        assert!(err.to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_question_service_list() {
+        let svc = QuestionService::new();
+
+        // Ask two questions concurrently
+        let handle1 = {
+            let svc = &svc;
+            tokio::spawn(async move {
+                svc.ask(
+                    "ses_a",
+                    vec![QuestionInfo::new("Q1?", "H1")],
+                    None,
+                )
+                .await
+            })
+        };
+        let handle2 = {
+            let svc = &svc;
+            tokio::spawn(async move {
+                svc.ask(
+                    "ses_b",
+                    vec![QuestionInfo::new("Q2?", "H2")],
+                    None,
+                )
+                .await
+            })
+        };
+
+        tokio::task::yield_now().await;
+
+        // Both should be pending
+        let pending = svc.list().await;
+        assert_eq!(pending.len(), 2);
+        assert_eq!(svc.pending_count().await, 2);
+
+        // Verify both are present
+        let session_ids: Vec<&str> = pending.iter().map(|r| r.session_id.as_str()).collect();
+        assert!(session_ids.contains(&"ses_a"));
+        assert!(session_ids.contains(&"ses_b"));
+
+        // Reply to both
+        for req in &pending {
+            let answer = QuestionAnswer::new(vec!["OK".into()]);
+            svc.reply(&req.id, vec![answer])
+                .await
+                .expect("reply should succeed");
+        }
+
+        // Both handles should resolve
+        let r1 = handle1.await.expect("task1 complete").expect("ask1 success");
+        let r2 = handle2.await.expect("task2 complete").expect("ask2 success");
+        assert_eq!(r1[0].labels(), &["OK"]);
+        assert_eq!(r2[0].labels(), &["OK"]);
+
+        // Pending should be zero
+        assert_eq!(svc.pending_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn test_question_service_concurrent() {
+        use std::sync::Arc;
+        let svc = Arc::new(QuestionService::new());
+        let question_count = 5usize;
+
+        // Spawn multiple concurrent asks
+        let mut handles = Vec::new();
+        for i in 0..question_count {
+            let svc = Arc::clone(&svc);
+            handles.push(tokio::spawn(async move {
+                let questions = vec![QuestionInfo::new(
+                    format!("Q{}?", i),
+                    format!("H{}", i),
+                )];
+                svc.ask(format!("ses_{}", i), questions, None).await
+            }));
+        }
+
+        // Wait a bit for all asks to register
+        tokio::task::yield_now().await;
+        // Give all spawns time to run
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+        let pending = svc.list().await;
+        assert_eq!(pending.len(), question_count);
+
+        // Reply to each in reverse order
+        for req in pending.iter().rev() {
+            let answer = QuestionAnswer::new(vec![format!("ans_{}", req.session_id)]);
+            svc.reply(&req.id, vec![answer])
+                .await
+                .expect("reply should succeed");
+        }
+
+        // All handles should resolve successfully
+        for handle in handles {
+            let result = handle.await.expect("task should complete").expect("ask should succeed");
+            assert_eq!(result.len(), 1);
+            assert!(!result[0].is_empty());
+        }
+
+        assert_eq!(svc.pending_count().await, 0);
+    }
+
+    // -- format_model_output extended ---------------------------------------
+
+    #[tokio::test]
+    async fn test_format_model_output_multi_question() {
+        let questions = vec![
+            QuestionPrompt {
+                question: "Color?".into(),
+                header: "C".into(),
+                options: vec![],
+                multiple: false,
+            },
+            QuestionPrompt {
+                question: "Size?".into(),
+                header: "S".into(),
+                options: vec![],
+                multiple: false,
+            },
+            QuestionPrompt {
+                question: "Shape?".into(),
+                header: "Sh".into(),
+                options: vec![],
+                multiple: false,
+            },
+        ];
+        let answers = vec![
+            QuestionAnswer::new(vec!["Blue".into()]),
+            QuestionAnswer::new(vec!["Large".into()]),
+            QuestionAnswer::new(vec!["Circle".into()]),
+        ];
+        let output = format_model_output(&questions, &answers);
+        assert!(output.contains("\"Color?\"=\"Blue\""));
+        assert!(output.contains("\"Size?\"=\"Large\""));
+        assert!(output.contains("\"Shape?\"=\"Circle\""));
+        assert!(output.contains("User has answered your questions"));
+    }
+
+    #[tokio::test]
+    async fn test_format_model_output_mixed() {
+        let questions = vec![
+            QuestionPrompt {
+                question: "A?".into(),
+                header: "HA".into(),
+                options: vec![],
+                multiple: false,
+            },
+            QuestionPrompt {
+                question: "B?".into(),
+                header: "HB".into(),
+                options: vec![],
+                multiple: false,
+            },
+        ];
+        // B has an empty answer
+        let answers = vec![
+            QuestionAnswer::new(vec!["Yes".into()]),
+            QuestionAnswer::new(vec![]),
+        ];
+        let output = format_model_output(&questions, &answers);
+        assert!(output.contains("\"A?\"=\"Yes\""));
+        // Empty answer should show Unanswered
+        assert!(output.contains("\"B?\"=\"Unanswered\""));
+    }
+
+    #[tokio::test]
+    async fn test_format_model_output_no_questions() {
+        let questions: Vec<QuestionPrompt> = vec![];
+        let answers: Vec<QuestionAnswer> = vec![];
+        let output = format_model_output(&questions, &answers);
+        assert!(output.contains("User has answered your questions"));
+        assert!(output.contains("."));
+        // No question-answer pairs
+        assert!(!output.contains("\"=\""));
+    }
+
+    // -- QuestionInfo builder roundtrip -------------------------------------
+
+    #[tokio::test]
+    async fn test_question_info_all_options() {
+        let info = QuestionInfo::new("Complex question?", "Complex")
+            .with_options(vec![
+                QuestionOption::new("Opt A", "First option description"),
+                QuestionOption::new("Opt B", "Second option description"),
+                QuestionOption::new("Opt C", "Third option description"),
+            ])
+            .with_multiple(true)
+            .with_custom(false);
+
+        assert_eq!(info.question, "Complex question?");
+        assert_eq!(info.header, "Complex");
+        assert_eq!(info.options.len(), 3);
+        assert!(info.multiple);
+        assert!(!info.custom);
+
+        // Serde roundtrip
+        let json = serde_json::to_string(&info).expect("serialize");
+        let deser: QuestionInfo = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(deser.question, info.question);
+        assert_eq!(deser.header, info.header);
+        assert_eq!(deser.options.len(), info.options.len());
+        assert_eq!(deser.multiple, info.multiple);
+        assert_eq!(deser.custom, info.custom);
+        assert_eq!(deser.options[0].label, "Opt A");
+        assert_eq!(deser.options[1].label, "Opt B");
+        assert_eq!(deser.options[2].label, "Opt C");
     }
 }

@@ -659,4 +659,175 @@ mod tests {
         // By default in the TS code, detached is true
         // Our Default derives it to false; document the difference
     }
+
+    // ── Worktree name generation edge cases ──────────────────────────
+
+    #[test]
+    fn test_slugify_mixed_case_and_special_chars() {
+        assert_eq!(
+            WorktreeManager::slugify("My Feature Branch!!!"),
+            "my-feature-branch"
+        );
+        assert_eq!(
+            WorktreeManager::slugify("CamelCaseFeature"),
+            "camelcasefeature"
+        );
+        assert_eq!(WorktreeManager::slugify("UPPER CASE"), "upper-case");
+    }
+
+    #[test]
+    fn test_slugify_unicode() {
+        // Unicode characters are not ASCII alphanumeric, so they become hyphens.
+        // Each non-ASCII run collapses to a single hyphen, then leading/trailing
+        // hyphens are stripped.
+        assert_eq!(WorktreeManager::slugify("café"), "caf");
+        assert_eq!(WorktreeManager::slugify("über cool"), "ber-cool");
+        // All-unicode with no ASCII alphanumeric → empty after trimming → "worktree"
+        assert_eq!(WorktreeManager::slugify("こんにちは"), "worktree");
+    }
+
+    #[test]
+    fn test_slugify_long_string_no_panic() {
+        // >100 chars should not panic and should preserve the content
+        let long = "a".repeat(200);
+        let result = WorktreeManager::slugify(&long);
+        assert_eq!(result.len(), 200);
+        assert_eq!(result, long);
+
+        // Long string with special chars interleaved
+        let long_special = "x".repeat(50) + &"!@#".repeat(50);
+        let result = WorktreeManager::slugify(&long_special);
+        // Should not panic and should produce a non-empty result
+        assert!(!result.is_empty());
+    }
+
+    // ── Worktree list/remove edge cases ────────────────────────────────
+
+    #[test]
+    fn test_parse_porcelain_bare_worktree() {
+        // Only a worktree line, no branch line following it
+        let text = "worktree /tmp/bare-worktree\n";
+        let entries = WorktreeManager::parse_porcelain(text);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path.as_deref(), Some("/tmp/bare-worktree"));
+        assert_eq!(entries[0].branch, None);
+    }
+
+    #[test]
+    fn test_parse_porcelain_orphan_branch_before_worktree() {
+        // A branch line appearing before any worktree line should be ignored
+        // (orphan branch lines have no preceding worktree entry to attach to)
+        let text = "branch refs/heads/orphan\nworktree /tmp/some-worktree\n";
+        let entries = WorktreeManager::parse_porcelain(text);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].path.as_deref(), Some("/tmp/some-worktree"));
+        assert_eq!(entries[0].branch, None);
+    }
+
+    #[test]
+    fn test_parse_porcelain_with_metadata_lines() {
+        // Real git porcelain output includes HEAD, "locked", "prunable" lines
+        // between the worktree and branch lines. These should be ignored.
+        let text = concat!(
+            "worktree /home/user/project\n",
+            "HEAD abcd1234\n",
+            "branch refs/heads/main\n",
+            "\n",
+            "worktree /home/user/feature\n",
+            "HEAD efgh5678\n",
+            "locked\n",
+            "branch refs/heads/feature\n",
+            "\n",
+            "worktree /tmp/prunable\n",
+            "HEAD ijkl9012\n",
+            "prunable gitdir file points to non-existent parent\n",
+        );
+        let entries = WorktreeManager::parse_porcelain(text);
+        assert_eq!(entries.len(), 3);
+
+        // First entry: has branch, HEAD metadata ignored
+        assert_eq!(entries[0].path.as_deref(), Some("/home/user/project"));
+        assert_eq!(entries[0].branch.as_deref(), Some("refs/heads/main"));
+
+        // Second entry: has branch, HEAD + locked metadata ignored
+        assert_eq!(entries[1].path.as_deref(), Some("/home/user/feature"));
+        assert_eq!(entries[1].branch.as_deref(), Some("refs/heads/feature"));
+
+        // Third entry: no branch (prunable metadata ignored)
+        assert_eq!(entries[2].path.as_deref(), Some("/tmp/prunable"));
+        assert_eq!(entries[2].branch, None);
+    }
+
+    // ── CreateInput struct tests ────────────────────────────────────────
+
+    #[test]
+    fn test_create_input_with_name() {
+        let input = CreateInput {
+            name: Some("my-feature".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(input.name.as_deref(), Some("my-feature"));
+    }
+
+    #[test]
+    fn test_create_input_detached_false() {
+        let input = CreateInput {
+            detached: false,
+            ..Default::default()
+        };
+        assert!(!input.detached);
+    }
+
+    // ── WorktreeInfo struct edge cases ──────────────────────────────────
+
+    #[test]
+    fn test_worktree_info_equality() {
+        let info1 = WorktreeInfo {
+            name: "test".to_string(),
+            directory: PathBuf::from("/tmp/test"),
+            branch: Some("main".to_string()),
+        };
+        let info2 = WorktreeInfo {
+            name: "test".to_string(),
+            directory: PathBuf::from("/tmp/test"),
+            branch: Some("main".to_string()),
+        };
+        assert_eq!(info1, info2);
+    }
+
+    #[test]
+    fn test_worktree_info_branch_none_vs_some() {
+        let info_none = WorktreeInfo {
+            name: "test".to_string(),
+            directory: PathBuf::from("/tmp/test"),
+            branch: None,
+        };
+        let info_some = WorktreeInfo {
+            name: "test".to_string(),
+            directory: PathBuf::from("/tmp/test"),
+            branch: Some("main".to_string()),
+        };
+        assert_ne!(info_none, info_some);
+        assert_eq!(info_none.branch, None);
+        assert_eq!(info_some.branch, Some("main".to_string()));
+    }
+
+    // ── strip_branch_prefix edge case ───────────────────────────────────
+
+    #[test]
+    fn test_strip_branch_prefix_unexpected_ref_format() {
+        // strip_branch_prefix only strips "refs/heads/", not other ref prefixes
+        assert_eq!(
+            WorktreeManager::strip_branch_prefix("refs/tags/v1.0"),
+            "refs/tags/v1.0"
+        );
+        assert_eq!(
+            WorktreeManager::strip_branch_prefix("refs/remotes/origin/main"),
+            "refs/remotes/origin/main"
+        );
+        assert_eq!(
+            WorktreeManager::strip_branch_prefix("refs/notes/commits"),
+            "refs/notes/commits"
+        );
+    }
 }

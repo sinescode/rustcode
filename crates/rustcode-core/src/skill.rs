@@ -832,4 +832,286 @@ mod tests {
         assert!(!registry.contains("disabled-skill"));
         assert!(registry.contains("customize-opencode"));
     }
+
+    // ── YAML frontmatter parsing edge cases ──────────────────────────
+
+    #[test]
+    fn test_extract_frontmatter_empty_block() {
+        let content = "---\n---\n\nBody content here.\n";
+        let err = extract_frontmatter(content, "test.md")
+            .expect_err("empty frontmatter block should fail");
+        assert!(
+            matches!(err, ParseError::NoFrontmatter { .. }),
+            "expected NoFrontmatter, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_extract_frontmatter_null_name() {
+        // YAML `name:` with no value is null — serde cannot deserialize null as String
+        let content = "---\nname:\n---\n\nBody\n";
+        let err = extract_frontmatter(content, "test.md")
+            .expect_err("null name should fail to deserialize");
+        assert!(
+            matches!(err, ParseError::InvalidYaml { .. }),
+            "expected InvalidYaml, got {:?}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_extract_frontmatter_extra_fields() {
+        let content = "---\nname: my-skill\ndescription: A skill\nversion: 1.0\nauthor: test-user\ntags:\n  - rust\n  - skill\n---\n\n# Body\n\nExtra fields should be ignored.\n";
+        let (fm, body) = extract_frontmatter(content, "test.md")
+            .expect("extra fields should not prevent parsing");
+        assert_eq!(fm.name, "my-skill");
+        assert_eq!(fm.description.as_deref(), Some("A skill"));
+        assert!(body.contains("# Body"));
+        assert!(body.contains("Extra fields should be ignored."));
+    }
+
+    #[test]
+    fn test_extract_frontmatter_triple_dash_in_body() {
+        let content = "---\nname: dash-test\ndescription: Test triple dash in body\n---\n\n# Heading\n\nSome text with --- in the middle.\n\n---\n\nAnother section.\n";
+        let (fm, body) = extract_frontmatter(content, "test.md")
+            .expect("triple dash in body should not confuse parser");
+        assert_eq!(fm.name, "dash-test");
+        assert!(body.contains("---"));
+        assert!(body.contains("# Heading"));
+        assert!(body.contains("Another section."));
+    }
+
+    // ── discover_skill_files with nested directories ─────────────────
+
+    #[test]
+    fn test_discover_skill_files_deeply_nested() {
+        let tmp = std::env::temp_dir().join("rustcode-skill-deep-nested");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let skill_dir = tmp
+            .join(".opencode")
+            .join("skill")
+            .join("a")
+            .join("b")
+            .join("c");
+        std::fs::create_dir_all(&skill_dir).expect("create deeply nested dirs");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "---\nname: deep-nested\ndescription: Deeply nested skill\n---\n\n# Deep\n",
+        )
+        .expect("write SKILL.md");
+
+        let files = discover_skill_files(&tmp, &tmp, &tmp, &[], true);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(!files.is_empty());
+        assert!(files.iter().any(|f| f.ends_with("SKILL.md")));
+    }
+
+    #[test]
+    fn test_discover_skill_files_extra_paths() {
+        let tmp = std::env::temp_dir().join("rustcode-skill-extra-paths");
+        let _ = std::fs::remove_dir_all(&tmp);
+        let extra_dir = tmp.join("extra-skills");
+        let skill_subdir = extra_dir.join("my-extra-skill");
+        std::fs::create_dir_all(&skill_subdir).expect("create extra dirs");
+        std::fs::write(
+            skill_subdir.join("SKILL.md"),
+            "---\nname: extra-skill\ndescription: From extra paths\n---\n\n# Extra\n",
+        )
+        .expect("write SKILL.md");
+
+        let worktree = std::env::temp_dir().join("rustcode-skill-extra-wt");
+        std::fs::create_dir_all(&worktree).expect("create worktree dir");
+
+        let extra_paths = vec![extra_dir.clone()];
+        let files =
+            discover_skill_files(&worktree, &worktree, &worktree, &extra_paths, true);
+        let _ = std::fs::remove_dir_all(&tmp);
+        let _ = std::fs::remove_dir_all(&worktree);
+
+        assert!(!files.is_empty());
+        assert!(files.iter().any(|f| f.ends_with("SKILL.md")));
+    }
+
+    // ── glob_home_skills tests ───────────────────────────────────────
+
+    #[test]
+    fn test_glob_home_skills_empty_dir() {
+        let tmp = std::env::temp_dir().join("rustcode-home-empty");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create empty home dir");
+
+        let results = glob_home_skills(&tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_glob_home_skills_nonexistent_dir() {
+        let nonexistent =
+            std::path::Path::new("/tmp/rustcode-definitely-does-not-exist-98765");
+        let results = glob_home_skills(nonexistent);
+        assert!(results.is_empty());
+    }
+
+    // ── format_skill_list with various skill sets ────────────────────
+
+    #[test]
+    fn test_format_skill_list_multiple_non_verbose() {
+        let s1 = Skill {
+            name: "alpha-skill".to_string(),
+            description: Some("First test skill".to_string()),
+            location: "/tmp/s1/SKILL.md".to_string(),
+            content: "# Alpha".to_string(),
+        };
+        let s2 = Skill {
+            name: "beta-skill".to_string(),
+            description: Some("Second test skill".to_string()),
+            location: "/tmp/s2/SKILL.md".to_string(),
+            content: "# Beta".to_string(),
+        };
+        let s3 = Skill {
+            name: "gamma-skill".to_string(),
+            description: Some("Third test skill".to_string()),
+            location: "/tmp/s3/SKILL.md".to_string(),
+            content: "# Gamma".to_string(),
+        };
+
+        let result = format_skill_list(&[&s1, &s2, &s3], false);
+
+        assert!(result.contains("## Available Skills"));
+        assert!(result.contains("- **alpha-skill**: First test skill"));
+        assert!(result.contains("- **beta-skill**: Second test skill"));
+        assert!(result.contains("- **gamma-skill**: Third test skill"));
+    }
+
+    #[test]
+    fn test_format_skill_list_long_description() {
+        let long_desc = "A".repeat(250);
+        let skill = Skill {
+            name: "verbose-skill".to_string(),
+            description: Some(long_desc.clone()),
+            location: "/tmp/long/SKILL.md".to_string(),
+            content: "# Long".to_string(),
+        };
+
+        let result = format_skill_list(&[&skill], false);
+        assert!(result.contains("## Available Skills"));
+        assert!(result.contains("- **verbose-skill**: "));
+        assert!(result.contains(&long_desc));
+    }
+
+    #[test]
+    fn test_format_skill_list_verbose_multiple() {
+        let s1 = Skill {
+            name: "first-skill".to_string(),
+            description: Some("First".to_string()),
+            location: "/tmp/first/SKILL.md".to_string(),
+            content: "# First".to_string(),
+        };
+        let s2 = Skill {
+            name: "second-skill".to_string(),
+            description: Some("Second".to_string()),
+            location: "/tmp/second/SKILL.md".to_string(),
+            content: "# Second".to_string(),
+        };
+
+        let result = format_skill_list(&[&s1, &s2], true);
+
+        assert!(result.contains("<available_skills>"));
+        assert!(result.contains("</available_skills>"));
+        // Verify two <skill> elements
+        assert_eq!(result.matches("<skill>").count(), 2);
+        assert_eq!(result.matches("</skill>").count(), 2);
+        assert!(result.contains("<name>first-skill</name>"));
+        assert!(result.contains("<name>second-skill</name>"));
+    }
+
+    // ── SkillRegistry edge cases ─────────────────────────────────────
+
+    #[test]
+    fn test_registry_register_empty_content() {
+        let mut registry = SkillRegistry::new();
+        let skill = Skill {
+            name: "empty-content".to_string(),
+            description: Some("Has empty content".to_string()),
+            location: "/tmp/empty/SKILL.md".to_string(),
+            content: String::new(),
+        };
+        let prev = registry.register(skill);
+        assert!(prev.is_none());
+
+        let retrieved = registry
+            .get("empty-content")
+            .expect("skill should be registered");
+        assert_eq!(retrieved.name, "empty-content");
+        assert!(retrieved.content.is_empty());
+    }
+
+    #[test]
+    fn test_registry_contains() {
+        let mut registry = SkillRegistry::new();
+
+        // Should return false for non-existent skill
+        assert!(!registry.contains("no-such-skill"));
+
+        // Register a skill and check contains returns true
+        let skill = Skill::builtin("present-skill", "I exist", "# Present");
+        registry.register(skill);
+
+        assert!(registry.contains("present-skill"));
+        assert!(!registry.contains("still-missing"));
+    }
+
+    #[test]
+    fn test_registry_counts_after_multiple_registrations() {
+        let mut registry = SkillRegistry::new();
+        assert_eq!(registry.count(), 0);
+
+        // Register first skill
+        registry.register(Skill::builtin("skill-a", "First", "# A"));
+        assert_eq!(registry.count(), 1);
+
+        // Register second skill (different name)
+        registry.register(Skill::builtin("skill-b", "Second", "# B"));
+        assert_eq!(registry.count(), 2);
+
+        // Register third skill
+        registry.register(Skill::builtin("skill-c", "Third", "# C"));
+        assert_eq!(registry.count(), 3);
+
+        // Override skill-a (duplicate name) — count should stay at 3
+        let prev = registry.register(Skill::builtin("skill-a", "First v2", "# A v2"));
+        assert!(prev.is_some());
+        assert_eq!(registry.count(), 3);
+
+        // Verify the override took effect
+        let skill_a = registry.get("skill-a").expect("skill-a should exist");
+        assert_eq!(skill_a.description.as_deref(), Some("First v2"));
+    }
+
+    // ── ParseError Display ───────────────────────────────────────────
+
+    #[test]
+    fn test_parse_error_read_display() {
+        let io_err =
+            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let err = ParseError::Read {
+            path: "/home/user/.claude/skills/SKILL.md".to_string(),
+            source: io_err,
+        };
+        let display = err.to_string();
+        assert!(
+            display.contains("/home/user/.claude/skills/SKILL.md"),
+            "display should contain the path, got: {}",
+            display
+        );
+        assert!(
+            display.contains("permission denied"),
+            "display should contain the source error message, got: {}",
+            display
+        );
+    }
 }

@@ -440,6 +440,415 @@ pub enum ProjectDirectoryType {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Project Service — detection, creation, listing, validation
+// ══════════════════════════════════════════════════════════════════════════════
+
+use std::path::{Path, PathBuf};
+
+/// Errors that can occur during project service operations.
+///
+/// # Source
+/// Ported from error patterns in `packages/core/src/project.ts`.
+#[derive(Debug, thiserror::Error)]
+pub enum ProjectServiceError {
+    /// The project directory does not exist.
+    #[error("directory not found: {0}")]
+    DirectoryNotFound(String),
+
+    /// No project could be detected in or above the given directory.
+    #[error("no project found in or above: {0}")]
+    NoProjectFound(String),
+
+    /// The project already exists (conflict on create).
+    #[error("project already exists: {0}")]
+    AlreadyExists(String),
+
+    /// Project validation failed.
+    #[error("project validation failed: {0}")]
+    ValidationFailed(String),
+
+    /// Git operation failed.
+    #[error("git error: {0}")]
+    GitError(String),
+
+    /// An I/O error occurred.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Result of project detection from a directory.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectDetection {
+    /// The detected project ID.
+    pub id: ProjectId,
+    /// The project root directory.
+    pub directory: String,
+    /// Whether a .git directory was found.
+    pub has_git: bool,
+    /// The path to the .git store (if found).
+    pub git_store: Option<String>,
+    /// The detected VCS type.
+    pub vcs: Option<String>,
+    /// Whether the detection found an opencode config file.
+    pub has_opencode_config: bool,
+}
+
+/// A project entry for listing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProjectEntry {
+    /// The project ID.
+    pub id: ProjectId,
+    /// A human-readable name.
+    pub name: Option<String>,
+    /// The project root directory.
+    pub directory: String,
+    /// VCS type.
+    pub vcs: Option<String>,
+    /// When the project was created (epoch millis).
+    pub time_created: i64,
+    /// When the project was last updated (epoch millis).
+    pub time_updated: i64,
+}
+
+/// Project service — detects, creates, lists, and validates projects.
+///
+/// # Source
+/// Ported from `packages/core/src/project.ts` `ProjectV2` namespace.
+pub struct ProjectService {
+    /// Root directory to search for projects (defaults to home or cwd).
+    search_root: PathBuf,
+}
+
+impl ProjectService {
+    /// Create a new project service.
+    pub fn new(search_root: impl Into<PathBuf>) -> Self {
+        Self {
+            search_root: search_root.into(),
+        }
+    }
+
+    /// Detect the current project from the given directory (or cwd).
+    ///
+    /// Walks up from `start_dir` looking for `.git` or an opencode config file.
+    /// Returns the first project found, or `NoProjectFound` if none exists.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/project.ts` `resolve()` method (lines 110–122).
+    pub fn detect(&self, start_dir: &Path) -> Result<ProjectDetection, ProjectServiceError> {
+        let start = if start_dir.is_absolute() {
+            start_dir.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| ProjectServiceError::Io(e))?
+                .join(start_dir)
+        };
+
+        // Canonicalize if possible
+        let start = start.canonicalize().unwrap_or(start);
+
+        // Walk up looking for .git or opencode config
+        let mut current = start.clone();
+        loop {
+            let git_path = current.join(".git");
+            let opencode_path = current.join(".opencode");
+            let opencode_config = current.join("opencode.json");
+
+            let has_git = git_path.exists();
+            let has_opencode_config = opencode_path.exists() || opencode_config.exists();
+
+            if has_git || has_opencode_config {
+                let project_id = self.compute_project_id(&current);
+                let vcs = if has_git {
+                    Some("git".to_string())
+                } else {
+                    None
+                };
+
+                return Ok(ProjectDetection {
+                    id: project_id,
+                    directory: current.display().to_string(),
+                    has_git,
+                    git_store: if has_git {
+                        Some(git_path.display().to_string())
+                    } else {
+                        None
+                    },
+                    vcs,
+                    has_opencode_config,
+                });
+            }
+
+            // Go up one level
+            if let Some(parent) = current.parent() {
+                if parent == current {
+                    // Reached filesystem root
+                    break;
+                }
+                current = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+
+        Err(ProjectServiceError::NoProjectFound(
+            start.display().to_string(),
+        ))
+    }
+
+    /// Detect the current project from the current working directory.
+    pub fn current(&self) -> Result<ProjectDetection, ProjectServiceError> {
+        let cwd = std::env::current_dir().map_err(ProjectServiceError::Io)?;
+        self.detect(&cwd)
+    }
+
+    /// Create a new project at the given directory with initial configuration.
+    ///
+    /// # Source
+    /// Ported from project initialization patterns in the TS codebase.
+    pub fn create(
+        &self,
+        directory: &Path,
+        name: Option<&str>,
+    ) -> Result<ProjectDetection, ProjectServiceError> {
+        let dir = if directory.is_absolute() {
+            directory.to_path_buf()
+        } else {
+            std::env::current_dir()
+                .map_err(|e| ProjectServiceError::Io(e))?
+                .join(directory)
+        };
+
+        // Ensure directory exists
+        if dir.exists() {
+            // Check if already a project
+            if dir.join(".git").exists() || dir.join(".opencode").exists() {
+                return Err(ProjectServiceError::AlreadyExists(
+                    dir.display().to_string(),
+                ));
+            }
+        } else {
+            std::fs::create_dir_all(&dir)?;
+        }
+
+        // Initialize git if needed
+        self.init_git(&dir)?;
+
+        // Write opencode config file
+        let opencode_dir = dir.join(".opencode");
+        std::fs::create_dir_all(&opencode_dir)?;
+
+        let config = serde_json::json!({
+            "name": name.unwrap_or_else(|| dir.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("unnamed")),
+            "version": "0.1.0",
+            "created_at": chrono::Utc::now().timestamp_millis(),
+        });
+
+        let config_path = opencode_dir.join("project.json");
+        std::fs::write(
+            &config_path,
+            serde_json::to_string_pretty(&config)
+                .map_err(|e| ProjectServiceError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?,
+        )?;
+
+        Ok(ProjectDetection {
+            id: self.compute_project_id(&dir),
+            directory: dir.display().to_string(),
+            has_git: true,
+            git_store: Some(dir.join(".git").display().to_string()),
+            vcs: Some("git".to_string()),
+            has_opencode_config: true,
+        })
+    }
+
+    /// List known projects under the search root.
+    ///
+    /// Scans for directories containing `.git` or `.opencode` markers.
+    pub fn list(&self, max_depth: u32) -> Result<Vec<ProjectEntry>, ProjectServiceError> {
+        let mut projects: Vec<ProjectEntry> = Vec::new();
+        self.scan_for_projects(&self.search_root, max_depth, 0, &mut projects)?;
+
+        // Deduplicate by directory
+        projects.sort_by(|a, b| a.directory.cmp(&b.directory));
+        projects.dedup_by(|a, b| a.directory == b.directory);
+
+        Ok(projects)
+    }
+
+    /// Initialize a git repository at the given directory.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/project.ts` git init patterns.
+    pub fn init_git(&self, directory: &Path) -> Result<(), ProjectServiceError> {
+        if directory.join(".git").exists() {
+            return Ok(()); // Already initialized
+        }
+
+        // Try running `git init`
+        let output = std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(directory)
+            .output()
+            .map_err(|e| ProjectServiceError::GitError(format!("failed to run git init: {e}")))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(ProjectServiceError::GitError(format!(
+                "git init failed: {stderr}"
+            )));
+        }
+
+        Ok(())
+    }
+
+    /// Validate a project's integrity.
+    ///
+    /// Checks:
+    /// - The directory exists and is accessible
+    /// - The opencode config file is valid JSON (if present)
+    /// - The git repository is not corrupted (light check)
+    pub fn validate(&self, directory: &Path) -> Result<Vec<String>, ProjectServiceError> {
+        let mut issues: Vec<String> = Vec::new();
+
+        if !directory.exists() {
+            return Err(ProjectServiceError::DirectoryNotFound(
+                directory.display().to_string(),
+            ));
+        }
+
+        if !directory.is_dir() {
+            issues.push(format!(
+                "path is not a directory: {}",
+                directory.display()
+            ));
+            return Ok(issues);
+        }
+
+        // Check opencode config
+        let config_path = directory.join(".opencode").join("project.json");
+        if config_path.exists() {
+            match std::fs::read_to_string(&config_path) {
+                Ok(content) => {
+                    if serde_json::from_str::<serde_json::Value>(&content).is_err() {
+                        issues.push(format!(
+                            "invalid JSON in opencode config: {}",
+                            config_path.display()
+                        ));
+                    }
+                }
+                Err(e) => {
+                    issues.push(format!(
+                        "cannot read opencode config: {e}"
+                    ));
+                }
+            }
+        }
+
+        // Check git integrity (light)
+        let git_dir = directory.join(".git");
+        if git_dir.exists() {
+            if !git_dir.is_dir() {
+                issues.push(format!(".git exists but is not a directory: {directory:?}"));
+            } else {
+                // Check that HEAD exists (basic integrity check)
+                let head_path = git_dir.join("HEAD");
+                if !head_path.exists() {
+                    issues.push(format!("git HEAD missing: {}", head_path.display()));
+                }
+            }
+        }
+
+        Ok(issues)
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────
+
+    /// Compute a stable project ID from the directory path.
+    fn compute_project_id(&self, directory: &Path) -> ProjectId {
+        let path_str = directory.display().to_string();
+        // Use SHA-256 hex of the normalized path as the project ID
+        use sha2::Digest;
+        let hash = sha2::Sha256::digest(path_str.as_bytes());
+        let hex = hex::encode(&hash[..16]); // First 16 bytes = 32 hex chars
+        ProjectId::new(format!("proj_{hex}"))
+    }
+
+    /// Recursively scan for projects.
+    fn scan_for_projects(
+        &self,
+        dir: &Path,
+        max_depth: u32,
+        current_depth: u32,
+        results: &mut Vec<ProjectEntry>,
+    ) -> Result<(), ProjectServiceError> {
+        if current_depth > max_depth || !dir.is_dir() {
+            return Ok(());
+        }
+
+        // Check if this directory itself is a project
+        if dir.join(".git").exists() || dir.join(".opencode").exists() {
+            let project_id = self.compute_project_id(dir);
+            let now = chrono::Utc::now().timestamp_millis();
+
+            // Try to read project name from config
+            let name = dir
+                .join(".opencode")
+                .join("project.json")
+                .exists()
+                .then(|| {
+                    std::fs::read_to_string(dir.join(".opencode").join("project.json"))
+                        .ok()
+                        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+                        .and_then(|v| v.get("name")?.as_str().map(String::from))
+                })
+                .flatten()
+                .or_else(|| {
+                    dir.file_name()
+                        .and_then(|n| n.to_str())
+                        .map(String::from)
+                });
+
+            results.push(ProjectEntry {
+                id: project_id,
+                name,
+                directory: dir.display().to_string(),
+                vcs: if dir.join(".git").exists() {
+                    Some("git".to_string())
+                } else {
+                    None
+                },
+                time_created: now,
+                time_updated: now,
+            });
+            return Ok(()); // Don't recurse into project directories
+        }
+
+        // Recurse into subdirectories (skip hidden dirs)
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let name_str = name.to_string_lossy();
+                // Skip hidden directories and common non-project dirs
+                if name_str.starts_with('.')
+                    || name_str == "node_modules"
+                    || name_str == "target"
+                    || name_str == "dist"
+                    || name_str == "build"
+                {
+                    continue;
+                }
+                if entry.file_type().map(|ft| ft.is_dir()).unwrap_or(false) {
+                    self.scan_for_projects(&entry.path(), max_depth, current_depth + 1, results)?;
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Tests
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -686,5 +1095,289 @@ mod tests {
             strategy: StrategyId::new("unknown"),
         };
         assert!(err.to_string().contains("unknown"));
+    }
+
+    // ── ProjectService tests ─────────────────────────────────────────
+
+    fn setup_project_fs() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path().to_path_buf();
+
+        // Create a project structure
+        let project_dir = root.join("my-project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(project_dir.join("README.md"), "# My Project\n").unwrap();
+        std::fs::write(project_dir.join("Cargo.toml"), "[package]\nname = \"my-project\"\n").unwrap();
+
+        std::fs::create_dir_all(project_dir.join("src")).unwrap();
+        std::fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+        // Create a nested project
+        let nested = root.join("my-project").join("sub-lib");
+        std::fs::create_dir_all(&nested).unwrap();
+        std::fs::write(nested.join("lib.rs"), "pub fn x() {}\n").unwrap();
+
+        (dir, root)
+    }
+
+    #[test]
+    fn test_detect_project_with_git() {
+        let (_dir, root) = setup_project_fs();
+        let project_dir = root.join("my-project");
+
+        // Init git
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project_dir)
+            .output()
+            .expect("git init");
+
+        let svc = ProjectService::new(root.clone());
+        let detection = svc.detect(&project_dir).expect("detect project");
+        assert!(detection.has_git);
+        assert!(detection.git_store.is_some());
+        assert_eq!(detection.vcs.as_deref(), Some("git"));
+        assert_eq!(detection.directory, project_dir.display().to_string());
+    }
+
+    #[test]
+    fn test_detect_project_from_subdirectory() {
+        let (_dir, root) = setup_project_fs();
+        let project_dir = root.join("my-project");
+
+        // Init git in parent
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project_dir)
+            .output()
+            .expect("git init");
+
+        // Detect from a subdirectory
+        let sub_dir = project_dir.join("src");
+        let svc = ProjectService::new(root.clone());
+        let detection = svc.detect(&sub_dir).expect("detect from subdir");
+        assert_eq!(detection.directory, project_dir.display().to_string());
+    }
+
+    #[test]
+    fn test_detect_no_project() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+
+        // Create empty dir with no .git
+        let empty_dir = root.join("empty");
+        std::fs::create_dir_all(&empty_dir).unwrap();
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let result = svc.detect(&empty_dir);
+        assert!(matches!(result, Err(ProjectServiceError::NoProjectFound(_))));
+    }
+
+    #[test]
+    fn test_create_project() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        let project_dir = root.join("new-project");
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let detection = svc
+            .create(&project_dir, Some("new-project"))
+            .expect("create project");
+
+        assert!(project_dir.exists());
+        assert!(project_dir.join(".git").exists());
+        assert!(project_dir.join(".opencode").join("project.json").exists());
+        assert_eq!(detection.directory, project_dir.display().to_string());
+        assert!(detection.has_git);
+        assert!(detection.has_opencode_config);
+    }
+
+    #[test]
+    fn test_create_project_already_exists() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        let project_dir = root.join("exists-project");
+
+        // Init git to make it look like a project
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project_dir)
+            .output()
+            .expect("git init");
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let result = svc.create(&project_dir, None);
+        assert!(matches!(result, Err(ProjectServiceError::AlreadyExists(_))));
+    }
+
+    #[test]
+    fn test_list_projects() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+
+        // Create multiple projects
+        for name in &["proj-a", "proj-b", "not-a-project"] {
+            let project_dir = root.join(name);
+            std::fs::create_dir_all(&project_dir).unwrap();
+        }
+
+        // Init git in proj-a and proj-b
+        for name in &["proj-a", "proj-b"] {
+            std::process::Command::new("git")
+                .args(["init", "--quiet"])
+                .current_dir(root.join(name))
+                .output()
+                .expect("git init");
+        }
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let projects = svc.list(3).expect("list projects");
+        assert_eq!(projects.len(), 2);
+
+        let names: Vec<&str> = projects
+            .iter()
+            .filter_map(|p| p.name.as_deref())
+            .collect();
+        assert!(names.contains(&"proj-a"));
+        assert!(names.contains(&"proj-b"));
+    }
+
+    #[test]
+    fn test_list_projects_empty() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let projects = svc.list(3).expect("list projects");
+        assert!(projects.is_empty());
+    }
+
+    #[test]
+    fn test_validate_project_valid() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        let project_dir = root.join("valid-project");
+
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&project_dir)
+            .output()
+            .expect("git init");
+
+        // Create valid opencode config
+        std::fs::create_dir_all(project_dir.join(".opencode")).unwrap();
+        std::fs::write(
+            project_dir.join(".opencode").join("project.json"),
+            r#"{"name": "valid", "version": "0.1.0"}"#,
+        )
+        .unwrap();
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let issues = svc.validate(&project_dir).expect("validate");
+        assert!(issues.is_empty(), "expected no issues, got: {issues:?}");
+    }
+
+    #[test]
+    fn test_validate_project_missing_dir() {
+        let svc = ProjectService::new(PathBuf::from("/tmp"));
+        let result = svc.validate(Path::new("/nonexistent/dir"));
+        assert!(matches!(result, Err(ProjectServiceError::DirectoryNotFound(_))));
+    }
+
+    #[test]
+    fn test_validate_project_invalid_config() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        let project_dir = root.join("bad-config");
+
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::create_dir_all(project_dir.join(".opencode")).unwrap();
+        // Write invalid JSON
+        std::fs::write(
+            project_dir.join(".opencode").join("project.json"),
+            "not valid json {{{",
+        )
+        .unwrap();
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let issues = svc.validate(&project_dir).expect("validate");
+        assert!(!issues.is_empty());
+        assert!(issues.iter().any(|i| i.contains("invalid JSON")));
+    }
+
+    #[test]
+    fn test_project_detection_with_opencode_config() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        let project_dir = root.join("config-only-project");
+
+        std::fs::create_dir_all(&project_dir).unwrap();
+        // Create .opencode marker but no .git
+        std::fs::create_dir_all(project_dir.join(".opencode")).unwrap();
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let detection = svc.detect(&project_dir).expect("detect project");
+        assert!(detection.has_opencode_config);
+        assert!(!detection.has_git);
+        assert!(detection.vcs.is_none());
+    }
+
+    #[test]
+    fn test_compute_project_id_stable() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        let svc = ProjectService::new(root.to_path_buf());
+
+        let project_dir = root.join("stable-id");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let id1 = svc.compute_project_id(&project_dir);
+        let id2 = svc.compute_project_id(&project_dir);
+        assert_eq!(id1, id2, "project ID should be stable");
+
+        let other = root.join("other-dir");
+        std::fs::create_dir_all(&other).unwrap();
+        let id3 = svc.compute_project_id(&other);
+        assert_ne!(id1, id3, "different dirs should have different IDs");
+    }
+
+    #[test]
+    fn test_list_projects_respects_depth() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+
+        // Create a project at depth 2
+        let deep = root.join("level1").join("level2");
+        std::fs::create_dir_all(&deep).unwrap();
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&deep)
+            .output()
+            .expect("git init");
+
+        // With depth 1, should NOT find it
+        let svc = ProjectService::new(root.to_path_buf());
+        let shallow = svc.list(1).expect("list shallow");
+        assert!(shallow.is_empty(), "should not find project at depth 2 with max_depth=1");
+
+        // With depth 3, should find it
+        let deep_result = svc.list(3).expect("list deep");
+        assert_eq!(deep_result.len(), 1);
+    }
+
+    #[test]
+    fn test_detect_project_stops_at_root() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+
+        // Create an empty subdir with no git parents — detection should fail
+        let empty = root.join("no-git-here");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        let svc = ProjectService::new(root.to_path_buf());
+        let result = svc.detect(&empty);
+        assert!(result.is_err());
     }
 }

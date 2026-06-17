@@ -607,6 +607,570 @@ pub struct FileEditedEvent {
     pub file: String,
 }
 
+// ── Filesystem operations ───────────────────────────────────────────────────
+// Ported from: packages/core/src/filesystem.ts (Interface: read, list, find, glob, grep)
+
+use std::path::{Path, PathBuf};
+
+/// Errors that can occur during filesystem operations.
+///
+/// # Source
+/// Ported from error patterns in `packages/core/src/filesystem.ts`.
+#[derive(Debug, thiserror::Error)]
+pub enum FileSystemError {
+    /// The path does not exist.
+    #[error("file not found: {0}")]
+    NotFound(String),
+
+    /// The path is not a file when a file was expected.
+    #[error("not a file: {0}")]
+    NotAFile(String),
+
+    /// The path is not a directory when a directory was expected.
+    #[error("not a directory: {0}")]
+    NotADirectory(String),
+
+    /// The path escapes the allowed root/project directory.
+    #[error("path escapes root: {0}")]
+    PathEscapesRoot(String),
+
+    /// An I/O error occurred.
+    #[error("io error: {0}")]
+    Io(#[from] std::io::Error),
+
+    /// Pattern compilation error (regex).
+    #[error("invalid pattern: {0}")]
+    InvalidPattern(String),
+
+    /// Unsupported encoding.
+    #[error("unsupported encoding: {0}")]
+    UnsupportedEncoding(String),
+}
+
+/// Metadata for a file or directory entry.
+///
+/// # Source
+/// Derived from `fs.stat` + `Entry` in `packages/core/src/filesystem.ts`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FileMetadata {
+    /// The entry itself (path, type, mime).
+    pub entry: Entry,
+    /// File size in bytes (0 for directories).
+    pub size: u64,
+    /// Last modification time as epoch millis.
+    pub modified_ms: i64,
+    /// Whether the entry is readable.
+    pub readable: bool,
+    /// Whether the entry is writable.
+    pub writable: bool,
+}
+
+/// Read a file's content with automatic encoding detection.
+///
+/// Attempts UTF-8 first; falls back to base64 for binary content.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` `read()` method (lines 89–96).
+pub fn read_file(root: &Path, input: &ReadInput) -> Result<Content, FileSystemError> {
+    let absolute = resolve_safe(root, &input.path)?;
+    let metadata = std::fs::metadata(&absolute)?;
+    if !metadata.is_file() {
+        return Err(FileSystemError::NotAFile(absolute.display().to_string()));
+    }
+
+    let raw = std::fs::read(&absolute)?;
+
+    // Try UTF-8 first, fall back to base64
+    match std::str::from_utf8(&raw) {
+        Ok(text) => {
+            let mime = mime_type(&absolute);
+            Ok(Content {
+                uri: format!("file://{}", absolute.display()),
+                name: std::path::Path::new(input.path.as_str())
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string()),
+                content: text.to_string(),
+                encoding: ContentEncoding::Utf8,
+                mime,
+            })
+        }
+        Err(_) => {
+            let mime = mime_type(&absolute);
+            Ok(Content {
+                uri: format!("file://{}", absolute.display()),
+                name: std::path::Path::new(input.path.as_str())
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string()),
+                content: base64_encode(&raw),
+                encoding: ContentEncoding::Base64,
+                mime,
+            })
+        }
+    }
+}
+
+/// List directory entries with metadata.
+///
+/// Sorts directories before files, then alphabetically by path.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` `list()` method (lines 98–121).
+pub fn list_directory(root: &Path, input: Option<&ListInput>) -> Result<Vec<Entry>, FileSystemError> {
+    let rel_path = input
+        .and_then(|i| i.path.as_ref())
+        .cloned()
+        .unwrap_or_else(|| RelativePath::new("."));
+    let absolute = resolve_safe(root, &rel_path)?;
+    let metadata = std::fs::metadata(&absolute)?;
+    if !metadata.is_dir() {
+        return Err(FileSystemError::NotADirectory(absolute.display().to_string()));
+    }
+
+    let mut entries: Vec<Entry> = Vec::new();
+    let dir_iter = std::fs::read_dir(&absolute)?;
+
+    for item in dir_iter {
+        let item = item?;
+        let file_type = item.file_type()?;
+        let name = item.file_name().to_string_lossy().to_string();
+
+        let (entry_type, mime, path_suffix) = if file_type.is_dir() {
+            (FileType::Directory, "application/x-directory".to_string(), format!("{name}/"))
+        } else if file_type.is_file() {
+            let item_abs = item.path();
+            (FileType::File, mime_type(&item_abs), name.clone())
+        } else {
+            continue; // Skip symlinks and special files
+        };
+
+        // Compute relative path from root
+        let item_abs = item.path();
+        let item_rel = item_abs
+            .strip_prefix(root)
+            .unwrap_or(&item_abs)
+            .to_string_lossy()
+            .to_string();
+
+        // Skip ignored paths
+        if is_ignored(&item_rel, None) {
+            continue;
+        }
+
+        entries.push(Entry {
+            path: RelativePath::new(&item_rel),
+            entry_type,
+            mime,
+        });
+    }
+
+    // Sort: directories first, then alphabetically
+    entries.sort_by(|a, b| {
+        match (a.entry_type, b.entry_type) {
+            (FileType::Directory, FileType::File) => std::cmp::Ordering::Less,
+            (FileType::File, FileType::Directory) => std::cmp::Ordering::Greater,
+            _ => a.path.as_str().cmp(b.path.as_str()),
+        }
+    });
+
+    Ok(entries)
+}
+
+/// Search for files by fuzzy name matching.
+///
+/// Walks the directory tree from `root`, matching filenames against the query.
+/// Respects ignore patterns and optional type/limit filters.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` `find()` method.
+pub fn find_files(
+    root: &Path,
+    input: &FindInput,
+) -> Result<Vec<Entry>, FileSystemError> {
+    let limit = input.limit.unwrap_or(50) as usize;
+    let mut results: Vec<Entry> = Vec::new();
+
+    walk_for_entries(root, root, &mut results, |entry| {
+        if results.len() >= limit {
+            return false;
+        }
+        // Type filter
+        if let Some(ref filter_type) = input.r#type {
+            if entry.entry_type != *filter_type {
+                return false;
+            }
+        }
+        // Fuzzy match: check if query appears as substring of the filename
+        let file_name = std::path::Path::new(entry.path.as_str())
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("");
+        fuzzy_match(&input.query, file_name)
+    })?;
+
+    Ok(results)
+}
+
+/// Search for files matching a glob pattern.
+///
+/// Uses the `glob` crate for pattern matching against filesystem entries.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` `glob()` method.
+pub fn glob_search(
+    root: &Path,
+    input: &GlobInput,
+) -> Result<Vec<Entry>, FileSystemError> {
+    let limit = input.limit.unwrap_or(100) as usize;
+    let mut results: Vec<Entry> = Vec::new();
+
+    let search_root = if let Some(ref rel_path) = input.path {
+        resolve_safe(root, rel_path)?
+    } else {
+        root.to_path_buf()
+    };
+
+    if !search_root.exists() {
+        return Ok(results);
+    }
+
+    walk_for_entries(root, &search_root, &mut results, |entry| {
+        if results.len() >= limit {
+            return false;
+        }
+        glob_matches(&input.pattern, entry.path.as_str())
+    })?;
+
+    Ok(results)
+}
+
+/// Search file contents using regex pattern matching (grep).
+///
+/// Walks the directory tree, reading file contents and matching against
+/// the regex pattern line by line.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` `grep()` method.
+pub fn grep_search(
+    root: &Path,
+    input: &GrepInput,
+) -> Result<Vec<Match>, FileSystemError> {
+    let limit = input.limit.unwrap_or(50) as usize;
+    let re = regex::Regex::new(&input.pattern)
+        .map_err(|e| FileSystemError::InvalidPattern(format!("regex error: {e}")))?;
+    let mut results: Vec<Match> = Vec::new();
+
+    let search_root = if let Some(ref rel_path) = input.path {
+        resolve_safe(root, rel_path)?
+    } else {
+        root.to_path_buf()
+    };
+
+    if !search_root.exists() {
+        return Ok(results);
+    }
+
+    // Collect files to search (filtered by include pattern and ignore)
+    let mut files: Vec<Entry> = Vec::new();
+    walk_for_entries(root, &search_root, &mut files, |entry| {
+        if entry.entry_type != FileType::File {
+            return false;
+        }
+        if let Some(ref include) = input.include {
+            if !glob_matches(include, entry.path.as_str()) {
+                return false;
+            }
+        }
+        true
+    })?;
+
+    for file_entry in &files {
+        if results.len() >= limit {
+            break;
+        }
+
+        let absolute = root.join(file_entry.path.as_str());
+        let content = match std::fs::read_to_string(&absolute) {
+            Ok(c) => c,
+            Err(_) => continue, // Skip binary/unreadable files
+        };
+
+        for (line_idx, line_text) in content.lines().enumerate() {
+            if results.len() >= limit {
+                break;
+            }
+
+            if let Some(captures) = re.captures(line_text) {
+                let mut submatches = Vec::new();
+                for (i, cap) in captures.iter().enumerate() {
+                    if let Some(m) = cap {
+                        submatches.push(Submatch {
+                            text: m.as_str().to_string(),
+                            start: m.start() as u32,
+                            end: m.end() as u32,
+                        });
+                    }
+                }
+                // Only add if we have actual submatches (non-empty matches)
+                if !submatches.is_empty() {
+                    results.push(Match {
+                        entry: file_entry.clone(),
+                        line: (line_idx + 1) as u32,
+                        offset: captures.get(0).map(|m| m.start() as u32).unwrap_or(0),
+                        text: line_text.to_string(),
+                        submatches,
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(results)
+}
+
+/// Get metadata for a file or directory.
+///
+/// # Source
+/// Derived from `fs.stat` in `packages/core/src/filesystem.ts`.
+pub fn file_metadata(
+    root: &Path,
+    rel_path: &RelativePath,
+) -> Result<FileMetadata, FileSystemError> {
+    let absolute = resolve_safe(root, rel_path)?;
+    let metadata = std::fs::metadata(&absolute)?;
+
+    let (entry_type, mime) = if metadata.is_dir() {
+        (FileType::Directory, "application/x-directory".to_string())
+    } else if metadata.is_file() {
+        (FileType::File, mime_type(&absolute))
+    } else {
+        return Err(FileSystemError::NotFound(format!(
+            "unsupported file type: {}",
+            absolute.display()
+        )));
+    };
+
+    let modified_ms = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0);
+
+    Ok(FileMetadata {
+        entry: Entry {
+            path: rel_path.clone(),
+            entry_type,
+            mime,
+        },
+        size: metadata.len(),
+        modified_ms,
+        readable: !metadata.permissions().readonly(),
+        writable: !metadata.permissions().readonly(),
+    })
+}
+
+/// Check if a file or directory exists at the given relative path.
+pub fn file_exists(root: &Path, rel_path: &RelativePath) -> bool {
+    let absolute = root.join(rel_path.as_str());
+    absolute.exists()
+}
+
+/// Check whether a path is a directory.
+pub fn is_directory(root: &Path, rel_path: &RelativePath) -> Result<bool, FileSystemError> {
+    let absolute = resolve_safe(root, rel_path)?;
+    Ok(absolute.is_dir())
+}
+
+/// Check whether a path is a file.
+pub fn is_file(root: &Path, rel_path: &RelativePath) -> Result<bool, FileSystemError> {
+    let absolute = resolve_safe(root, rel_path)?;
+    Ok(absolute.is_file())
+}
+
+// ── Internal helpers ────────────────────────────────────────────────────────
+
+/// Resolve a relative path safely within the root directory — prevents path escape.
+fn resolve_safe(root: &Path, rel: &RelativePath) -> Result<PathBuf, FileSystemError> {
+    let rel_str = rel.as_str();
+
+    // Reject paths with `..` components that would escape
+    if rel_str.contains("..") {
+        // Allow `..` only if the resolved path stays within root
+        let candidate = root.join(rel_str);
+        match candidate.canonicalize() {
+            Ok(resolved) => {
+                if resolved.starts_with(root) {
+                    return Ok(resolved);
+                }
+                return Err(FileSystemError::PathEscapesRoot(rel_str.to_string()));
+            }
+            Err(_) => {
+                // If path doesn't exist yet, check lexically
+                let candidate = root.join(rel_str);
+                // Simple check: the candidate must start with root
+                if candidate.starts_with(root) {
+                    return Ok(candidate);
+                }
+                return Err(FileSystemError::PathEscapesRoot(rel_str.to_string()));
+            }
+        }
+    }
+
+    Ok(root.join(rel_str))
+}
+
+/// Walk a directory tree, collecting entries that pass the filter predicate.
+fn walk_for_entries(
+    root: &Path,
+    current: &Path,
+    results: &mut Vec<Entry>,
+    predicate: impl Fn(&Entry) -> bool,
+) -> Result<(), FileSystemError> {
+    if !current.is_dir() {
+        return Ok(());
+    }
+
+    let dir_iter = match std::fs::read_dir(current) {
+        Ok(iter) => iter,
+        Err(_) => return Ok(()), // Skip unreadable directories
+    };
+
+    for item in dir_iter {
+        let item = match item {
+            Ok(i) => i,
+            Err(_) => continue,
+        };
+        let file_type = match item.file_type() {
+            Ok(ft) => ft,
+            Err(_) => continue,
+        };
+        let name = item.file_name().to_string_lossy().to_string();
+        let item_abs = item.path();
+
+        let item_rel = item_abs
+            .strip_prefix(root)
+            .unwrap_or(&item_abs)
+            .to_string_lossy()
+            .to_string();
+
+        // Skip ignored paths
+        if is_ignored(&item_rel, None) {
+            continue;
+        }
+
+        if file_type.is_dir() {
+            let entry = Entry {
+                path: RelativePath::new(&item_rel),
+                entry_type: FileType::Directory,
+                mime: "application/x-directory".to_string(),
+            };
+            if predicate(&entry) {
+                results.push(entry);
+            }
+            // Recurse into subdirectories
+            walk_for_entries(root, &item_abs, results, &predicate)?;
+        } else if file_type.is_file() {
+            let mime = mime_type(&item_abs);
+            let entry = Entry {
+                path: RelativePath::new(&item_rel),
+                entry_type: FileType::File,
+                mime,
+            };
+            if predicate(&entry) {
+                results.push(entry);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Determine MIME type from file extension.
+fn mime_type(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+
+    match ext.as_str() {
+        // Text
+        "txt" => "text/plain".to_string(),
+        "md" | "markdown" => "text/markdown".to_string(),
+        "csv" => "text/csv".to_string(),
+        "html" | "htm" => "text/html".to_string(),
+        "css" => "text/css".to_string(),
+        "xml" => "text/xml".to_string(),
+        // Code
+        "rs" => "text/x-rust".to_string(),
+        "ts" => "text/typescript".to_string(),
+        "tsx" => "text/typescript".to_string(),
+        "js" => "application/javascript".to_string(),
+        "jsx" => "text/javascript".to_string(),
+        "py" => "text/x-python".to_string(),
+        "rb" => "text/x-ruby".to_string(),
+        "go" => "text/x-go".to_string(),
+        "java" => "text/x-java".to_string(),
+        "c" => "text/x-c".to_string(),
+        "h" => "text/x-c-header".to_string(),
+        "cpp" | "cc" | "cxx" => "text/x-c++".to_string(),
+        "hpp" | "hh" | "hxx" => "text/x-c++-header".to_string(),
+        "sh" | "bash" => "text/x-shellscript".to_string(),
+        "zsh" => "text/x-shellscript".to_string(),
+        "sql" => "text/x-sql".to_string(),
+        "json" => "application/json".to_string(),
+        "yaml" | "yml" => "application/x-yaml".to_string(),
+        "toml" => "application/toml".to_string(),
+        // Images
+        "png" => "image/png".to_string(),
+        "jpg" | "jpeg" => "image/jpeg".to_string(),
+        "gif" => "image/gif".to_string(),
+        "svg" => "image/svg+xml".to_string(),
+        "webp" => "image/webp".to_string(),
+        "ico" => "image/x-icon".to_string(),
+        // Fonts
+        "ttf" => "font/ttf".to_string(),
+        "woff" => "font/woff".to_string(),
+        "woff2" => "font/woff2".to_string(),
+        // Archives / binaries
+        "zip" => "application/zip".to_string(),
+        "tar" => "application/x-tar".to_string(),
+        "gz" => "application/gzip".to_string(),
+        "pdf" => "application/pdf".to_string(),
+        "wasm" => "application/wasm".to_string(),
+        // Default
+        _ => "application/octet-stream".to_string(),
+    }
+}
+
+/// Simple base64 encoding (uses the base64 crate if available, otherwise hex fallback).
+fn base64_encode(data: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(data)
+}
+
+/// Simple fuzzy match — checks if query characters appear in order in the target.
+fn fuzzy_match(query: &str, target: &str) -> bool {
+    let query_lower = query.to_lowercase();
+    let target_lower = target.to_lowercase();
+
+    // First try direct substring match
+    if target_lower.contains(&query_lower) {
+        return true;
+    }
+
+    // Then try character-by-character fuzzy match
+    let mut q_chars = query_lower.chars().peekable();
+    for tc in target_lower.chars() {
+        if let Some(&qc) = q_chars.peek() {
+            if qc == tc {
+                q_chars.next();
+            }
+        }
+    }
+    q_chars.next().is_none()
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -999,5 +1563,327 @@ mod tests {
             "**/logs/**",
             "deep/path/logs/something"
         ));
+    }
+
+    // ── Filesystem operations tests ───────────────────────────────────
+
+    /// Helper: create a temp directory with test files
+    fn setup_test_fs() -> (tempfile::TempDir, PathBuf) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path().to_path_buf();
+
+        // Create directory structure
+        std::fs::create_dir_all(root.join("src/components")).unwrap();
+        std::fs::create_dir_all(root.join("src/utils")).unwrap();
+        std::fs::create_dir_all(root.join("tests")).unwrap();
+        std::fs::create_dir_all(root.join("node_modules/pkg")).unwrap();
+
+        // Create test files
+        std::fs::write(root.join("README.md"), "# Test Project\nHello world\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
+        std::fs::write(root.join("src/main.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+        std::fs::write(root.join("src/lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
+        std::fs::write(root.join("src/components/mod.rs"), "pub mod button;\npub mod input;\n").unwrap();
+        std::fs::write(root.join("src/components/button.rs"), "// TODO: implement button\n").unwrap();
+        std::fs::write(root.join("src/utils/helpers.rs"), "pub fn helper() -> bool { true }\n").unwrap();
+        std::fs::write(root.join("tests/integration.rs"), "#[test]\nfn it_works() {}\n").unwrap();
+        std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports = {};\n").unwrap();
+
+        (dir, root)
+    }
+
+    #[test]
+    fn test_read_file_utf8() {
+        let (_dir, root) = setup_test_fs();
+        let input = ReadInput {
+            path: RelativePath::new("README.md"),
+        };
+        let content = read_file(&root, &input).expect("read file");
+        assert_eq!(content.encoding, ContentEncoding::Utf8);
+        assert!(content.content.contains("# Test Project"));
+        assert_eq!(content.name.as_deref(), Some("README.md"));
+        assert!(content.uri.starts_with("file://"));
+    }
+
+    #[test]
+    fn test_read_file_missing() {
+        let (_dir, root) = setup_test_fs();
+        let input = ReadInput {
+            path: RelativePath::new("nonexistent.txt"),
+        };
+        let result = read_file(&root, &input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_read_file_not_a_file() {
+        let (_dir, root) = setup_test_fs();
+        let input = ReadInput {
+            path: RelativePath::new("src"),
+        };
+        let result = read_file(&root, &input);
+        assert!(matches!(result, Err(FileSystemError::NotAFile(_))));
+    }
+
+    #[test]
+    fn test_list_directory_root() {
+        let (_dir, root) = setup_test_fs();
+        let entries = list_directory(&root, None).expect("list directory");
+        // Should have README.md, Cargo.toml, src/ (but not node_modules/)
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"README.md"));
+        assert!(paths.contains(&"Cargo.toml"));
+        assert!(paths.contains(&"src/")); // directories get trailing slash
+        // node_modules should be ignored
+        assert!(!paths.iter().any(|p| p.contains("node_modules")));
+    }
+
+    #[test]
+    fn test_list_directory_subdir() {
+        let (_dir, root) = setup_test_fs();
+        let input = ListInput {
+            path: Some(RelativePath::new("src")),
+        };
+        let entries = list_directory(&root, Some(&input)).expect("list directory");
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.contains("main.rs")));
+        assert!(paths.iter().any(|p| p.contains("lib.rs")));
+        assert!(paths.iter().any(|p| p.contains("components/")));
+    }
+
+    #[test]
+    fn test_list_directory_missing() {
+        let (_dir, root) = setup_test_fs();
+        let input = ListInput {
+            path: Some(RelativePath::new("nonexistent")),
+        };
+        let result = list_directory(&root, Some(&input));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_find_files_by_name() {
+        let (_dir, root) = setup_test_fs();
+        let input = FindInput {
+            query: "button".to_string(),
+            r#type: None,
+            limit: None,
+        };
+        let entries = find_files(&root, &input).expect("find files");
+        assert!(!entries.is_empty());
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.contains("button")));
+    }
+
+    #[test]
+    fn test_find_files_with_type_filter() {
+        let (_dir, root) = setup_test_fs();
+        let input = FindInput {
+            query: ".rs".to_string(),
+            r#type: Some(FileType::File),
+            limit: Some(2),
+        };
+        let entries = find_files(&root, &input).expect("find files");
+        assert!(entries.len() <= 2);
+        for entry in &entries {
+            assert_eq!(entry.entry_type, FileType::File);
+            assert!(entry.path.as_str().ends_with(".rs"));
+        }
+    }
+
+    #[test]
+    fn test_find_files_empty_query_returns_none() {
+        let (_dir, root) = setup_test_fs();
+        let input = FindInput {
+            query: "zzz_nonexistent_zzz".to_string(),
+            r#type: None,
+            limit: None,
+        };
+        let entries = find_files(&root, &input).expect("find files");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_glob_search_rs_files() {
+        let (_dir, root) = setup_test_fs();
+        let input = GlobInput {
+            pattern: "**/*.rs".to_string(),
+            path: None,
+            limit: None,
+        };
+        let entries = glob_search(&root, &input).expect("glob search");
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        // Should find .rs files but not from node_modules (ignored)
+        assert!(paths.iter().any(|p| p.contains("main.rs")));
+        assert!(paths.iter().any(|p| p.contains("lib.rs")));
+        assert!(!paths.iter().any(|p| p.contains("node_modules")));
+    }
+
+    #[test]
+    fn test_glob_search_with_path_scope() {
+        let (_dir, root) = setup_test_fs();
+        let input = GlobInput {
+            pattern: "**/*.rs".to_string(),
+            path: Some(RelativePath::new("src/components")),
+            limit: None,
+        };
+        let entries = glob_search(&root, &input).expect("glob search");
+        let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.iter().any(|p| p.contains("button.rs")));
+        assert!(!paths.iter().any(|p| p.contains("main.rs")));
+    }
+
+    #[test]
+    fn test_glob_search_with_limit() {
+        let (_dir, root) = setup_test_fs();
+        let input = GlobInput {
+            pattern: "**/*.rs".to_string(),
+            path: None,
+            limit: Some(2),
+        };
+        let entries = glob_search(&root, &input).expect("glob search");
+        assert!(entries.len() <= 2);
+    }
+
+    #[test]
+    fn test_grep_search_literal() {
+        let (_dir, root) = setup_test_fs();
+        let input = GrepInput {
+            pattern: "TODO".to_string(),
+            path: None,
+            include: None,
+            limit: None,
+        };
+        let matches = grep_search(&root, &input).expect("grep search");
+        assert!(!matches.is_empty());
+        // The button.rs file contains "TODO"
+        assert!(matches.iter().any(|m| m.entry.path.as_str().contains("button.rs")));
+    }
+
+    #[test]
+    fn test_grep_search_with_include_filter() {
+        let (_dir, root) = setup_test_fs();
+        let input = GrepInput {
+            pattern: "fn".to_string(),
+            path: None,
+            include: Some("**/*.rs".to_string()),
+            limit: None,
+        };
+        let matches = grep_search(&root, &input).expect("grep search");
+        // All matches should be in .rs files
+        for m in &matches {
+            assert!(m.entry.path.as_str().ends_with(".rs"));
+        }
+    }
+
+    #[test]
+    fn test_grep_search_invalid_regex() {
+        let (_dir, root) = setup_test_fs();
+        let input = GrepInput {
+            pattern: "[unclosed".to_string(),
+            path: None,
+            include: None,
+            limit: None,
+        };
+        let result = grep_search(&root, &input);
+        assert!(matches!(result, Err(FileSystemError::InvalidPattern(_))));
+    }
+
+    #[test]
+    fn test_file_metadata_file() {
+        let (_dir, root) = setup_test_fs();
+        let meta = file_metadata(&root, &RelativePath::new("README.md")).expect("file metadata");
+        assert_eq!(meta.entry.entry_type, FileType::File);
+        assert!(meta.size > 0);
+        assert!(meta.modified_ms > 0);
+        assert!(meta.readable);
+    }
+
+    #[test]
+    fn test_file_metadata_directory() {
+        let (_dir, root) = setup_test_fs();
+        let meta = file_metadata(&root, &RelativePath::new("src")).expect("file metadata");
+        assert_eq!(meta.entry.entry_type, FileType::Directory);
+        assert_eq!(meta.entry.mime, "application/x-directory");
+    }
+
+    #[test]
+    fn test_file_metadata_missing() {
+        let (_dir, root) = setup_test_fs();
+        let result = file_metadata(&root, &RelativePath::new("nope.txt"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_file_exists() {
+        let (_dir, root) = setup_test_fs();
+        assert!(file_exists(&root, &RelativePath::new("README.md")));
+        assert!(!file_exists(&root, &RelativePath::new("nope.txt")));
+    }
+
+    #[test]
+    fn test_is_directory() {
+        let (_dir, root) = setup_test_fs();
+        assert!(is_directory(&root, &RelativePath::new("src")).unwrap());
+        assert!(!is_directory(&root, &RelativePath::new("README.md")).unwrap());
+    }
+
+    #[test]
+    fn test_is_file() {
+        let (_dir, root) = setup_test_fs();
+        assert!(is_file(&root, &RelativePath::new("README.md")).unwrap());
+        assert!(!is_file(&root, &RelativePath::new("src")).unwrap());
+    }
+
+    #[test]
+    fn test_path_escape_prevention() {
+        let (_dir, root) = setup_test_fs();
+        let input = ReadInput {
+            path: RelativePath::new("../../../etc/passwd"),
+        };
+        let result = read_file(&root, &input);
+        // Should either fail (PathEscapesRoot) or not actually read the system file
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_fuzzy_match_substring() {
+        assert!(fuzzy_match("main", "src/main.rs"));
+        assert!(fuzzy_match("button", "button_component.ts"));
+        assert!(!fuzzy_match("zzz", "src/main.rs"));
+    }
+
+    #[test]
+    fn test_fuzzy_match_case_insensitive() {
+        assert!(fuzzy_match("MAIN", "src/main.rs"));
+        assert!(fuzzy_match("Button", "button_component.ts"));
+    }
+
+    #[test]
+    fn test_list_directory_sorts_dirs_first() {
+        let (_dir, root) = setup_test_fs();
+        let entries = list_directory(&root, None).expect("list directory");
+        // First entries should be directories
+        let first_dir_idx = entries.iter().position(|e| e.entry_type == FileType::Directory);
+        let first_file_idx = entries.iter().position(|e| e.entry_type == FileType::File);
+        if let (Some(d_idx), Some(f_idx)) = (first_dir_idx, first_file_idx) {
+            assert!(d_idx < f_idx, "directories should come before files");
+        }
+    }
+
+    #[test]
+    fn test_read_file_base64_fallback() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let root = dir.path();
+        // Create a file with invalid UTF-8 bytes
+        let invalid_utf8 = vec![0xFF, 0xFE, 0x00, 0x01, 0x02];
+        std::fs::write(root.join("binary.bin"), &invalid_utf8).unwrap();
+
+        let input = ReadInput {
+            path: RelativePath::new("binary.bin"),
+        };
+        let content = read_file(root, &input).expect("read binary file");
+        assert_eq!(content.encoding, ContentEncoding::Base64);
+        assert!(!content.content.is_empty());
     }
 }

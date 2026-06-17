@@ -345,4 +345,133 @@ mod tests {
         assert!(!formatted.contains("\x1b[32m--- a/file.txt"));
         assert!(!formatted.contains("\x1b[31m+++ b/file.txt"));
     }
+
+    // ── format_tokens edge cases ──────────────────────────────────────
+
+    #[test]
+    fn test_format_tokens_very_large() {
+        // Billions and beyond
+        assert_eq!(format_tokens(1_000_000_000), "1000.0M");
+        assert_eq!(format_tokens(2_500_000_000), "2500.0M");
+        assert_eq!(format_tokens(9_999_999_999), "9999.9M");
+    }
+
+    #[test]
+    fn test_format_tokens_exact_boundaries() {
+        assert_eq!(format_tokens(999), "999");
+        assert_eq!(format_tokens(1_000), "1.0K");
+        assert_eq!(format_tokens(999_999), "999.9K");
+        assert_eq!(format_tokens(1_000_000), "1.0M");
+    }
+
+    // ── format_cost edge cases ────────────────────────────────────────
+
+    #[test]
+    fn test_format_cost_exact_boundaries() {
+        // Boundary between <$0.01 and showing value
+        assert_eq!(format_cost(0.00499), "<$0.01");
+        assert_eq!(format_cost(0.005), "$0.01"); // rounds to $0.01
+        assert_eq!(format_cost(0.00999), "$0.01");
+        assert_eq!(format_cost(0.01), "$0.01");
+        assert_eq!(format_cost(0.994), "$0.99");
+        assert_eq!(format_cost(0.995), "$1.00"); // rounds up
+    }
+
+    #[test]
+    fn test_format_cost_very_large() {
+        assert_eq!(format_cost(10_000.0), "$10.00K");
+        assert_eq!(format_cost(99_999.99), "$99.99K");
+        assert_eq!(format_cost(999_999.99), "$999.99K");
+        assert_eq!(format_cost(10_000_000.0), "$10.00M");
+        assert_eq!(format_cost(1_000_000_000.0), "$1000.00M");
+    }
+
+    // ── format_duration edge cases ────────────────────────────────────
+
+    #[test]
+    fn test_format_duration_exact_second_boundaries() {
+        // Exactly at boundaries
+        assert_eq!(format_duration(999), "<1s");
+        assert_eq!(format_duration(1_000), "1s");
+        assert_eq!(format_duration(59_000), "59s");
+        assert_eq!(format_duration(60_000), "1m");
+        assert_eq!(format_duration(3_599_000), "59m 59s");
+        assert_eq!(format_duration(3_600_000), "1h");
+        assert_eq!(format_duration(86_399_000), "23h 59m");
+        assert_eq!(format_duration(86_400_000), "~1 day");
+        assert_eq!(format_duration(604_799_000), "~6 days");
+        assert_eq!(format_duration(604_800_000), "~1 week");
+    }
+
+    #[test]
+    fn test_format_duration_large_values() {
+        // Very large durations
+        assert_eq!(format_duration(86_400_000 * 10), "~10 days");
+        assert_eq!(format_duration(604_800_000 * 4), "~4 weeks");
+        assert_eq!(format_duration(604_800_000 * 52), "~52 weeks");
+    }
+
+    #[test]
+    fn test_format_duration_no_remainder_minutes() {
+        assert_eq!(format_duration(120_000), "2m");
+        assert_eq!(format_duration(600_000), "10m");
+        assert_eq!(format_duration(3_600_000), "1h");
+    }
+
+    #[test]
+    fn test_format_duration_exact_minutes_with_seconds() {
+        assert_eq!(format_duration(61_000), "1m 1s");
+        assert_eq!(format_duration(121_000), "2m 1s");
+        assert_eq!(format_duration(3_601_000), "1h 0m");
+    }
+
+    // ── format_diff edge cases ────────────────────────────────────────
+
+    #[test]
+    fn test_format_diff_empty() {
+        let formatted = format_diff("");
+        assert_eq!(formatted, "");
+    }
+
+    #[test]
+    fn test_format_diff_only_context_lines() {
+        let diff = "line1\nline2\nline3\n";
+        let formatted = format_diff(diff);
+        // All lines should be present without color codes
+        assert!(formatted.contains("line1"));
+        assert!(formatted.contains("line2"));
+        assert!(formatted.contains("line3"));
+        // No color escape codes
+        assert!(!formatted.contains("\x1b["));
+    }
+
+    #[test]
+    fn test_format_diff_mixed_changes() {
+        let diff = "\
+--- a/old.txt
++++ b/new.txt
+@@ -1,4 +1,4 @@
+ context line
+-old line 1
+-old line 2
++new line 1
++new line 2
+ context end
+";
+        let formatted = format_diff(diff);
+        // Context lines preserved
+        assert!(formatted.contains("context line"));
+        assert!(formatted.contains("context end"));
+        // Removed lines in red
+        assert!(formatted.contains("\x1b[31m-old line 1\x1b[0m"));
+        assert!(formatted.contains("\x1b[31m-old line 2\x1b[0m"));
+        // Added lines in green
+        assert!(formatted.contains("\x1b[32m+new line 1\x1b[0m"));
+        assert!(formatted.contains("\x1b[32m+new line 2\x1b[0m"));
+        // Headers preserved without color
+        assert!(formatted.contains("--- a/old.txt"));
+        assert!(formatted.contains("+++ b/new.txt"));
+        // Hunk header in cyan
+        assert!(formatted.contains("\x1b[36m@@ -1,4 +1,4 @@\x1b[0m"));
+    }
 }

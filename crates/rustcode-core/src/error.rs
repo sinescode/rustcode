@@ -693,6 +693,69 @@ pub struct HttpContext {
     pub retry_after_ms: Option<u64>,
 }
 
+impl HttpContext {
+    /// Create a new empty HTTP context.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the HTTP method.
+    pub fn with_method(mut self, method: impl Into<String>) -> Self {
+        self.method = method.into();
+        self
+    }
+
+    /// Set the request URL.
+    pub fn with_url(mut self, url: impl Into<String>) -> Self {
+        self.url = url.into();
+        self
+    }
+
+    /// Set the response status code.
+    pub fn with_response_status(mut self, status: u16) -> Self {
+        self.response_status = Some(status);
+        self
+    }
+
+    /// Add a request header.
+    pub fn with_request_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.request_headers.insert(key.into(), value.into());
+        self
+    }
+
+    /// Add a response header.
+    pub fn with_response_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.response_headers
+            .get_or_insert_with(HashMap::new)
+            .insert(key.into(), value.into());
+        self
+    }
+
+    /// Set the response body.
+    pub fn with_body(mut self, body: impl Into<String>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    /// Mark the body as truncated.
+    pub fn with_body_truncated(mut self, truncated: bool) -> Self {
+        self.body_truncated = truncated;
+        self
+    }
+
+    /// Set the request ID for tracing.
+    pub fn with_request_id(mut self, id: impl Into<String>) -> Self {
+        self.request_id = Some(id.into());
+        self
+    }
+
+    /// Set the retry-after hint in milliseconds.
+    pub fn with_retry_after(mut self, ms: u64) -> Self {
+        self.retry_after_ms = Some(ms);
+        self
+    }
+}
+
 // ── Tests ───────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -879,5 +942,256 @@ mod tests {
         assert!(ctx.method.is_empty());
         assert!(ctx.response_status.is_none());
         assert!(!ctx.body_truncated);
+    }
+
+    #[test]
+    fn test_toml_error_conversion() {
+        let toml_err = "key = ".parse::<toml::Table>().unwrap_err();
+        let err: Error = toml_err.into();
+        assert!(matches!(err, Error::Toml(_)));
+        assert!(err.to_string().contains("TOML error"));
+    }
+
+    #[test]
+    fn test_http_error_conversion() {
+        // reqwest::Error cannot be constructed directly in tests,
+        // but we can verify the From impl exists via type checking.
+        // Test the Display impl for the Network variant instead.
+        let err = Error::Network("connection refused".into());
+        assert!(err.to_string().contains("connection refused"));
+    }
+
+    #[test]
+    fn test_all_error_variants_display() {
+        // Verify every error variant has a non-empty Display message
+        let errors: Vec<Error> = vec![
+            Error::FileSystem { path: "/tmp/test".into(), message: "permission denied".into() },
+            Error::StaleContent { path: "/tmp/stale".into() },
+            Error::TargetExists { path: "/tmp/exists".into() },
+            Error::BinaryFile { path: "/tmp/binary".into() },
+            Error::MediaIngestLimit { path: "/tmp/large".into() },
+            Error::Config("invalid config".into()),
+            Error::Database("connection failed".into()),
+            Error::ProviderInit { provider_id: "test".into(), message: "timeout".into() },
+            Error::NoProviders,
+            Error::NoModels { provider_id: "test".into() },
+            Error::ModelNotFound { provider_id: "test".into(), model_id: "gpt-5".into() },
+            Error::HeaderTimeout { ms: 30000 },
+            Error::ResponseStream("broken pipe".into()),
+            Error::ContextOverflow("too many tokens".into()),
+            Error::Tool("exec failed".into()),
+            Error::ToolRegistration { name: "my_tool".into(), message: "duplicate".into() },
+            Error::Session("timeout".into()),
+            Error::SessionNotFound { session_id: "ses_x".into() },
+            Error::SessionPromptConflict { session_id: "ses_x".into() },
+            Error::SessionOperationUnavailable { session_id: "ses_x".into(), reason: "locked".into() },
+            Error::StepLimitExceeded { session_id: "ses_x".into() },
+            Error::ModelNotSelected,
+            Error::MessageDecode { session_id: "ses_x".into(), message_id: "msg_x".into() },
+            Error::Git("merge conflict".into()),
+            Error::Plugin("load failed".into()),
+            Error::McpNotFound { name: "my_server".into() },
+            Error::LspInit("timeout".into()),
+            Error::Network("dns error".into()),
+            Error::Auth("expired token".into()),
+            Error::QuestionRejected,
+            Error::QuestionNotFound { question_id: "que_x".into() },
+            Error::ProjectNotFound { project_id: "proj_x".into() },
+            Error::NotFound { entity: "file".into(), id: "test.txt".into() },
+            Error::Search("ripgrep failed".into()),
+            Error::InvalidSearchPattern("(unclosed".into()),
+            Error::Aborted,
+            Error::NotImplemented("feature X".into()),
+            Error::Internal("unexpected state".into()),
+        ];
+        for err in &errors {
+            let msg = err.to_string();
+            assert!(!msg.is_empty(), "empty display for: {err:?}");
+        }
+    }
+
+    #[test]
+    fn test_error_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Error>();
+        assert_send_sync::<LlmErrorReason>();
+        assert_send_sync::<PermissionError>();
+        assert_send_sync::<WorktreeError>();
+        assert_send_sync::<ImageError>();
+        assert_send_sync::<SkillError>();
+        assert_send_sync::<ApiError>();
+    }
+
+    #[test]
+    fn test_llm_error_reason_display_all_variants() {
+        let reasons: Vec<LlmErrorReason> = vec![
+            LlmErrorReason::InvalidRequest {
+                message: "bad param".into(),
+                parameter: Some("temperature".into()),
+                classification: Some("invalid_value".into()),
+            },
+            LlmErrorReason::NoRoute {
+                route: "anthropic".into(),
+                provider: "bedrock".into(),
+                model: "claude".into(),
+            },
+            LlmErrorReason::Authentication {
+                message: "key expired".into(),
+                kind: AuthErrorKind::Expired,
+            },
+            LlmErrorReason::QuotaExceeded {
+                message: "monthly limit".into(),
+            },
+            LlmErrorReason::ContentPolicy {
+                message: "violation".into(),
+            },
+            LlmErrorReason::ProviderInternal {
+                message: "server error".into(),
+                status: 500,
+                retry_after_ms: None,
+            },
+            LlmErrorReason::Transport {
+                message: "timeout".into(),
+                kind: Some("connect".into()),
+                url: Some("https://api.example.com".into()),
+            },
+            LlmErrorReason::InvalidProviderOutput {
+                message: "bad json".into(),
+                raw: Some("{invalid}".into()),
+            },
+            LlmErrorReason::UnknownProvider {
+                message: "unexpected".into(),
+                status: Some(418),
+            },
+        ];
+        for reason in &reasons {
+            let msg = reason.to_string();
+            assert!(!msg.is_empty(), "empty display for: {reason:?}");
+        }
+    }
+
+    #[test]
+    fn test_permission_error_display_all_variants() {
+        assert_eq!(PermissionError::Rejected.to_string(), "permission rejected");
+        assert_eq!(
+            PermissionError::Corrected { feedback: "use bash instead".into() }.to_string(),
+            "permission corrected: use bash instead"
+        );
+        assert_eq!(PermissionError::Denied.to_string(), "permission denied");
+        assert_eq!(
+            PermissionError::NotFound { request_id: "per_123".into() }.to_string(),
+            "permission request `per_123` not found"
+        );
+    }
+
+    #[test]
+    fn test_worktree_error_display_all_variants() {
+        assert_eq!(WorktreeError::NotGit.to_string(), "not a git repository");
+        assert_eq!(WorktreeError::NameGenerationFailed.to_string(), "failed to generate worktree name");
+        assert_eq!(
+            WorktreeError::CreateFailed("disk full".into()).to_string(),
+            "failed to create worktree: disk full"
+        );
+        assert_eq!(
+            WorktreeError::StartCommandFailed("timeout".into()).to_string(),
+            "failed to start command in worktree: timeout"
+        );
+        assert_eq!(
+            WorktreeError::RemoveFailed("perm denied".into()).to_string(),
+            "failed to remove worktree: perm denied"
+        );
+        assert_eq!(
+            WorktreeError::ResetFailed("conflict".into()).to_string(),
+            "failed to reset worktree: conflict"
+        );
+        assert_eq!(
+            WorktreeError::ListFailed("io error".into()).to_string(),
+            "failed to list worktrees: io error"
+        );
+    }
+
+    #[test]
+    fn test_image_error_display_all_variants() {
+        assert_eq!(ImageError::ResizerUnavailable.to_string(), "image resizer unavailable");
+        assert_eq!(ImageError::InvalidDataUrl.to_string(), "invalid data URL");
+        assert_eq!(ImageError::Decode.to_string(), "image decode error");
+        assert_eq!(
+            ImageError::Size { width: 100, height: 200 }.to_string(),
+            "image too large: 100x200 exceeds limit"
+        );
+    }
+
+    #[test]
+    fn test_skill_error_display_all_variants() {
+        assert_eq!(SkillError::Invalid("bad syntax".into()).to_string(), "invalid skill: bad syntax");
+        assert_eq!(
+            SkillError::NameMismatch { expected: "a".into(), actual: "b".into() }.to_string(),
+            "skill name mismatch: expected `a`, got `b`"
+        );
+        assert_eq!(SkillError::NotFound { name: "missing".into() }.to_string(), "skill `missing` not found");
+    }
+
+    #[test]
+    fn test_api_error_display_all_variants() {
+        assert_eq!(ApiError::InvalidRequest("x".into()).to_string(), "invalid request: x");
+        assert_eq!(ApiError::Unauthorized.to_string(), "unauthorized");
+        assert_eq!(ApiError::Forbidden.to_string(), "forbidden");
+        assert_eq!(ApiError::NotFound { entity: "item".into() }.to_string(), "not found: item");
+        assert_eq!(ApiError::Conflict("dup".into()).to_string(), "conflict: dup");
+        assert_eq!(ApiError::Timeout("slow".into()).to_string(), "timeout: slow");
+        assert_eq!(ApiError::Upstream("bad gateway".into()).to_string(), "upstream error: bad gateway");
+        assert_eq!(ApiError::ServiceUnavailable("down".into()).to_string(), "service unavailable: down");
+        assert_eq!(ApiError::Unknown("wtf".into()).to_string(), "unknown error: wtf");
+    }
+
+    #[test]
+    fn test_http_context_builder() {
+        let ctx = HttpContext::new()
+            .with_method("POST")
+            .with_url("https://api.example.com/v1/messages")
+            .with_response_status(200)
+            .with_request_header("Content-Type", "application/json")
+            .with_response_header("X-Request-Id", "abc123")
+            .with_body(r#"{"id":"msg_1"}"#)
+            .with_body_truncated(false)
+            .with_request_id("req_1")
+            .with_retry_after(5000);
+
+        assert_eq!(ctx.method, "POST");
+        assert_eq!(ctx.url, "https://api.example.com/v1/messages");
+        assert_eq!(ctx.response_status, Some(200));
+        assert_eq!(ctx.request_headers.get("Content-Type").map(|s| s.as_str()), Some("application/json"));
+        assert_eq!(
+            ctx.response_headers.as_ref().and_then(|h| h.get("X-Request-Id").map(|s| s.as_str())),
+            Some("abc123")
+        );
+        assert_eq!(ctx.body.as_deref(), Some(r#"{"id":"msg_1"}"#));
+        assert!(!ctx.body_truncated);
+        assert_eq!(ctx.request_id.as_deref(), Some("req_1"));
+        assert_eq!(ctx.retry_after_ms, Some(5000));
+    }
+
+    #[test]
+    fn test_error_format_impl() {
+        // Verify std::fmt::Display is implemented (compile-time check)
+        let err = Error::Internal("test".into());
+        let _: &dyn std::fmt::Display = &err;
+        let _: &dyn std::fmt::Debug = &err;
+        let _: &dyn std::error::Error = &err;
+    }
+
+    #[test]
+    fn test_error_conversions_chain() {
+        // Test that errors chain properly through multiple conversions
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "access denied");
+        let error: Error = io_err.into();
+        let display = error.to_string();
+        assert!(display.contains("access denied"));
+        assert!(display.contains("I/O error"));
+
+        // Test From<serde_json::Error> chain
+        let json_err = serde_json::from_str::<serde_json::Value>("{bad}").unwrap_err();
+        let error: Error = json_err.into();
+        assert!(error.to_string().contains("JSON error"));
     }
 }

@@ -535,4 +535,134 @@ mod tests {
         assert_eq!(extension_mime("tiff"), Some("image/tiff"));
         assert_eq!(extension_mime("tif"), Some("image/tiff"));
     }
+
+    // ── Additional extension tests ──────────────────────────────────
+
+    #[test]
+    fn test_detect_mime_ico() {
+        assert_eq!(detect_mime(Path::new("favicon.ico")), "image/x-icon");
+    }
+
+    #[test]
+    fn test_detect_mime_avif() {
+        assert_eq!(detect_mime(Path::new("photo.avif")), "image/avif");
+    }
+
+    #[test]
+    fn test_detect_mime_heic_heif() {
+        assert_eq!(detect_mime(Path::new("photo.heic")), "image/heic");
+        assert_eq!(detect_mime(Path::new("photo.heif")), "image/heif");
+    }
+
+    // ── PDF detection edge cases ────────────────────────────────────
+
+    #[test]
+    fn test_detect_mime_pdf_uppercase() {
+        assert_eq!(
+            detect_mime(Path::new("DOCUMENT.PDF")),
+            "application/pdf"
+        );
+    }
+
+    #[test]
+    fn test_sniff_pdf_with_binary_after_header() {
+        // PDF header followed by arbitrary binary data — should still detect
+        let mut data = vec![0x25, 0x50, 0x44, 0x46, 0x2D]; // "%PDF-"
+        data.extend_from_slice(&[0x00, 0xFF, 0xAB, 0xCD, 0xEF, 0x01, 0x02]);
+        assert_eq!(
+            detect_mime_from_bytes(&data, "unknown"),
+            "application/pdf"
+        );
+    }
+
+    // ── Magic byte edge cases ───────────────────────────────────────
+
+    #[test]
+    fn test_sniff_png_empty_fallback() {
+        let png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
+        assert_eq!(
+            detect_mime_from_bytes(&png_header, ""),
+            "image/png"
+        );
+    }
+
+    #[test]
+    fn test_sniff_jpeg_exif() {
+        // EXIF JPEG: starts with 0xFF 0xD8 0xFF 0xE1
+        let jpeg_exif = [0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x01, 0x02, 0x03];
+        assert_eq!(
+            detect_mime_from_bytes(&jpeg_exif, "unknown"),
+            "image/jpeg"
+        );
+    }
+
+    #[test]
+    fn test_sniff_webp_riff_no_webp() {
+        // RIFF header present but bytes 8-11 are not "WEBP" — should fall back
+        let riff_not_webp = [
+            0x52, 0x49, 0x46, 0x46, // "RIFF"
+            0x00, 0x00, 0x00, 0x00, // size
+            0x41, 0x56, 0x49, 0x20, // "AVI " (not WEBP)
+        ];
+        assert_eq!(
+            detect_mime_from_bytes(&riff_not_webp, "application/octet-stream"),
+            "application/octet-stream"
+        );
+    }
+
+    // ── image_size_ok boundary tests ────────────────────────────────
+
+    #[test]
+    fn test_image_size_ok_at_max_width() {
+        // Exactly at MAX_WIDTH should be Ok
+        assert!(image_size_ok(MAX_WIDTH, 100, 100).is_ok());
+    }
+
+    #[test]
+    fn test_image_size_ok_at_max_height() {
+        // Exactly at MAX_HEIGHT should be Ok
+        assert!(image_size_ok(100, MAX_HEIGHT, 100).is_ok());
+    }
+
+    #[test]
+    fn test_image_size_ok_at_max_base64_bytes() {
+        // Exactly at MAX_BASE64_BYTES should be Ok
+        assert!(image_size_ok(100, 100, MAX_BASE64_BYTES).is_ok());
+    }
+
+    #[test]
+    fn test_image_size_ok_zero_dimensions() {
+        // Zero dimensions are within limits (0 ≤ MAX)
+        assert!(image_size_ok(0, 0, 100).is_ok());
+        assert!(image_size_ok(0, 100, 100).is_ok());
+        assert!(image_size_ok(100, 0, 100).is_ok());
+    }
+
+    // ── Combined limit boundary test ────────────────────────────────
+
+    #[test]
+    fn test_image_size_ok_all_at_max() {
+        // All dimensions exactly at their MAX limits should be Ok
+        assert!(image_size_ok(MAX_WIDTH, MAX_HEIGHT, MAX_BASE64_BYTES).is_ok());
+    }
+
+    // ── detect_mime edge cases ──────────────────────────────────────
+
+    #[test]
+    fn test_detect_mime_multiple_dots() {
+        // "gz" extension is not in our mapping — falls back to octet-stream
+        assert_eq!(
+            detect_mime(Path::new("archive.tar.gz")),
+            "application/octet-stream"
+        );
+    }
+
+    #[test]
+    fn test_detect_mime_dotfile_secret_png() {
+        // Hidden dotfiles with a known extension should be detected correctly
+        assert_eq!(
+            detect_mime(Path::new(".secret.png")),
+            "image/png"
+        );
+    }
 }

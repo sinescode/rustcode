@@ -135,6 +135,48 @@ impl Storage {
         self.key_path(key).exists()
     }
 
+    /// Read a value, returning a default if the key doesn't exist.
+    ///
+    /// # Errors
+    /// Returns `Error::Io` or deserialization errors only if the key exists
+    /// and the file cannot be read or deserialized.
+    pub fn read_or_default<T: serde::de::DeserializeOwned + Default>(
+        &self,
+        key: &[&str],
+    ) -> Result<T> {
+        if self.exists(key) {
+            self.read(key)
+        } else {
+            Ok(T::default())
+        }
+    }
+
+    /// Update an existing value, or insert a default value if it doesn't exist.
+    ///
+    /// If the key exists, the value is read, modified by `f`, and written back.
+    /// If the key does not exist, a default value is created, modified by `f`,
+    /// and written.
+    ///
+    /// # Errors
+    /// Returns `Error::Io` or serialization/deserialization errors.
+    pub fn update_or_insert<T>(
+        &self,
+        key: &[&str],
+        f: impl FnOnce(&mut T),
+    ) -> Result<T>
+    where
+        T: serde::de::DeserializeOwned + serde::Serialize + Default,
+    {
+        if self.exists(key) {
+            self.update(key, f)
+        } else {
+            let mut value = T::default();
+            f(&mut value);
+            self.write(key, &value)?;
+            Ok(value)
+        }
+    }
+
     /// Convert key path to filesystem path.
     fn key_path(&self, key: &[&str]) -> PathBuf {
         let mut path = self.dir.clone();
@@ -305,6 +347,28 @@ impl Database {
         .map_err(|e| Error::Config(format!("migration table creation error: {e}")))?;
         Ok(())
     }
+
+    /// Execute a basic SELECT query and return an optional row.
+    ///
+    /// This is a convenience wrapper around `sqlx::query_as` for simple
+    /// lookups. Returns `None` if no row matches, or `Some(T)` for the
+    /// first matching row.
+    ///
+    /// # Errors
+    /// Returns `Error::Config` if the query fails.
+    ///
+    /// # Source
+    /// Convenience method — not directly ported from TS but follows the
+    /// same query pattern used throughout `packages/core/src/database/`.
+    pub async fn query_row<T>(&self, sql: &str) -> Result<Option<T>>
+    where
+        T: for<'r> sqlx::FromRow<'r, sqlx::SqliteRow> + Send + Unpin,
+    {
+        sqlx::query_as::<_, T>(sql)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| Error::Config(format!("query error: {e}")))
+    }
 }
 
 impl std::fmt::Debug for Database {
@@ -406,6 +470,16 @@ CREATE INDEX IF NOT EXISTS idx_session_input_session ON session_input(session_id
 
 /// All migrations in order.
 pub const ALL_MIGRATIONS: &[Migration] = &[INITIAL_MIGRATION];
+
+/// A migration that always fails — for testing rollback behavior.
+///
+/// The first statement creates a table; the second is intentionally invalid
+/// SQL. Because both run in the same transaction, the rollback should undo
+/// the table creation.
+pub const FAILING_MIGRATION: Migration = Migration {
+    id: "99999999_test_failing",
+    sql: "CREATE TABLE this_should_rollback (id INTEGER); INVALID SQL SYNTAX THAT FAILS",
+};
 
 #[cfg(test)]
 mod tests {
@@ -602,6 +676,348 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(title, "Test Session");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Storage read_or_default tests ---------------------------------------
+
+    #[test]
+    fn test_storage_read_or_default_missing() {
+        let dir = std::env::temp_dir().join("rustcode-storage-test-rod-miss");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new(dir.clone());
+
+        // Key doesn't exist — should return default (0 for i32)
+        let value: i32 = storage
+            .read_or_default(&["nonexistent", "key"])
+            .expect("read_or_default should succeed for missing key");
+        assert_eq!(value, 0, "default for i32 should be 0");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_storage_read_or_default_exists() {
+        let dir = std::env::temp_dir().join("rustcode-storage-test-rod-exists");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new(dir.clone());
+
+        // Write a value first
+        storage
+            .write(&["existing", "value"], &42i32)
+            .expect("write should succeed");
+
+        // read_or_default should return the stored value
+        let value: i32 = storage
+            .read_or_default(&["existing", "value"])
+            .expect("read_or_default should succeed for existing key");
+        assert_eq!(value, 42, "should return stored value, not default");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Storage update_or_insert tests --------------------------------------
+
+    #[test]
+    fn test_storage_update_or_insert_new() {
+        let dir = std::env::temp_dir().join("rustcode-storage-test-uoi-new");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new(dir.clone());
+
+        // Key doesn't exist — should create default, modify, and write
+        let value: i32 = storage
+            .update_or_insert(&["new", "counter"], |v| *v += 10)
+            .expect("update_or_insert should succeed for new key");
+        assert_eq!(value, 10, "default (0) + 10 = 10");
+
+        // Verify it was persisted
+        let stored: i32 = storage
+            .read(&["new", "counter"])
+            .expect("read after update_or_insert should succeed");
+        assert_eq!(stored, 10);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_storage_update_or_insert_existing() {
+        let dir = std::env::temp_dir().join("rustcode-storage-test-uoi-exists");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new(dir.clone());
+
+        // Write initial value
+        storage
+            .write(&["existing", "counter"], &5i32)
+            .expect("write should succeed");
+
+        // update_or_insert should read the existing value (5) and modify it
+        let value: i32 = storage
+            .update_or_insert(&["existing", "counter"], |v| *v *= 3)
+            .expect("update_or_insert should succeed for existing key");
+        assert_eq!(value, 15, "existing 5 * 3 = 15");
+
+        // Verify
+        let stored: i32 = storage
+            .read(&["existing", "counter"])
+            .expect("read after update_or_insert should succeed");
+        assert_eq!(stored, 15);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Storage nested keys test --------------------------------------------
+
+    #[test]
+    fn test_storage_nested_keys() {
+        let dir = std::env::temp_dir().join("rustcode-storage-test-nested");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new(dir.clone());
+
+        // Write with 3+ deep key path
+        storage
+            .write(&["a", "b", "c", "d"], &"deep-value")
+            .expect("write with deep key path should succeed");
+
+        // Read it back
+        let value: String = storage
+            .read(&["a", "b", "c", "d"])
+            .expect("read with deep key path should succeed");
+        assert_eq!(value, "deep-value");
+
+        // Read at different depth
+        storage
+            .write(&["a", "sibling"], &"sibling-value")
+            .expect("sibling write should succeed");
+        let sibling: String = storage
+            .read(&["a", "sibling"])
+            .expect("read sibling should succeed");
+        assert_eq!(sibling, "sibling-value");
+
+        // Verify sibling keys at the same depth don't interfere
+        let a_keys = storage
+            .list(&["a"])
+            .expect("list at 'a' level should succeed");
+        assert!(a_keys.contains(&"sibling".to_string()));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Storage complex JSON test -------------------------------------------
+
+    #[test]
+    fn test_storage_complex_json() {
+        let dir = std::env::temp_dir().join("rustcode-storage-test-complex");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new(dir.clone());
+
+        // Write a complex JSON value with nested objects and arrays
+        let complex: serde_json::Value = serde_json::json!({
+            "name": "test-project",
+            "settings": {
+                "theme": "dark",
+                "font_size": 14,
+                "extensions": ["rust", "python", "typescript"]
+            },
+            "metadata": {
+                "created_at": "2026-06-17",
+                "version": 2,
+                "tags": ["backend", "api", "database"]
+            }
+        });
+
+        storage
+            .write(&["config", "project"], &complex)
+            .expect("write complex JSON should succeed");
+
+        let read_back: serde_json::Value = storage
+            .read(&["config", "project"])
+            .expect("read complex JSON should succeed");
+
+        assert_eq!(read_back["name"], "test-project");
+        assert_eq!(read_back["settings"]["theme"], "dark");
+        assert_eq!(read_back["settings"]["font_size"], 14);
+        assert_eq!(read_back["settings"]["extensions"][0], "rust");
+        assert_eq!(read_back["metadata"]["version"], 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Database migration failure rollback test ----------------------------
+
+    #[tokio::test]
+    async fn test_database_migration_failure_rollback() {
+        let dir = std::env::temp_dir().join("rustcode-db-test-fail-mig");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let db_path = dir.join("test.db");
+
+        let db = Database::open(&db_path)
+            .await
+            .expect("open database should succeed");
+
+        // Run the failing migration — should error
+        let result = db.run_migrations(&[FAILING_MIGRATION]).await;
+        assert!(result.is_err(), "failing migration should return an error");
+
+        // The transaction should have rolled back — table must NOT exist
+        let tables: Vec<(String,)> =
+            sqlx::query_as(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='this_should_rollback'",
+            )
+            .fetch_all(db.pool())
+            .await
+            .expect("query sqlite_master should succeed");
+        assert!(
+            tables.is_empty(),
+            "this_should_rollback table should not exist after rollback"
+        );
+
+        // The migration should NOT be recorded in _migration
+        let count: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM _migration WHERE id = '99999999_test_failing'")
+                .fetch_one(db.pool())
+                .await
+                .expect("count migration should succeed");
+        assert_eq!(count.0, 0, "failing migration should not be recorded");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Database query_row test ---------------------------------------------
+
+    #[tokio::test]
+    async fn test_database_query_row() {
+        let dir = std::env::temp_dir().join("rustcode-db-test-query-row");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let db_path = dir.join("test.db");
+
+        let db = Database::open(&db_path)
+            .await
+            .expect("open database should succeed");
+        db.run_migrations(ALL_MIGRATIONS)
+            .await
+            .expect("run migrations should succeed");
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system time")
+            .as_millis() as i64;
+
+        // Insert test data
+        sqlx::query(
+            "INSERT INTO project (id, vcs, name, time_created, time_initialized) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind("proj-qr")
+        .bind("git")
+        .bind("query-test")
+        .bind(now)
+        .bind(now)
+        .execute(db.pool())
+        .await
+        .expect("insert project");
+
+        // query_row to get it back
+        #[derive(Debug, PartialEq, sqlx::FromRow)]
+        struct ProjectRow {
+            id: String,
+            vcs: Option<String>,
+            name: Option<String>,
+        }
+
+        let project: Option<ProjectRow> = db
+            .query_row("SELECT id, vcs, name FROM project WHERE id = 'proj-qr'")
+            .await
+            .expect("query_row should succeed");
+
+        let project = project.expect("project should exist");
+        assert_eq!(project.id, "proj-qr");
+        assert_eq!(project.name.as_deref(), Some("query-test"));
+        assert_eq!(project.vcs.as_deref(), Some("git"));
+
+        // query_row for a non-existent row should return None
+        let missing: Option<ProjectRow> = db
+            .query_row("SELECT id, vcs, name FROM project WHERE id = 'nonexistent'")
+            .await
+            .expect("query_row for missing row should succeed");
+        assert!(missing.is_none(), "missing row should be None");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- default_db_path test ------------------------------------------------
+
+    #[test]
+    fn test_default_db_path_returns_path() {
+        let path = default_db_path().expect("default_db_path should succeed");
+        let path_str = path.to_string_lossy();
+        assert!(
+            path_str.ends_with("opencode/opencode.db"),
+            "default_db_path should end with 'opencode/opencode.db', got: {path_str}"
+        );
+    }
+
+    // -- Database open twice reuses tables test ------------------------------
+
+    #[tokio::test]
+    async fn test_database_open_twice_reuses_tables() {
+        let dir = std::env::temp_dir().join("rustcode-db-test-reopen");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let db_path = dir.join("test.db");
+
+        // First open: create tables via migration
+        {
+            let db = Database::open(&db_path)
+                .await
+                .expect("first open should succeed");
+            db.run_migrations(ALL_MIGRATIONS)
+                .await
+                .expect("run migrations should succeed");
+
+            // Insert a row to verify persistence
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time")
+                .as_millis() as i64;
+            sqlx::query(
+                "INSERT INTO project (id, vcs, name, time_created, time_initialized) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind("persist-1")
+            .bind("git")
+            .bind("persistent test")
+            .bind(now)
+            .bind(now)
+            .execute(db.pool())
+            .await
+            .expect("insert project");
+        }
+        // db dropped here — pool closed, file released
+
+        // Second open: same file, verify tables and data persist
+        let db2 = Database::open(&db_path)
+            .await
+            .expect("second open should succeed");
+
+        // Tables should still exist
+        let tables: Vec<(String,)> =
+            sqlx::query_as("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                .fetch_all(db2.pool())
+                .await
+                .expect("query tables should succeed");
+        let names: Vec<&str> = tables.iter().map(|(n,)| n.as_str()).collect();
+        assert!(names.contains(&"project"), "project table should persist");
+        assert!(names.contains(&"session"), "session table should persist");
+        assert!(names.contains(&"message"), "message table should persist");
+
+        // Data should persist
+        let (name,): (String,) =
+            sqlx::query_as("SELECT name FROM project WHERE id = 'persist-1'")
+                .fetch_one(db2.pool())
+                .await
+                .expect("query project should succeed");
+        assert_eq!(name, "persistent test", "data should persist across reopens");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

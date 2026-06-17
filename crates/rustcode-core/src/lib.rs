@@ -65,6 +65,7 @@ pub mod state;
 pub mod tool_output_store;
 pub mod storage;
 pub mod tool;
+pub mod tool_impls;
 pub mod v2_schema;
 pub mod worktree;
 pub mod workspace;

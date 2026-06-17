@@ -1213,4 +1213,240 @@ mod tests {
             _ => panic!("expected NotImplemented error"),
         }
     }
+
+    // ── Prompt content tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_prompt_explore_contains_key_phrase() {
+        assert!(
+            PROMPT_EXPLORE.contains("file search specialist"),
+            "PROMPT_EXPLORE should contain 'file search specialist'"
+        );
+    }
+
+    #[test]
+    fn test_prompt_compaction_contains_key_phrase() {
+        assert!(
+            PROMPT_COMPACTION.contains("context summarization"),
+            "PROMPT_COMPACTION should contain 'context summarization'"
+        );
+    }
+
+    #[test]
+    fn test_prompt_summary_contains_key_phrase() {
+        assert!(
+            PROMPT_SUMMARY.contains("pull request description"),
+            "PROMPT_SUMMARY should contain 'pull request description'"
+        );
+    }
+
+    #[test]
+    fn test_prompt_title_contains_key_phrases() {
+        assert!(
+            PROMPT_TITLE.contains("title generator"),
+            "PROMPT_TITLE should contain 'title generator'"
+        );
+        assert!(
+            PROMPT_TITLE.contains("≤50 characters"),
+            "PROMPT_TITLE should contain '≤50 characters'"
+        );
+    }
+
+    #[test]
+    fn test_prompt_generate_contains_key_phrase() {
+        assert!(
+            PROMPT_GENERATE.contains("agent architect"),
+            "PROMPT_GENERATE should contain 'agent architect'"
+        );
+    }
+
+    #[test]
+    fn test_all_prompts_are_non_empty() {
+        assert!(PROMPT_EXPLORE.len() > 0, "PROMPT_EXPLORE should not be empty");
+        assert!(PROMPT_COMPACTION.len() > 0, "PROMPT_COMPACTION should not be empty");
+        assert!(PROMPT_SUMMARY.len() > 0, "PROMPT_SUMMARY should not be empty");
+        assert!(PROMPT_TITLE.len() > 0, "PROMPT_TITLE should not be empty");
+        assert!(PROMPT_GENERATE.len() > 0, "PROMPT_GENERATE should not be empty");
+    }
+
+    // ── derive_subagent_session_permission edge cases ────────────────────
+
+    #[test]
+    fn test_derive_with_subagent_already_todowrite_allowed() {
+        let parent = PermissionRuleset::new();
+        let subagent = AgentInfo {
+            name: "test".into(),
+            mode: AgentMode::Subagent,
+            native: false,
+            permission: vec![PermissionRule {
+                permission: "todowrite".into(),
+                pattern: "*".into(),
+                action: PermissionAction::Allow,
+            }],
+            ..Default::default()
+        };
+        let derived = derive_subagent_session_permission(&parent, &subagent);
+        let has_todo_deny = derived.iter().any(|r| {
+            r.permission == "todowrite" && r.pattern == "*" && r.action == PermissionAction::Deny
+        });
+        assert!(
+            !has_todo_deny,
+            "todowrite deny should NOT be added when subagent already allows todowrite"
+        );
+    }
+
+    #[test]
+    fn test_derive_with_parent_external_directory_rules() {
+        let parent = vec![PermissionRule {
+            permission: "external_directory".into(),
+            pattern: "/some/path/*".into(),
+            action: PermissionAction::Allow,
+        }];
+        let subagent = AgentInfo {
+            name: "test".into(),
+            mode: AgentMode::Subagent,
+            native: false,
+            permission: PermissionRuleset::new(),
+            ..Default::default()
+        };
+        let derived = derive_subagent_session_permission(&parent, &subagent);
+        let carries_ext_dir = derived.iter().any(|r| {
+            r.permission == "external_directory"
+                && r.pattern == "/some/path/*"
+                && r.action == PermissionAction::Allow
+        });
+        assert!(
+            carries_ext_dir,
+            "should carry forward external_directory rules from parent"
+        );
+    }
+
+    #[test]
+    fn test_derive_with_empty_parent_and_empty_subagent() {
+        let parent = PermissionRuleset::new();
+        let subagent = AgentInfo {
+            name: "test".into(),
+            mode: AgentMode::Subagent,
+            native: false,
+            permission: PermissionRuleset::new(),
+            ..Default::default()
+        };
+        let derived = derive_subagent_session_permission(&parent, &subagent);
+        let has_todo_deny = derived.iter().any(|r| {
+            r.permission == "todowrite" && r.pattern == "*" && r.action == PermissionAction::Deny
+        });
+        let has_task_deny = derived.iter().any(|r| {
+            r.permission == "task" && r.pattern == "*" && r.action == PermissionAction::Deny
+        });
+        assert!(has_todo_deny, "should add todowrite deny");
+        assert!(has_task_deny, "should add task deny");
+        assert_eq!(
+            derived.len(),
+            2,
+            "should only have task+todowrite denies, no extra rules from empty parent"
+        );
+    }
+
+    // ── AgentInfo default tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_agent_info_new_creates_correct_struct() {
+        let info = AgentInfo::new("my-agent", AgentMode::Subagent);
+        assert_eq!(info.name, "my-agent");
+        assert_eq!(info.mode, AgentMode::Subagent);
+        assert!(!info.native, "new agents should not be native");
+        assert!(!info.hidden, "new agents should not be hidden");
+        assert!(info.description.is_none(), "new agents should have no description");
+        assert!(info.prompt.is_none(), "new agents should have no prompt");
+    }
+
+    #[test]
+    fn test_agent_info_default_has_empty_name_and_primary() {
+        let info = AgentInfo::default();
+        assert_eq!(info.name, "", "default name should be empty string");
+        assert_eq!(info.mode, AgentMode::Primary, "default mode should be Primary");
+    }
+
+    // ── GeneratedAgent struct test ───────────────────────────────────────
+
+    #[test]
+    fn test_generated_agent_camelcase_deserialization() {
+        let json = r#"{"identifier":"code-reviewer","whenToUse":"Use for code review","systemPrompt":"You are a code reviewer."}"#;
+        let agent: GeneratedAgent =
+            serde_json::from_str(json).expect("should deserialize with camelCase field names");
+        assert_eq!(agent.identifier, "code-reviewer");
+        assert_eq!(agent.when_to_use, "Use for code review");
+        assert_eq!(agent.system_prompt, "You are a code reviewer.");
+    }
+
+    // ── AgentService resolve/select behavior ─────────────────────────────
+
+    #[test]
+    fn test_agent_service_get_nonexistent_returns_none() {
+        let svc = make_service();
+        let result = svc.get("nonexistent-agent");
+        assert!(result.is_none(), "nonexistent agent should return None");
+    }
+
+    #[test]
+    fn test_agent_service_default_agent_name_none_configured() {
+        let svc = make_service();
+        let name = svc.default_agent_name(None);
+        assert!(name.is_some(), "default name should be Some even when None is configured");
+        assert_eq!(name.expect("should fall back to build"), "build");
+    }
+
+    #[test]
+    fn test_agent_service_list_includes_all_7_builtins() {
+        let svc = make_service();
+        let list = svc.list(None);
+        assert_eq!(list.len(), 7, "should have exactly 7 built-in agents");
+        let names: Vec<&str> = list.iter().map(|a| a.name.as_str()).collect();
+        assert!(names.contains(&"build"), "should contain build");
+        assert!(names.contains(&"plan"), "should contain plan");
+        assert!(names.contains(&"general"), "should contain general");
+        assert!(names.contains(&"explore"), "should contain explore");
+        assert!(names.contains(&"compaction"), "should contain compaction");
+        assert!(names.contains(&"title"), "should contain title");
+        assert!(names.contains(&"summary"), "should contain summary");
+    }
+
+    // ── Edge case tests ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_apply_config_override_steps_via_max_steps() {
+        let (worktree, data_dir, tmp_dir) = test_dirs();
+        let mut cfg = empty_config();
+        let mut agent_cfg = config::AgentConfig::default();
+        // Set max_steps (deprecated field) but NOT steps — should still apply via fallback
+        agent_cfg.max_steps = Some(42);
+        cfg.agent.insert("build".into(), agent_cfg);
+        let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
+        let build = svc.get("build").expect("build should exist");
+        assert_eq!(
+            build.steps, Some(42),
+            "max_steps should set steps via fallback when steps is None"
+        );
+    }
+
+    #[test]
+    fn test_deprecated_mode_field_applies_agent_overrides() {
+        let (worktree, data_dir, tmp_dir) = test_dirs();
+        let mut cfg = empty_config();
+        let mut mode_cfg = config::AgentConfig::default();
+        mode_cfg.description = Some("From deprecated mode field".into());
+        mode_cfg.temperature = Some(0.3);
+        cfg.mode.insert("build".into(), mode_cfg);
+        let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
+        let build = svc.get("build").expect("build should exist");
+        assert_eq!(
+            build.description.as_deref(),
+            Some("From deprecated mode field"),
+            "description should be set from deprecated mode field"
+        );
+        assert_eq!(
+            build.temperature, Some(0.3),
+            "temperature should be set from deprecated mode field"
+        );
+    }
 }

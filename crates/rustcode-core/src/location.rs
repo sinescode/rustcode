@@ -243,6 +243,193 @@ impl From<LocationRef> for LocationServiceKey {
         }
     }
 }
+// ══════════════════════════════════════════════════════════════════════════════
+// Location Resolver
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Resolve a [`LocationRef`] into a [`LocationFull`].
+///
+/// Takes a resolver function that maps a directory path to
+/// `(project_id, project_directory, optional_vcs)`. Returns `None` if
+/// the resolver cannot map the directory.
+///
+/// # Source
+/// `packages/core/src/location.ts` lines 32–45 — `layer`.
+pub fn resolve_location(
+    ref_: &LocationRef,
+    resolver: impl FnOnce(&str) -> Option<(ProjectId, String, Option<ProjectVcs>)>,
+) -> Option<LocationFull> {
+    let (project_id, project_directory, vcs) = resolver(&ref_.directory)?;
+    Some(LocationFull {
+        directory: ref_.directory.clone(),
+        workspace_id: ref_.workspace_id.clone(),
+        project: LocationProjectRef {
+            id: project_id,
+            directory: project_directory,
+        },
+        vcs,
+    })
+}
+
+// ── Internal path helpers ─────────────────────────────────────────────────
+
+/// Check whether `child` is lexically contained within `parent`.
+///
+/// Both paths are expected to be absolute and normalized. Returns `true` when
+/// `child` equals `parent` or starts with `parent/`.
+///
+/// # Source
+/// `packages/core/src/fs-util.ts` — `FSUtil.contains`.
+fn path_contains(parent: &str, child: &str) -> bool {
+    let parent = parent.replace('\\', "/");
+    let child = child.replace('\\', "/");
+    let parent = parent.trim_end_matches('/');
+    let child = child.trim_end_matches('/');
+
+    if child == parent {
+        return true;
+    }
+    child.starts_with(&format!("{}/", parent))
+}
+
+/// Lexically normalize a path by resolving `.` and `..` components.
+///
+/// This is a pure-string operation — no filesystem access.
+fn path_normalize(p: &str) -> String {
+    let is_absolute = p.starts_with('/');
+    let parts: Vec<&str> = p
+        .split('/')
+        .filter(|s| !s.is_empty() && *s != ".")
+        .collect();
+    let mut result: Vec<&str> = Vec::new();
+    for part in parts {
+        if part == ".." {
+            result.pop();
+        } else {
+            result.push(part);
+        }
+    }
+    let normalized = result.join("/");
+    if is_absolute {
+        format!("/{normalized}")
+    } else if normalized.is_empty() {
+        ".".to_string()
+    } else {
+        normalized
+    }
+}
+
+/// Replace backslashes with forward slashes.
+///
+/// # Source
+/// `packages/core/src/location-mutation.ts` line 76 — `slash`.
+fn slash_path(value: &str) -> String {
+    value.replace('\\', "/")
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Mutation Service
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Service for resolving mutation paths against the current location.
+///
+/// # Source
+/// `packages/core/src/location-mutation.ts` lines 60–61, 78–153 —
+/// `Service` and `layer`.
+pub struct MutationService {
+    /// Canonical absolute path of the location root.
+    pub location_root: String,
+}
+
+impl MutationService {
+    /// Create a new mutation service with the given location root.
+    ///
+    /// The root is normalized by stripping trailing slashes so that
+    /// containment checks and resource path extraction work correctly.
+    #[must_use]
+    pub fn new(location_root: impl Into<String>) -> Self {
+        let mut root: String = location_root.into();
+        // Strip trailing slashes (but preserve "/" as-is).
+        while root.len() > 1 && root.ends_with('/') {
+            root.pop();
+        }
+        Self {
+            location_root: root,
+        }
+    }
+
+    /// Resolve a mutation input path against the location root.
+    ///
+    /// Returns a [`MutationTarget`] with the canonical path, permission
+    /// resource, and optional external directory authorization when the
+    /// target is outside the root.
+    ///
+    /// # Source
+    /// `packages/core/src/location-mutation.ts` lines 119–149 — `resolve`.
+    pub fn resolve(
+        &self,
+        input: &MutationResolveInput,
+    ) -> Result<MutationTarget, MutationPathError> {
+        let is_absolute = input.path.starts_with('/');
+
+        // Resolve relative paths against the location root.
+        let absolute = if is_absolute {
+            path_normalize(&input.path)
+        } else {
+            path_normalize(&format!("{}/{}", self.location_root, input.path))
+        };
+
+        let lexically_internal = path_contains(&self.location_root, &absolute);
+
+        // Relative paths that escape the location root are rejected.
+        if !is_absolute && !lexically_internal {
+            return Err(MutationPathError::relative_escape(&input.path));
+        }
+
+        // Permission resource: location-relative for internal, canonical for external.
+        let resource = if lexically_internal {
+            let rel = if absolute == self.location_root {
+                ".".to_string()
+            } else {
+                absolute[self.location_root.len() + 1..].to_string()
+            };
+            slash_path(&rel)
+        } else {
+            slash_path(&absolute)
+        };
+
+        // External directory authorization when outside the location root.
+        let external_directory = if !lexically_internal {
+            // When kind is Directory, use the target directory itself;
+            // otherwise use the parent directory as the approval boundary.
+            let external_dir = if input.kind == Some(MutationKind::Directory) {
+                absolute.clone()
+            } else {
+                let parts: Vec<&str> = absolute.split('/').collect();
+                if parts.len() <= 1 {
+                    "/".to_string()
+                } else {
+                    parts[..parts.len() - 1].join("/")
+                }
+            };
+            let external_resource = format!("{external_dir}/*");
+            Some(ExternalDirectoryAuthorization {
+                action: "external_directory".into(),
+                directory: slash_path(&external_dir),
+                resource: external_resource.clone(),
+                save: external_resource,
+            })
+        } else {
+            None
+        };
+
+        Ok(MutationTarget {
+            canonical: absolute,
+            resource,
+            external_directory,
+        })
+    }
+}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Tests
@@ -479,5 +666,431 @@ mod tests {
         let json = serde_json::to_string(&key).expect("serialize");
         let parsed: LocationServiceKey = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.directory, "/data");
+    }
+
+    // ── LocationServiceKey Hash ──────────────────────────────────────
+
+    #[test]
+    fn test_location_service_key_hash() {
+        use std::collections::HashMap;
+
+        let ws1 = WorkspaceId::ascending("wrk_hash1").expect("valid");
+        let ws2 = WorkspaceId::ascending("wrk_hash2").expect("valid");
+
+        let key1 = LocationServiceKey {
+            directory: "/app".into(),
+            workspace_id: Some(ws1),
+        };
+        let key2 = LocationServiceKey {
+            directory: "/app".into(),
+            workspace_id: Some(ws2),
+        };
+        let key3 = LocationServiceKey {
+            directory: "/other".into(),
+            workspace_id: None,
+        };
+
+        let mut map: HashMap<LocationServiceKey, i32> = HashMap::new();
+        map.insert(key1.clone(), 1);
+        map.insert(key2.clone(), 2);
+        map.insert(key3.clone(), 3);
+
+        assert_eq!(map.get(&key1).expect("key1 present"), &1);
+        assert_eq!(map.get(&key2).expect("key2 present"), &2);
+        assert_eq!(map.get(&key3).expect("key3 present"), &3);
+        assert_eq!(map.len(), 3);
+
+        // Same key (no workspace) should overwrite
+        let key_no_ws = LocationServiceKey {
+            directory: "/tmp".into(),
+            workspace_id: None,
+        };
+        map.insert(key_no_ws.clone(), 10);
+        assert_eq!(map.get(&key_no_ws).expect("key_no_ws present"), &10);
+
+        let same_key = LocationServiceKey {
+            directory: "/tmp".into(),
+            workspace_id: None,
+        };
+        map.insert(same_key, 20);
+        // HashMap with 3 original keys + 1 new key (overwritten) = 4 entries
+        assert_eq!(map.len(), 4);
+        assert_eq!(
+            map.get(&LocationServiceKey {
+                directory: "/tmp".into(),
+                workspace_id: None,
+            })
+            .expect("overwritten key present"),
+            &20
+        );
+    }
+
+    // ── resolve_location ─────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_location_valid_directory() {
+        let ref_ = LocationRef::new("/home/user/myproject");
+        let result = resolve_location(&ref_, |dir| {
+            assert_eq!(dir, "/home/user/myproject");
+            Some((
+                ProjectId::new("proj_abc"),
+                "/home/user/myproject".to_string(),
+                Some(ProjectVcs::git("/home/user/myproject/.git")),
+            ))
+        });
+        let full = result.expect("resolver mapped the directory");
+        assert_eq!(full.directory, "/home/user/myproject");
+        assert_eq!(full.project.id.0, "proj_abc");
+        assert_eq!(full.project.directory, "/home/user/myproject");
+        assert!(full.workspace_id.is_none());
+        assert!(full.vcs.is_some());
+        match &full.vcs {
+            Some(ProjectVcs::Git { store }) => {
+                assert_eq!(store, "/home/user/myproject/.git");
+            }
+        }
+    }
+
+    #[test]
+    fn test_resolve_location_unresolvable_directory() {
+        let ref_ = LocationRef::new("/unknown/path");
+        let result = resolve_location(&ref_, |_dir| None);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_resolve_location_with_workspace_id() {
+        let ws = WorkspaceId::ascending("wrk_resloc").expect("valid");
+        let ref_ = LocationRef::with_workspace("/ws/proj", ws.clone());
+        let result = resolve_location(&ref_, |_dir| {
+            Some((
+                ProjectId::new("p_ws"),
+                "/ws/proj".to_string(),
+                None,
+            ))
+        });
+        let full = result.expect("resolver mapped the directory");
+        assert_eq!(full.workspace_id.as_ref().expect("has workspace").as_str(), "wrk_resloc");
+        assert_eq!(full.project.id.0, "p_ws");
+    }
+
+    // ── LocationFull roundtrip with workspace_id ─────────────────────
+
+    #[test]
+    fn test_location_full_roundtrip_all_fields() {
+        let ws = WorkspaceId::ascending("wrk_full").expect("valid");
+        let full = LocationFull {
+            directory: "/repo".into(),
+            workspace_id: Some(ws),
+            project: LocationProjectRef {
+                id: ProjectId::new("proj_full"),
+                directory: "/repo".into(),
+            },
+            vcs: Some(ProjectVcs::git("/repo/.git")),
+        };
+        let json = serde_json::to_string(&full).expect("serialize");
+        let parsed: LocationFull = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.directory, "/repo");
+        assert_eq!(
+            parsed.workspace_id.expect("has workspace_id").as_str(),
+            "wrk_full"
+        );
+        assert_eq!(parsed.project.id.0, "proj_full");
+        assert_eq!(parsed.project.directory, "/repo");
+        let vcs = parsed.vcs.expect("has vcs");
+        match vcs {
+            ProjectVcs::Git { store } => assert_eq!(store, "/repo/.git"),
+        }
+    }
+
+    // ── MutationService::resolve — internal paths ────────────────────
+
+    #[test]
+    fn test_mutation_resolve_internal_relative() {
+        let svc = MutationService::new("/home/user/project");
+        let input = MutationResolveInput {
+            path: "src/main.rs".into(),
+            kind: Some(MutationKind::File),
+        };
+        let target = svc.resolve(&input).expect("resolve internal relative");
+        assert_eq!(target.canonical, "/home/user/project/src/main.rs");
+        assert_eq!(target.resource, "src/main.rs");
+        assert!(target.external_directory.is_none());
+    }
+
+    #[test]
+    fn test_mutation_resolve_internal_relative_directory_kind() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "lib".into(),
+            kind: Some(MutationKind::Directory),
+        };
+        let target = svc.resolve(&input).expect("resolve internal directory");
+        assert_eq!(target.canonical, "/app/lib");
+        assert_eq!(target.resource, "lib");
+        assert!(target.external_directory.is_none());
+    }
+
+    #[test]
+    fn test_mutation_resolve_internal_absolute_inside_root() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "/app/src/lib.rs".into(),
+            kind: None,
+        };
+        let target = svc.resolve(&input).expect("resolve internal absolute");
+        assert_eq!(target.canonical, "/app/src/lib.rs");
+        assert_eq!(target.resource, "src/lib.rs");
+        assert!(target.external_directory.is_none());
+    }
+
+    #[test]
+    fn test_mutation_resolve_internal_normalization() {
+        // "src/../src/main.rs" should normalize to "src/main.rs"
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "src/../src/main.rs".into(),
+            kind: Some(MutationKind::File),
+        };
+        let target = svc.resolve(&input).expect("resolve with .. normalization");
+        assert_eq!(target.canonical, "/app/src/main.rs");
+        assert_eq!(target.resource, "src/main.rs");
+    }
+
+    #[test]
+    fn test_mutation_resolve_internal_dot_path() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: ".".into(),
+            kind: Some(MutationKind::Directory),
+        };
+        let target = svc.resolve(&input).expect("resolve dot path");
+        assert_eq!(target.canonical, "/app");
+        assert_eq!(target.resource, ".");
+    }
+
+    #[test]
+    fn test_mutation_resolve_internal_trailing_slash_root() {
+        // Constructor should normalize trailing slashes on the root.
+        let svc = MutationService::new("/app/");
+        assert_eq!(svc.location_root, "/app");
+        let input = MutationResolveInput {
+            path: "src/main.rs".into(),
+            kind: Some(MutationKind::File),
+        };
+        let target = svc.resolve(&input).expect("resolve with trailing-slash root");
+        assert_eq!(target.canonical, "/app/src/main.rs");
+        assert_eq!(target.resource, "src/main.rs");
+    }
+
+    #[test]
+    fn test_mutation_resolve_internal_multiple_trailing_slashes() {
+        let svc = MutationService::new("///app///");
+        // Multiple leading slashes are not collapsed by our normalization,
+        // but trailing slashes are. The root is "///app".
+        assert_eq!(svc.location_root, "///app");
+    }
+
+    // ── MutationService::resolve — external paths ────────────────────
+
+    #[test]
+    fn test_mutation_resolve_external_absolute() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "/mnt/data/output.txt".into(),
+            kind: Some(MutationKind::File),
+        };
+        let target = svc.resolve(&input).expect("resolve external absolute");
+        assert_eq!(target.canonical, "/mnt/data/output.txt");
+        assert_eq!(target.resource, "/mnt/data/output.txt");
+        let auth = target
+            .external_directory
+            .expect("has external_directory authorization");
+        assert_eq!(auth.action, "external_directory");
+        assert_eq!(auth.directory, "/mnt/data");
+        assert_eq!(auth.resource, "/mnt/data/*");
+        assert_eq!(auth.save, "/mnt/data/*");
+    }
+
+    #[test]
+    fn test_mutation_resolve_external_directory_kind() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "/mnt/shared".into(),
+            kind: Some(MutationKind::Directory),
+        };
+        let target = svc.resolve(&input).expect("resolve external directory");
+        let auth = target
+            .external_directory
+            .expect("has external_directory authorization");
+        // When kind is Directory, the boundary is the target itself
+        assert_eq!(auth.directory, "/mnt/shared");
+        assert_eq!(auth.resource, "/mnt/shared/*");
+    }
+
+    #[test]
+    fn test_mutation_resolve_external_no_kind() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "/etc/config".into(),
+            kind: None,
+        };
+        let target = svc.resolve(&input).expect("resolve external without kind");
+        let auth = target
+            .external_directory
+            .expect("has external_directory authorization");
+        // When kind is None, the boundary is the parent directory
+        assert_eq!(auth.directory, "/etc");
+        assert_eq!(auth.resource, "/etc/*");
+    }
+
+    // ── MutationService::resolve — escape errors ─────────────────────
+
+    #[test]
+    fn test_mutation_resolve_relative_escape() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "../outside".into(),
+            kind: None,
+        };
+        let err = svc.resolve(&input).expect_err("relative escape should fail");
+        match err {
+            MutationPathError::RelativeEscape { path } => {
+                assert_eq!(path, "../outside");
+            }
+            other => panic!("expected RelativeEscape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_mutation_resolve_relative_escape_deep() {
+        let svc = MutationService::new("/home/user/project");
+        let input = MutationResolveInput {
+            path: "../../../etc/passwd".into(),
+            kind: None,
+        };
+        let err = svc
+            .resolve(&input)
+            .expect_err("deep relative escape should fail");
+        match err {
+            MutationPathError::RelativeEscape { path } => {
+                assert_eq!(path, "../../../etc/passwd");
+            }
+            other => panic!("expected RelativeEscape, got {other:?}"),
+        }
+    }
+
+    // ── MutationService::resolve — serialization roundtrip ───────────
+
+    #[test]
+    fn test_mutation_resolve_result_serde_roundtrip() {
+        let svc = MutationService::new("/app");
+        let input = MutationResolveInput {
+            path: "src/lib.rs".into(),
+            kind: Some(MutationKind::File),
+        };
+        let target = svc.resolve(&input).expect("resolve");
+        let json = serde_json::to_string(&target).expect("serialize target");
+        let parsed: MutationTarget = serde_json::from_str(&json).expect("deserialize target");
+        assert_eq!(parsed.canonical, target.canonical);
+        assert_eq!(parsed.resource, target.resource);
+        assert!(parsed.external_directory.is_none());
+    }
+
+    // ── path_contains ────────────────────────────────────────────────
+
+    #[test]
+    fn test_path_contains_identical() {
+        assert!(path_contains("/app", "/app"));
+    }
+
+    #[test]
+    fn test_path_contains_child() {
+        assert!(path_contains("/app", "/app/src"));
+    }
+
+    #[test]
+    fn test_path_contains_deep_child() {
+        assert!(path_contains("/app", "/app/src/lib/util.rs"));
+    }
+
+    #[test]
+    fn test_path_contains_outside() {
+        assert!(!path_contains("/app", "/mnt/data"));
+    }
+
+    #[test]
+    fn test_path_contains_prefix_but_not_child() {
+        // "/app2" should not be contained in "/app"
+        assert!(!path_contains("/app", "/app2"));
+        assert!(!path_contains("/app", "/application"));
+    }
+
+    #[test]
+    fn test_path_contains_trailing_slashes() {
+        assert!(path_contains("/app/", "/app/src"));
+        assert!(path_contains("/app", "/app/src/"));
+    }
+
+    #[test]
+    fn test_path_contains_backslash_normalization() {
+        assert!(path_contains("\\app", "\\app\\src"));
+    }
+
+    // ── path_normalize ───────────────────────────────────────────────
+
+    #[test]
+    fn test_path_normalize_identity() {
+        assert_eq!(path_normalize("/foo/bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn test_path_normalize_dot() {
+        assert_eq!(path_normalize("/foo/./bar"), "/foo/bar");
+    }
+
+    #[test]
+    fn test_path_normalize_dotdot() {
+        assert_eq!(path_normalize("/foo/bar/../baz"), "/foo/baz");
+    }
+
+    #[test]
+    fn test_path_normalize_relative_dotdot_escape() {
+        assert_eq!(path_normalize("../outside"), "../outside");
+    }
+
+    #[test]
+    fn test_path_normalize_multiple_dotdots() {
+        assert_eq!(path_normalize("/a/b/c/../../d"), "/a/d");
+    }
+
+    #[test]
+    fn test_path_normalize_empty() {
+        assert_eq!(path_normalize(""), ".");
+    }
+
+    #[test]
+    fn test_path_normalize_dot_only() {
+        assert_eq!(path_normalize("."), ".");
+    }
+
+    #[test]
+    fn test_path_normalize_deep_escape() {
+        assert_eq!(
+            path_normalize("/home/user/project/../../../etc/passwd"),
+            "/home/etc/passwd"
+        );
+    }
+
+    // ── slash_path ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_slash_path_backslashes() {
+        assert_eq!(slash_path(r"C:\Users\test"), "C:/Users/test");
+    }
+
+    #[test]
+    fn test_slash_path_no_backslashes() {
+        assert_eq!(slash_path("/usr/local/bin"), "/usr/local/bin");
     }
 }

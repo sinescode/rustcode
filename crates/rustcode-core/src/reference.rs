@@ -125,6 +125,36 @@ impl ReferenceSource {
             Self::Git(_) => "git",
         }
     }
+
+    /// Get the optional description from either local or git source.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        match self {
+            Self::Local(l) => l.description.as_deref(),
+            Self::Git(g) => g.description.as_deref(),
+        }
+    }
+
+    /// Check whether this source is marked as hidden.
+    #[must_use]
+    pub fn is_hidden(&self) -> bool {
+        match self {
+            Self::Local(l) => l.hidden,
+            Self::Git(g) => g.hidden,
+        }
+    }
+
+    /// Get a hint for the filesystem path of this source.
+    ///
+    /// For local sources this is the directory path; for git sources
+    /// this is the repository identifier.
+    #[must_use]
+    pub fn path_hint(&self) -> &str {
+        match self {
+            Self::Local(l) => &l.path,
+            Self::Git(g) => &g.repository,
+        }
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -192,6 +222,85 @@ impl ReferenceData {
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&ReferenceSource> {
         self.sources.get(name)
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Reference Service
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Service for managing and looking up references.
+///
+/// Wraps [`ReferenceData`] and provides filtered lookups that produce
+/// [`ReferenceSummary`] values suitable for system-context rendering.
+///
+/// # Source
+/// `packages/core/src/reference.ts` — Reference.Service context.
+#[derive(Debug, Clone, Default)]
+pub struct ReferenceService {
+    data: ReferenceData,
+}
+
+impl ReferenceService {
+    /// Create a new empty reference service.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Add or replace a reference source.
+    pub fn add(&mut self, name: impl Into<String>, source: ReferenceSource) {
+        self.data.add(name, source);
+    }
+
+    /// Remove a reference by name. Returns `true` if it existed.
+    pub fn remove(&mut self, name: &str) -> bool {
+        self.data.remove(name)
+    }
+
+    /// Get a reference source by name.
+    #[must_use]
+    pub fn get(&self, name: &str) -> Option<&ReferenceSource> {
+        self.data.get(name)
+    }
+
+    /// List all registered (name, source) pairs, sorted by name.
+    #[must_use]
+    pub fn list(&self) -> Vec<(&str, &ReferenceSource)> {
+        self.data.list()
+    }
+
+    /// Look up materialized references, filtered to those with descriptions
+    /// and excluding hidden sources.
+    #[must_use]
+    pub fn lookup(&self) -> Vec<ReferenceSummary> {
+        self.data
+            .list()
+            .into_iter()
+            .filter(|(_, source)| !source.is_hidden())
+            .filter(|(_, source)| source.description().is_some())
+            .map(|(name, source)| ReferenceSummary {
+                name: name.to_string(),
+                path: source.path_hint().to_string(),
+                description: source.description().map(String::from),
+            })
+            .collect()
+    }
+
+    /// Look up all references (including those without descriptions),
+    /// still excluding hidden sources.
+    #[must_use]
+    pub fn lookup_all(&self) -> Vec<ReferenceSummary> {
+        self.data
+            .list()
+            .into_iter()
+            .filter(|(_, source)| !source.is_hidden())
+            .map(|(name, source)| ReferenceSummary {
+                name: name.to_string(),
+                path: source.path_hint().to_string(),
+                description: source.description().map(String::from),
+            })
+            .collect()
     }
 }
 
@@ -268,6 +377,37 @@ pub fn reference_update_message(current: &[ReferenceSummary]) -> String {
             .to_string(),
         render_reference_guidance(current),
     ];
+    lines.join("\n")
+}
+
+/// Generate guidance text for LLM context from a list of references.
+///
+/// Produces a compact human-readable list suitable for injecting into
+/// the system prompt or other LLM-facing context.
+///
+/// # Source
+/// `packages/core/src/reference/guidance.ts` — referenceLookupText equivalent.
+#[must_use]
+pub fn reference_lookup_text(references: &[ReferenceSummary]) -> String {
+    if references.is_empty() {
+        return String::new();
+    }
+
+    let mut lines = vec![
+        "The following project references are available:".to_string(),
+    ];
+
+    for r in references {
+        match &r.description {
+            Some(desc) => {
+                lines.push(format!("- {} ({}) — {}", r.name, r.path, desc));
+            }
+            None => {
+                lines.push(format!("- {} ({})", r.name, r.path));
+            }
+        }
+    }
+
     lines.join("\n")
 }
 
@@ -474,5 +614,289 @@ mod tests {
     #[test]
     fn test_reference_removed_message_exists() {
         assert!(REFERENCE_REMOVED_MESSAGE.contains("no longer available"));
+    }
+
+    // ── ReferenceSource helpers ────────────────────────────────────
+
+    #[test]
+    fn test_reference_source_description() {
+        let local = ReferenceSource::Local(LocalReferenceSource {
+            source_type: "local".into(),
+            path: "/x".into(),
+            description: Some("desc".into()),
+            hidden: false,
+        });
+        assert_eq!(local.description(), Some("desc"));
+
+        let git = ReferenceSource::Git(GitReferenceSource::new("a/b"));
+        assert_eq!(git.description(), None);
+    }
+
+    #[test]
+    fn test_reference_source_is_hidden() {
+        let hidden_src = ReferenceSource::Local(LocalReferenceSource {
+            source_type: "local".into(),
+            path: "/x".into(),
+            description: None,
+            hidden: true,
+        });
+        assert!(hidden_src.is_hidden());
+
+        let visible = ReferenceSource::Local(LocalReferenceSource::new("/y"));
+        assert!(!visible.is_hidden());
+    }
+
+    #[test]
+    fn test_reference_source_path_hint() {
+        let local = ReferenceSource::Local(LocalReferenceSource::new("/home/user"));
+        assert_eq!(local.path_hint(), "/home/user");
+
+        let git = ReferenceSource::Git(GitReferenceSource::new("owner/repo"));
+        assert_eq!(git.path_hint(), "owner/repo");
+    }
+
+    // ── ReferenceService ───────────────────────────────────────────
+
+    #[test]
+    fn test_reference_service_lookup() {
+        let mut svc = ReferenceService::new();
+        svc.add(
+            "docs",
+            ReferenceSource::Local(LocalReferenceSource {
+                source_type: "local".into(),
+                path: "/docs".into(),
+                description: Some("API documentation".into()),
+                hidden: false,
+            }),
+        );
+        svc.add(
+            "lib",
+            ReferenceSource::Local(LocalReferenceSource {
+                source_type: "local".into(),
+                path: "/lib".into(),
+                description: Some("Core library".into()),
+                hidden: false,
+            }),
+        );
+
+        let results = svc.lookup();
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().any(|r| r.name == "docs" && r.path == "/docs"));
+        assert!(results.iter().any(|r| r.name == "lib" && r.path == "/lib"));
+    }
+
+    #[test]
+    fn test_reference_service_lookup_filters_empty_description() {
+        let mut svc = ReferenceService::new();
+        svc.add(
+            "with-desc",
+            ReferenceSource::Local(LocalReferenceSource {
+                source_type: "local".into(),
+                path: "/a".into(),
+                description: Some("Has description".into()),
+                hidden: false,
+            }),
+        );
+        svc.add(
+            "no-desc",
+            ReferenceSource::Local(LocalReferenceSource {
+                source_type: "local".into(),
+                path: "/b".into(),
+                description: None,
+                hidden: false,
+            }),
+        );
+
+        // lookup() filters to only those with descriptions
+        let described = svc.lookup();
+        assert_eq!(described.len(), 1);
+        assert_eq!(described[0].name, "with-desc");
+
+        // lookup_all() includes everything (except hidden)
+        let all = svc.lookup_all();
+        assert_eq!(all.len(), 2);
+        let names: Vec<&str> = all.iter().map(|r| r.name.as_str()).collect();
+        assert!(names.contains(&"with-desc"));
+        assert!(names.contains(&"no-desc"));
+    }
+
+    #[test]
+    fn test_reference_service_add_remove_list() {
+        let mut svc = ReferenceService::new();
+        svc.add("a", ReferenceSource::Local(LocalReferenceSource::new("/a")));
+        svc.add("b", ReferenceSource::Git(GitReferenceSource::new("org/b")));
+        svc.add("c", ReferenceSource::Local(LocalReferenceSource::new("/c")));
+
+        assert_eq!(svc.list().len(), 3);
+
+        // Remove the middle one
+        assert!(svc.remove("b"));
+        assert!(!svc.remove("b")); // already gone
+
+        let remaining = svc.list();
+        assert_eq!(remaining.len(), 2);
+        assert_eq!(remaining[0].0, "a");
+        assert_eq!(remaining[1].0, "c");
+    }
+
+    // ── Serialization edge cases ───────────────────────────────────
+
+    #[test]
+    fn test_local_source_hidden_field() {
+        // hidden=true should appear in serialized JSON
+        let src = LocalReferenceSource {
+            source_type: "local".into(),
+            path: "/secret".into(),
+            description: None,
+            hidden: true,
+        };
+        let json = serde_json::to_string(&src).expect("serialize");
+        assert!(json.contains(r#""hidden":true"#));
+
+        // default hidden=false should be omitted
+        let default_src = LocalReferenceSource::new("/public");
+        let json2 = serde_json::to_string(&default_src).expect("serialize");
+        assert!(!json2.contains("hidden"));
+    }
+
+    #[test]
+    fn test_git_source_complete() {
+        let src = GitReferenceSource {
+            source_type: "git".into(),
+            repository: "https://github.com/owner/repo.git".into(),
+            branch: Some("develop".into()),
+            description: Some("Full-featured git reference".into()),
+            hidden: false,
+        };
+        let json = serde_json::to_string(&src).expect("serialize");
+        let parsed: GitReferenceSource = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed.source_type, "git");
+        assert_eq!(parsed.repository, "https://github.com/owner/repo.git");
+        assert_eq!(parsed.branch.as_deref(), Some("develop"));
+        assert_eq!(parsed.description.as_deref(), Some("Full-featured git reference"));
+        assert!(!parsed.hidden);
+    }
+
+    #[test]
+    fn test_reference_info_comprehensive() {
+        let info = ReferenceInfo {
+            name: "my-docs".into(),
+            path: "/home/user/project/docs".into(),
+            description: Some("Project documentation directory".into()),
+            hidden: false,
+            source: ReferenceSource::Local(LocalReferenceSource {
+                source_type: "local".into(),
+                path: "/home/user/project/docs".into(),
+                description: Some("Project documentation directory".into()),
+                hidden: false,
+            }),
+        };
+
+        let json = serde_json::to_string(&info).expect("serialize");
+        let parsed: ReferenceInfo = serde_json::from_str(&json).expect("deserialize");
+
+        assert_eq!(parsed.name, "my-docs");
+        assert_eq!(parsed.path, "/home/user/project/docs");
+        assert_eq!(
+            parsed.description.as_deref(),
+            Some("Project documentation directory")
+        );
+        assert!(!parsed.hidden);
+        assert!(parsed.source.is_local());
+    }
+
+    #[test]
+    fn test_reference_source_tagged_enum_deserialization() {
+        // Local JSON with type="local"
+        let local_json =
+            r#"{"type":"local","path":"/tmp/test","description":null,"hidden":false}"#;
+        let parsed: ReferenceSource =
+            serde_json::from_str(local_json).expect("deserialize local");
+        assert!(parsed.is_local());
+        assert!(!parsed.is_git());
+        if let ReferenceSource::Local(l) = &parsed {
+            assert_eq!(l.path, "/tmp/test");
+        } else {
+            panic!("expected Local variant");
+        }
+
+        // Git JSON with type="git"
+        let git_json = r#"{"type":"git","repository":"org/repo","branch":"main","description":"a repo","hidden":false}"#;
+        let parsed: ReferenceSource =
+            serde_json::from_str(git_json).expect("deserialize git");
+        assert!(parsed.is_git());
+        assert!(!parsed.is_local());
+        if let ReferenceSource::Git(g) = &parsed {
+            assert_eq!(g.repository, "org/repo");
+            assert_eq!(g.branch.as_deref(), Some("main"));
+        } else {
+            panic!("expected Git variant");
+        }
+    }
+
+    #[test]
+    fn test_render_reference_guidance_empty_list() {
+        // Edge case: empty slice produces empty string
+        let result = render_reference_guidance(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_render_guidance_single_entry_without_description() {
+        let entries = vec![ReferenceSummary {
+            name: "bare-ref".into(),
+            path: "/bare".into(),
+            description: None,
+        }];
+        let rendered = render_reference_guidance(&entries);
+        // Should include the reference but NOT a description tag
+        assert!(rendered.contains("<name>bare-ref</name>"));
+        assert!(rendered.contains("<path>/bare</path>"));
+        assert!(!rendered.contains("<description>"));
+    }
+
+    #[test]
+    fn test_reference_update_message_updated() {
+        let entries = vec![ReferenceSummary {
+            name: "proj".into(),
+            path: "/proj".into(),
+            description: Some("Main project".into()),
+        }];
+        let msg = reference_update_message(&entries);
+        assert!(msg.contains("The available project references have changed."));
+        assert!(msg.contains("supersedes the previous reference list"));
+        assert!(msg.contains("<available_references>"));
+        assert!(msg.contains("<name>proj</name>"));
+        assert!(msg.contains("</available_references>"));
+    }
+
+    // ── reference_lookup_text ──────────────────────────────────────
+
+    #[test]
+    fn test_reference_lookup_text_empty() {
+        let result = reference_lookup_text(&[]);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_reference_lookup_text_with_entries() {
+        let entries = vec![
+            ReferenceSummary {
+                name: "api".into(),
+                path: "/api".into(),
+                description: Some("REST API".into()),
+            },
+            ReferenceSummary {
+                name: "bare".into(),
+                path: "/bare".into(),
+                description: None,
+            },
+        ];
+        let text = reference_lookup_text(&entries);
+        assert!(text.contains("The following project references are available:"));
+        assert!(text.contains("- api (/api)"));
+        assert!(text.contains("REST API"));
+        assert!(text.contains("- bare (/bare)"));
     }
 }

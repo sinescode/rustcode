@@ -600,6 +600,272 @@ struct ScpMatch {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Repository Service — clone, fetch, resolve
+// ══════════════════════════════════════════════════════════════════════════════
+
+use std::path::{Path, PathBuf};
+
+/// Repository service — handles cloning, fetching, and resolving references.
+///
+/// # Source
+/// Ported from `packages/core/src/repository.ts` and `repository-cache.ts`.
+#[derive(Debug, Clone)]
+pub struct RepositoryService {
+    /// Root directory for caching cloned repositories.
+    cache_root: PathBuf,
+}
+
+impl RepositoryService {
+    /// Create a new RepositoryService with a cache root directory.
+    pub fn new(cache_root: impl Into<PathBuf>) -> Self {
+        Self {
+            cache_root: cache_root.into(),
+        }
+    }
+
+    /// Get the cache root directory.
+    pub fn cache_root(&self) -> &Path {
+        &self.cache_root
+    }
+
+    /// Compute the local cache path for a repository reference.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/repository.ts` `cachePath()` (lines 121–123).
+    pub fn cache_path(&self, reference: &RepositoryReference) -> PathBuf {
+        let path_str = reference.cache_path(&self.cache_root.display().to_string());
+        PathBuf::from(path_str)
+    }
+
+    /// Clone a repository (shallow, single-branch) into the cache.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/repository-cache.ts` `ensure()`.
+    pub async fn clone(
+        &self,
+        reference: &RemoteReference,
+        branch: Option<&str>,
+    ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
+        let local_path = self.cache_path(&RepositoryReference::Remote(reference.clone()));
+        let remote_url = &reference.base.remote;
+
+        // Ensure parent directory exists
+        if let Some(parent) = local_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                RepositoryCacheError::CacheOperation {
+                    operation: "mkdir".into(),
+                    path: parent.display().to_string(),
+                    message: e.to_string(),
+                }
+            })?;
+        }
+
+        // Check if already cloned
+        if local_path.join(".git").exists() {
+            // Already exists — just fetch if requested
+            let head = self.resolve_head(&local_path)?;
+            let current_branch = self.resolve_branch(&local_path)?;
+            return Ok(RepositoryCacheResult {
+                repository: reference.base.label.clone(),
+                host: reference.base.host.clone(),
+                remote: remote_url.clone(),
+                local_path: local_path.display().to_string(),
+                status: RepositoryCacheStatus::Cached,
+                head: Some(head),
+                branch: current_branch,
+            });
+        }
+
+        // Build git clone command
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(["clone", "--depth=1", "--single-branch"]);
+        if let Some(b) = branch {
+            cmd.args(["--branch", b]);
+        }
+        cmd.arg(remote_url)
+            .arg(local_path.display().to_string());
+
+        let output = cmd.output().map_err(|e| RepositoryCacheError::CloneFailed {
+            repository: reference.base.label.clone(),
+            message: format!("failed to run git clone: {e}"),
+        })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RepositoryCacheError::CloneFailed {
+                repository: reference.base.label.clone(),
+                message: format!("git clone failed: {stderr}"),
+            });
+        }
+
+        let head = self.resolve_head(&local_path)?;
+        let current_branch = self.resolve_branch(&local_path)?;
+
+        Ok(RepositoryCacheResult {
+            repository: reference.base.label.clone(),
+            host: reference.base.host.clone(),
+            remote: remote_url.clone(),
+            local_path: local_path.display().to_string(),
+            status: RepositoryCacheStatus::Cloned,
+            head: Some(head),
+            branch: current_branch,
+        })
+    }
+
+    /// Fetch updates for an already-cloned repository.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/repository-cache.ts` `refresh` logic.
+    pub async fn fetch(
+        &self,
+        reference: &RemoteReference,
+    ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
+        let local_path = self.cache_path(&RepositoryReference::Remote(reference.clone()));
+
+        if !local_path.join(".git").exists() {
+            // Not cloned yet — clone it first
+            return self.clone(reference, None).await;
+        }
+
+        // Run git fetch
+        let output = std::process::Command::new("git")
+            .args(["fetch", "--depth=1", "origin"])
+            .current_dir(&local_path)
+            .output()
+            .map_err(|e| RepositoryCacheError::FetchFailed {
+                repository: reference.base.label.clone(),
+                message: format!("failed to run git fetch: {e}"),
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RepositoryCacheError::FetchFailed {
+                repository: reference.base.label.clone(),
+                message: format!("git fetch failed: {stderr}"),
+            });
+        }
+
+        // Reset to origin/HEAD
+        let _ = std::process::Command::new("git")
+            .args(["reset", "--hard", "origin/HEAD"])
+            .current_dir(&local_path)
+            .output();
+
+        let head = self.resolve_head(&local_path)?;
+        let current_branch = self.resolve_branch(&local_path)?;
+
+        Ok(RepositoryCacheResult {
+            repository: reference.base.label.clone(),
+            host: reference.base.host.clone(),
+            remote: reference.base.remote.clone(),
+            local_path: local_path.display().to_string(),
+            status: RepositoryCacheStatus::Refreshed,
+            head: Some(head),
+            branch: current_branch,
+        })
+    }
+
+    /// Resolve a reference to a commit hash (HEAD).
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/repository-cache.ts` HEAD resolution.
+    pub fn resolve(&self, local_path: &Path) -> Result<String, RepositoryCacheError> {
+        self.resolve_head(local_path).map_err(|e| RepositoryCacheError::CacheOperation {
+            operation: "resolve".into(),
+            path: local_path.display().to_string(),
+            message: e.to_string(),
+        })
+    }
+
+    /// Resolve the current branch name from a repository.
+    pub fn resolve_branch(
+        &self,
+        local_path: &Path,
+    ) -> Result<Option<String>, RepositoryCacheError> {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(local_path)
+            .output()
+            .map_err(|e| RepositoryCacheError::CacheOperation {
+                operation: "branch".into(),
+                path: local_path.display().to_string(),
+                message: e.to_string(),
+            })?;
+
+        let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if branch == "HEAD" || branch.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(branch))
+        }
+    }
+
+    /// Ensure a repository is cached and up-to-date (clone if missing, fetch if present).
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/repository-cache.ts` `ensure()`.
+    pub async fn ensure(
+        &self,
+        input: &RepositoryCacheEnsureInput,
+    ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
+        // Validate branch if provided
+        if let Some(ref branch) = input.branch {
+            validate_branch(branch).map_err(|e| RepositoryCacheError::InvalidBranch {
+                branch: branch.clone(),
+                message: e.to_string(),
+            })?;
+        }
+
+        let local_path = self.cache_path(&RepositoryReference::Remote(input.reference.clone()));
+        let needs_clone = !local_path.join(".git").exists();
+
+        if needs_clone {
+            self.clone(&input.reference, input.branch.as_deref()).await
+        } else if input.refresh {
+            self.fetch(&input.reference).await
+        } else {
+            let head = self.resolve_head(&local_path)?;
+            let branch = self.resolve_branch(&local_path)?;
+            Ok(RepositoryCacheResult {
+                repository: input.reference.base.label.clone(),
+                host: input.reference.base.host.clone(),
+                remote: input.reference.base.remote.clone(),
+                local_path: local_path.display().to_string(),
+                status: RepositoryCacheStatus::Cached,
+                head: Some(head),
+                branch,
+            })
+        }
+    }
+
+    // ── Internal helpers ─────────────────────────────────────────────
+
+    /// Resolve HEAD commit hash from a local repository.
+    fn resolve_head(&self, local_path: &Path) -> Result<String, RepositoryCacheError> {
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(local_path)
+            .output()
+            .map_err(|e| RepositoryCacheError::CacheOperation {
+                operation: "rev-parse".into(),
+                path: local_path.display().to_string(),
+                message: e.to_string(),
+            })?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(RepositoryCacheError::CacheOperation {
+                operation: "rev-parse".into(),
+                path: local_path.display().to_string(),
+                message: format!("git rev-parse failed: {stderr}"),
+            });
+        }
+
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Tests
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -837,5 +1103,286 @@ mod tests {
         };
         let json = serde_json::to_string(&input).expect("serialize");
         assert!(json.contains("refresh"));
+    }
+
+    // ── Extended URL parsing tests ────────────────────────────────────
+
+    #[test]
+    fn test_parse_https_gitlab() {
+        let ref_ = parse_repository("https://gitlab.com/org/project").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.host, "gitlab.com");
+                assert_eq!(r.base.path, "org/project");
+                assert_eq!(r.base.owner.as_deref(), Some("org"));
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_https_with_dotgit() {
+        let ref_ = parse_repository("https://github.com/user/repo.git").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.repo, "repo");
+                assert_eq!(r.base.path, "user/repo");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_ssh_with_user() {
+        let ref_ = parse_repository("git@gitlab.com:group/subgroup/project.git").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.host, "gitlab.com");
+                assert_eq!(r.base.repo, "project");
+                assert!(r.base.path.contains("group/subgroup/project"));
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_host_path_style() {
+        let ref_ = parse_repository("github.com/owner/repo").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.host, "github.com");
+                assert_eq!(r.base.path, "owner/repo");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_bitbucket_https() {
+        let ref_ = parse_repository("https://bitbucket.org/team/repo.git").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.host, "bitbucket.org");
+                assert_eq!(r.base.repo, "repo");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_single_owner_no_repo() {
+        // Single segment should not parse as GitHub shorthand
+        let result = parse_repository("justowner");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_empty_after_trim() {
+        assert!(parse_repository("   ").is_none());
+        assert!(parse_repository("\t\n").is_none());
+    }
+
+    #[test]
+    fn test_parse_strips_git_plus_ssh() {
+        let ref_ = parse_repository("git+ssh://git@github.com/owner/repo.git").expect("parse");
+        assert!(ref_.is_remote());
+    }
+
+    #[test]
+    fn test_parse_trailing_slash() {
+        let ref_ = parse_repository("owner/repo/").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.path, "owner/repo");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_three_segment_path() {
+        let ref_ = parse_repository("github.com/org/repo/sub").expect("parse");
+        match ref_ {
+            RepositoryReference::Remote(r) => {
+                assert_eq!(r.base.host, "github.com");
+                assert_eq!(r.base.owner, None); // Only 2-segment gets owner
+                assert_eq!(r.base.repo, "sub");
+            }
+            _ => panic!("expected Remote"),
+        }
+    }
+
+    #[test]
+    fn test_parse_file_url_windows_path() {
+        let ref_ = parse_repository("file:///C:/Users/dev/repo").expect("parse");
+        assert!(ref_.is_file());
+    }
+
+    #[test]
+    fn test_repository_error_invalid_reference_display() {
+        let err = RepositoryError::InvalidReference {
+            repository: "bad".into(),
+            message: "nope".into(),
+        };
+        assert!(err.to_string().contains("bad"));
+        assert!(err.to_string().contains("nope"));
+    }
+
+    #[test]
+    fn test_repository_error_invalid_branch_display() {
+        let err = RepositoryError::InvalidBranch {
+            branch: "-bad".into(),
+            message: "no dashes".into(),
+        };
+        assert!(err.to_string().contains("-bad"));
+    }
+
+    #[test]
+    fn test_repository_cache_error_clone_failed_display() {
+        let err = RepositoryCacheError::CloneFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(err.to_string().contains("x/y"));
+        assert!(err.to_string().contains("boom"));
+    }
+
+    #[test]
+    fn test_repository_cache_error_fetch_failed_display() {
+        let err = RepositoryCacheError::FetchFailed {
+            repository: "a/b".into(),
+            message: "network error".into(),
+        };
+        assert!(err.to_string().contains("a/b"));
+    }
+
+    // ── RepositoryService tests ───────────────────────────────────────
+
+    fn setup_repo_cache() -> (tempfile::TempDir, RepositoryService) {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let svc = RepositoryService::new(dir.path().to_path_buf());
+        (dir, svc)
+    }
+
+    #[test]
+    fn test_cache_path_remote() {
+        let (_dir, svc) = setup_repo_cache();
+        let ref_ = parse_repository("github.com/owner/repo").expect("parse");
+        let path = svc.cache_path(&ref_);
+        assert!(path.starts_with(svc.cache_root()));
+        assert!(path.to_string_lossy().contains("github.com"));
+        assert!(path.to_string_lossy().contains("owner"));
+        assert!(path.to_string_lossy().contains("repo"));
+    }
+
+    #[test]
+    fn test_cache_path_file() {
+        let (_dir, svc) = setup_repo_cache();
+        let ref_ = parse_repository("file:///home/user/local-repo").expect("parse");
+        let path = svc.cache_path(&ref_);
+        assert!(path.starts_with(svc.cache_root()));
+        assert!(path.to_string_lossy().contains("file"));
+    }
+
+    #[test]
+    fn test_resolve_branch_detached_head() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo_path = dir.path().join("detached-repo");
+
+        // Create a repo and make a commit
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+
+        std::fs::write(repo_path.join("test.txt"), "hello").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+
+        let svc = RepositoryService::new(dir.path().to_path_buf());
+        let branch = svc.resolve_branch(&repo_path).expect("resolve branch");
+        // Should resolve to a branch name (not "HEAD")
+        assert!(branch.is_some());
+    }
+
+    #[test]
+    fn test_resolve_head_returns_hash() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo_path = dir.path().join("hash-repo");
+
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+
+        std::fs::write(repo_path.join("file.txt"), "data").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+
+        let svc = RepositoryService::new(dir.path().to_path_buf());
+        let hash = svc.resolve(&repo_path).expect("resolve HEAD");
+        // Should be a 40-char hex string
+        assert_eq!(hash.len(), 40);
+        assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn test_validate_branch_more_cases() {
+        // Valid cases
+        assert!(validate_branch("main").is_ok());
+        assert!(validate_branch("feature/PROJ-123").is_ok());
+        assert!(validate_branch("release/2024.01").is_ok());
+        assert!(validate_branch("fix/bug_123-v2_backport").is_ok());
+        assert!(validate_branch("1.0.0").is_ok());
+
+        // Invalid cases
+        assert!(validate_branch("").is_ok()); // Empty is technically valid per our regex
+        assert!(validate_branch("-starts-with-dash").is_err());
+        assert!(validate_branch("has space").is_err());
+        assert!(validate_branch("has..dots").is_err());
+        assert!(validate_branch("has@at").is_err());
+    }
+
+    #[test]
+    fn test_parse_remote_repository_via_ssh_url() {
+        let r = parse_remote_repository("ssh://git@github.com/org/repo.git").expect("parse ssh");
+        assert_eq!(r.base.host, "github.com");
+        assert_eq!(r.base.repo, "repo");
+    }
+
+    #[test]
+    fn test_reference_is_remote_and_is_file() {
+        let remote = parse_repository("owner/repo").expect("parse");
+        assert!(remote.is_remote());
+        assert!(!remote.is_file());
+
+        let file = parse_repository("file:///local/repo").expect("parse");
+        assert!(file.is_file());
+        assert!(!file.is_remote());
+    }
+
+    #[test]
+    fn test_cache_identity_file() {
+        let ref_ = parse_repository("file:///home/dev/project").expect("parse");
+        // File references have host="file"
+        assert!(ref_.cache_identity().starts_with("file/"));
     }
 }

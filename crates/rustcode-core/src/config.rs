@@ -1846,4 +1846,424 @@ mod tests {
             _ => panic!("expected Notify"),
         }
     }
+
+    // ── JSONC edge cases ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_jsonc_nested_comments() {
+        // Block comment containing what looks like a string with slashes
+        let input = r#"{
+            /* comment with "quotes" and // slashes */
+            "key": "value"
+        }"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["key"], "value");
+    }
+
+    #[test]
+    fn test_parse_jsonc_escaped_quotes_in_string() {
+        let input = r#"{"message": "She said \"hello\" to me"}"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["message"], "She said \"hello\" to me");
+    }
+
+    #[test]
+    fn test_parse_jsonc_unicode_in_strings() {
+        let input = r#"{"greeting": "こんにちは", "emoji": "🚀"}"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["greeting"], "こんにちは");
+        assert_eq!(result["emoji"], "🚀");
+    }
+
+    #[test]
+    fn test_parse_jsonc_line_comment_after_value() {
+        let input = r#"{
+            "key": "value" // inline comment
+        }"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["key"], "value");
+    }
+
+    #[test]
+    fn test_parse_jsonc_multiple_trailing_commas() {
+        let input = r#"{
+            "a": 1,
+            "b": 2,
+            "c": 3,
+        }"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["a"], 1);
+        assert_eq!(result["b"], 2);
+        assert_eq!(result["c"], 3);
+    }
+
+    #[test]
+    fn test_parse_jsonc_empty_object_with_comments() {
+        let input = r#"{
+            // nothing here
+            /* really */
+        }"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert!(result.as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_parse_jsonc_block_comment_between_fields() {
+        let input = r#"{
+            "a": 1,
+            /* separator */
+            "b": 2
+        }"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["a"], 1);
+        assert_eq!(result["b"], 2);
+    }
+
+    #[test]
+    fn test_parse_jsonc_single_line_block_comment() {
+        let input = r#"{/* short */ "key": true}"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["key"], true);
+    }
+
+    // ── Variable substitution edge cases ──────────────────────────────────
+
+    #[test]
+    fn test_substitute_with_custom_env_map() {
+        let mut env = HashMap::new();
+        env.insert("CUSTOM_KEY".into(), "custom_value".into());
+        let result = substitute_variables(
+            "{env:CUSTOM_KEY}",
+            std::path::Path::new("."),
+            Some(&env),
+        )
+        .unwrap();
+        assert_eq!(result, "custom_value");
+    }
+
+    #[test]
+    fn test_substitute_multiple_env_vars() {
+        std::env::set_var("RUSTCODE_VAR_A", "alpha");
+        std::env::set_var("RUSTCODE_VAR_B", "beta");
+        let result = substitute_variables(
+            "{env:RUSTCODE_VAR_A} and {env:RUSTCODE_VAR_B}",
+            std::path::Path::new("."),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, "alpha and beta");
+        std::env::remove_var("RUSTCODE_VAR_A");
+        std::env::remove_var("RUSTCODE_VAR_B");
+    }
+
+    #[test]
+    fn test_substitute_env_var_in_json_context() {
+        std::env::set_var("RUSTCODE_MODEL", "claude-sonnet");
+        let result = substitute_variables(
+            r#"{"model": "{env:RUSTCODE_MODEL}"}"#,
+            std::path::Path::new("."),
+            None,
+        )
+        .unwrap();
+        assert_eq!(result, r#"{"model": "claude-sonnet"}"#);
+        std::env::remove_var("RUSTCODE_MODEL");
+    }
+
+    #[test]
+    fn test_substitute_comment_line_keeps_file_token() {
+        // When a {file:...} token appears on a commented line, it should be kept verbatim
+        let result = substitute_variables(
+            "// {file:./example.txt}\n{\"key\": \"value\"}",
+            std::path::Path::new("."),
+            None,
+        )
+        .unwrap();
+        assert!(result.contains("{file:./example.txt}"));
+        assert!(result.contains("\"key\""));
+    }
+
+    // ── Info field coverage tests ────────────────────────────────────────
+
+    #[test]
+    fn test_info_all_fields_deserialize() {
+        let json = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json",
+            "shell": "/bin/bash",
+            "logLevel": "INFO",
+            "server": {
+                "port": 3000,
+                "hostname": "localhost"
+            },
+            "command": {
+                "test": {
+                    "template": "echo hello"
+                }
+            },
+            "skills": {
+                "paths": ["./skills"],
+                "urls": ["https://example.com/skills"]
+            },
+            "references": {
+                "mylib": {
+                    "repository": "https://github.com/example/repo",
+                    "branch": "main"
+                }
+            },
+            "watcher": {
+                "ignore": ["node_modules", ".git"]
+            },
+            "snapshot": true,
+            "plugin": ["my-plugin"],
+            "share": "manual",
+            "autoupdate": "notify",
+            "disabled_providers": ["bedrock"],
+            "enabled_providers": ["anthropic"],
+            "model": "anthropic/claude-sonnet-4-6",
+            "small_model": "anthropic/claude-haiku",
+            "default_agent": "build",
+            "username": "test-user",
+            "agent": {
+                "build": {
+                    "name": "build-agent",
+                    "mode": "primary",
+                    "steps": 25
+                }
+            },
+            "provider": {
+                "anthropic": {
+                    "api": "anthropic",
+                    "env": ["ANTHROPIC_API_KEY"]
+                }
+            },
+            "mcp": {
+                "filesystem": {
+                    "type": "local",
+                    "command": ["npx", "-y", "@modelcontextprotocol/server-filesystem"]
+                }
+            },
+            "formatter": true,
+            "lsp": true,
+            "instructions": ["Always use TypeScript", "No console.log"],
+            "permission": {
+                "bash": "ask",
+                "read": { "*.env": "deny", "*.ts": "allow" }
+            },
+            "tools": {
+                "bash": true,
+                "python": false
+            },
+            "attachment": {
+                "image": {
+                    "max_width": 1920,
+                    "max_height": 1080
+                }
+            },
+            "enterprise": {
+                "url": "https://enterprise.example.com"
+            },
+            "tool_output": {
+                "max_lines": 1000,
+                "max_bytes": 50000
+            },
+            "compaction": {
+                "auto": true,
+                "prune": false
+            },
+            "experimental": {
+                "batch_tool": true
+            }
+        });
+
+        let info: Info = serde_json::from_value(json).unwrap();
+        assert_eq!(info.schema.unwrap(), "https://opencode.ai/config.json");
+        assert_eq!(info.shell.unwrap(), "/bin/bash");
+        assert_eq!(info.log_level.unwrap(), LogLevel::Info);
+        assert!(info.server.is_some());
+        assert_eq!(info.command.len(), 1);
+        assert!(info.skills.is_some());
+        assert_eq!(info.references.len(), 1);
+        assert!(info.watcher.is_some());
+        assert_eq!(info.snapshot, Some(true));
+        assert_eq!(info.plugin.len(), 1);
+        assert!(matches!(info.share.unwrap(), ShareMode::Manual));
+        assert_eq!(info.disabled_providers, vec!["bedrock"]);
+        assert_eq!(info.enabled_providers, vec!["anthropic"]);
+        assert_eq!(info.model.unwrap(), "anthropic/claude-sonnet-4-6");
+        assert_eq!(info.small_model.unwrap(), "anthropic/claude-haiku");
+        assert_eq!(info.default_agent.unwrap(), "build");
+        assert_eq!(info.username.unwrap(), "test-user");
+        assert_eq!(info.agent.len(), 1);
+        assert_eq!(info.provider.len(), 1);
+        assert_eq!(info.mcp.len(), 1);
+        assert!(info.formatter.is_some());
+        assert!(info.lsp.is_some());
+        assert_eq!(info.instructions.len(), 2);
+        assert!(info.permission.is_some());
+        assert_eq!(info.tools.len(), 2);
+        assert!(info.attachment.is_some());
+        assert!(info.enterprise.is_some());
+        assert!(info.tool_output.is_some());
+        assert!(info.compaction.is_some());
+        assert!(info.experimental.is_some());
+    }
+
+    #[test]
+    fn test_info_default_is_empty() {
+        let info = Info::default();
+        assert!(info.schema.is_none());
+        assert!(info.shell.is_none());
+        assert!(info.log_level.is_none());
+        assert!(info.server.is_none());
+        assert!(info.command.is_empty());
+        assert!(info.skills.is_none());
+        assert!(info.references.is_empty());
+        assert!(info.watcher.is_none());
+        assert!(info.snapshot.is_none());
+        assert!(info.plugin.is_empty());
+        assert!(info.share.is_none());
+        assert!(info.model.is_none());
+        assert!(info.agent.is_empty());
+        assert!(info.provider.is_empty());
+        assert!(info.mcp.is_empty());
+        assert!(info.instructions.is_empty());
+        assert!(info.permission.is_none());
+        assert!(info.tools.is_empty());
+    }
+
+    #[test]
+    fn test_parse_jsonc_boolean_and_number_values() {
+        let input = r#"{
+            "enabled": true,
+            "disabled": false,
+            "count": 42,
+            "price": 9.99,
+            "null_field": null
+        }"#;
+        let result = parse_jsonc(input, std::path::Path::new("test.jsonc")).unwrap();
+        assert_eq!(result["enabled"], true);
+        assert_eq!(result["disabled"], false);
+        assert_eq!(result["count"], 42);
+        assert_eq!(result["price"], 9.99);
+        assert!(result["null_field"].is_null());
+    }
+
+    #[test]
+    fn test_substitute_variables_empty_template() {
+        let result = substitute_variables("", std::path::Path::new("."), None).unwrap();
+        assert_eq!(result, "");
+    }
+
+    // ── Config discovery integration test ────────────────────────────────
+
+    #[test]
+    fn test_discover_config_files_current_dir() {
+        // Discover from the current directory should not error
+        let files = discover_config_files(
+            "opencode",
+            std::path::Path::new("."),
+            None,
+        );
+        // May or may not find files, but should not error
+        assert!(files.is_ok());
+    }
+
+    #[test]
+    fn test_discover_opencode_dirs_current_dir() {
+        let dirs = discover_opencode_dirs(
+            std::path::Path::new("."),
+            None,
+        );
+        assert!(dirs.is_ok());
+    }
+
+    // ── Config merging: all fields ────────────────────────────────────────
+
+    #[test]
+    fn test_merge_all_scalar_fields() {
+        let mut target = Info::default();
+        let source = Info {
+            schema: Some("https://schema.test".into()),
+            shell: Some("/bin/fish".into()),
+            log_level: Some(LogLevel::Debug),
+            snapshot: Some(false),
+            share: Some(ShareMode::Disabled),
+            model: Some("test/model".into()),
+            small_model: Some("test/small".into()),
+            default_agent: Some("test-agent".into()),
+            username: Some("tester".into()),
+            ..Default::default()
+        };
+        merge_info(&mut target, &source);
+        assert_eq!(target.schema.unwrap(), "https://schema.test");
+        assert_eq!(target.shell.unwrap(), "/bin/fish");
+        assert_eq!(target.log_level.unwrap(), LogLevel::Debug);
+        assert_eq!(target.snapshot.unwrap(), false);
+        assert!(matches!(target.share.unwrap(), ShareMode::Disabled));
+        assert_eq!(target.model.unwrap(), "test/model");
+        assert_eq!(target.small_model.unwrap(), "test/small");
+        assert_eq!(target.default_agent.unwrap(), "test-agent");
+        assert_eq!(target.username.unwrap(), "tester");
+    }
+
+    #[test]
+    fn test_merge_providers_and_agents() {
+        let mut target = Info {
+            agent: {
+                let mut m = HashMap::new();
+                m.insert("existing".into(), AgentConfig {
+                    name: Some("existing".into()),
+                    ..Default::default()
+                });
+                m
+            },
+            provider: {
+                let mut m = HashMap::new();
+                m.insert("old-prov".into(), ProviderConfig::default());
+                m
+            },
+            ..Default::default()
+        };
+        let source = Info {
+            agent: {
+                let mut m = HashMap::new();
+                m.insert("new-agent".into(), AgentConfig {
+                    name: Some("new-agent".into()),
+                    ..Default::default()
+                });
+                m
+            },
+            provider: {
+                let mut m = HashMap::new();
+                m.insert("new-prov".into(), ProviderConfig::default());
+                m
+            },
+            ..Default::default()
+        };
+
+        merge_info(&mut target, &source);
+
+        // Existing entries should be preserved
+        assert!(target.agent.contains_key("existing"));
+        assert!(target.provider.contains_key("old-prov"));
+        // New entries should be added
+        assert!(target.agent.contains_key("new-agent"));
+        assert!(target.provider.contains_key("new-prov"));
+    }
+
+    #[test]
+    fn test_merge_disabled_enabled_providers() {
+        let mut target = Info {
+            disabled_providers: vec!["a".into()],
+            ..Default::default()
+        };
+        let source = Info {
+            disabled_providers: vec!["b".into(), "c".into()],
+            enabled_providers: vec!["d".into()],
+            ..Default::default()
+        };
+        merge_info(&mut target, &source);
+        // Source overrides disabled_providers (full replacement)
+        assert_eq!(target.disabled_providers, vec!["b", "c"]);
+        assert_eq!(target.enabled_providers, vec!["d"]);
+    }
 }

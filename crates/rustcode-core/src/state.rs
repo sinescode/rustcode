@@ -667,4 +667,325 @@ mod tests {
         let doc = state.get().await;
         assert_eq!(doc.title, "Cloneable");
     }
+
+    #[tokio::test]
+    async fn test_mutate_with_reason_propagates() {
+        let finalized_reasons = Arc::new(Mutex::new(Vec::new()));
+        let reasons_clone = Arc::clone(&finalized_reasons);
+
+        let options = StateOptions {
+            initial: Arc::new(|| Document {
+                title: String::new(),
+                content: String::new(),
+                tags: Vec::new(),
+            }),
+            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
+            finalize: Some(Arc::new(
+                move |_editor: &DocumentEditor<'_>, reason: Option<&str>| {
+                    let mut log = reasons_clone.blocking_lock();
+                    log.push(reason.expect("reason").to_string());
+                },
+            )),
+        };
+
+        let state = AppState::new(options);
+
+        state
+            .mutate(Some("urgent-bugfix"), |editor| {
+                editor.set_title("Patched");
+            })
+            .await;
+
+        state
+            .mutate(Some("routine-cleanup"), |editor| {
+                editor.append_content("Cleaned");
+            })
+            .await;
+
+        let reasons = finalized_reasons.lock().await;
+        assert_eq!(reasons.len(), 2);
+        assert_eq!(reasons[0], "urgent-bugfix");
+        assert_eq!(reasons[1], "routine-cleanup");
+    }
+
+    #[tokio::test]
+    async fn test_rebuild_preserves_transform_order() {
+        let state = AppState::new(make_document_options());
+
+        // Register transforms that append markers in order
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.append_content("[T1]");
+            }))
+            .await;
+
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.append_content("[T2]");
+            }))
+            .await;
+
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.append_content("[T3]");
+            }))
+            .await;
+
+        let doc = state.get().await;
+        assert_eq!(doc.content, "[T1][T2][T3]");
+
+        // Trigger a rebuild by adding another transform
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.append_content("[T4]");
+            }))
+            .await;
+
+        // After rebuild, all four transforms should replay in registration order
+        let doc = state.get().await;
+        assert_eq!(doc.content, "[T1][T2][T3][T4]");
+
+        // Another rebuild: add T5, verify full order preserved
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.append_content("[T5]");
+            }))
+            .await;
+
+        let doc = state.get().await;
+        assert_eq!(doc.content, "[T1][T2][T3][T4][T5]");
+    }
+
+    #[tokio::test]
+    async fn test_finalize_on_empty_state() {
+        let finalize_called = Arc::new(Mutex::new(false));
+        let called_clone = Arc::clone(&finalize_called);
+
+        let options = StateOptions {
+            initial: Arc::new(|| Document {
+                title: String::new(),
+                content: String::new(),
+                tags: Vec::new(),
+            }),
+            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
+            finalize: Some(Arc::new(
+                move |_editor: &DocumentEditor<'_>, _reason: Option<&str>| {
+                    let mut called = called_clone.blocking_lock();
+                    *called = true;
+                },
+            )),
+        };
+
+        // State with finalize but zero registered transforms
+        let state = AppState::new(options);
+        assert_eq!(state.transform_count().await, 0);
+
+        // Mutate — finalize hook should still run
+        state
+            .mutate(Some("no-transforms-yet"), |editor| {
+                editor.set_title("First Edit");
+            })
+            .await;
+
+        let was_called = *finalize_called.lock().await;
+        assert!(
+            was_called,
+            "finalize hook should run on mutate even when no transforms are registered"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_slot_update_triggers_rebuild() {
+        let state = AppState::new(make_document_options());
+
+        let slot = state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("Original");
+            }))
+            .await;
+
+        let doc = state.get().await;
+        assert_eq!(doc.title, "Original");
+
+        // Update the slot's transform function — should trigger rebuild
+        slot.update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+            editor.set_title("Updated");
+            editor.append_content("NewContent");
+        }))
+        .await;
+
+        let doc = state.get().await;
+        assert_eq!(doc.title, "Updated");
+        assert_eq!(doc.content, "NewContent");
+    }
+
+    #[tokio::test]
+    async fn test_transform_count_after_remove_and_rebuild() {
+        let state = AppState::new(make_document_options());
+
+        let _slot_a = state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("A");
+            }))
+            .await;
+
+        let slot_b = state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.append_content("B");
+            }))
+            .await;
+
+        let _slot_c = state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.add_tag("C");
+            }))
+            .await;
+
+        assert_eq!(state.transform_count().await, 3);
+
+        // Remove the middle transform and rebuild
+        state.remove_transform(&slot_b).await;
+
+        assert_eq!(
+            state.transform_count().await,
+            2,
+            "transform count should decrease after removal"
+        );
+
+        // After rebuild, only transforms A and C should be active
+        let doc = state.get().await;
+        assert_eq!(doc.title, "A");
+        assert!(doc.content.is_empty(), "B's content should be gone");
+        assert_eq!(doc.tags, vec!["C"]);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_mutate_and_get() {
+        let state = Arc::new(AppState::new(make_document_options()));
+
+        // Set up a transform as baseline
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("Concurrent");
+            }))
+            .await;
+
+        let mut handles = Vec::new();
+
+        // Spawn several tasks that mutate
+        for i in 0..10 {
+            let s = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                s.mutate(Some("concurrent"), move |editor: &mut DocumentEditor<'_>| {
+                    editor.append_content(&format!("M{}", i));
+                })
+                .await;
+            }));
+        }
+
+        // Spawn several tasks that read
+        for _ in 0..10 {
+            let s = Arc::clone(&state);
+            handles.push(tokio::spawn(async move {
+                let doc = s.get().await;
+                // Just verify we can read without panicking
+                let _ = doc.title.len();
+                let _ = doc.content.len();
+            }));
+        }
+
+        for handle in handles {
+            handle.await.expect("concurrent task should not panic");
+        }
+
+        // Final read — state should be internally consistent
+        let doc = state.get().await;
+        assert_eq!(doc.title, "Concurrent");
+        // Content may vary due to interleaving, but no data race means no panic/corruption
+    }
+
+    #[tokio::test]
+    async fn test_state_default_options_no_finalize() {
+        // make_document_options already has finalize: None
+        let state = AppState::new(make_document_options());
+
+        // Mutate without a finalize hook — must not panic
+        state
+            .mutate(Some("no-hook"), |editor| {
+                editor.set_title("Safe");
+                editor.append_content("No finalize needed");
+            })
+            .await;
+
+        let doc = state.get().await;
+        assert_eq!(doc.title, "Safe");
+        assert_eq!(doc.content, "No finalize needed");
+    }
+
+    #[tokio::test]
+    async fn test_state_clone_independence() {
+        let state = AppState::new(make_document_options());
+
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("Immutable Base");
+                editor.append_content("Original");
+            }))
+            .await;
+
+        // get() returns a clone — modifying it must not affect the real state
+        let mut doc_clone = state.get().await;
+        doc_clone.title = "Hacked".to_string();
+        doc_clone.content.push_str("Tampered");
+
+        // Fetch again — should be unchanged
+        let doc = state.get().await;
+        assert_eq!(doc.title, "Immutable Base");
+        assert_eq!(doc.content, "Original");
+    }
+
+    #[tokio::test]
+    async fn test_appstate_debug_format() {
+        let state = AppState::new(make_document_options());
+
+        state
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("Debug Me");
+            }))
+            .await;
+
+        // Debug output must not panic
+        let debug_str = format!("{:?}", state);
+        assert!(debug_str.contains("AppState"));
+        assert!(debug_str.contains("StateOptions"));
+    }
+
+    #[tokio::test]
+    async fn test_stateoptions_clone() {
+        let options_a = make_document_options();
+
+        // Clone the options — both must work independently
+        let options_b = options_a.clone();
+
+        let state_a = AppState::new(options_a);
+        let state_b = AppState::new(options_b);
+
+        state_a
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("State A");
+            }))
+            .await;
+
+        state_b
+            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
+                editor.set_title("State B");
+            }))
+            .await;
+
+        let doc_a = state_a.get().await;
+        let doc_b = state_b.get().await;
+
+        assert_eq!(doc_a.title, "State A");
+        assert_eq!(doc_b.title, "State B");
+    }
 }

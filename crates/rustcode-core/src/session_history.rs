@@ -191,6 +191,126 @@ pub struct LegacyPromptedParams {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Session History Service
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Service for managing session message history.
+///
+/// Handles appending messages, replaying history, and context epoch management.
+///
+/// Ported from:
+/// - `packages/core/src/session/history.ts` (lines 1-102)
+pub struct SessionHistory {
+    messages: Vec<HistoryEntry>,
+    epoch: Option<ContextEpoch>,
+}
+
+impl SessionHistory {
+    /// Create a new empty history.
+    pub fn new() -> Self {
+        Self {
+            messages: Vec::new(),
+            epoch: None,
+        }
+    }
+
+    /// Append a message to the history.
+    ///
+    /// Returns the sequence number assigned to this message.
+    ///
+    /// Ported from: `packages/core/src/session/history.ts` — append logic
+    pub fn append(&mut self, message: serde_json::Value) -> u64 {
+        let seq = self.next_seq();
+        self.messages.push(HistoryEntry { seq, message });
+        seq
+    }
+
+    /// Get the next sequence number.
+    fn next_seq(&self) -> u64 {
+        self.messages.last().map(|e| e.seq + 1).unwrap_or(1)
+    }
+
+    /// Replay history as an iterator of (seq, message) pairs.
+    ///
+    /// Ported from: `packages/core/src/session/history.ts` — replay/iterator pattern
+    pub fn replay(&self) -> impl Iterator<Item = &HistoryEntry> {
+        self.messages.iter()
+    }
+
+    /// Replay messages starting from a specific sequence number.
+    pub fn replay_from(&self, from_seq: u64) -> impl Iterator<Item = &HistoryEntry> {
+        self.messages.iter().filter(move |e| e.seq >= from_seq)
+    }
+
+    /// Get the current epoch.
+    pub fn epoch(&self) -> Option<&ContextEpoch> {
+        self.epoch.as_ref()
+    }
+
+    /// Set or update the context epoch.
+    ///
+    /// The epoch establishes a baseline for context management.
+    ///
+    /// Ported from: `packages/core/src/session/history.ts` — epoch management
+    pub fn set_epoch(&mut self, epoch: ContextEpoch) {
+        self.epoch = Some(epoch);
+    }
+
+    /// Clear the epoch (e.g., after compaction).
+    pub fn clear_epoch(&mut self) {
+        self.epoch = None;
+    }
+
+    /// Get the total number of messages in history.
+    pub fn len(&self) -> usize {
+        self.messages.len()
+    }
+
+    /// Check if the history is empty.
+    pub fn is_empty(&self) -> bool {
+        self.messages.is_empty()
+    }
+
+    /// Get the latest sequence number.
+    pub fn latest_seq(&self) -> Option<u64> {
+        self.messages.last().map(|e| e.seq)
+    }
+
+    /// Get the latest message.
+    pub fn latest_message(&self) -> Option<&serde_json::Value> {
+        self.messages.last().map(|e| &e.message)
+    }
+
+    /// Load history from a vector of messages with auto-assigned seq numbers.
+    pub fn load(&mut self, messages: Vec<serde_json::Value>) {
+        self.messages.clear();
+        for msg in messages {
+            self.append(msg);
+        }
+    }
+
+    /// Get messages suitable for a runner context (new since baseline).
+    pub fn runner_context(&self, baseline_seq: Option<u64>) -> Vec<&HistoryEntry> {
+        match baseline_seq {
+            Some(seq) => self.messages.iter().filter(|e| e.seq > seq).collect(),
+            None => self.messages.iter().collect(),
+        }
+    }
+
+    /// Clear all history.
+    pub fn clear(&mut self) {
+        self.messages.clear();
+        self.epoch = None;
+    }
+}
+
+impl Default for SessionHistory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Tests
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -313,5 +433,111 @@ mod tests {
             conflict.to_string(),
             "Lifecycle conflict for input: msg_conflict"
         );
+    }
+
+    #[test]
+    fn test_session_history_append() {
+        let mut history = SessionHistory::new();
+        let seq = history.append(serde_json::json!({"type": "user", "text": "hello"}));
+        assert_eq!(seq, 1);
+
+        let seq2 = history.append(serde_json::json!({"type": "assistant", "text": "hi"}));
+        assert_eq!(seq2, 2);
+        assert_eq!(history.len(), 2);
+    }
+
+    #[test]
+    fn test_session_history_replay() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({"type": "user", "text": "msg1"}));
+        history.append(serde_json::json!({"type": "user", "text": "msg2"}));
+
+        let msgs: Vec<_> = history.replay().collect();
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].seq, 1);
+        assert_eq!(msgs[1].seq, 2);
+    }
+
+    #[test]
+    fn test_session_history_replay_from() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({"text": "a"}));
+        history.append(serde_json::json!({"text": "b"}));
+        history.append(serde_json::json!({"text": "c"}));
+
+        let from_2: Vec<_> = history.replay_from(2).collect();
+        assert_eq!(from_2.len(), 2);
+        assert_eq!(from_2[0].message["text"], "b");
+        assert_eq!(from_2[1].message["text"], "c");
+    }
+
+    #[test]
+    fn test_session_history_epoch() {
+        let mut history = SessionHistory::new();
+        assert!(history.epoch().is_none());
+
+        let epoch = ContextEpoch {
+            session_id: "ses_001".into(),
+            baseline: "Summary...".into(),
+            agent: "build".into(),
+            snapshot: serde_json::json!({}),
+            baseline_seq: 5,
+            replacement_seq: None,
+            revision: 1,
+        };
+        history.set_epoch(epoch);
+        assert!(history.epoch().is_some());
+        assert_eq!(history.epoch().unwrap().baseline_seq, 5);
+
+        history.clear_epoch();
+        assert!(history.epoch().is_none());
+    }
+
+    #[test]
+    fn test_session_history_load() {
+        let mut history = SessionHistory::new();
+        history.load(vec![
+            serde_json::json!({"text": "first"}),
+            serde_json::json!({"text": "second"}),
+        ]);
+        assert_eq!(history.len(), 2);
+        assert_eq!(history.latest_seq(), Some(2));
+    }
+
+    #[test]
+    fn test_session_history_empty() {
+        let history = SessionHistory::new();
+        assert!(history.is_empty());
+        assert_eq!(history.len(), 0);
+        assert!(history.latest_seq().is_none());
+        assert!(history.latest_message().is_none());
+    }
+
+    #[test]
+    fn test_session_history_runner_context() {
+        let mut history = SessionHistory::new();
+        for i in 1..=5 {
+            history.append(serde_json::json!({"seq": i}));
+        }
+
+        let ctx = history.runner_context(Some(3));
+        assert_eq!(ctx.len(), 2); // seq 4 and 5
+        assert_eq!(ctx[0].seq, 4);
+        assert_eq!(ctx[1].seq, 5);
+    }
+
+    #[test]
+    fn test_session_history_clear() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({"text": "msg"}));
+        history.clear();
+        assert!(history.is_empty());
+        assert!(history.epoch().is_none());
+    }
+
+    #[test]
+    fn test_session_history_default() {
+        let history = SessionHistory::default();
+        assert!(history.is_empty());
     }
 }

@@ -979,4 +979,216 @@ mod tests {
         let json = serde_json::to_string(&diff).unwrap();
         assert!(!json.contains("patch"));
     }
+
+    // ── init() seed from source ──────────────────────────────────────────
+
+    #[test]
+    fn test_new_creates_correct_gitdir_path() {
+        let svc = SnapshotService::new(
+            "/tmp/project",
+            "/tmp/project",
+            "/home/user/.local/share/opencode",
+            "my-project",
+            Some("git"),
+        );
+        let expected_hash = hash_path("/tmp/project");
+        let expected_suffix = format!("snapshot/my-project/{}", expected_hash);
+        let gitdir_str = svc.gitdir().to_string_lossy();
+        assert!(
+            gitdir_str.contains(&expected_suffix),
+            "gitdir should contain '{}', got '{}'",
+            expected_suffix,
+            gitdir_str
+        );
+    }
+
+    #[test]
+    fn test_init_vcs_none_returns_not_enabled() {
+        let mut svc = SnapshotService::new(
+            "/tmp/project",
+            "/tmp/project",
+            "/tmp/snapshots",
+            "test-proj",
+            None,
+        );
+        let result = svc.init();
+        assert!(result.is_err());
+        match result {
+            Err(SnapshotError::NotEnabled) => {} // expected
+            other => panic!("expected NotEnabled, got {:?}", other),
+        }
+    }
+
+    // ── track() with ignored files ───────────────────────────────────────
+
+    #[test]
+    fn test_file_size_limit_is_2_mib() {
+        assert_eq!(FILE_SIZE_LIMIT, 2 * 1024 * 1024);
+        assert_eq!(FILE_SIZE_LIMIT, 2097152);
+    }
+
+    #[test]
+    fn test_null_join_single_item() {
+        let items = vec!["only-one.txt"];
+        let result = null_join(&items);
+        assert_eq!(result, "only-one.txt\0");
+    }
+
+    // ── track() with large file filtering ────────────────────────────────
+
+    #[test]
+    fn test_new_different_project_ids_different_gitdirs() {
+        let svc_a = SnapshotService::new(
+            "/tmp/project",
+            "/tmp/project",
+            "/tmp/data",
+            "project-alpha",
+            Some("git"),
+        );
+        let svc_b = SnapshotService::new(
+            "/tmp/project",
+            "/tmp/project",
+            "/tmp/data",
+            "project-beta",
+            Some("git"),
+        );
+        assert_ne!(
+            svc_a.gitdir(),
+            svc_b.gitdir(),
+            "different project IDs should produce different gitdirs"
+        );
+    }
+
+    #[test]
+    fn test_snapshot_file_diff_added_status_serde() {
+        let diff = SnapshotFileDiff {
+            file: Some("new_file.rs".into()),
+            patch: Some("// brand new file\n".into()),
+            additions: 42,
+            deletions: 0,
+            status: Some("added".into()),
+        };
+        let json = serde_json::to_string(&diff).expect("serialize added diff");
+        let parsed: SnapshotFileDiff = serde_json::from_str(&json).expect("deserialize added diff");
+        assert_eq!(parsed.status, Some("added".into()));
+        assert_eq!(parsed.additions, 42);
+        assert_eq!(parsed.deletions, 0);
+        assert!(json.contains("added"));
+    }
+
+    // ── restore() edge cases ─────────────────────────────────────────────
+
+    #[test]
+    fn test_snapshot_file_diff_zero_additions_and_deletions() {
+        let diff = SnapshotFileDiff {
+            file: Some("unchanged.txt".into()),
+            patch: None,
+            additions: 0,
+            deletions: 0,
+            status: Some("modified".into()),
+        };
+        let json = serde_json::to_string(&diff).expect("serialize zero-change diff");
+        let parsed: SnapshotFileDiff = serde_json::from_str(&json).expect("deserialize zero-change diff");
+        assert_eq!(parsed.additions, 0);
+        assert_eq!(parsed.deletions, 0);
+        // "patch" should be absent since it's None with skip_serializing_if
+        assert!(!json.contains("patch"));
+    }
+
+    #[test]
+    fn test_snapshot_patch_empty_files() {
+        let patch = SnapshotPatch {
+            hash: "deadbeef".into(),
+            files: vec![],
+        };
+        let json = serde_json::to_string(&patch).expect("serialize empty patch");
+        let parsed: SnapshotPatch = serde_json::from_str(&json).expect("deserialize empty patch");
+        assert_eq!(parsed.hash, "deadbeef");
+        assert!(parsed.files.is_empty());
+    }
+
+    // ── diff_full() with file content ────────────────────────────────────
+
+    #[test]
+    fn test_snapshot_file_diff_all_status_values() {
+        let statuses = vec!["added", "deleted", "modified"];
+        for status in &statuses {
+            let diff = SnapshotFileDiff {
+                file: Some("test.rs".into()),
+                patch: Some("diff content".into()),
+                additions: 1,
+                deletions: 1,
+                status: Some(status.to_string()),
+            };
+            let json = serde_json::to_string(&diff)
+                .expect("serialize diff with status");
+            let parsed: SnapshotFileDiff = serde_json::from_str(&json)
+                .expect("deserialize diff with status");
+            assert_eq!(parsed.status.as_deref(), Some(status));
+        }
+    }
+
+    #[test]
+    fn test_snapshot_file_diff_file_none() {
+        let diff = SnapshotFileDiff {
+            file: None,
+            patch: None,
+            additions: 0,
+            deletions: 0,
+            status: None,
+        };
+        let json = serde_json::to_string(&diff).expect("serialize file-none diff");
+        let parsed: SnapshotFileDiff = serde_json::from_str(&json).expect("deserialize file-none diff");
+        assert_eq!(parsed.file, None);
+        // All optional fields with skip_serializing_if=None should be absent
+        assert!(!json.contains("file"));
+        assert!(!json.contains("patch"));
+        assert!(!json.contains("status"));
+    }
+
+    // ── cleanup() gc behavior ────────────────────────────────────────────
+
+    #[test]
+    fn test_prune_age_is_7_days() {
+        assert_eq!(PRUNE_AGE, "7.days");
+    }
+
+    #[test]
+    fn test_snapshot_error_display() {
+        // NotEnabled
+        let e = SnapshotError::NotEnabled;
+        let msg = e.to_string();
+        assert!(msg.contains("snapshot not enabled"), "got: {}", msg);
+
+        // NotInitialized
+        let e = SnapshotError::NotInitialized;
+        let msg = e.to_string();
+        assert!(msg.contains("snapshot not initialized"), "got: {}", msg);
+
+        // LockPoison
+        let e = SnapshotError::LockPoison;
+        let msg = e.to_string();
+        assert!(msg.contains("lock poison"), "got: {}", msg);
+
+        // Other
+        let e = SnapshotError::Other("custom message".into());
+        let msg = e.to_string();
+        assert!(msg.contains("custom message"), "got: {}", msg);
+    }
+
+    // ── SNAPSHOT_CFG constants ───────────────────────────────────────────
+
+    #[test]
+    fn test_snapshot_cfg_contains_expected_flags() {
+        // SNAPSHOT_CFG provides three -c key=value pairs (6 &str elements)
+        assert_eq!(SNAPSHOT_CFG.len(), 6);
+        let joined = SNAPSHOT_CFG.join(" ");
+        assert!(joined.contains("core.autocrlf=false"));
+        assert!(joined.contains("core.longpaths=true"));
+        assert!(joined.contains("core.symlinks=true"));
+        // Verify the -c flags alternate
+        assert_eq!(SNAPSHOT_CFG[0], "-c");
+        assert_eq!(SNAPSHOT_CFG[2], "-c");
+        assert_eq!(SNAPSHOT_CFG[4], "-c");
+    }
 }

@@ -504,4 +504,308 @@ mod tests {
             assert_eq!(received.payload["seq"], expected);
         }
     }
+
+    // -- SharedBus clone + subscribe (multiple subscribers from different clones) --
+
+    #[tokio::test]
+    async fn shared_bus_clone_multiple_subscribers_from_different_handles() {
+        let bus1 = SharedBus::new(16);
+        let bus2 = bus1.clone();
+
+        // Subscribe from both the original and the clone
+        let mut sub1 = bus1.subscribe();
+        let mut sub2 = bus2.subscribe();
+
+        assert_eq!(bus1.receiver_count(), 2, "two active subscribers");
+
+        // Publish from the clone handle
+        bus2
+            .publish(GlobalEvent::new(json!({"type": "from-clone"})))
+            .expect("publish from clone should succeed");
+
+        let ev1 = sub1.recv().await.expect("sub1 should receive event from clone publish");
+        let ev2 = sub2.recv().await.expect("sub2 should receive event from clone publish");
+
+        assert_eq!(ev1.payload["type"], "from-clone");
+        assert_eq!(ev2.payload["type"], "from-clone");
+        assert_eq!(
+            ev1.id(),
+            ev2.id(),
+            "both subscribers should see the same event ID"
+        );
+
+        // Publish from the original handle
+        bus1
+            .publish(GlobalEvent::new(json!({"type": "from-original"})))
+            .expect("publish from original should succeed");
+
+        let ev3 = sub1.recv().await.expect("sub1 should receive event from original publish");
+        let ev4 = sub2.recv().await.expect("sub2 should receive event from original publish");
+
+        assert_eq!(ev3.payload["type"], "from-original");
+        assert_eq!(ev4.payload["type"], "from-original");
+        assert_eq!(ev3.id(), ev4.id(), "both should see the same second event ID");
+    }
+
+    // -- GlobalEvent all-variant context fields + serde roundtrip ------------
+
+    #[test]
+    fn global_event_all_context_fields_serde_roundtrip() {
+        let event = GlobalEvent::new(json!({"type": "full", "data": "test-value"}))
+            .with_directory("/home/user/project")
+            .with_project("my-project")
+            .with_workspace("my-workspace");
+
+        // All four context fields are set
+        assert_eq!(event.directory.as_deref(), Some("/home/user/project"));
+        assert_eq!(event.project.as_deref(), Some("my-project"));
+        assert_eq!(event.workspace.as_deref(), Some("my-workspace"));
+        assert_eq!(event.payload["type"], "full");
+        assert_eq!(event.payload["data"], "test-value");
+
+        // Serialize to JSON
+        let serialized =
+            serde_json::to_string(&event).expect("serialization of full-context event should succeed");
+
+        // Deserialize back
+        let deserialized: GlobalEvent = serde_json::from_str(&serialized)
+            .expect("deserialization of full-context event should succeed");
+
+        // All fields preserved
+        assert_eq!(
+            deserialized.directory.as_deref(),
+            Some("/home/user/project"),
+            "directory should survive roundtrip"
+        );
+        assert_eq!(
+            deserialized.project.as_deref(),
+            Some("my-project"),
+            "project should survive roundtrip"
+        );
+        assert_eq!(
+            deserialized.workspace.as_deref(),
+            Some("my-workspace"),
+            "workspace should survive roundtrip"
+        );
+        assert_eq!(deserialized.payload["type"], "full");
+        assert_eq!(deserialized.payload["data"], "test-value");
+    }
+
+    #[test]
+    fn global_event_all_fields_none_serde_omits_nulls() {
+        let event = GlobalEvent::new(json!({"type": "bare"}));
+        let serialized =
+            serde_json::to_string(&event).expect("serialization should succeed");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&serialized).expect("should be valid JSON");
+
+        // None fields should be absent (skip_serializing_if = "Option::is_none")
+        assert!(
+            !parsed.as_object().unwrap().contains_key("directory"),
+            "None directory should be omitted"
+        );
+        assert!(
+            !parsed.as_object().unwrap().contains_key("project"),
+            "None project should be omitted"
+        );
+        assert!(
+            !parsed.as_object().unwrap().contains_key("workspace"),
+            "None workspace should be omitted"
+        );
+        assert!(parsed.as_object().unwrap().contains_key("payload"));
+
+        // Deserialize back — omitted fields become None
+        let deserialized: GlobalEvent =
+            serde_json::from_str(&serialized).expect("deserialization should succeed");
+        assert!(deserialized.directory.is_none());
+        assert!(deserialized.project.is_none());
+        assert!(deserialized.workspace.is_none());
+    }
+
+    // -- BusSubscription drop (auto-unsubscribe) receiver_count --------------
+
+    #[tokio::test]
+    async fn subscription_drop_receiver_count_goes_to_zero() {
+        let bus = EventBus::new(16);
+
+        assert_eq!(
+            bus.receiver_count(),
+            0,
+            "no subscribers should exist initially"
+        );
+
+        let sub = bus.subscribe();
+        assert_eq!(
+            bus.receiver_count(),
+            1,
+            "one subscriber after subscribe()"
+        );
+
+        // Verify publish works while subscribed
+        bus.publish(GlobalEvent::new(json!({"type": "alive"})))
+            .expect("publish should succeed with active subscriber");
+
+        drop(sub);
+
+        assert_eq!(
+            bus.receiver_count(),
+            0,
+            "receiver_count must drop to 0 after BusSubscription is dropped"
+        );
+
+        // Subsequent publish must fail because there are no receivers
+        let result = bus.publish(GlobalEvent::new(json!({"type": "dead"})));
+        assert!(
+            result.is_err(),
+            "publish must return error after all subscriptions are dropped"
+        );
+    }
+
+    // -- Send-after-drop (no panic) ------------------------------------------
+
+    #[tokio::test]
+    async fn publish_after_subscription_drop_returns_error_does_not_panic() {
+        let bus = EventBus::new(16);
+        let mut sub = bus.subscribe();
+
+        // Publish while subscribed — should succeed
+        bus.publish(GlobalEvent::new(json!({"type": "before-drop"})))
+            .expect("publish with active subscriber should succeed");
+
+        let received = sub.recv().await.expect("should receive the event");
+        assert_eq!(received.payload["type"], "before-drop");
+
+        // Drop the only subscriber
+        drop(sub);
+
+        // Publish after drop — must return an error but NOT panic
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            // We cannot use .await inside catch_unwind easily, so test
+            // the synchronous publish call path — it returns Result, not panic
+            bus.publish(GlobalEvent::new(json!({"type": "after-drop"})))
+        }));
+
+        match result {
+            Ok(Err(_send_error)) => {
+                // Expected: publish returned an error
+            }
+            Ok(Ok(_)) => {
+                panic!("publish after drop should have returned an error");
+            }
+            Err(panic_payload) => {
+                // If we get here, publish panicked — that's a bug
+                let msg = panic_payload
+                    .downcast_ref::<String>()
+                    .map(|s| s.as_str())
+                    .or_else(|| panic_payload.downcast_ref::<&str>().copied())
+                    .unwrap_or("<unknown panic message>");
+                panic!("publish after drop MUST NOT panic, but it did: {msg}");
+            }
+        }
+    }
+
+    // -- Backpressure (many events before consumer starts) -------------------
+
+    #[tokio::test]
+    async fn backpressure_many_events_all_received_with_large_buffer() {
+        let bus = EventBus::new(256);
+        let mut sub = bus.subscribe();
+
+        let count = 100;
+        for i in 0..count {
+            bus.publish(GlobalEvent::new(json!({"seq": i})))
+                .expect("publish should succeed");
+        }
+
+        // Now consume — all events should still be in the buffer
+        for expected in 0..count {
+            let received = sub
+                .recv()
+                .await
+                .unwrap_or_else(|| panic!("should receive event seq={expected}"));
+            assert_eq!(
+                received.payload["seq"], expected,
+                "event {expected} should arrive in order"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn backpressure_small_buffer_causes_lag_but_recv_does_not_panic() {
+        // Buffer capacity of 8 is much smaller than the 50 events we publish.
+        // This guarantees the subscriber lags and BusSubscription::recv()
+        // exercises its Lagged error-handling branch.
+        let bus = EventBus::new(8);
+        let mut sub = bus.subscribe();
+
+        let count = 50;
+        for i in 0..count {
+            bus.publish(GlobalEvent::new(json!({"seq": i})))
+                .expect("publish should succeed while subscriber exists");
+        }
+
+        // The subscriber has lagged — recv() internally handles Lagged and
+        // returns the oldest surviving buffered message (or the next arrival).
+        // The key assertion: recv() does NOT panic and returns Some.
+        let received = sub
+            .recv()
+            .await
+            .expect("recv() must return Some even after lag (NOT panic)");
+
+        // After a lag with capacity 8 and 50 publishes, the oldest buffered
+        // message should have seq >= 42 (50 - 8).  Verify the value is
+        // reasonable given the buffer size.
+        let seq = received.payload["seq"]
+            .as_i64()
+            .expect("seq field should be an integer");
+        assert!(
+            seq >= 42,
+            "expected seq >= 42 (oldest buffered after {count} sends on capacity 8), got {seq}"
+        );
+    }
+
+    // -- SharedBus default constructor ---------------------------------------
+
+    #[tokio::test]
+    async fn shared_bus_default_creates_working_bus_with_default_capacity() {
+        let bus = SharedBus::default();
+
+        // Default capacity is 1024 — we can publish at least that many + subscribe
+        let mut sub = bus.subscribe();
+
+        bus.publish(GlobalEvent::new(json!({"type": "default-shared"})))
+            .expect("SharedBus::default() should support publish");
+
+        let received = sub.recv().await.expect("SharedBus::default() should deliver events");
+        assert_eq!(received.payload["type"], "default-shared");
+
+        // Verify capacity is sufficient for many events (default = 1024)
+        for i in 0..200 {
+            bus.publish(GlobalEvent::new(json!({"seq": i})))
+                .expect("should handle multiple publishes on default bus");
+        }
+        // Consume a few to confirm they arrive
+        for expected in 0..10 {
+            let received = sub.recv().await.expect("should receive buffered event");
+            assert_eq!(received.payload["seq"], expected);
+        }
+    }
+
+    // -- EventBus default constructor ----------------------------------------
+
+    #[tokio::test]
+    async fn event_bus_default_creates_working_bus() {
+        let bus = EventBus::default();
+
+        assert_eq!(bus.receiver_count(), 0);
+
+        let mut sub = bus.subscribe();
+        assert_eq!(bus.receiver_count(), 1);
+
+        bus.publish(GlobalEvent::new(json!({"type": "default-eventbus"})))
+            .expect("EventBus::default() should support publish");
+
+        let received = sub.recv().await.expect("EventBus::default() should deliver events");
+        assert_eq!(received.payload["type"], "default-eventbus");
+    }
 }

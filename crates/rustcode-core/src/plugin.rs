@@ -77,6 +77,31 @@ pub enum PluginState {
     Same,
 }
 
+impl std::fmt::Display for PluginState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::First => write!(f, "first"),
+            Self::Updated => write!(f, "updated"),
+            Self::Same => write!(f, "same"),
+        }
+    }
+}
+
+// ── Plugin load error ──────────────────────────────────────────────────
+
+/// Error type for plugin loading failures.
+///
+/// Ported from plugin loading error handling in the TypeScript source.
+#[derive(Debug, thiserror::Error)]
+pub enum PluginLoadError {
+    #[error("plugin spec is empty")]
+    EmptySpec,
+    #[error("plugin `{spec}` is deprecated")]
+    DeprecatedPlugin { spec: String },
+    #[error("plugin `{spec}` not found")]
+    NotFound { spec: String },
+}
+
 // ── Plugin hook names ─────────────────────────────────────────────────
 
 /// Named hooks that plugins can register to intercept or transform.
@@ -538,6 +563,63 @@ impl PluginManager {
         self.meta.clear();
         self.last_init = None;
     }
+
+    /// Load a plugin from a specifier string.
+    ///
+    /// For file plugins, the target path is resolved from the spec.
+    /// For npm plugins, the target is a placeholder (actual install handled externally).
+    ///
+    /// Ported from `packages/opencode/src/plugin/index.ts` plugin loading.
+    pub fn load(&mut self, spec: impl Into<String>) -> Result<&Plugin, PluginLoadError> {
+        let spec: String = spec.into();
+        if spec.is_empty() {
+            return Err(PluginLoadError::EmptySpec);
+        }
+        if is_deprecated_plugin(&spec) {
+            return Err(PluginLoadError::DeprecatedPlugin { spec });
+        }
+
+        let source = plugin_source(&spec);
+        let parsed = parse_specifier(&spec);
+
+        let target = match source {
+            PluginSource::File => {
+                let path = spec.strip_prefix("file://").unwrap_or(&spec);
+                PathBuf::from(path)
+            }
+            PluginSource::Npm => {
+                PathBuf::from(format!("/node_modules/{}", parsed.pkg))
+            }
+        };
+
+        let mut plugin = Plugin::new(parsed.pkg.as_str(), parsed.pkg.as_str(), source)
+            .with_spec(spec)
+            .with_target(target);
+
+        if !parsed.version.is_empty() {
+            plugin = plugin.with_version(parsed.version);
+        }
+
+        self.register(plugin);
+        Ok(self.plugins.last().expect("plugin was just registered"))
+    }
+
+    /// Validate a plugin specifier and return what would be installed.
+    ///
+    /// This is a stub — actual npm install is handled externally.
+    ///
+    /// Ported from `packages/opencode/src/plugin/install.ts`.
+    pub fn install_validate(&self, spec: &str) -> Result<ParsedSpec, PluginLoadError> {
+        if spec.is_empty() {
+            return Err(PluginLoadError::EmptySpec);
+        }
+        if is_deprecated_plugin(spec) {
+            return Err(PluginLoadError::DeprecatedPlugin {
+                spec: spec.to_string(),
+            });
+        }
+        Ok(parse_specifier(spec))
+    }
 }
 
 /// Get the current time in milliseconds since Unix epoch.
@@ -849,5 +931,182 @@ mod tests {
         assert_eq!(json, "\"experimental.text.complete\"");
         let parsed: PluginHook = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed, PluginHook::ExperimentalTextComplete);
+    }
+
+    // ── Additional spec parsing tests ──────────────────────────────
+
+    #[test]
+    fn test_parse_specifier_with_at_sign_in_name() {
+        let result = parse_specifier("@scope/pkg");
+        assert_eq!(result.pkg, "@scope/pkg");
+        assert_eq!(result.version, "latest");
+    }
+
+    #[test]
+    fn test_parse_specifier_npm_alias_bare() {
+        let result = parse_specifier("npm:express");
+        assert_eq!(result.pkg, "express");
+        assert_eq!(result.version, "latest");
+    }
+
+    // ── Fingerprint edge-case tests ────────────────────────────────
+
+    #[test]
+    fn test_fingerprint_file_plugin_no_modified() {
+        let fp = compute_fingerprint(
+            PluginSource::File,
+            "/path/to/plugin",
+            None,
+            None,
+            None,
+        );
+        assert_eq!(fp, "/path/to/plugin|");
+    }
+
+    #[test]
+    fn test_fingerprint_npm_plugin_no_version() {
+        let fp = compute_fingerprint(
+            PluginSource::Npm,
+            "/node_modules/express",
+            Some("4.18.2"),
+            None,
+            None,
+        );
+        assert_eq!(fp, "/node_modules/express|4.18.2|");
+    }
+
+    #[test]
+    fn test_fingerprint_npm_plugin_no_requested() {
+        let fp = compute_fingerprint(
+            PluginSource::Npm,
+            "/node_modules/express",
+            None,
+            Some("4.18.2"),
+            None,
+        );
+        assert_eq!(fp, "/node_modules/express||4.18.2");
+    }
+
+    #[test]
+    fn test_compute_fingerprint_stability() {
+        let fp1 = compute_fingerprint(
+            PluginSource::Npm,
+            "/node_modules/express",
+            Some("4.18.2"),
+            Some("4.18.2"),
+            None,
+        );
+        let fp2 = compute_fingerprint(
+            PluginSource::Npm,
+            "/node_modules/express",
+            Some("4.18.2"),
+            Some("4.18.2"),
+            None,
+        );
+        assert_eq!(fp1, fp2);
+    }
+
+    // ── PluginManager load/install tests ──────────────────────────
+
+    #[test]
+    fn test_plugin_manager_load_file() {
+        let mut manager = PluginManager::new();
+        let plugin = manager.load("./my-plugin").expect("load file plugin");
+        assert_eq!(plugin.spec, "./my-plugin");
+        assert_eq!(plugin.source, PluginSource::File);
+        assert!(!plugin.id.is_empty());
+    }
+
+    #[test]
+    fn test_plugin_manager_load_npm() {
+        let mut manager = PluginManager::new();
+        let plugin = manager.load("express").expect("load npm plugin");
+        assert_eq!(plugin.spec, "express");
+        assert_eq!(plugin.source, PluginSource::Npm);
+        assert_eq!(plugin.id, "express");
+        assert_eq!(plugin.version.as_deref(), Some("latest"));
+    }
+
+    #[test]
+    fn test_plugin_manager_load_deprecated() {
+        let mut manager = PluginManager::new();
+        let result = manager.load("opencode-openai-codex-auth");
+        assert!(result.is_err());
+        match result {
+            Err(PluginLoadError::DeprecatedPlugin { spec }) => {
+                assert!(spec.contains("opencode-openai-codex-auth"));
+            }
+            _ => panic!("expected DeprecatedPlugin error"),
+        }
+    }
+
+    #[test]
+    fn test_plugin_manager_load_empty() {
+        let mut manager = PluginManager::new();
+        let result = manager.load("");
+        assert!(result.is_err());
+        match result {
+            Err(PluginLoadError::EmptySpec) => {}
+            _ => panic!("expected EmptySpec error"),
+        }
+    }
+
+    #[test]
+    fn test_plugin_manager_install_validate() {
+        let manager = PluginManager::new();
+
+        // Valid spec
+        let result = manager.install_validate("express@4.18.2");
+        assert!(result.is_ok());
+        let parsed = result.expect("valid spec");
+        assert_eq!(parsed.pkg, "express");
+        assert_eq!(parsed.version, "4.18.2");
+
+        // Empty spec
+        let result = manager.install_validate("");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PluginLoadError::EmptySpec)));
+
+        // Deprecated spec
+        let result = manager.install_validate("opencode-copilot-auth");
+        assert!(result.is_err());
+        assert!(matches!(result, Err(PluginLoadError::DeprecatedPlugin { .. })));
+    }
+
+    // ── Serde and Display round-trip tests ─────────────────────────
+
+    #[test]
+    fn test_plugin_hook_all_variants_serde() {
+        let hooks = [
+            PluginHook::ExperimentalTextComplete,
+            PluginHook::ExperimentalSessionCompacting,
+            PluginHook::ExperimentalChatMessagesTransform,
+            PluginHook::Event,
+            PluginHook::Config,
+        ];
+        for hook in &hooks {
+            let json = serde_json::to_string(hook).expect("serialize hook");
+            let parsed: PluginHook = serde_json::from_str(&json).expect("deserialize hook");
+            assert_eq!(&parsed, hook, "roundtrip failed for {:?}", hook);
+        }
+    }
+
+    #[test]
+    fn test_plugin_source_display() {
+        assert_eq!(format!("{}", PluginSource::File), "file");
+        assert_eq!(format!("{}", PluginSource::Npm), "npm");
+    }
+
+    #[test]
+    fn test_plugin_kind_display() {
+        assert_eq!(format!("{}", PluginKind::Server), "server");
+        assert_eq!(format!("{}", PluginKind::Tui), "tui");
+    }
+
+    #[test]
+    fn test_plugin_state_display() {
+        assert_eq!(format!("{}", PluginState::First), "first");
+        assert_eq!(format!("{}", PluginState::Updated), "updated");
+        assert_eq!(format!("{}", PluginState::Same), "same");
     }
 }

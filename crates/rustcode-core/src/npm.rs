@@ -186,6 +186,188 @@ pub fn sanitize_package_name(name: &str) -> String {
         .collect()
 }
 
+// ── NpmService ─────────────────────────────────────────────────────────────
+
+/// Service for NPM package management operations.
+///
+/// Ported from: `packages/core/src/npm.ts`
+pub struct NpmService {
+    /// NPM registry configuration
+    registry_config: NpmRegistryConfig,
+    /// Path to npm binary
+    npm_path: String,
+}
+
+impl NpmService {
+    /// Create a new NpmService with default registry config.
+    pub fn new() -> Self {
+        Self {
+            registry_config: NpmRegistryConfig::default(),
+            npm_path: Self::resolve_npm(),
+        }
+    }
+
+    /// Create with a custom registry configuration.
+    pub fn with_config(config: NpmRegistryConfig) -> Self {
+        Self {
+            registry_config: config,
+            npm_path: Self::resolve_npm(),
+        }
+    }
+
+    /// Resolve the npm binary path.
+    pub(crate) fn resolve_npm() -> String {
+        // Check env var
+        if let Ok(path) = std::env::var("NPM_PATH") {
+            if std::path::Path::new(&path).exists() {
+                return path;
+            }
+        }
+
+        // Check system PATH for npm
+        if let Some(path) = find_on_path("npm") {
+            return path;
+        }
+
+        // Also try npx, pnpm, yarn
+        for cmd in &["npx", "pnpm", "yarn"] {
+            if let Some(path) = find_on_path(cmd) {
+                return path;
+            }
+        }
+
+        // Fallback
+        "npm".to_string()
+    }
+
+    /// Resolve a package specifier into its entry point.
+    ///
+    /// This validates the specifier format and returns the directory
+    /// where the package would be installed.
+    ///
+    /// Ported from: `packages/core/src/npm.ts` — `resolve()`
+    pub fn resolve(
+        &self,
+        package_spec: &str,
+    ) -> Result<NpmEntryPoint, NpmInstallFailedError> {
+        if package_spec.is_empty() {
+            return Err(NpmInstallFailedError {
+                add: None,
+                dir: ".".into(),
+                cause: Some("empty package specifier".into()),
+            });
+        }
+
+        // Determine the package directory name
+        let (name, _version) = self.parse_specifier(package_spec);
+        let sanitized = sanitize_package_name(&name);
+        let node_modules = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join("node_modules")
+            .join(&sanitized);
+
+        Ok(NpmEntryPoint {
+            directory: node_modules.to_string_lossy().to_string(),
+            entrypoint: None,
+        })
+    }
+
+    /// Parse a package specifier into (name, version).
+    ///
+    /// Supports formats:
+    /// - `package-name` (latest)
+    /// - `package-name@1.2.3` (specific version)
+    /// - `@scope/package-name@^2.0.0` (scoped with semver)
+    /// - `package-name@latest` (tag)
+    pub fn parse_specifier(&self, spec: &str) -> (String, Option<String>) {
+        if spec.starts_with('@') {
+            // Scoped package: @scope/name or @scope/name@version
+            let rest = &spec[1..];
+            if let Some(slash_pos) = rest.find('/') {
+                let after_slash = &rest[slash_pos + 1..];
+                if let Some(at_pos) = after_slash.rfind('@') {
+                    if at_pos > 0 {
+                        let name = spec[..slash_pos + at_pos + 2].to_string();
+                        let version = Some(after_slash[at_pos + 1..].to_string());
+                        return (name, version);
+                    }
+                }
+                // No version in scoped package
+                return (spec.to_string(), None);
+            }
+        }
+
+        // Unscoped package
+        if let Some(at_pos) = spec.rfind('@') {
+            if at_pos > 0 {
+                let name = spec[..at_pos].to_string();
+                let version = Some(spec[at_pos + 1..].to_string());
+                return (name, version);
+            }
+        }
+
+        (spec.to_string(), None)
+    }
+
+    /// Validate that a package can be installed (no-op stub).
+    ///
+    /// In production, this would check the npm registry for the package.
+    /// Currently just validates the specifier is non-empty.
+    ///
+    /// Ported from: `packages/core/src/npm.ts` — `install()`
+    pub fn install(
+        &self,
+        input: &NpmInstallInput,
+    ) -> Result<(), NpmInstallFailedError> {
+        // Validate package names
+        if let Some(ref packages) = input.add {
+            for pkg in packages {
+                if pkg.name.is_empty() {
+                    return Err(NpmInstallFailedError {
+                        add: Some(vec![pkg.name.clone()]),
+                        dir: ".".into(),
+                        cause: Some("empty package name".into()),
+                    });
+                }
+            }
+        }
+
+        // Stub — actual install would spawn npm process
+        // This validates without performing installation
+        Ok(())
+    }
+
+    /// Get the current npm registry URL.
+    pub fn registry_url(&self) -> &str {
+        &self.registry_config.registry
+    }
+
+    /// Get the npm binary path.
+    pub fn npm_path(&self) -> &str {
+        &self.npm_path
+    }
+}
+
+impl Default for NpmService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Find a binary on the system PATH.
+fn find_on_path(name: &str) -> Option<String> {
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var).find_map(|dir| {
+            let path = dir.join(name);
+            if path.is_file() {
+                Some(path.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+    })
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -401,5 +583,153 @@ mod tests {
     #[test]
     fn sanitize_backslash_replaced() {
         assert_eq!(sanitize_package_name("path\\to\\pkg"), "path_to_pkg");
+    }
+
+    // ── NpmService tests ─────────────────────────────────────────────────
+
+    #[test]
+    fn test_npm_service_resolve_simple() {
+        let svc = NpmService::new();
+        let result = svc.resolve("lodash").expect("resolve should succeed");
+        assert!(result.directory().contains("node_modules"));
+        assert!(result.directory().contains("lodash"));
+    }
+
+    #[test]
+    fn test_npm_service_resolve_scoped() {
+        let svc = NpmService::new();
+        let result = svc.resolve("@scope/mypackage").expect("resolve should succeed");
+        assert!(result.directory().contains("node_modules"));
+        assert!(result.directory().contains("_scope_mypackage"));
+    }
+
+    #[test]
+    fn test_npm_service_resolve_with_version() {
+        let svc = NpmService::new();
+        let result = svc.resolve("express@4.18.2").expect("resolve should succeed");
+        assert!(result.directory().contains("node_modules"));
+    }
+
+    #[test]
+    fn test_npm_service_resolve_empty() {
+        let svc = NpmService::new();
+        let result = svc.resolve("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_npm_service_parse_specifier_simple() {
+        let svc = NpmService::new();
+        let (name, version) = svc.parse_specifier("lodash");
+        assert_eq!(name, "lodash");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_npm_service_parse_specifier_with_version() {
+        let svc = NpmService::new();
+        let (name, version) = svc.parse_specifier("lodash@4.17.21");
+        assert_eq!(name, "lodash");
+        assert_eq!(version, Some("4.17.21".into()));
+    }
+
+    #[test]
+    fn test_npm_service_parse_specifier_scoped() {
+        let svc = NpmService::new();
+        let (name, version) = svc.parse_specifier("@scope/pkg");
+        assert_eq!(name, "@scope/pkg");
+        assert!(version.is_none());
+    }
+
+    #[test]
+    fn test_npm_service_parse_specifier_scoped_with_version() {
+        let svc = NpmService::new();
+        let (name, version) = svc.parse_specifier("@scope/pkg@1.0.0");
+        assert_eq!(name, "@scope/pkg");
+        assert_eq!(version, Some("1.0.0".into()));
+    }
+
+    #[test]
+    fn test_npm_service_parse_specifier_scoped_deep_version() {
+        let svc = NpmService::new();
+        let (name, version) = svc.parse_specifier("@angular/core@^16.0.0");
+        assert_eq!(name, "@angular/core");
+        assert_eq!(version, Some("^16.0.0".into()));
+    }
+
+    #[test]
+    fn test_npm_service_parse_specifier_org_scoped() {
+        let svc = NpmService::new();
+        let (name, version) = svc.parse_specifier("@types/node@18");
+        assert_eq!(name, "@types/node");
+        assert_eq!(version, Some("18".into()));
+    }
+
+    #[test]
+    fn test_npm_service_install_validates_empty_name() {
+        let svc = NpmService::new();
+        let input = NpmInstallInput {
+            add: Some(vec![NpmPackageAddInput {
+                name: "".into(),
+                version: None,
+            }]),
+        };
+        let result = svc.install(&input);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_npm_service_install_validates_ok() {
+        let svc = NpmService::new();
+        let input = NpmInstallInput {
+            add: Some(vec![
+                NpmPackageAddInput {
+                    name: "lodash".into(),
+                    version: Some("^4.0.0".into()),
+                },
+                NpmPackageAddInput {
+                    name: "express".into(),
+                    version: None,
+                },
+            ]),
+        };
+        let result = svc.install(&input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_npm_service_install_empty() {
+        let svc = NpmService::new();
+        let input = NpmInstallInput { add: None };
+        let result = svc.install(&input);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_npm_service_registry_url() {
+        let svc = NpmService::new();
+        assert_eq!(svc.registry_url(), "https://registry.npmjs.org");
+    }
+
+    #[test]
+    fn test_npm_service_custom_registry() {
+        let config = NpmRegistryConfig {
+            registry: "https://registry.example.com".into(),
+        };
+        let svc = NpmService::with_config(config);
+        assert_eq!(svc.registry_url(), "https://registry.example.com");
+    }
+
+    #[test]
+    fn test_npm_service_default() {
+        let svc = NpmService::default();
+        assert!(!svc.npm_path().is_empty());
+    }
+
+    #[test]
+    fn test_npm_service_resolve_npm_path() {
+        // Should not crash
+        let path = NpmService::resolve_npm();
+        assert!(!path.is_empty());
     }
 }

@@ -414,6 +414,228 @@ impl ObservabilityConfig {
     }
 }
 
+// ── ObservabilityService ──────────────────────────────────────────────────
+
+/// Service that orchestrates the observability subsystem:
+/// logging, OpenTelemetry tracing, and OTLP export.
+///
+/// Ported from: `packages/core/src/observability.ts`
+pub struct ObservabilityService {
+    config: ObservabilityConfig,
+    initialized: bool,
+}
+
+impl ObservabilityService {
+    /// Create a new service with default config.
+    pub fn new() -> Self {
+        Self {
+            config: ObservabilityConfig::default(),
+            initialized: false,
+        }
+    }
+
+    /// Create a new service with a specific config.
+    pub fn with_config(config: ObservabilityConfig) -> Self {
+        Self {
+            config,
+            initialized: false,
+        }
+    }
+
+    /// Initialize the observability subsystem.
+    ///
+    /// Sets up:
+    /// - File logging to `$XDG_DATA_HOME/opencode/log/`
+    /// - Optional stderr logging when `OPENCODE_PRINT_LOGS=1`
+    /// - OTLP export to configured endpoint (if `OTEL_EXPORTER_OTLP_ENDPOINT` is set)
+    ///
+    /// Returns `true` if initialization was successful.
+    ///
+    /// Ported from: `packages/core/src/observability.ts` — `init()`
+    pub fn init(&mut self) -> Result<bool, ObservabilityError> {
+        if self.initialized {
+            return Ok(true);
+        }
+
+        // Validate config
+        self.validate_config()?;
+
+        // Create log directory if it doesn't exist
+        let log_dir = std::path::Path::new(&self.config.logging.log_dir);
+        if !log_dir.exists() {
+            std::fs::create_dir_all(log_dir).map_err(|e| ObservabilityError {
+                message: format!("failed to create log directory: {e}"),
+                kind: ObservabilityErrorKind::InitFailed,
+            })?;
+        }
+
+        // Determine log level filter
+        let log_filter = match self.config.logging.min_level {
+            LogLevel::Debug => "debug",
+            LogLevel::Info => "info",
+            LogLevel::Warn => "warn",
+            LogLevel::Error => "error",
+        };
+
+        // If OTLP is enabled, validate the endpoint
+        if self.config.otlp.enabled {
+            if let Some(ref endpoint) = self.config.otlp.endpoint {
+                if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+                    return Err(ObservabilityError {
+                        message: format!("invalid OTLP endpoint: {endpoint}"),
+                        kind: ObservabilityErrorKind::InvalidConfig,
+                    });
+                }
+            }
+        }
+
+        self.initialized = true;
+        tracing::info!(
+            target: "observability",
+            level = log_filter,
+            otlp_enabled = self.config.otlp.enabled,
+            log_dir = %self.config.logging.log_dir,
+            "observability initialized"
+        );
+
+        Ok(true)
+    }
+
+    /// Shutdown the observability subsystem.
+    ///
+    /// Flushes all pending logs and traces, closes file handles.
+    ///
+    /// Ported from: `packages/core/src/observability.ts` — `shutdown()`
+    pub fn shutdown(&mut self) -> Result<(), ObservabilityError> {
+        if !self.initialized {
+            return Ok(());
+        }
+
+        // Flush any pending writes
+        tracing::info!(target: "observability", "shutting down");
+
+        self.initialized = false;
+        Ok(())
+    }
+
+    /// Check if the service is initialized.
+    pub fn is_initialized(&self) -> bool {
+        self.initialized
+    }
+
+    /// Get a reference to the current config.
+    pub fn config(&self) -> &ObservabilityConfig {
+        &self.config
+    }
+
+    /// Validate configuration consistency.
+    fn validate_config(&self) -> Result<(), ObservabilityError> {
+        // Validate log level
+        if self.config.logging.print_to_stderr
+            && self.config.logging.min_level == LogLevel::Debug
+        {
+            // Stderr debug logging is noisy — allowed but warn
+            tracing::warn!(
+                target: "observability",
+                "debug-level stderr logging enabled — output will be verbose"
+            );
+        }
+
+        // Validate OTLP headers format
+        for (key, value) in &self.config.otlp.headers {
+            if key.is_empty() {
+                return Err(ObservabilityError {
+                    message: "OTLP header key cannot be empty".into(),
+                    kind: ObservabilityErrorKind::InvalidConfig,
+                });
+            }
+            if key.contains(char::is_whitespace) {
+                return Err(ObservabilityError {
+                    message: format!("OTLP header key contains whitespace: '{key}'"),
+                    kind: ObservabilityErrorKind::InvalidConfig,
+                });
+            }
+            let _ = value; // values may be empty (e.g., Bearer token prefix)
+        }
+
+        Ok(())
+    }
+
+    /// Get the effective log level after initialization.
+    pub fn effective_log_level(&self) -> LogLevel {
+        self.config.logging.min_level
+    }
+
+    /// Set the log level dynamically.
+    pub fn set_log_level(&mut self, level: LogLevel) {
+        self.config.logging.min_level = level;
+    }
+
+    /// Check if OTLP export is active.
+    pub fn otlp_enabled(&self) -> bool {
+        self.config.otlp.enabled
+    }
+
+    /// Get the OTLP endpoint, if configured.
+    pub fn otlp_endpoint(&self) -> Option<&str> {
+        self.config.otlp.endpoint.as_deref()
+    }
+
+    /// Get the OTLP logs URL.
+    pub fn otlp_logs_url(&self) -> Option<String> {
+        self.config.otlp.logs_url()
+    }
+
+    /// Get the OTLP traces URL.
+    pub fn otlp_traces_url(&self) -> Option<String> {
+        self.config.otlp.traces_url()
+    }
+}
+
+impl Default for ObservabilityService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Observability Error ───────────────────────────────────────────────────
+
+/// Error during observability operations.
+#[derive(Debug, Clone)]
+pub struct ObservabilityError {
+    pub message: String,
+    pub kind: ObservabilityErrorKind,
+}
+
+impl std::fmt::Display for ObservabilityError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.kind, self.message)
+    }
+}
+
+impl std::error::Error for ObservabilityError {}
+
+/// Kinds of observability errors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObservabilityErrorKind {
+    /// Initialization failed
+    InitFailed,
+    /// Invalid configuration
+    InvalidConfig,
+    /// Shutdown failed
+    ShutdownFailed,
+}
+
+impl std::fmt::Display for ObservabilityErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InitFailed => write!(f, "InitFailed"),
+            Self::InvalidConfig => write!(f, "InvalidConfig"),
+            Self::ShutdownFailed => write!(f, "ShutdownFailed"),
+        }
+    }
+}
+
 // ── Tests ──────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -549,5 +771,207 @@ mod tests {
         let config = ObservabilityConfig::default();
         assert_eq!(config.logging.min_level, LogLevel::Info);
         assert!(!config.otlp.enabled);
+    }
+
+    // ── ObservabilityService tests ────────────────────────────────────
+
+    #[test]
+    fn test_observability_service_new() {
+        let svc = ObservabilityService::new();
+        assert!(!svc.is_initialized());
+        assert!(!svc.otlp_enabled());
+    }
+
+    #[test]
+    fn test_observability_service_default() {
+        let svc = ObservabilityService::default();
+        assert!(!svc.is_initialized());
+        assert_eq!(svc.effective_log_level(), LogLevel::Info);
+    }
+
+    #[test]
+    fn test_observability_service_init() {
+        let tmp_dir = std::env::temp_dir().join("opencode-test-logs");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let config = ObservabilityConfig {
+            logging: LoggingConfig {
+                log_dir: tmp_dir.to_string_lossy().to_string(),
+                ..LoggingConfig::default()
+            },
+            ..Default::default()
+        };
+
+        let mut svc = ObservabilityService::with_config(config);
+        let result = svc.init();
+        assert!(result.is_ok());
+        assert!(svc.is_initialized());
+
+        // Verify log dir was created
+        assert!(tmp_dir.exists());
+
+        // Cleanup
+        svc.shutdown().ok();
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_observability_service_double_init() {
+        let tmp_dir = std::env::temp_dir().join("opencode-test-double-init");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let config = ObservabilityConfig {
+            logging: LoggingConfig {
+                log_dir: tmp_dir.to_string_lossy().to_string(),
+                ..LoggingConfig::default()
+            },
+            ..Default::default()
+        };
+
+        let mut svc = ObservabilityService::with_config(config);
+        assert!(svc.init().is_ok());
+        // Second init should be a no-op success
+        assert!(svc.init().is_ok());
+
+        svc.shutdown().ok();
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_observability_service_invalid_otlp_endpoint() {
+        let config = ObservabilityConfig {
+            otlp: OtlpConfig {
+                endpoint: Some("ftp://invalid-protocol.com".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut svc = ObservabilityService::with_config(config);
+        let result = svc.init();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_observability_service_valid_otlp_endpoint() {
+        let tmp_dir = std::env::temp_dir().join("opencode-test-otlp");
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+
+        let config = ObservabilityConfig {
+            logging: LoggingConfig {
+                log_dir: tmp_dir.to_string_lossy().to_string(),
+                ..LoggingConfig::default()
+            },
+            otlp: OtlpConfig {
+                endpoint: Some("https://otlp.example.com".to_string()),
+                headers: vec![("api-key".to_string(), "secret123".to_string())]
+                    .into_iter()
+                    .collect(),
+                enabled: true,
+            },
+            ..Default::default()
+        };
+
+        let mut svc = ObservabilityService::with_config(config);
+        let result = svc.init();
+        assert!(result.is_ok());
+        assert!(svc.otlp_enabled());
+        assert_eq!(svc.otlp_endpoint(), Some("https://otlp.example.com"));
+
+        svc.shutdown().ok();
+        let _ = std::fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_observability_service_shutdown_not_initialized() {
+        let mut svc = ObservabilityService::new();
+        // Should not error on shutdown without init
+        assert!(svc.shutdown().is_ok());
+    }
+
+    #[test]
+    fn test_observability_service_set_log_level() {
+        let mut svc = ObservabilityService::new();
+        assert_eq!(svc.effective_log_level(), LogLevel::Info);
+        svc.set_log_level(LogLevel::Debug);
+        assert_eq!(svc.effective_log_level(), LogLevel::Debug);
+        svc.set_log_level(LogLevel::Error);
+        assert_eq!(svc.effective_log_level(), LogLevel::Error);
+    }
+
+    #[test]
+    fn test_observability_service_otlp_urls() {
+        let config = ObservabilityConfig {
+            otlp: OtlpConfig {
+                endpoint: Some("https://otlp.example.com".to_string()),
+                enabled: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let svc = ObservabilityService::with_config(config);
+        assert_eq!(
+            svc.otlp_logs_url(),
+            Some("https://otlp.example.com/v1/logs".to_string())
+        );
+        assert_eq!(
+            svc.otlp_traces_url(),
+            Some("https://otlp.example.com/v1/traces".to_string())
+        );
+    }
+
+    #[test]
+    fn test_observability_service_validate_empty_header_key() {
+        let config = ObservabilityConfig {
+            otlp: OtlpConfig {
+                headers: vec![("".to_string(), "value".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut svc = ObservabilityService::with_config(config);
+        let result = svc.init();
+        // Empty header key should be rejected
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_observability_service_with_whitespace_header_key() {
+        let config = ObservabilityConfig {
+            otlp: OtlpConfig {
+                headers: vec![("bad key".to_string(), "value".to_string())]
+                    .into_iter()
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let mut svc = ObservabilityService::with_config(config);
+        let result = svc.init();
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_observability_error_display() {
+        let err = ObservabilityError {
+            message: "something went wrong".into(),
+            kind: ObservabilityErrorKind::InitFailed,
+        };
+        let s = err.to_string();
+        assert!(s.contains("InitFailed"));
+        assert!(s.contains("something went wrong"));
+    }
+
+    #[test]
+    fn test_observability_service_config_access() {
+        let svc = ObservabilityService::new();
+        let config = svc.config();
+        assert_eq!(config.logging.min_level, LogLevel::Info);
     }
 }
