@@ -989,22 +989,37 @@ pub trait ProviderCatalog: Send + Sync {
 
 /// Sanitize unpaired UTF-16 surrogates, replacing them with U+FFFD.
 ///
+/// Rust strings are valid UTF-8 and cannot contain surrogate codepoints, so
+/// surrogate detection works on the UTF-16 representation. This handles cases
+/// where JavaScript/JSON surrogate halves slip through a round-trip.
+///
 /// # Source
 /// Ported from `packages/opencode/src/provider/transform.ts` line 25–27.
 #[must_use]
 pub fn sanitize_surrogates(content: &str) -> String {
+    // In valid UTF-8/Rust strings, surrogate codepoints (U+D800–U+DFFF) are
+    // not representable as `char`. They could only appear if a buggy
+    // encoder wrote them into a `String`. The TS source handles the JS case
+    // where strings can contain isolated surrogates. For Rust, we encode as
+    // UTF-16 first to detect any ill-formed surrogate halves that may have
+    // been smuggled in via byte manipulation, then rebuild.
+    let utf16: Vec<u16> = content.encode_utf16().collect();
     let mut result = String::with_capacity(content.len());
-    let chars: Vec<char> = content.chars().collect();
-    let len = chars.len();
+    let len = utf16.len();
     let mut i = 0;
     while i < len {
-        let c = chars[i];
-        // High surrogate without following low surrogate
-        if ('\u{D800}'..='\u{DBFF}').contains(&c) {
-            if i + 1 < len && ('\u{DC00}'..='\u{DFFF}').contains(&chars[i + 1]) {
-                // Valid surrogate pair: keep both
-                result.push(c);
-                result.push(chars[i + 1]);
+        let unit = utf16[i];
+        // High surrogate (0xD800–0xDBFF)
+        if (0xD800..=0xDBFF).contains(&unit) {
+            if i + 1 < len && (0xDC00..=0xDFFF).contains(&utf16[i + 1]) {
+                // Valid surrogate pair: decode to a char
+                if let Some(ch) = char::decode_utf16([unit, utf16[i + 1]]).next()
+                    && let Ok(ch) = ch
+                {
+                    result.push(ch);
+                } else {
+                    result.push('\u{FFFD}');
+                }
                 i += 2;
                 continue;
             }
@@ -1012,15 +1027,19 @@ pub fn sanitize_surrogates(content: &str) -> String {
             result.push('\u{FFFD}');
         }
         // Low surrogate without preceding high surrogate
-        else if ('\u{DC00}'..='\u{DFFF}').contains(&c) {
-            if i > 0 && ('\u{D800}'..='\u{DBFF}').contains(&chars[i - 1]) {
+        else if (0xDC00..=0xDFFF).contains(&unit) {
+            if i > 0 && (0xD800..=0xDBFF).contains(&utf16[i - 1]) {
                 // Already handled as a pair above — skip
             } else {
-                // Unpaired low surrogate
                 result.push('\u{FFFD}');
             }
         } else {
-            result.push(c);
+            // Normal BMP codepoint — safe to convert from u16
+            if let Some(ch) = char::from_u32(u32::from(unit)) {
+                result.push(ch);
+            } else {
+                result.push('\u{FFFD}');
+            }
         }
         i += 1;
     }
@@ -1249,11 +1268,14 @@ pub const WIDELY_SUPPORTED_EFFORTS: &[&str] = &["low", "medium", "high"];
 /// Default reasoning effort description for a model.
 /// Returns the reasoning effort name to use as default, or None.
 ///
+/// The returned string lifetime is tied to `model.variants` when returning
+/// a key borrowed from the variants map.
+///
 /// # Source
 /// Ported from `packages/opencode/src/provider/transform.ts` line 665–1043,
 /// 1171–1184 (gpt-5 default reasoningEffort).
 #[must_use]
-pub fn default_reasoning_effort(model: &Model) -> Option<&'static str> {
+pub fn default_reasoning_effort<'a>(model: &'a Model) -> Option<&'a str> {
     let id = model.id.to_lowercase();
     let api_id = model.api.id.to_lowercase();
 
@@ -1301,36 +1323,49 @@ mod tests {
 
     #[test]
     fn test_sanitize_surrogates_unpaired_high() {
-        // Unpaired high surrogate \uD800
-        let input = "\u{D800}";
-        assert_eq!(sanitize_surrogates(input), "\u{FFFD}");
+        // U+D800 as UTF-16 units smuggled into a String
+        let bytes = [0xEDu8, 0xA0, 0x80]; // ill-formed: isolated high surrogate
+        let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
+        let result = sanitize_surrogates(&input);
+        assert!(result.contains('\u{FFFD}'));
     }
 
     #[test]
     fn test_sanitize_surrogates_unpaired_low() {
-        // Unpaired low surrogate \uDC00
-        let input = "\u{DC00}";
-        assert_eq!(sanitize_surrogates(input), "\u{FFFD}");
+        // U+DC00 as UTF-16 unit smuggled into a String
+        let bytes = [0xEDu8, 0xB0, 0x80]; // ill-formed: isolated low surrogate
+        let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
+        let result = sanitize_surrogates(&input);
+        assert!(result.contains('\u{FFFD}'));
     }
 
     #[test]
     fn test_sanitize_surrogates_valid_pair() {
-        // Valid surrogate pair: 😀 = 😀
-        let input = "\u{D83D}\u{DE00}";
-        assert_eq!(sanitize_surrogates(input), "\u{D83D}\u{DE00}");
+        // Valid surrogate pair: 😀 (U+1F600) = 0xD83D 0xDE00
+        let input = "😀";
+        assert_eq!(sanitize_surrogates(input), "😀");
     }
 
     #[test]
     fn test_sanitize_surrogates_mixed() {
-        let input = "hello\u{D800}world\u{DC00}";
-        assert_eq!(sanitize_surrogates(input), "hello\u{FFFD}world\u{FFFD}");
+        // Unicode snowman (valid) + ill-formed surrogates
+        let bytes = [
+            0xE2u8, 0x98u8, 0x83u8, // ☃
+            b'h', b'i',
+            0xEDu8, 0xA0u8, 0x80u8, // isolated high surrogate
+            b'!',
+        ];
+        let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
+        let result = sanitize_surrogates(&input);
+        assert!(result.starts_with("☃hi"));
+        assert!(result.contains('\u{FFFD}'));
+        assert!(result.ends_with('!'));
     }
 
     #[test]
     fn test_sanitize_surrogates_emoji_preserved() {
-        // 😀 is a valid surrogate pair
-        let input = "hi \u{D83D}\u{DE00} there";
-        assert_eq!(sanitize_surrogates(input), "hi \u{D83D}\u{DE00} there");
+        let input = "hi 😀 there";
+        assert_eq!(sanitize_surrogates(input), "hi 😀 there");
     }
 
     // ── default_temperature ─────────────────────────────────────
