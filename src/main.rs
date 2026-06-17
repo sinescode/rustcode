@@ -15,7 +15,9 @@
 
 use clap::{Parser, Subcommand};
 use rustcode_core::config::Config;
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 // ── Top-level CLI ───────────────────────────────────────────────────────────
 /// AI-powered development tool — Rust port of OpenCode.
@@ -1478,7 +1480,6 @@ async fn cmd_session(cmd: &SessionCommand) -> i32 {
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/tui.ts`
 async fn cmd_tui(args: &TuiArgs) -> i32 {
-    // TS: "--fork requires --continue or --session"
     if args.fork && !args.r#continue && args.session.is_none() {
         eprintln!("Error: --fork requires --continue or --session");
         return 1;
@@ -1486,14 +1487,69 @@ async fn cmd_tui(args: &TuiArgs) -> i32 {
 
     tracing::info!(
         "tui: project={:?}, model={:?}, continue={}, session={:?}",
-        args.project,
-        args.model,
-        args.r#continue,
-        args.session,
+        args.project, args.model, args.r#continue, args.session,
     );
 
-    // TODO: Wire to rustcode-tui crate.
-    eprintln!("tui: TUI not yet implemented.");
+    // ── Bootstrap backend services ──────────────────────────────────
+    use rustcode_core::bus;
+    use rustcode_core::session::SessionManager;
+    use rustcode_core::session_runner::SessionRunner;
+    use rustcode_core::tool::ToolRegistry;
+
+    let shared_bus = bus::SharedBus::new(256);
+    let sessions = Arc::new(SessionManager::new(shared_bus.clone()));
+    let tools = Arc::new(ToolRegistry::new());
+    let runner = Arc::new(SessionRunner::new(tools.clone()));
+
+    // Auto-detect providers from environment
+    let providers_map: HashMap<String, Box<dyn rustcode_core::provider::Provider>> =
+        rustcode_core::providers::auto_detect_all()
+            .into_iter()
+            .map(|p| {
+                let id = p.provider_id().to_string();
+                (id, p)
+            })
+            .collect();
+
+    if providers_map.is_empty() {
+        eprintln!("No LLM providers detected. Set an API key environment variable:");
+        eprintln!("  ANTHROPIC_API_KEY  — for Claude (Anthropic)");
+        eprintln!("  OPENAI_API_KEY     — for GPT (OpenAI)");
+        eprintln!("  GOOGLE_GENERATIVE_AI_API_KEY — for Gemini (Google)");
+        eprintln!("  OPENROUTER_API_KEY — for OpenRouter (multi-provider)");
+        eprintln!("  DEEPSEEK_API_KEY   — for DeepSeek");
+        eprintln!("  GROQ_API_KEY       — for Groq");
+        eprintln!("  ...and more (see docs for full list)");
+        eprintln!();
+        eprintln!("Continuing in offline mode — prompts will not call an LLM.");
+    } else {
+        tracing::info!("Detected {} provider(s)", providers_map.len());
+        for (id, _) in &providers_map {
+            tracing::info!("  - {id}");
+        }
+    }
+
+    // ── Launch TUI ─────────────────────────────────────────────────
+    match rustcode_tui::TuiApp::new(sessions, runner, providers_map, shared_bus) {
+        Ok(mut app) => {
+            // Run the TUI — this blocks until the user quits
+            let rt = tokio::runtime::Runtime::new().unwrap();
+            if let Err(e) = rt.block_on(app.run_async()) {
+                eprintln!("TUI error: {e}");
+                let _ = app.cleanup();
+                return 1;
+            }
+            if let Err(e) = app.cleanup() {
+                eprintln!("Terminal cleanup error: {e}");
+                return 1;
+            }
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize TUI: {e}");
+            return 1;
+        }
+    }
+
     0
 }
 
