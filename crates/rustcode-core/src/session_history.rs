@@ -1,0 +1,317 @@
+//! Session history types — history load, logging, and input types.
+//!
+//! Ported from:
+//! - `packages/core/src/session/history.ts` (lines 1–102)
+//! - `packages/core/src/session/logging.ts` (lines 1–8)
+//! - `packages/core/src/session/input.ts` (lines 1–354)
+
+use serde::{Deserialize, Serialize};
+use crate::session_info::SessionId;
+use crate::session_message::{SessionMessageId, Prompt};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// History Entry
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A history entry — a message with its sequence number.
+///
+/// # Source
+/// `packages/core/src/session/history.ts` lines 90–99 `entriesForRunner`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HistoryEntry {
+    /// Monotonic sequence number
+    pub seq: u64,
+    /// The message at this sequence
+    pub message: serde_json::Value,
+}
+
+/// Context epoch — baseline for session context management.
+///
+/// # Source
+/// `packages/core/src/session/history.ts` lines 58–79 — returns from
+/// `SessionContextEpochTable` lookup.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextEpoch {
+    pub session_id: SessionId,
+    /// The baseline summary
+    pub baseline: String,
+    /// Agent active in this epoch
+    pub agent: String,
+    /// System context snapshot
+    pub snapshot: serde_json::Value,
+    /// Baseline sequence number
+    pub baseline_seq: u64,
+    /// Replacement sequence number
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub replacement_seq: Option<u64>,
+    /// Revision counter
+    #[serde(default)]
+    pub revision: u64,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// History Load Params
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Parameters for loading session history.
+///
+/// # Source
+/// `packages/core/src/session/history.ts` lines 66–80 `load`, lines 82–89 `loadForRunner`.
+#[derive(Debug, Clone)]
+pub struct HistoryLoadParams {
+    pub session_id: SessionId,
+    /// Baseline sequence for runner context
+    pub baseline_seq: Option<u64>,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Logging
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Log message context for session failures.
+///
+/// # Source
+/// `packages/core/src/session/logging.ts` lines 4–8 `logFailure`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionLogEntry {
+    /// Log message type
+    pub message: LogMessageType,
+    /// Session ID
+    pub session_id: SessionId,
+    /// Error cause details
+    pub cause: String,
+}
+
+/// Kinds of session log messages.
+///
+/// # Source
+/// `packages/core/src/session/logging.ts` line 5 `message` union.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LogMessageType {
+    /// Failed to drain a session
+    #[serde(rename = "Failed to drain Session")]
+    DrainFailed,
+    /// Failed to wake a session
+    #[serde(rename = "Failed to wake Session")]
+    WakeFailed,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Session Input Types
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Delivery mode for session input.
+///
+/// # Source
+/// `packages/core/src/session/input.ts` line 18 `Delivery`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum InputDelivery {
+    /// Steer — immediate/live input
+    Steer,
+    /// Queue — buffered for later processing
+    Queue,
+}
+
+/// An admitted session input.
+///
+/// # Source
+/// `packages/core/src/session/input.ts` lines 21–29 `Admitted`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdmittedInput {
+    /// Admission sequence number
+    pub admitted_seq: u64,
+    /// Message ID
+    pub id: SessionMessageId,
+    /// Owning session
+    pub session_id: SessionId,
+    /// The prompt
+    pub prompt: Prompt,
+    /// Delivery mode
+    pub delivery: InputDelivery,
+    /// When the input was created
+    pub time_created: u64,
+    /// When promoted (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promoted_seq: Option<u64>,
+}
+
+/// Lifecycle conflict error when input IDs collide.
+///
+/// # Source
+/// `packages/core/src/session/input.ts` lines 50–52 `LifecycleConflict`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LifecycleConflict {
+    pub id: SessionMessageId,
+}
+
+impl std::fmt::Display for LifecycleConflict {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Lifecycle conflict for input: {}", self.id)
+    }
+}
+
+impl std::error::Error for LifecycleConflict {}
+
+/// Parameters for promoting steers (cutoff-based).
+///
+/// # Source
+/// `packages/core/src/session/input.ts` lines 300–321 `promoteSteers`.
+#[derive(Debug, Clone)]
+pub struct PromoteSteersParams {
+    pub session_id: SessionId,
+    /// Only promote inputs with admitted_seq <= cutoff
+    pub cutoff: u64,
+}
+
+/// Parameters for admitting a new input.
+///
+/// # Source
+/// `packages/core/src/session/input.ts` lines 54–93 `admit`.
+#[derive(Debug, Clone)]
+pub struct AdmitInputParams {
+    pub id: SessionMessageId,
+    pub session_id: SessionId,
+    pub prompt: Prompt,
+    pub delivery: InputDelivery,
+}
+
+/// Parameters for projecting a legacy prompted input.
+///
+/// # Source
+/// `packages/core/src/session/input.ts` lines 242–270 `projectLegacyPrompted`.
+#[derive(Debug, Clone)]
+pub struct LegacyPromptedParams {
+    pub id: SessionMessageId,
+    pub session_id: SessionId,
+    pub prompt: Prompt,
+    pub delivery: InputDelivery,
+    pub time_created: u64,
+    pub promoted_seq: u64,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tests
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_history_entry_roundtrip() {
+        let entry = HistoryEntry {
+            seq: 42,
+            message: serde_json::json!({"type": "user", "text": "hello"}),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        let parsed: HistoryEntry = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.seq, 42);
+        assert_eq!(parsed.message["type"], "user");
+    }
+
+    #[test]
+    fn test_context_epoch_serialization() {
+        let epoch = ContextEpoch {
+            session_id: "ses_001".into(),
+            baseline: "Summary of previous work".into(),
+            agent: "build".into(),
+            snapshot: serde_json::json!({"files": ["src/main.rs"]}),
+            baseline_seq: 10,
+            replacement_seq: None,
+            revision: 3,
+        };
+        let json = serde_json::to_string(&epoch).expect("serialize");
+        assert!(json.contains("ses_001"));
+        assert!(json.contains("Summary of previous work"));
+        let parsed: ContextEpoch = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.revision, 3);
+    }
+
+    #[test]
+    fn test_log_message_type_serialization() {
+        assert_eq!(
+            serde_json::to_string(&LogMessageType::DrainFailed).expect("serialize"),
+            r#""Failed to drain Session""#
+        );
+        assert_eq!(
+            serde_json::to_string(&LogMessageType::WakeFailed).expect("serialize"),
+            r#""Failed to wake Session""#
+        );
+    }
+
+    #[test]
+    fn test_session_log_entry() {
+        let entry = SessionLogEntry {
+            message: LogMessageType::DrainFailed,
+            session_id: "ses_001".into(),
+            cause: "Provider timeout".into(),
+        };
+        let json = serde_json::to_string(&entry).expect("serialize");
+        assert!(json.contains("Failed to drain Session"));
+        assert!(json.contains("Provider timeout"));
+    }
+
+    #[test]
+    fn test_input_delivery_serialization() {
+        assert_eq!(
+            serde_json::to_string(&InputDelivery::Steer).expect("serialize"),
+            r#""steer""#
+        );
+        assert_eq!(
+            serde_json::to_string(&InputDelivery::Queue).expect("serialize"),
+            r#""queue""#
+        );
+    }
+
+    #[test]
+    fn test_admitted_input_full() {
+        let input = AdmittedInput {
+            admitted_seq: 5,
+            id: "msg_001".into(),
+            session_id: "ses_001".into(),
+            prompt: Prompt {
+                text: "Fix the bug".into(),
+                files: None,
+                agents: None,
+            },
+            delivery: InputDelivery::Steer,
+            time_created: 1700000000000,
+            promoted_seq: Some(6),
+        };
+        let json = serde_json::to_string(&input).expect("serialize");
+        assert!(json.contains("msg_001"));
+        assert!(json.contains("steer"));
+        assert!(json.contains("Fix the bug"));
+    }
+
+    #[test]
+    fn test_admitted_input_no_promotion() {
+        let input = AdmittedInput {
+            admitted_seq: 5,
+            id: "msg_001".into(),
+            session_id: "ses_001".into(),
+            prompt: Prompt {
+                text: "Hello".into(),
+                files: None,
+                agents: None,
+            },
+            delivery: InputDelivery::Queue,
+            time_created: 1700000000000,
+            promoted_seq: None,
+        };
+        let json = serde_json::to_string(&input).expect("serialize");
+        assert!(!json.contains("promoted_seq"));
+    }
+
+    #[test]
+    fn test_lifecycle_conflict_display() {
+        let conflict = LifecycleConflict {
+            id: "msg_conflict".into(),
+        };
+        assert_eq!(
+            conflict.to_string(),
+            "Lifecycle conflict for input: msg_conflict"
+        );
+    }
+}
