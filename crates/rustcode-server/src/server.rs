@@ -30,6 +30,15 @@ pub struct AppState {
     /// Permission service for evaluating and managing permissions.
     pub permissions: Arc<rustcode_core::permission::PermissionService>,
 
+    /// Session runner for executing prompts against LLMs.
+    pub runner: Arc<rustcode_core::session_runner::SessionRunner>,
+
+    /// Registered LLM providers (provider_id → provider).
+    pub providers: std::collections::HashMap<
+        String,
+        Box<dyn rustcode_core::provider::Provider>,
+    >,
+
     /// Server version string.
     pub version: String,
 }
@@ -41,12 +50,19 @@ impl AppState {
         sessions: Arc<rustcode_core::session::SessionManager>,
         tools: Arc<rustcode_core::tool::ToolRegistry>,
         permissions: Arc<rustcode_core::permission::PermissionService>,
+        runner: Arc<rustcode_core::session_runner::SessionRunner>,
+        providers: std::collections::HashMap<
+            String,
+            Box<dyn rustcode_core::provider::Provider>,
+        >,
     ) -> Self {
         Self {
             bus,
             sessions,
             tools,
             permissions,
+            runner,
+            providers,
             version: env!("CARGO_PKG_VERSION").to_string(),
         }
     }

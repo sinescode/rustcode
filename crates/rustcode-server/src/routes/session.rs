@@ -37,6 +37,7 @@ use axum::routing::{delete, get, patch, post};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
+use tracing::{error, info};
 
 use crate::server::AppState;
 
@@ -485,16 +486,126 @@ async fn get_message(
 }
 
 async fn post_prompt(
-    State(_): State<Arc<AppState>>,
+    State(state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(payload): Json<PromptPayload>,
 ) -> impl IntoResponse {
-    // Create a user message and append it
-    Json(serde_json::json!({
-        "session_id": session_id,
-        "text": payload.text,
-        "status": "accepted",
-    }))
+    // Resolve the model — default to Anthropic's claude-sonnet-4-6
+    let model_selection = payload.model.unwrap_or_else(|| ModelSelectionPayload {
+        id: "claude-sonnet-4-6".into(),
+        provider_id: "anthropic".into(),
+        variant: None,
+    });
+
+    // Find the provider
+    let provider = match state.providers.get(&model_selection.provider_id) {
+        Some(p) => p,
+        None => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": format!("provider '{}' not configured", model_selection.provider_id)
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Find the model
+    let model = match provider.get_model(&model_selection.id).await {
+        Ok(m) => m,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({"error": format!("model not found: {e}")})),
+            )
+                .into_response();
+        }
+    };
+
+    // Build the prompt input
+    let mut parts = Vec::new();
+    if let Some(payload_parts) = payload.parts {
+        for part in payload_parts {
+            if let Some(t) = part.get("text").and_then(|v| v.as_str()) {
+                parts.push(rustcode_core::session_prompt::PromptPart::Text(
+                    rustcode_core::session_prompt::PromptTextPart {
+                        id: None,
+                        text: t.to_string(),
+                        synthetic: false,
+                    },
+                ));
+            }
+        }
+    }
+    if !payload.text.is_empty() {
+        parts.push(rustcode_core::session_prompt::PromptPart::Text(
+            rustcode_core::session_prompt::PromptTextPart {
+                id: None,
+                text: payload.text.clone(),
+                synthetic: false,
+            },
+        ));
+    }
+
+    let input = rustcode_core::session_prompt::SessionPromptInput {
+        session_id,
+        message_id: None,
+        model: Some(rustcode_core::session_info::ModelRef {
+            id: model_selection.id,
+            provider_id: model_selection.provider_id,
+            variant: model_selection.variant,
+        }),
+        agent: payload.agent.or(Some("build".into())),
+        no_reply: false,
+        tools: None,
+        format: None,
+        system: None,
+        variant: None,
+        parts,
+    };
+
+    // Default instructions from CLAUDE.md / built-in system prompt
+    let instructions = vec![
+        "You are a helpful coding assistant powered by Claude.".to_string(),
+        "You have access to tools for reading, writing, editing, and searching code.".to_string(),
+        "Always write correct, idiomatic Rust code.".to_string(),
+        "Use the available tools when you need to interact with the filesystem.".to_string(),
+    ];
+
+    // Run the prompt through the session runner
+    info!(
+        "Running prompt for session {} with model {}/{}",
+        input.session_id, input.model.as_ref().map(|m| m.provider_id.as_str()).unwrap_or("?"), input.model.as_ref().map(|m| m.id.as_str()).unwrap_or("?")
+    );
+
+    match state.runner.run(provider.as_ref(), &model, &input, &instructions).await {
+        Ok(result) => {
+            info!(
+                "Prompt completed for session {}: {} chars, {} events",
+                input.session_id,
+                result.text.len(),
+                result.events.len()
+            );
+
+            Json(serde_json::json!({
+                "session_id": input.session_id,
+                "text": result.text,
+                "success": result.success,
+                "events_count": result.events.len(),
+                "error": result.error,
+            }))
+            .into_response()
+        }
+        Err(e) => {
+            error!("Prompt failed for session {}: {e}", input.session_id);
+            (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({"error": e.to_string()})),
+            )
+                .into_response()
+        }
+    }
 }
 
 async fn delete_message(
