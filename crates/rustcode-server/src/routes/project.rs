@@ -1,13 +1,6 @@
 //! Project routes — list, current, init git, update, directories.
 //!
 //! Ported from: `packages/opencode/src/server/routes/instance/httpapi/groups/project.ts`
-//!
-//! Route paths:
-//! - `GET   /project`                       — list projects
-//! - `GET   /project/current`               — current project info
-//! - `POST  /project/git/init`              — init git repo
-//! - `PATCH /project/:projectID`            — update project
-//! - `GET   /project/:projectID/directories` — project directories
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -28,7 +21,6 @@ pub struct UpdateProjectPayload {
     pub commands: Option<serde_json::Value>,
 }
 
-/// Create the project routes router.
 pub fn project_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/project", get(list_projects))
@@ -39,44 +31,33 @@ pub fn project_routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn list_projects() -> impl IntoResponse {
+async fn list_projects(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }
 
-async fn current_project() -> impl IntoResponse {
+async fn current_project(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "id": "default",
         "name": "rustcode",
-        "directory": std::env::current_dir()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default(),
+        "directory": std::env::current_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default(),
     }))
 }
 
-async fn init_git() -> impl IntoResponse {
-    Json(serde_json::json!({
-        "id": "default",
-        "name": "rustcode",
-        "initialized": true,
-    }))
+async fn init_git(State(_): State<Arc<AppState>>) -> impl IntoResponse {
+    Json(serde_json::json!({ "id": "default", "name": "rustcode", "initialized": true }))
 }
 
 async fn update_project(
+    State(_): State<Arc<AppState>>,
     Path(project_id): Path<String>,
     Json(payload): Json<UpdateProjectPayload>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "id": project_id,
-        "name": payload.name,
-        "updated": true,
-    }))
+    Json(serde_json::json!({ "id": project_id, "name": payload.name, "updated": true }))
 }
 
 async fn project_directories(
+    State(_): State<Arc<AppState>>,
     Path(project_id): Path<String>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "project_id": project_id,
-        "directories": [],
-    }))
+    Json(serde_json::json!({ "project_id": project_id, "directories": [] }))
 }

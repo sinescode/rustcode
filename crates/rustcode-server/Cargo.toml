@@ -17,4 +17,5 @@ tower.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
 tower-http = { version = "0.6", features = ["cors", "compression-gzip", "decompression-gzip"] }
+anyhow.workspace = true
 uuid = { workspace = true, features = ["v4"] }

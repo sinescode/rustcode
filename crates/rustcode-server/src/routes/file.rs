@@ -1,14 +1,6 @@
 //! File routes — find text, find files, find symbols, list, read, status.
 //!
 //! Ported from: `packages/opencode/src/server/routes/instance/httpapi/groups/file.ts`
-//!
-//! Route paths:
-//! - `GET /find`        — find text (ripgrep)
-//! - `GET /find/file`   — find files
-//! - `GET /find/symbol` — find symbols (LSP)
-//! - `GET /file`        — list directory
-//! - `GET /file/content` — read file content
-//! - `GET /file/status`  — git file status
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
@@ -19,10 +11,6 @@ use std::sync::Arc;
 
 use crate::server::AppState;
 
-/// Query for finding text.
-///
-/// # Source
-/// `FindTextQuery` in `file.ts` line 20.
 #[derive(Debug, Deserialize)]
 pub struct FindTextQuery {
     pub pattern: String,
@@ -32,10 +20,6 @@ pub struct FindTextQuery {
     pub workspace: Option<String>,
 }
 
-/// Query for finding files.
-///
-/// # Source
-/// `FindFileQuery` in `file.ts` line 25.
 #[derive(Debug, Deserialize)]
 pub struct FindFileQuery {
     pub query: String,
@@ -51,10 +35,6 @@ pub struct FindFileQuery {
     pub limit: Option<u32>,
 }
 
-/// Query for finding symbols.
-///
-/// # Source
-/// `FindSymbolQuery` in `file.ts` line 35.
 #[derive(Debug, Deserialize)]
 pub struct FindSymbolQuery {
     pub query: String,
@@ -64,10 +44,6 @@ pub struct FindSymbolQuery {
     pub workspace: Option<String>,
 }
 
-/// Query for file operations.
-///
-/// # Source
-/// `FileQuery` in `file.ts` line 15.
 #[derive(Debug, Deserialize)]
 pub struct FileQuery {
     pub path: String,
@@ -77,7 +53,6 @@ pub struct FileQuery {
     pub workspace: Option<String>,
 }
 
-/// Create the file routes router.
 pub fn file_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/find", get(find_text))
@@ -90,51 +65,40 @@ pub fn file_routes(state: Arc<AppState>) -> Router {
 }
 
 async fn find_text(
+    State(_): State<Arc<AppState>>,
     Query(query): Query<FindTextQuery>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "pattern": query.pattern,
-        "matches": [],
-    }))
+    Json(serde_json::json!({ "pattern": query.pattern, "matches": [] }))
 }
 
 async fn find_file(
+    State(_): State<Arc<AppState>>,
     Query(query): Query<FindFileQuery>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "query": query.query,
-        "files": [],
-    }))
+    Json(serde_json::json!({ "query": query.query, "files": [] }))
 }
 
 async fn find_symbol(
+    State(_): State<Arc<AppState>>,
     Query(query): Query<FindSymbolQuery>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "query": query.query,
-        "symbols": [],
-    }))
+    Json(serde_json::json!({ "query": query.query, "symbols": [] }))
 }
 
 async fn list_files(
+    State(_): State<Arc<AppState>>,
     Query(query): Query<FileQuery>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "path": query.path,
-        "entries": [],
-    }))
+    Json(serde_json::json!({ "path": query.path, "entries": [] }))
 }
 
 async fn read_file(
+    State(_): State<Arc<AppState>>,
     Query(query): Query<FileQuery>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "path": query.path,
-        "type": "text",
-        "content": "",
-    }))
+    Json(serde_json::json!({ "path": query.path, "type": "text", "content": "" }))
 }
 
-async fn file_status() -> impl IntoResponse {
+async fn file_status(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }

@@ -1,12 +1,6 @@
 //! Provider routes — list, auth methods, OAuth authorize/callback.
 //!
 //! Ported from: `packages/opencode/src/server/routes/instance/httpapi/groups/provider.ts`
-//!
-//! Route paths:
-//! - `GET  /provider`                                — list providers
-//! - `GET  /provider/auth`                           — provider auth methods
-//! - `POST /provider/:providerID/oauth/authorize`    — start OAuth
-//! - `POST /provider/:providerID/oauth/callback`     — OAuth callback
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -32,7 +26,6 @@ pub struct CallbackInput {
     pub redirect_uri: Option<String>,
 }
 
-/// Create the provider routes router.
 pub fn provider_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/provider", get(list_providers))
@@ -42,30 +35,26 @@ pub fn provider_routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn list_providers() -> impl IntoResponse {
+async fn list_providers(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }
 
-async fn provider_auth_methods() -> impl IntoResponse {
+async fn provider_auth_methods(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }
 
 async fn oauth_authorize(
+    State(_): State<Arc<AppState>>,
     Path(provider_id): Path<String>,
     Json(_payload): Json<AuthorizeInput>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "provider_id": provider_id,
-        "authorization_url": null,
-    }))
+    Json(serde_json::json!({ "provider_id": provider_id, "authorization_url": null }))
 }
 
 async fn oauth_callback(
+    State(_): State<Arc<AppState>>,
     Path(provider_id): Path<String>,
-    Json(payload): Json<CallbackInput>,
+    Json(_payload): Json<CallbackInput>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "provider_id": provider_id,
-        "success": true,
-    }))
+    Json(serde_json::json!({ "provider_id": provider_id, "success": true }))
 }

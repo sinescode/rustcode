@@ -1,10 +1,6 @@
 //! Permission routes — list pending, reply.
 //!
 //! Ported from: `packages/opencode/src/server/routes/instance/httpapi/groups/permission.ts`
-//!
-//! Route paths:
-//! - `GET  /permission`                 — list pending permissions
-//! - `POST /permission/:requestID/reply` — respond to permission request
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
@@ -22,7 +18,6 @@ pub struct PermissionReplyPayload {
     pub message: Option<String>,
 }
 
-/// Create the permission routes router.
 pub fn permission_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/permission", get(list_permissions))
@@ -30,17 +25,14 @@ pub fn permission_routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn list_permissions() -> impl IntoResponse {
+async fn list_permissions(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }
 
 async fn reply_permission(
+    State(_): State<Arc<AppState>>,
     Path(request_id): Path<String>,
     Json(payload): Json<PermissionReplyPayload>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "processed": true,
-        "request_id": request_id,
-        "reply": payload.reply,
-    }))
+    Json(serde_json::json!({ "processed": true, "request_id": request_id, "reply": payload.reply }))
 }

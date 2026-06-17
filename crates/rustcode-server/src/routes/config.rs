@@ -24,7 +24,7 @@ pub fn config_routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn get_config() -> impl IntoResponse {
+async fn get_config(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "schema": "opencode.json",
         "version": env!("CARGO_PKG_VERSION"),
@@ -32,6 +32,7 @@ async fn get_config() -> impl IntoResponse {
 }
 
 async fn update_config(
+    State(_): State<Arc<AppState>>,
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({
@@ -40,6 +41,6 @@ async fn update_config(
     }))
 }
 
-async fn list_providers() -> impl IntoResponse {
+async fn list_providers(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }

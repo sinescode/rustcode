@@ -98,7 +98,7 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
 ///
 /// # Source
 /// `global.ts` line 87 — `HttpApiEndpoint.get("event", GlobalPaths.event, ...)`.
-async fn global_event() -> impl IntoResponse {
+async fn global_event(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     // The TS source returns `GlobalEventSchema` for the schema definition.
     // In runtime, this is an SSE endpoint. For now, return empty OK.
     // Full SSE implementation connects to the bus and streams events.
@@ -109,7 +109,7 @@ async fn global_event() -> impl IntoResponse {
 ///
 /// # Source
 /// `global.ts` line 96 — `HttpApiEndpoint.get("configGet", GlobalPaths.config, ...)`.
-async fn global_config_get() -> impl IntoResponse {
+async fn global_config_get(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!({
         "schema": "opencode.json",
         "version": env!("CARGO_PKG_VERSION"),
@@ -121,6 +121,7 @@ async fn global_config_get() -> impl IntoResponse {
 /// # Source
 /// `global.ts` line 105 — `HttpApiEndpoint.patch("configUpdate", GlobalPaths.config, ...)`.
 async fn global_config_update(
+    State(_): State<Arc<AppState>>,
     Json(_payload): Json<ConfigUpdatePayload>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({
@@ -133,7 +134,7 @@ async fn global_config_update(
 ///
 /// # Source
 /// `global.ts` line 116 — `HttpApiEndpoint.post("dispose", GlobalPaths.dispose, ...)`.
-async fn global_dispose() -> impl IntoResponse {
+async fn global_dispose(State(_): State<Arc<AppState>>) -> impl IntoResponse {
     Json(serde_json::json!(true))
 }
 
@@ -142,6 +143,7 @@ async fn global_dispose() -> impl IntoResponse {
 /// # Source
 /// `global.ts` line 125 — `HttpApiEndpoint.post("upgrade", GlobalPaths.upgrade, ...)`.
 async fn global_upgrade(
+    State(_): State<Arc<AppState>>,
     Json(payload): Json<UpgradeInput>,
 ) -> impl IntoResponse {
     let target = payload.target.unwrap_or_else(|| "latest".to_string());

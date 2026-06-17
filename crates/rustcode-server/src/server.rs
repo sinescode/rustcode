@@ -122,13 +122,11 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// Returns an error if the server fails to bind to the address.
 pub async fn serve(state: Arc<AppState>, config: ServerConfig) -> anyhow::Result<()> {
     let router = build_router(state);
-    let addr = SocketAddr::new(
-        config
-            .hostname
-            .parse()
-            .unwrap_or_else(|_| "127.0.0.1".parse().unwrap()),
-        config.port,
-    );
+    let host: std::net::IpAddr = config
+        .hostname
+        .parse()
+        .unwrap_or_else(|_| "127.0.0.1".parse().expect("hardcoded IP is valid"));
+    let addr = SocketAddr::new(host, config.port);
 
     let listener = TcpListener::bind(addr).await?;
     let bound_addr = listener.local_addr()?;

@@ -325,7 +325,7 @@ async fn list_sessions(
 }
 
 async fn session_status(
-    State(state): State<Arc<AppState>>,
+    State(_): State<Arc<AppState>>,
 ) -> impl IntoResponse {
     // Return an empty status map — status tracking is in the processor layer
     let status_map: HashMap<String, serde_json::Value> = HashMap::new();
@@ -436,12 +436,14 @@ async fn list_children(
 }
 
 async fn get_todos(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     Json(serde_json::json!([]))
 }
 
 async fn get_diff(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     Json(serde_json::json!([]))
@@ -483,6 +485,7 @@ async fn get_message(
 }
 
 async fn post_prompt(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(payload): Json<PromptPayload>,
 ) -> impl IntoResponse {
@@ -495,18 +498,21 @@ async fn post_prompt(
 }
 
 async fn delete_message(
+    State(_): State<Arc<AppState>>,
     Path((session_id, message_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({"deleted": true, "session_id": session_id, "message_id": message_id}))
 }
 
 async fn delete_part(
+    State(_): State<Arc<AppState>>,
     Path((session_id, message_id, part_id)): Path<(String, String, String)>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({"deleted": true, "session_id": session_id, "message_id": message_id, "part_id": part_id}))
 }
 
 async fn update_part(
+    State(_): State<Arc<AppState>>,
     Path((session_id, message_id, part_id)): Path<(String, String, String)>,
     Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
@@ -535,12 +541,14 @@ async fn fork_session(
 }
 
 async fn abort_session(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({"aborted": true, "session_id": session_id}))
 }
 
 async fn share_session(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({
@@ -550,12 +558,14 @@ async fn share_session(
 }
 
 async fn unshare_session(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
     Json(serde_json::json!({"id": session_id, "share": null}))
 }
 
 async fn init_session(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(_payload): Json<InitPayload>,
 ) -> impl IntoResponse {
@@ -563,6 +573,7 @@ async fn init_session(
 }
 
 async fn summarize_session(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(payload): Json<SummarizePayload>,
 ) -> impl IntoResponse {
@@ -574,6 +585,7 @@ async fn summarize_session(
 }
 
 async fn prompt_async(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(payload): Json<PromptPayload>,
 ) -> impl IntoResponse {
@@ -585,6 +597,7 @@ async fn prompt_async(
 }
 
 async fn post_command(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(payload): Json<CommandPayload>,
 ) -> impl IntoResponse {
@@ -596,6 +609,7 @@ async fn post_command(
 }
 
 async fn post_shell(
+    State(_): State<Arc<AppState>>,
     Path(session_id): Path<String>,
     Json(payload): Json<ShellPayload>,
 ) -> impl IntoResponse {
@@ -649,6 +663,7 @@ async fn unrevert_session(
 }
 
 async fn permission_respond(
+    State(_): State<Arc<AppState>>,
     Path((session_id, permission_id)): Path<(String, String)>,
     Json(payload): Json<PermissionResponsePayload>,
 ) -> impl IntoResponse {
