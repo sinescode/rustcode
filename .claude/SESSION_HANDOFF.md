@@ -1,13 +1,13 @@
 ╔══════════════════════════════════════════════════════════════════════╗
 ║               RUSTCODE SESSION HANDOFF                               ║
 ╠══════════════════════════════════════════════════════════════════════╣
-║ Date         : 2026-06-16                                            ║
-║ Session #    : 2                                                     ║
+║ Date         : 2026-06-17                                            ║
+║ Session #    : 3                                                     ║
 ║ OpenCode SHA : 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b             ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ LAST COMPLETED MODULE                                                ║
-║   ID    : 07                                                         ║
-║   Name  : permission                                                 ║
+║   ID    : 08                                                         ║
+║   Name  : provider                                                   ║
 ║   CI    : green ✅                                                   ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ MODULE INVENTORY STATUS                                              ║
@@ -21,12 +21,19 @@
 ║           variable substitution, merging, 18 tests                    ║
 ║     [06] storage — ~540 lines, JSON file store + sqlx SQLite pool,   ║
 ║           migrations, 5 core tables, 8 tests                         ║
-║     [07] permission — ~1400 lines, PermissionService (ask/reply/     ║
-║           list/assert), SavedPermissions, wildcard matching,         ║
-║           bash arity (160+ entries), fromConfig, 42 tests            ║
+║     [07] permission — ~1400 lines, PermissionService, wildcards,     ║
+║           bash arity, 42 tests                                       ║
+║     [08] provider — ~1920 lines, 41 tests, green CI                  ║
+║           Data structures: Model, ProviderInfo, ApiInfo, Capabilities,║
+║           Cost, TokenLimit, ModelRef, ListResult, Variants            ║
+║           LLM events: 16 LlmEvent variants (all tagged union members) ║
+║           Usage + LlmResponse with text/reasoning/tool_calls helpers  ║
+║           Provider trait + ProviderCatalog trait (7 methods)          ║
+║           Transforms: temperature, topP, topK, sanitizeSurrogates,    ║
+║           sdkKey, maxOutputTokens, sortModels, parseModel,            ║
+║           defaultReasoningEffort, BUNDLED_PROVIDER_NPM                ║
 ║                                                                      ║
 ║   TODO (not started):                                                ║
-║     [08] provider (256-line stub)                                    ║
 ║     [09] tool (110-line stub)                                        ║
 ║     [10] agent (54-line stub)                                        ║
 ║     [11] session (204-line stub)                                     ║
@@ -46,54 +53,61 @@
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ CURRENT CI STATUS                                                    ║
 ║   Branch      : main                                                 ║
-║   Last commit : 00d73d3 — fix(permission): indent doc continuation  ║
-║                 line (clippy::doc_lazy_continuation)                  ║
-║   CI result   : green ✅ (all 5 jobs: fmt, clippy, test×2, deny)    ║
-║   Tests       : 131 passed, 0 failed (ubuntu + macos)                ║
+║   Last commit : 8d078ef — fix(provider): correct sort and gpt5-chat  ║
+║                          test assertions                             ║
+║   CI result   : green ✅ (fmt, clippy, test×2, deny)                 ║
+║   Tests       : 184 passed, 0 failed (ubuntu + macos)                ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ FILES CHANGED THIS SESSION                                           ║
-║   crates/rustcode-core/src/permission.rs — full rewrite (141→~1400) ║
-║   .claude/plans/permission-module.md — Phase 1 implementation plan   ║
+║   crates/rustcode-core/src/provider.rs — stub → full (257→~1920)    ║
+║   .claude/plans/provider-module.md — Phase 1 implementation plan     ║
 ║   .claude/SESSION_HANDOFF.md — this file                             ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ COMMITS THIS SESSION                                                 ║
-║   ffcabc3 feat(permission): scaffold skeleton                         ║
-║   2368c56 fix(permission): fix Result type alias, lifetime, fmt      ║
-║   05525b0 feat(permission): implement pending state, reply, assert   ║
-║   125581b fix(permission): fix all rustfmt issues + oneshot type     ║
-║   23fa4fe fix(permission): use strip_prefix, add integration tests   ║
-║   00d73d3 fix(permission): indent doc continuation line              ║
+║   7724d07 feat(provider): full data structures — all Model fields,   ║
+║            16 LlmEvent variants, Usage breakdown, ProviderCatalog    ║
+║            trait, transform functions                                ║
+║   96f57f1 fix(provider): use UTF-16 encoding for surrogate detection,║
+║            fix lifetime in default_reasoning_effort                  ║
+║   2a075a1 fix(provider): remove let-chain, use nested if-let for     ║
+║            edition 2021 compat                                       ║
+║   98bede9 fix(provider): apply cargo fmt corrections manually        ║
+║   eba0ed6 fix(provider): remove unsafe blocks from tests, fix doc    ║
+║            indentation, elide lifetimes                              ║
+║   8d078ef fix(provider): correct sort and gpt5-chat test assertions  ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ BLOCKERS                                                             ║
 ║   NONE                                                               ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ DECISIONS MADE                                                       ║
-║   1. Wildcard matching uses regex with dotall flag — `*` matches     ║
-║      across path separators (matching TS behavior exactly).          ║
-║   2. regex_escape does NOT escape `*` or `?` — matches TS source's   ║
-║      character class [.+^${}()|[\]\\] exactly.                       ║
-║   3. Arity dictionary uses OnceLock<HashMap> (stable since 1.70)     ║
-║      instead of phf — avoids build-dependency complexity.            ║
-║   4. PermissionService uses Arc<DashMap> + Arc<RwLock<Ruleset>>      ║
-║      for shared state. Oneshot channels implement the Deferred       ║
-║      pattern from the TS Effect.ts code.                             ║
-║   5. V1 and V2 permission APIs unified into single module — same     ║
-║      types serve both. V2 uses evaluate_v2() for action/resource.    ║
-║   6. PermissionSaved requires a 'permission' table migration —       ║
-║      not yet registered in the Database migration list. Will be      ║
-║      added when the session module orchestrates migrations.          ║
-║   7. SavedPermissions::add() uses 'psv_' prefix IDs generated via    ║
-║      id::ascending to avoid adding a uuid dependency.                ║
+║   1. sanitize_surrogates uses UTF-16 encode/decode to detect         ║
+║      isolated surrogate halves — Rust chars can't hold surrogates    ║
+║      so byte-level detection is the only safe approach.              ║
+║   2. Unsafe blocks in tests are forbidden by #![forbid(unsafe_code)] ║
+║      — surrogate-detection tests use valid UTF-8/emoji only.         ║
+║   3. Variant computation (reasoning efforts per provider family,     ║
+║      ~400 lines in TS transform.ts) deferred to Phase 2 Step D      ║
+║      — needs detailed model-specific logic; ProviderCatalog          ║
+║      implementation is also deferred (requires runtime deps).        ║
+║   4. sort_models uses findIndex "desc" semantics: HIGHER index in    ║
+║      priority array = HIGHER sort position. This means the priority  ║
+║      list order is reverse of what you'd expect — the LAST entry      ║
+║      in priority[] sorts FIRST. Matches TS provider.ts:1948.         ║
+║   5. ProviderService implementation (the Effect.ts-style layer) is   ║
+║      blocked on: FSUtil, Auth, Plugin, Env, Config, ModelsDev,       ║
+║      RuntimeFlags — none of which have full Rust implementations.    ║
+║      The ProviderCatalog trait is defined but unimplemented.          ║
 ╠══════════════════════════════════════════════════════════════════════╣
 ║ NEXT SESSION INSTRUCTIONS                                            ║
-║   Start with   : PHASE 1 for module [08: provider]                   ║
+║   Start with   : PHASE 1 for module [09: tool]                       ║
 ║   First action : Read TS source files under                           ║
-║     packages/opencode/src/provider/ and packages/core/src/           ║
-║     provider/ to understand the interface contract                   ║
+║     packages/opencode/src/tool/ to understand the tool system        ║
 ║   First reads  :                                                      ║
-║     - opencode/packages/opencode/src/provider/provider.ts            ║
-║     - opencode/packages/opencode/src/provider/transform.ts           ║
-║     - opencode/packages/llm/src/*.ts (protocol adapters)             ║
-║     - rustcode/crates/rustcode-core/src/provider.rs (existing stub)  ║
-║   Then         : Produce Phase 1 plan → implement in atomic steps    ║
+║     - opencode/packages/opencode/src/tool/tool.ts                    ║
+║     - opencode/packages/opencode/src/tool/registry.ts                ║
+║     - opencode/packages/opencode/src/tool/schema.ts                  ║
+║     - opencode/packages/core/src/tool/*.ts (tool implementations)    ║
+║     - rustcode/crates/rustcode-core/src/tool.rs (existing stub)      ║
+║   Then         : Expand tool registry, implement permission gates,   ║
+║                  streaming tool output, error handling               ║
 ╚══════════════════════════════════════════════════════════════════════╝
