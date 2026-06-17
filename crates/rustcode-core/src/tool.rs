@@ -5,6 +5,7 @@
 //! - `packages/opencode/src/tool/registry.ts` (441 lines)
 //! - `packages/opencode/src/tool/schema.ts` (15 lines)
 //! - `packages/opencode/src/tool/truncate.ts`
+//!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use async_trait::async_trait;
@@ -188,6 +189,20 @@ impl ToolInfo {
     }
 }
 
+/// Type alias for the plugin tool execute function.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/registry.ts` `ToolDefinition.execute`.
+pub type PluginToolExecFn = Arc<
+    dyn Fn(
+            serde_json::Value,
+            ToolContext,
+        ) -> std::pin::Pin<
+            Box<dyn std::future::Future<Output = crate::error::Result<ExecuteResult>> + Send>,
+        > + Send
+        + Sync,
+>;
+
 /// A plugin-provided tool (external or MCP).
 ///
 /// Plugin tools don't implement the Tool trait directly; they have
@@ -204,15 +219,7 @@ pub struct PluginToolDef {
     /// JSON Schema for the tool's input arguments
     pub json_schema: serde_json::Value,
     /// Execute function — takes raw args JSON + context, returns output or structured result
-    pub execute: Arc<
-        dyn Fn(
-                serde_json::Value,
-                ToolContext,
-            ) -> std::pin::Pin<
-                Box<dyn std::future::Future<Output = crate::error::Result<ExecuteResult>> + Send>,
-            > + Send
-            + Sync,
-    >,
+    pub execute: PluginToolExecFn,
 }
 
 impl PluginToolDef {
