@@ -809,10 +809,7 @@ mod tests {
             extra: HashMap::new(),
             messages: vec![],
         };
-        let result = tool
-            .execute(serde_json::json!({}), &ctx)
-            .await
-            .unwrap();
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
         assert_eq!(result.title, "noop");
         assert_eq!(result.output, "ok");
     }
@@ -917,16 +914,16 @@ mod tests {
                 >,
             > {
                 use futures::stream;
-                Ok(Box::new(stream::iter(vec![Ok(
-                    ToolOutputEvent::Complete(ExecuteResult {
+                Ok(Box::new(stream::iter(vec![Ok(ToolOutputEvent::Complete(
+                    ExecuteResult {
                         title: "ok".into(),
                         output: "streamed".into(),
                         truncated: false,
                         output_path: None,
                         attachments: None,
                         metadata: HashMap::new(),
-                    }),
-                )])))
+                    },
+                ))])))
             }
         }
 
