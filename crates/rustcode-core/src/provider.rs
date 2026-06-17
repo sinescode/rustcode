@@ -1471,34 +1471,21 @@ mod tests {
 
     #[test]
     fn test_sort_models_by_priority() {
+        // Matches TS: provider.ts line 1947-1955 — sortBy findIndex "desc" means
+        // higher findIndex = earlier in output. Priority list is:
+        // ["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"]
+        // gemini-3-pro (findIndex=3) > big-pickle (2) > claude-sonnet-4 (1) > gpt-5 (0)
         let mut models = vec![
-            "gemini-3-pro".to_string(),
-            "gpt-5.1".to_string(),
             "claude-sonnet-4-5".to_string(),
             "big-pickle".to_string(),
+            "gpt-5.1".to_string(),
+            "gemini-3-pro".to_string(),
         ];
         sort_models(&mut models);
-        // gpt-5 should be first, then claude-sonnet-4, then big-pickle, then gemini-3-pro
-        assert!(
-            models[0].contains("gpt-5"),
-            "expected gpt-5 first, got: {:?}",
-            models
-        );
-        assert!(
-            models[1].contains("big-pickle"),
-            "expected big-pickle second, got: {:?}",
-            models
-        );
-        assert!(
-            models[2].contains("claude-sonnet-4"),
-            "expected claude third, got: {:?}",
-            models
-        );
-        assert!(
-            models[3].contains("gemini-3-pro"),
-            "expected gemini last, got: {:?}",
-            models
-        );
+        assert!(models[0].contains("gemini-3-pro"), "got: {:?}", models);
+        assert!(models[1].contains("big-pickle"), "got: {:?}", models);
+        assert!(models[2].contains("claude-sonnet-4"), "got: {:?}", models);
+        assert!(models[3].contains("gpt-5"), "got: {:?}", models);
     }
 
     #[test]
@@ -1884,6 +1871,12 @@ mod tests {
 
     #[test]
     fn test_default_reasoning_effort_gpt5_chat() {
+        // API ID "gpt-5.2-chat-latest" does NOT contain the literal
+        // substring "gpt-5-chat" (".2" separates "5" and "chat"), so
+        // the gpt-5 family detection fires and returns "medium".
+        // Only models whose api.id literally contains "gpt-5-chat"
+        // (e.g. "gpt-5-chat-latest") are excluded.
+        // Matches TS: options.ts line 1152.
         let model = Model {
             id: "gpt-5.2-chat-latest".into(),
             api: ApiInfo {
@@ -1893,8 +1886,7 @@ mod tests {
             },
             ..make_stub_model()
         };
-        // gpt-5-chat models don't default to "medium" reasoning
-        assert_eq!(default_reasoning_effort(&model), None);
+        assert_eq!(default_reasoning_effort(&model), Some("medium"));
     }
 
     #[test]
