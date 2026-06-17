@@ -1663,27 +1663,24 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
         }
         DebugCommand::Paths => {
             // Ported from: `debug/index.ts` — `debug paths`
-            let config = Config::load().unwrap_or_default();
+            // TS: iterates over `Global.Path` entries (data, config, cache, state).
+            // Uses the `dirs` crate directly since Config only exposes data_dir()
+            // and global_config_dir().
             let data_dir = Config::data_dir().unwrap_or_else(|_| PathBuf::from("."));
             println!("data      {}", data_dir.display());
-            println!(
-                "config    {}",
-                Config::config_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "unknown".into())
-            );
-            println!(
-                "cache     {}",
-                Config::cache_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "unknown".into())
-            );
-            println!(
-                "state     {}",
-                Config::state_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| "unknown".into())
-            );
+            let config_dir = dirs::config_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("opencode");
+            println!("config    {}", config_dir.display());
+            let cache_dir = dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("opencode");
+            println!("cache     {}", cache_dir.display());
+            let state_dir = dirs::state_dir()
+                .or_else(|| dirs::data_dir())
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("opencode");
+            println!("state     {}", state_dir.display());
             0
         }
         DebugCommand::Wait => {
