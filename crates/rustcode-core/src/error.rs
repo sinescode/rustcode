@@ -325,6 +325,13 @@ pub enum Error {
     #[error("aborted")]
     Aborted,
 
+    // -- Not implemented --
+    /// Feature not yet implemented.
+    ///
+    /// Used as a stub for modules still under construction.
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
+
     // -- Internal --
     /// Internal error (should never happen in normal operation).
     #[error("internal error: {0}")]
