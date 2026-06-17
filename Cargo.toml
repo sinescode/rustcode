@@ -43,6 +43,7 @@ sha2 = "0.10"
 hex = "0.4"
 regex = "1"
 rand = "0.8"
+serde_yaml = "0.9"
 rustcode-core = { path = "crates/rustcode-core" }
 rustcode-server = { path = "crates/rustcode-server" }
 rustcode-tui = { path = "crates/rustcode-tui" }

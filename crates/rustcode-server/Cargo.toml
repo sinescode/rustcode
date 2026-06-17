@@ -3,12 +3,12 @@ name = "rustcode-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description.workspace = true
+description = "HTTP/SSE server for rustcode"
 
 [dependencies]
 rustcode-core.workspace = true
-tokio.workspace = true
-axum.workspace = true
+tokio = { workspace = true, features = ["sync", "macros"] }
+axum = { workspace = true, features = ["macros"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -16,3 +16,5 @@ tracing.workspace = true
 tower.workspace = true
 futures.workspace = true
 tokio-stream.workspace = true
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "decompression-gzip"] }
+uuid = { workspace = true, features = ["v4"] }
