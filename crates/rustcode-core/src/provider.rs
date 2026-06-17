@@ -802,9 +802,7 @@ pub enum ChatMessage {
     #[serde(rename = "assistant")]
     Assistant { content: MessageContent },
     #[serde(rename = "tool")]
-    Tool {
-        content: Vec<ToolResultPart>,
-    },
+    Tool { content: Vec<ToolResultPart> },
 }
 
 /// Message content (text or multi-part).
@@ -954,11 +952,7 @@ pub trait ProviderCatalog: Send + Sync {
     async fn get_provider(&self, provider_id: &str) -> crate::error::Result<ProviderInfo>;
 
     /// Get a specific model from a provider.
-    async fn get_model(
-        &self,
-        provider_id: &str,
-        model_id: &str,
-    ) -> crate::error::Result<Model>;
+    async fn get_model(&self, provider_id: &str, model_id: &str) -> crate::error::Result<Model>;
 
     /// Find the closest matching model by searching for query terms.
     ///
@@ -1058,8 +1052,11 @@ pub fn default_temperature(model_id: &str) -> Option<f64> {
         Some(1.0)
     } else if id.contains("qwen") {
         Some(0.55)
-    } else if id.contains("claude") || id.contains("gemini") || id.contains("glm-4.6")
-        || id.contains("glm-4.7") || id.contains("minimax-m2")
+    } else if id.contains("claude")
+        || id.contains("gemini")
+        || id.contains("glm-4.6")
+        || id.contains("glm-4.7")
+        || id.contains("minimax-m2")
     {
         Some(1.0)
     } else if id.contains("kimi-k2") {
@@ -1087,9 +1084,15 @@ pub fn default_top_p(model_id: &str) -> Option<f64> {
     let id = model_id.to_lowercase();
     if id.contains("qwen") {
         Some(1.0)
-    } else if ["minimax-m2", "gemini", "kimi-k2.5", "kimi-k2p5", "kimi-k2-5"]
-        .iter()
-        .any(|s| id.contains(s))
+    } else if [
+        "minimax-m2",
+        "gemini",
+        "kimi-k2.5",
+        "kimi-k2p5",
+        "kimi-k2-5",
+    ]
+    .iter()
+    .any(|s| id.contains(s))
     {
         Some(0.95)
     } else {
@@ -1309,10 +1312,7 @@ mod tests {
 
     #[test]
     fn test_sanitize_surrogates_clean_text() {
-        assert_eq!(
-            sanitize_surrogates("hello world"),
-            "hello world"
-        );
+        assert_eq!(sanitize_surrogates("hello world"), "hello world");
     }
 
     #[test]
@@ -1350,8 +1350,7 @@ mod tests {
         // Unicode snowman (valid) + ill-formed surrogates
         let bytes = [
             0xE2u8, 0x98u8, 0x83u8, // ☃
-            b'h', b'i',
-            0xEDu8, 0xA0u8, 0x80u8, // isolated high surrogate
+            b'h', b'i', 0xEDu8, 0xA0u8, 0x80u8, // isolated high surrogate
             b'!',
         ];
         let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
@@ -1397,10 +1396,7 @@ mod tests {
 
     #[test]
     fn test_temperature_kimi_k2_thinking() {
-        assert_eq!(
-            default_temperature("kimi-k2-thinking"),
-            Some(1.0)
-        );
+        assert_eq!(default_temperature("kimi-k2-thinking"), Some(1.0));
     }
 
     #[test]
@@ -1479,18 +1475,31 @@ mod tests {
         ];
         sort_models(&mut models);
         // gpt-5 should be first, then claude-sonnet-4, then big-pickle, then gemini-3-pro
-        assert!(models[0].contains("gpt-5"), "expected gpt-5 first, got: {:?}", models);
-        assert!(models[1].contains("big-pickle"), "expected big-pickle second, got: {:?}", models);
-        assert!(models[2].contains("claude-sonnet-4"), "expected claude third, got: {:?}", models);
-        assert!(models[3].contains("gemini-3-pro"), "expected gemini last, got: {:?}", models);
+        assert!(
+            models[0].contains("gpt-5"),
+            "expected gpt-5 first, got: {:?}",
+            models
+        );
+        assert!(
+            models[1].contains("big-pickle"),
+            "expected big-pickle second, got: {:?}",
+            models
+        );
+        assert!(
+            models[2].contains("claude-sonnet-4"),
+            "expected claude third, got: {:?}",
+            models
+        );
+        assert!(
+            models[3].contains("gemini-3-pro"),
+            "expected gemini last, got: {:?}",
+            models
+        );
     }
 
     #[test]
     fn test_sort_models_latest_after() {
-        let mut models = vec![
-            "gpt-5.1-latest".to_string(),
-            "gpt-5.1".to_string(),
-        ];
+        let mut models = vec!["gpt-5.1-latest".to_string(), "gpt-5.1".to_string()];
         sort_models(&mut models);
         assert_eq!(models[0], "gpt-5.1");
         assert_eq!(models[1], "gpt-5.1-latest");
@@ -1619,10 +1628,7 @@ mod tests {
 
     #[test]
     fn test_llm_event_type_tags() {
-        assert_eq!(
-            LlmEvent::StepStart { index: 0 }.type_tag(),
-            "step-start"
-        );
+        assert_eq!(LlmEvent::StepStart { index: 0 }.type_tag(), "step-start");
         assert_eq!(
             LlmEvent::TextDelta {
                 id: "c_1".into(),
@@ -1869,10 +1875,7 @@ mod tests {
             },
             ..make_stub_model()
         };
-        assert_eq!(
-            default_reasoning_effort(&model),
-            Some("medium")
-        );
+        assert_eq!(default_reasoning_effort(&model), Some("medium"));
     }
 
     #[test]
