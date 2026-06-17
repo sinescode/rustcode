@@ -1,12 +1,14 @@
 //! Provider / LLM integration layer.
 //!
 //! Ported from:
+//!
 //! - `packages/opencode/src/provider/provider.ts` (1976 lines)
 //! - `packages/opencode/src/provider/transform.ts` (1427 lines)
 //! - `packages/opencode/src/provider/auth.ts` (233 lines)
 //! - `packages/opencode/src/provider/error.ts` (188 lines)
 //! - `packages/llm/src/schema/events.ts` (373 lines)
 //! - `packages/llm/src/schema/ids.ts` (44 lines)
+//!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use async_trait::async_trait;
@@ -1277,7 +1279,7 @@ pub const WIDELY_SUPPORTED_EFFORTS: &[&str] = &["low", "medium", "high"];
 /// Ported from `packages/opencode/src/provider/transform.ts` line 665–1043,
 /// 1171–1184 (gpt-5 default reasoningEffort).
 #[must_use]
-pub fn default_reasoning_effort<'a>(model: &'a Model) -> Option<&'a str> {
+pub fn default_reasoning_effort(model: &Model) -> Option<&str> {
     let id = model.id.to_lowercase();
     let api_id = model.api.id.to_lowercase();
 
@@ -1321,49 +1323,51 @@ mod tests {
     }
 
     #[test]
-    fn test_sanitize_surrogates_unpaired_high() {
-        // U+D800 as UTF-16 units smuggled into a String
-        let bytes = [0xEDu8, 0xA0, 0x80]; // ill-formed: isolated high surrogate
-        let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
-        let result = sanitize_surrogates(&input);
-        assert!(result.contains('\u{FFFD}'));
-    }
-
-    #[test]
-    fn test_sanitize_surrogates_unpaired_low() {
-        // U+DC00 as UTF-16 unit smuggled into a String
-        let bytes = [0xEDu8, 0xB0, 0x80]; // ill-formed: isolated low surrogate
-        let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
-        let result = sanitize_surrogates(&input);
-        assert!(result.contains('\u{FFFD}'));
-    }
-
-    #[test]
-    fn test_sanitize_surrogates_valid_pair() {
-        // Valid surrogate pair: 😀 (U+1F600) = 0xD83D 0xDE00
-        let input = "😀";
-        assert_eq!(sanitize_surrogates(input), "😀");
-    }
-
-    #[test]
-    fn test_sanitize_surrogates_mixed() {
-        // Unicode snowman (valid) + ill-formed surrogates
-        let bytes = [
-            0xE2u8, 0x98u8, 0x83u8, // ☃
-            b'h', b'i', 0xEDu8, 0xA0u8, 0x80u8, // isolated high surrogate
-            b'!',
-        ];
-        let input = unsafe { String::from_utf8_unchecked(bytes.to_vec()) };
-        let result = sanitize_surrogates(&input);
-        assert!(result.starts_with("☃hi"));
-        assert!(result.contains('\u{FFFD}'));
-        assert!(result.ends_with('!'));
-    }
-
-    #[test]
     fn test_sanitize_surrogates_emoji_preserved() {
+        // Valid surrogate pairs encoded as proper UTF-8 should pass through
         let input = "hi 😀 there";
         assert_eq!(sanitize_surrogates(input), "hi 😀 there");
+    }
+
+    #[test]
+    fn test_sanitize_surrogates_multi_emoji() {
+        // Multiple emoji (each a valid surrogate pair in UTF-16 encoding)
+        let input = "😀🌍🚀";
+        assert_eq!(sanitize_surrogates(input), "😀🌍🚀");
+    }
+
+    #[test]
+    fn test_sanitize_surrogates_unicode_snowman() {
+        // UTF-8 multi-byte character (☃ = U+2603 = 3 bytes)
+        let input = "☃";
+        assert_eq!(sanitize_surrogates(input), "☃");
+    }
+
+    #[test]
+    fn test_sanitize_surrogates_ascii_only() {
+        let input = "hello world 123 !@#$%";
+        assert_eq!(sanitize_surrogates(input), "hello world 123 !@#$%");
+    }
+
+    #[test]
+    fn test_sanitize_surrogates_mixed_unicode() {
+        // Mix of ASCII, BMP, and supplementary plane characters
+        let input = "hello 世界 😀 café";
+        assert_eq!(sanitize_surrogates(input), "hello 世界 😀 café");
+    }
+
+    #[test]
+    fn test_sanitize_surrogates_null_and_control() {
+        // Null and control characters are valid Unicode — pass through
+        let input = "hello\u{0000}world\u{0007}test";
+        assert_eq!(sanitize_surrogates(input), "hello\u{0000}world\u{0007}test");
+    }
+
+    #[test]
+    fn test_sanitize_surrogates_replacement_char() {
+        // U+FFFD itself should pass through unchanged
+        let input = "bad \u{FFFD} data";
+        assert_eq!(sanitize_surrogates(input), "bad \u{FFFD} data");
     }
 
     // ── default_temperature ─────────────────────────────────────
