@@ -172,7 +172,10 @@ pub struct ToolInfo {
 
 impl ToolInfo {
     /// Create a ToolInfo for a tool that can be instantiated on demand.
-    pub fn new(id: impl Into<String>, init: impl Fn() -> Box<dyn Tool> + Send + Sync + 'static) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        init: impl Fn() -> Box<dyn Tool> + Send + Sync + 'static,
+    ) -> Self {
         Self {
             id: id.into(),
             init: Arc::new(init),
@@ -205,10 +208,9 @@ pub struct PluginToolDef {
         dyn Fn(
                 serde_json::Value,
                 ToolContext,
-            )
-                -> std::pin::Pin<
-                    Box<dyn std::future::Future<Output = crate::error::Result<ExecuteResult>> + Send>,
-                > + Send
+            ) -> std::pin::Pin<
+                Box<dyn std::future::Future<Output = crate::error::Result<ExecuteResult>> + Send>,
+            > + Send
             + Sync,
     >,
 }
@@ -282,17 +284,14 @@ impl ToolRegistry {
 
     /// Get a tool by ID.
     pub fn get(&self, id: &str) -> Option<ToolDef> {
-        self.tools
-            .get(id)
-            .map(|r| r.clone())
-            .or_else(|| {
-                // Plugin tools don't implement Tool trait — wrap in adapter
-                self.plugin_tools.get(id).map(|r| {
-                    let plugin = r.clone();
-                    let adapter: Arc<dyn Tool> = Arc::new(PluginToolAdapter { def: plugin });
-                    ToolDef::new(adapter)
-                })
+        self.tools.get(id).map(|r| r.clone()).or_else(|| {
+            // Plugin tools don't implement Tool trait — wrap in adapter
+            self.plugin_tools.get(id).map(|r| {
+                let plugin = r.clone();
+                let adapter: Arc<dyn Tool> = Arc::new(PluginToolAdapter { def: plugin });
+                ToolDef::new(adapter)
             })
+        })
     }
 
     /// Check if a tool exists.
@@ -315,7 +314,10 @@ impl ToolRegistry {
 
     /// List all plugin tool defs.
     pub fn plugin_defs(&self) -> Vec<PluginToolDef> {
-        self.plugin_tools.iter().map(|r| r.value().clone()).collect()
+        self.plugin_tools
+            .iter()
+            .map(|r| r.value().clone())
+            .collect()
     }
 
     /// Get all LLM tool definitions for function calling.
@@ -915,16 +917,16 @@ mod tests {
                 >,
             > {
                 use futures::stream;
-                Ok(Box::new(stream::once(async {
-                    Ok(ToolOutputEvent::Complete(ExecuteResult {
+                Ok(Box::new(stream::iter(vec![Ok(
+                    ToolOutputEvent::Complete(ExecuteResult {
                         title: "ok".into(),
                         output: "streamed".into(),
                         truncated: false,
                         output_path: None,
                         attachments: None,
                         metadata: HashMap::new(),
-                    }))
-                })))
+                    }),
+                )])))
             }
         }
 
