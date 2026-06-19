@@ -10,6 +10,13 @@
 //! 3. `"reject"` — Optional rejection message textarea, Confirm / Cancel
 //!
 //! In Rust, this is implemented as a modal dialog overlay with arrow key navigation.
+//!
+//! ## Contextual info
+//!
+//! The dialog shows additional context based on permission type:
+//! - `bash`: the command being run (from metadata.command)
+//! - `edit` / `write`: the file path and diff preview (from metadata)
+//! - `read` / `grep` / `glob`: the path or pattern
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
@@ -240,6 +247,83 @@ pub enum PermissionReply {
     Reject { message: Option<String> },
 }
 
+/// Extract contextual info from a permission request's metadata.
+fn extract_context(request: &PermissionRequest) -> Vec<String> {
+    let mut context: Vec<String> = Vec::new();
+    let meta = &request.metadata;
+
+    match request.permission.as_str() {
+        "bash" => {
+            // Show the command from metadata
+            if let Some(cmd) = meta.get("command").and_then(|v| v.as_str()) {
+                context.push(format!("Command: {cmd}"));
+            } else if let Some(cmd) = meta.get("cmd").and_then(|v| v.as_str()) {
+                context.push(format!("Command: {cmd}"));
+            }
+            if let Some(cwd) = meta.get("cwd").and_then(|v| v.as_str()) {
+                context.push(format!("In: {cwd}"));
+            }
+        }
+        "edit" | "write" => {
+            // Show the file path and diff if available
+            if let Some(path) = meta.get("file").and_then(|v| v.as_str()) {
+                context.push(format!("File: {path}"));
+            } else if let Some(path) = meta.get("path").and_then(|v| v.as_str()) {
+                context.push(format!("File: {path}"));
+            }
+            if let Some(diff) = meta.get("diff").and_then(|v| v.as_str()) {
+                // Show first 5 lines of diff as preview
+                let preview: String = diff.lines().take(5).collect::<Vec<_>>().join("\n");
+                context.push(format!("Diff preview:\n{preview}"));
+                let remaining = diff.lines().count().saturating_sub(5);
+                if remaining > 0 {
+                    context.push(format!("  ... and {remaining} more lines"));
+                }
+            }
+        }
+        "read" | "glob" | "grep" => {
+            if let Some(path) = meta.get("path").and_then(|v| v.as_str()) {
+                context.push(format!("Path: {path}"));
+            } else if let Some(pattern) = meta.get("pattern").and_then(|v| v.as_str()) {
+                context.push(format!("Pattern: {pattern}"));
+            }
+        }
+        "delete" => {
+            if let Some(path) = meta.get("path").and_then(|v| v.as_str()) {
+                context.push(format!("Delete: {path}"));
+            }
+        }
+        "web" | "url" | "fetch" => {
+            if let Some(url) = meta.get("url").and_then(|v| v.as_str()) {
+                // Truncate long URLs
+                let display = if url.len() > 60 {
+                    format!("{}...", &url[..57])
+                } else {
+                    url.to_string()
+                };
+                context.push(format!("URL: {display}"));
+            }
+        }
+        _ => {
+            // Generic: show any string metadata values
+            for (key, value) in meta.as_object().into_iter().flat_map(|o| o.iter()) {
+                if let Some(s) = value.as_str() {
+                    if key != "id" && key != "sessionID" && key != "session_id" {
+                        let truncated = if s.len() > 80 {
+                            format!("{}...", &s[..77])
+                        } else {
+                            s.to_string()
+                        };
+                        context.push(format!("{key}: {truncated}"));
+                    }
+                }
+            }
+        }
+    }
+
+    context
+}
+
 /// Render the permission prompt dialog as a centered overlay.
 pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
     if !state.visible {
@@ -251,11 +335,17 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
         None => return,
     };
 
-    // Calculate dialog area (centered, 60% width, auto height)
-    let dialog_width = (area.width as f64 * 0.6) as u16;
-    let dialog_height = 10;
-    let dialog_x = (area.width - dialog_width) / 2;
-    let dialog_y = (area.height - dialog_height) / 2;
+    // Calculate dialog area — height depends on content
+    let context_lines = extract_context(request);
+    let patterns_section = if request.patterns.is_empty() { 0 } else { 2 + request.patterns.len() };
+    let context_height = context_lines.len();
+    let base_height = 10;
+    let extra = patterns_section + context_height;
+    let dialog_height = (base_height + extra) as u16;
+
+    let dialog_width = (area.width as f64 * 0.65).min(90.0) as u16;
+    let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
+    let dialog_y = (area.height.saturating_sub(dialog_height)) / 2;
 
     let dialog_area = Rect::new(
         area.x + dialog_x,
@@ -291,7 +381,7 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
     // Build content
     let mut lines: Vec<Line> = Vec::new();
 
-    // Permission type
+    // Permission type header
     lines.push(Line::from(vec![
         Span::styled("△ ", Style::default().fg(Color::Yellow)),
         Span::styled(
@@ -300,12 +390,25 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
         ),
     ]));
 
-    // Patterns (if any)
+    // Contextual info (bash command, file path, etc.)
+    if !context_lines.is_empty() {
+        lines.push(Line::from(""));
+        for ctx_line in &context_lines {
+            for subline in ctx_line.lines() {
+                lines.push(Line::from(Span::styled(
+                    format!("  {subline}"),
+                    Style::default().fg(Color::Gray),
+                )));
+            }
+        }
+    }
+
+    // Patterns
     if !request.patterns.is_empty() {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             "Patterns:",
-            Style::default().fg(Color::Gray),
+            Style::default().fg(Color::DarkGray),
         )));
         for pattern in &request.patterns {
             lines.push(Line::from(Span::styled(
@@ -343,6 +446,20 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
             )));
         }
         PermissionStage::AlwaysAllow => {
+            // Show which patterns will be saved
+            if !request.always.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "Will allow these patterns:",
+                    Style::default().fg(Color::Gray),
+                )));
+                for pattern in &request.always {
+                    lines.push(Line::from(Span::styled(
+                        format!("  ✓ {pattern}"),
+                        Style::default().fg(Color::Green),
+                    )));
+                }
+                lines.push(Line::from(""));
+            }
             let options = ["Confirm", "Cancel"];
             let mut option_spans: Vec<Span> = Vec::new();
             for (i, opt) in options.iter().enumerate() {
@@ -371,12 +488,13 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
                 "Tell OpenCode what to do differently:",
                 Style::default().fg(Color::Gray),
             )));
+            let display_text = if state.reject_message.is_empty() {
+                "(type a message, Enter to confirm, Esc to cancel)"
+            } else {
+                &state.reject_message
+            };
             lines.push(Line::from(Span::styled(
-                if state.reject_message.is_empty() {
-                    "(type a message, Enter to confirm, Esc to cancel)"
-                } else {
-                    &state.reject_message
-                },
+                display_text,
                 Style::default().fg(Color::White),
             )));
             lines.push(Line::from(""));

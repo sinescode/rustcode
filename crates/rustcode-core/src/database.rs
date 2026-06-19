@@ -1399,6 +1399,158 @@ impl DatabaseService {
             .map(SessionMessageRowRaw::into_row)
             .collect())
     }
+
+    // ── Single session fetch ─────────────────────────────────────────
+    /// Get a single session by ID.
+    pub async fn get_session(
+        &self,
+        id: &str,
+    ) -> Result<Option<SessionRow>, DatabaseServiceError> {
+        let row: Option<SessionRowRaw> = sqlx::query_as(
+            "SELECT id, project_id, workspace_id, slug, directory, title, version, \
+             time_created, time_updated, cost, tokens_input, tokens_output, agent, model \
+             FROM session WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get session: {e}")))?;
+
+        Ok(row.map(SessionRowRaw::into_row))
+    }
+
+    // ── Messages with parts (joined query) ──────────────────────────
+    /// Get messages for a session, each with its parts.
+    pub async fn get_messages_with_parts(
+        &self,
+        session_id: &str,
+        limit: Option<u32>,
+    ) -> Result<Vec<(MessageRow, Vec<PartRow>)>, DatabaseServiceError> {
+        let messages = self.list_messages(session_id, limit).await?;
+
+        let mut result = Vec::with_capacity(messages.len());
+        for msg in messages {
+            let parts = self.list_parts(&msg.id).await?;
+            result.push((msg, parts));
+        }
+
+        Ok(result)
+    }
+
+    // ── Message v2 (structured JSON data) ────────────────────────────
+    /// Insert a message using the new structured schema.
+    /// Fields are serialized into the `data` JSON column.
+    pub async fn insert_message_v2(
+        &self,
+        id: &str,
+        session_id: &str,
+        role: &str,
+        content: &str,
+        model: Option<&str>,
+        tokens: Option<i64>,
+        cost: Option<f64>,
+        error: Option<&str>,
+        created_at: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        let data = serde_json::json!({
+            "role": role,
+            "content": content,
+            "model": model,
+            "tokens": tokens,
+            "cost": cost,
+            "error": error,
+        });
+        let data_str = serde_json::to_string(&data)
+            .map_err(|e| DatabaseServiceError::Database(format!("serialize message v2: {e}")))?;
+
+        let now = chrono::Utc::now().timestamp_millis();
+        self.insert_message(id, session_id, &data_str, created_at, now)
+            .await
+    }
+
+    // ── Part v2 (structured JSON data) ───────────────────────────────
+    /// Insert a part using the new structured schema.
+    /// Fields are serialized into the `data` JSON column.
+    pub async fn insert_part_v2(
+        &self,
+        id: &str,
+        message_id: &str,
+        session_id: &str,
+        part_type: &str,
+        content: &str,
+        metadata: Option<&serde_json::Value>,
+        created_at: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        let data = serde_json::json!({
+            "type": part_type,
+            "content": content,
+            "metadata": metadata,
+        });
+        let data_str = serde_json::to_string(&data)
+            .map_err(|e| DatabaseServiceError::Database(format!("serialize part v2: {e}")))?;
+
+        let now = chrono::Utc::now().timestamp_millis();
+        self.insert_part(id, message_id, session_id, &data_str, created_at, now)
+            .await
+    }
+
+    // ── Update part data ─────────────────────────────────────────────
+    /// Update a part's data JSON blob.
+    pub async fn update_part(
+        &self,
+        id: &str,
+        data: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        let rows = sqlx::query(
+            "UPDATE part SET data = ?2, time_updated = ?3 WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(data)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update part: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("part {id}")));
+        }
+        Ok(())
+    }
+
+    // ── Cascade delete ───────────────────────────────────────────────
+    /// Delete a session and all related records (child sessions, messages, parts).
+    ///
+    /// Foreign keys handle the session→message→part cascade automatically.
+    /// Child sessions (parent_id) are deleted explicitly since there is no
+    /// self-referencing FK with ON DELETE CASCADE.
+    pub async fn delete_session_cascade(
+        &self,
+        id: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        // Delete child sessions first (they reference this session via parent_id)
+        sqlx::query("DELETE FROM session WHERE parent_id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                DatabaseServiceError::Database(format!("delete child sessions: {e}"))
+            })?;
+
+        // Delete the session itself (cascades to messages, parts via FK)
+        let rows = sqlx::query("DELETE FROM session WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| {
+                DatabaseServiceError::Database(format!("delete session cascade: {e}"))
+            })?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("session {id}")));
+        }
+        Ok(())
+    }
 }
 
 // ── Row types for CRUD results ────────────────────────────────────────────

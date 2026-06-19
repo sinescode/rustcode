@@ -3,13 +3,25 @@
 //! Ported from: `packages/core/src/background-job.ts`
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 //!
-//! This module provides the data types for background job lifecycle management.
+//! This module provides the data types and runtime service for background job
+//! lifecycle management.
+//!
 //! The TS source uses Effect.ts for the full job registry (scoped, process-local,
-//! with `Deferred`-based synchronization). The registry implementation itself lives
-//! in a separate runtime module; this file only defines the pure data types and
-//! their lifecycle helpers.
+//! with `Deferred`-based synchronization). The Rust port uses `tokio::sync::watch`
+//! channels for completion signaling and `tokio::spawn` for async task execution.
+
+use std::collections::HashMap;
+use std::future::Future;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use tokio::sync::{watch, Notify, RwLock};
+
+/// Callback type for the `onPromote` effect.
+///
+/// In the TS source this is an `Effect<void>` that runs when the job is promoted
+/// from background to foreground. The Rust port uses a boxed closure.
+pub type OnPromoteFn = Arc<dyn Fn() + Send + Sync>;
 
 // ── JobStatus ─────────────────────────────────────────────────────────────
 
@@ -159,34 +171,24 @@ impl JobInfo {
 ///
 /// # Source
 /// `packages/core/src/background-job.ts` — `type StartInput`
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Clone)]
 pub struct JobStartInput {
     /// Optional job identifier. If omitted, one is generated.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
 
     /// Job type discriminator.
     ///
     /// Renamed from `type` (reserved keyword in Rust).
-    #[serde(rename = "type")]
     pub type_: String,
 
     /// Optional human-readable title.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 
     /// Arbitrary metadata attached at creation.
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 
-    /// Placeholder for the TS `onPromote?: Effect.Effect<void>` callback.
-    ///
-    /// In the TS source this is an Effect that runs when the job is promoted
-    /// from background to foreground. The Rust port stores this as opaque JSON
-    /// until the Effect runtime layer is implemented.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub on_promote: Option<serde_json::Value>,
+    /// Callback that runs when the job is promoted from background to foreground.
+    pub on_promote: Option<OnPromoteFn>,
 }
 
 impl JobStartInput {
@@ -252,6 +254,374 @@ pub struct JobWaitResult {
 
     /// `true` if the wait timed out before the job completed.
     pub timed_out: bool,
+}
+
+// ── ActiveJob ─────────────────────────────────────────────────────────────
+
+/// Internal bookkeeping for a single running job.
+///
+/// Holds the job's info snapshot plus the `watch` senders that signal completion
+/// and cancellation to waiters.
+struct ActiveJob {
+    info: JobInfo,
+    done_tx: watch::Sender<Option<JobInfo>>,
+    cancel: watch::Sender<bool>,
+    promote_tx: watch::Sender<bool>,
+    on_promote: Option<OnPromoteFn>,
+}
+
+// ── BackgroundJobService ──────────────────────────────────────────────────
+
+/// Registry that manages the lifecycle of background jobs.
+///
+/// Ported from: `packages/core/src/background-job.ts` — `BackgroundJob` service
+///
+/// Jobs are spawned as independent tokio tasks. Completion and cancellation are
+/// communicated through `tokio::sync::watch` channels so that multiple waiters
+/// can observe the same terminal event.
+#[derive(Clone)]
+pub struct BackgroundJobService {
+    jobs: Arc<RwLock<HashMap<String, ActiveJob>>>,
+}
+
+impl BackgroundJobService {
+    /// Create a new, empty job service.
+    pub fn new() -> Self {
+        Self {
+            jobs: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    /// List all registered jobs, sorted by `started_at` (oldest first).
+    pub async fn list(&self) -> Vec<JobInfo> {
+        let jobs = self.jobs.read().await;
+        let mut infos: Vec<JobInfo> = jobs.values().map(|j| j.info.clone()).collect();
+        infos.sort_by_key(|i| i.started_at);
+        infos
+    }
+
+    /// Get the current info snapshot for a job by id.
+    pub async fn get(&self, id: &str) -> Option<JobInfo> {
+        let jobs = self.jobs.read().await;
+        jobs.get(id).map(|j| j.info.clone())
+    }
+
+    /// Start a new background job.
+    ///
+    /// `run_fn` is called inside a `tokio::spawn` task. It receives no arguments;
+    /// the returned future resolves to `Ok(output)` or `Err(message)`.
+    pub async fn start<F, Fut>(
+        &self,
+        input: JobStartInput,
+        run_fn: F,
+    ) -> JobInfo
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<String, String>> + Send + 'static,
+    {
+        let id = input.id.unwrap_or_else(|| {
+            crate::id::ascending(crate::id::IdPrefix::Job, None)
+                .expect("ID generation should not fail")
+        });
+
+        let mut info = JobInfo::new(id.clone(), input.type_);
+        info.title = input.title;
+        info.metadata = input.metadata;
+
+        let (done_tx, _done_rx) = watch::channel::<Option<JobInfo>>(None);
+        let (cancel_tx, cancel_rx) = watch::channel::<false>(false);
+        let (promote_tx, _promote_rx) = watch::channel::<false>(false);
+
+        let active = ActiveJob {
+            info: info.clone(),
+            done_tx: done_tx.clone(),
+            cancel: cancel_tx.clone(),
+            promote_tx: promote_tx.clone(),
+            on_promote: input.on_promote,
+        };
+        self.jobs.write().await.insert(id.clone(), active);
+
+        let jobs_ref = self.jobs.clone();
+        let done_tx2 = done_tx;
+        let id_clone = id.clone();
+
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                res = run_fn() => res,
+                _ = cancelled(&cancel_rx) => {
+                    // Mark as cancelled
+                    let mut jobs = jobs_ref.write().await;
+                    if let Some(active) = jobs.get_mut(&id_clone) {
+                        active.info.cancel();
+                        let snapshot = active.info.clone();
+                        let _ = active.done_tx.send(Some(snapshot));
+                    }
+                    return;
+                }
+            };
+
+            let mut jobs = jobs_ref.write().await;
+            if let Some(active) = jobs.get_mut(&id_clone) {
+                match result {
+                    Ok(output) => {
+                        active.info.set_output(output);
+                        active.info.complete();
+                    }
+                    Err(err) => {
+                        active.info.fail(err);
+                    }
+                }
+                let snapshot = active.info.clone();
+                let _ = done_tx2.send(Some(snapshot));
+            }
+        });
+
+        info
+    }
+
+    /// Extend a running job by chaining additional work after the current task.
+    ///
+    /// The new `run_fn` is spawned immediately; when it completes the job is
+    /// settled with the new result. If the job is already terminal this is a
+    /// no-op and returns the current info.
+    pub async fn extend<F, Fut>(
+        &self,
+        input: JobExtendInput,
+        run_fn: F,
+    ) -> JobInfo
+    where
+        F: FnOnce() -> Fut + Send + 'static,
+        Fut: Future<Output = Result<String, String>> + Send + 'static,
+    {
+        let jobs = self.jobs.read().await;
+        let active = match jobs.get(&input.id) {
+            Some(a) => a,
+            None => return JobInfo::new(input.id.clone(), "unknown".into()),
+        };
+        if active.info.is_terminal() {
+            return active.info.clone();
+        }
+        let cancel_rx = active.cancel.subscribe();
+        let done_tx = active.done_tx.clone();
+        drop(jobs);
+
+        let jobs_ref = self.jobs.clone();
+        let id = input.id.clone();
+
+        tokio::spawn(async move {
+            let result = tokio::select! {
+                res = run_fn() => res,
+                _ = cancelled(&cancel_rx) => {
+                    let mut jobs = jobs_ref.write().await;
+                    if let Some(active) = jobs.get_mut(&id) {
+                        active.info.cancel();
+                        let snapshot = active.info.clone();
+                        let _ = active.done_tx.send(Some(snapshot));
+                    }
+                    return;
+                }
+            };
+
+            let mut jobs = jobs_ref.write().await;
+            if let Some(active) = jobs.get_mut(&id) {
+                match result {
+                    Ok(output) => {
+                        active.info.set_output(output);
+                        active.info.complete();
+                    }
+                    Err(err) => {
+                        active.info.fail(err);
+                    }
+                }
+                let snapshot = active.info.clone();
+                let _ = done_tx.send(Some(snapshot));
+            }
+        });
+
+        self.get(&input.id).await.unwrap_or_else(|| {
+            JobInfo::new(input.id.clone(), "unknown".into())
+        })
+    }
+
+    /// Wait for a job to reach a terminal state.
+    ///
+    /// Returns a [`JobWaitResult`] with the final info snapshot. If `timeout`
+    /// is set and the job doesn't complete in time, `timed_out` is `true`.
+    pub async fn wait(&self, input: JobWaitInput) -> JobWaitResult {
+        let rx = {
+            let jobs = self.jobs.read().await;
+            match jobs.get(&input.id) {
+                Some(a) => {
+                    if a.info.is_terminal() {
+                        return JobWaitResult {
+                            info: Some(a.info.clone()),
+                            timed_out: false,
+                        };
+                    }
+                    a.done_tx.subscribe()
+                }
+                None => {
+                    return JobWaitResult {
+                        info: None,
+                        timed_out: false,
+                    };
+                }
+            }
+        };
+
+        let wait_fut = async {
+            let mut rx = rx;
+            // Skip the initial None value if still running.
+            while rx.changed().await.is_ok() {
+                let snap = rx.borrow().clone();
+                if let Some(info) = snap {
+                    return JobWaitResult {
+                        info: Some(info),
+                        timed_out: false,
+                    };
+                }
+            }
+            // Channel closed — job was removed or panicked.
+            JobWaitResult {
+                info: None,
+                timed_out: false,
+            }
+        };
+
+        let result = match input.timeout {
+            Some(ms) => {
+                let timeout = std::time::Duration::from_millis(ms);
+                match tokio::time::timeout(timeout, wait_fut).await {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let jobs = self.jobs.read().await;
+                        let info = jobs.get(&input.id).map(|a| a.info.clone());
+                        JobWaitResult {
+                            info,
+                            timed_out: true,
+                        }
+                    }
+                }
+            }
+            None => wait_fut.await,
+        };
+
+        result
+    }
+
+    /// Cancel a running job.
+    ///
+    /// Sends the cancellation signal through the watch channel. The spawned
+    /// task will observe the signal on its next `tokio::select!` poll and
+    /// settle the job as `Cancelled`.
+    pub async fn cancel(&self, id: &str) -> Option<JobInfo> {
+        let jobs = self.jobs.read().await;
+        if let Some(active) = jobs.get(id) {
+            if active.info.is_terminal() {
+                return Some(active.info.clone());
+            }
+            let _ = active.cancel.send(true);
+        }
+        drop(jobs);
+
+        // Give the task a moment to process the cancellation signal.
+        // We poll briefly to let the spawned task settle.
+        tokio::task::yield_now().await;
+
+        let jobs = self.jobs.read().await;
+        jobs.get(id).map(|a| a.info.clone())
+    }
+
+    /// Wait for a job to be promoted from background to foreground.
+    ///
+    /// If the job already has `metadata.background == true`, returns the current
+    /// info snapshot immediately. Otherwise, waits on the promotion channel.
+    /// Returns `None` if the job does not exist.
+    pub async fn wait_for_promotion(&self, id: &str) -> Option<JobInfo> {
+        let jobs = self.jobs.read().await;
+        let active = match jobs.get(id) {
+            Some(a) => a,
+            None => return None,
+        };
+
+        // Check if already a background job
+        if let Some(meta) = &active.info.metadata {
+            if meta.get("background").and_then(|v| v.as_bool()) == Some(true) {
+                return Some(active.info.clone());
+            }
+        }
+
+        // Subscribe to promotion channel
+        let mut rx = active.promote_tx.subscribe();
+        drop(jobs);
+
+        // Wait for promotion signal
+        while rx.changed().await.is_ok() {
+            if *rx.borrow() {
+                let jobs = self.jobs.read().await;
+                return jobs.get(id).map(|a| a.info.clone());
+            }
+        }
+
+        // Channel closed — job was removed
+        None
+    }
+
+    /// Promotes a background job to foreground.
+    ///
+    /// Sets `metadata.background = true` and resolves the promotion channel,
+    /// waking any waiters. Returns the updated info, or `None` if the job
+    /// does not exist.
+    pub async fn promote(&self, id: &str) -> Option<JobInfo> {
+        let jobs = self.jobs.read().await;
+        let active = match jobs.get(id) {
+            Some(a) => a,
+            None => return None,
+        };
+
+        // Already promoted
+        if let Some(meta) = &active.info.metadata {
+            if meta.get("background").and_then(|v| v.as_bool()) == Some(true) {
+                return Some(active.info.clone());
+            }
+        }
+
+        let on_promote = active.on_promote.clone();
+        let promote_tx = active.promote_tx.clone();
+        drop(jobs);
+
+        // Set metadata.background = true
+        let mut jobs = self.jobs.write().await;
+        if let Some(active) = jobs.get_mut(id) {
+            let mut meta = active.info.metadata.take().unwrap_or(serde_json::json!({}));
+            meta.as_object_mut()
+                .expect("metadata must be an object")
+                .insert("background".to_string(), serde_json::json!(true));
+            active.info.metadata = Some(meta);
+
+            // Signal promotion
+            let _ = promote_tx.send(true);
+
+            // Run the on_promote callback if set
+            if let Some(cb) = on_promote {
+                (cb)();
+            }
+
+            Some(active.info.clone())
+        } else {
+            None
+        }
+    }
+}
+
+/// Helper future that resolves when `cancel_rx` receives `true`.
+async fn cancelled(rx: &watch::Receiver<bool>) {
+    let mut rx = rx.clone();
+    while rx.changed().await.is_ok() {
+        if *rx.borrow() {
+            return;
+        }
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────
@@ -435,25 +805,7 @@ mod tests {
         assert_eq!(input.id, None);
         assert_eq!(input.title, None);
         assert_eq!(input.metadata, None);
-        assert_eq!(input.on_promote, None);
-    }
-
-    #[test]
-    fn test_job_start_input_serialization() {
-        let input = JobStartInput {
-            id: Some("custom_id".into()),
-            type_: "tool_call".into(),
-            title: Some("My Tool".into()),
-            metadata: Some(serde_json::json!({"priority": "high"})),
-            on_promote: None,
-        };
-        let json = serde_json::to_string(&input).expect("serialize JobStartInput");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
-        assert_eq!(parsed["id"], "custom_id");
-        assert_eq!(parsed["type"], "tool_call");
-        assert_eq!(parsed["title"], "My Tool");
-        assert_eq!(parsed["metadata"]["priority"], "high");
+        assert!(input.on_promote.is_none());
     }
 
     // ── JobExtendInput ────────────────────────────────────────────────
@@ -542,5 +894,333 @@ mod tests {
             serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["timedOut"], false);
         assert!(parsed.get("info").is_none());
+    }
+
+    // ── BackgroundJobService ───────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_service_new_is_empty() {
+        let svc = BackgroundJobService::new();
+        assert!(svc.list().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_service_start_and_complete() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("test_run".into());
+        let info = svc
+            .start(input, || async { Ok("done".into()) })
+            .await;
+        assert_eq!(info.status, JobStatus::Running);
+
+        let waited = svc
+            .wait(JobWaitInput {
+                id: info.id.clone(),
+                timeout: None,
+            })
+            .await;
+        assert!(!waited.timed_out);
+        let final_info = waited.info.expect("job should exist");
+        assert_eq!(final_info.status, JobStatus::Completed);
+        assert_eq!(final_info.output.as_deref(), Some("done"));
+    }
+
+    #[tokio::test]
+    async fn test_service_start_and_fail() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("fail_run".into());
+        let info = svc
+            .start(input, || async { Err("boom".into()) })
+            .await;
+
+        let waited = svc
+            .wait(JobWaitInput {
+                id: info.id.clone(),
+                timeout: None,
+            })
+            .await;
+        let final_info = waited.info.expect("job should exist");
+        assert_eq!(final_info.status, JobStatus::Error);
+        assert_eq!(final_info.error.as_deref(), Some("boom"));
+    }
+
+    #[tokio::test]
+    async fn test_service_cancel() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("cancel_run".into());
+        let info = svc
+            .start(input, || async {
+                // Simulate long work — will be cancelled before completing.
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok("never".into())
+            })
+            .await;
+
+        let cancelled = svc.cancel(&info.id).await;
+        let final_info = cancelled.expect("cancelled info");
+        assert_eq!(final_info.status, JobStatus::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn test_service_wait_with_timeout() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("timeout_run".into());
+        let info = svc
+            .start(input, || async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok("late".into())
+            })
+            .await;
+
+        let waited = svc
+            .wait(JobWaitInput {
+                id: info.id.clone(),
+                timeout: Some(50),
+            })
+            .await;
+        assert!(waited.timed_out);
+        let info_snapshot = waited.info.expect("info should be present on timeout");
+        assert_eq!(info_snapshot.status, JobStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn test_service_list_sorted_by_started_at() {
+        let svc = BackgroundJobService::new();
+
+        let info1 = svc
+            .start(JobStartInput::new("a".into()), || async { Ok("1".into()) })
+            .await;
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        let info2 = svc
+            .start(JobStartInput::new("b".into()), || async { Ok("2".into()) })
+            .await;
+
+        let list = svc.list().await;
+        assert_eq!(list.len(), 2);
+        // First job should have smaller started_at
+        assert!(list[0].started_at <= list[1].started_at);
+        // IDs match
+        assert_eq!(list[0].id, info1.id);
+        assert_eq!(list[1].id, info2.id);
+    }
+
+    #[tokio::test]
+    async fn test_service_get() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("get_test".into());
+        let info = svc
+            .start(input, || async { Ok("ok".into()) })
+            .await;
+
+        let found = svc.get(&info.id).await;
+        assert!(found.is_some());
+        assert_eq!(found.unwrap().id, info.id);
+
+        let missing = svc.get("nonexistent").await;
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_service_extend() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("extend_test".into());
+        let info = svc
+            .start(input, || async { Ok("first".into()) })
+            .await;
+
+        // Wait for initial job to complete
+        let _ = svc
+            .wait(JobWaitInput {
+                id: info.id.clone(),
+                timeout: None,
+            })
+            .await;
+
+        // Extend the completed job — should settle immediately
+        let extended = svc
+            .extend(
+                JobExtendInput {
+                    id: info.id.clone(),
+                },
+                || async { Ok("second".into()) },
+            )
+            .await;
+        // Since the job is already terminal, extend returns current info
+        assert_eq!(extended.status, JobStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_service_cancel_already_terminal() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("terminal_cancel".into());
+        let info = svc
+            .start(input, || async { Ok("done".into()) })
+            .await;
+
+        // Wait for completion
+        let _ = svc
+            .wait(JobWaitInput {
+                id: info.id.clone(),
+                timeout: None,
+            })
+            .await;
+
+        // Cancel on already-completed job returns info without error
+        let result = svc.cancel(&info.id).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().status, JobStatus::Completed);
+    }
+
+    #[tokio::test]
+    async fn test_service_wait_nonexistent() {
+        let svc = BackgroundJobService::new();
+        let result = svc
+            .wait(JobWaitInput {
+                id: "nonexistent".into(),
+                timeout: None,
+            })
+            .await;
+        assert!(!result.timed_out);
+        assert!(result.info.is_none());
+    }
+
+    // ── Promotion ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_wait_for_promotion_already_background() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput {
+            id: Some("promoted_01".into()),
+            type_: "test".into(),
+            title: None,
+            metadata: Some(serde_json::json!({"background": true})),
+            on_promote: None,
+        };
+        let info = svc
+            .start(input, || async { Ok("done".into()) })
+            .await;
+
+        // Already has metadata.background == true → returns immediately
+        let result = svc.wait_for_promotion(&info.id).await;
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().id, info.id);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_promotion_nonexistent() {
+        let svc = BackgroundJobService::new();
+        let result = svc.wait_for_promotion("does_not_exist").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_promote_sets_metadata_background() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("promote_01".into());
+        let info = svc
+            .start(input, || async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok("done".into())
+            })
+            .await;
+
+        let promoted = svc.promote(&info.id).await;
+        let p = promoted.expect("promoted info");
+        assert_eq!(p.id, info.id);
+        let meta = p.metadata.expect("metadata present");
+        assert_eq!(meta.get("background").unwrap(), true);
+    }
+
+    #[tokio::test]
+    async fn test_promote_nonexistent() {
+        let svc = BackgroundJobService::new();
+        let result = svc.promote("nonexistent").await;
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_promote_already_background_returns_immediately() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput {
+            id: Some("double_promote".into()),
+            type_: "test".into(),
+            title: None,
+            metadata: Some(serde_json::json!({"background": true})),
+            on_promote: None,
+        };
+        let info = svc
+            .start(input, || async { Ok("done".into()) })
+            .await;
+
+        // Already promoted → should return immediately
+        let result = svc.promote(&info.id).await;
+        let p = result.expect("already promoted");
+        assert_eq!(p.id, info.id);
+    }
+
+    #[tokio::test]
+    async fn test_promote_runs_on_promote_callback() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let counter = Arc::new(AtomicUsize::new(0));
+        let counter_clone = counter.clone();
+        let on_promote: OnPromoteFn = Arc::new(move || {
+            counter_clone.fetch_add(1, Ordering::SeqCst);
+        });
+
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput {
+            id: Some("cb_test".into()),
+            type_: "test".into(),
+            title: None,
+            metadata: None,
+            on_promote: Some(on_promote),
+        };
+        let info = svc
+            .start(input, || async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok("done".into())
+            })
+            .await;
+
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        let _ = svc.promote(&info.id).await;
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn test_wait_for_promotion_after_promote() {
+        let svc = BackgroundJobService::new();
+        let input = JobStartInput::new("wait_promote".into());
+        let info = svc
+            .start(input, || async {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                Ok("done".into())
+            })
+            .await;
+
+        let id = info.id.clone();
+
+        // Spawn a task that promotes after a short delay
+        let svc_clone = svc.clone();
+        let id_clone = id.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            svc_clone.promote(&id_clone).await;
+        });
+
+        // This should return once promoted
+        let result = svc.wait_for_promotion(&id).await;
+        let p = result.expect("should have promotion info");
+        assert_eq!(p.id, id);
+        let meta = p.metadata.expect("metadata present");
+        assert_eq!(meta.get("background").unwrap(), true);
+    }
+
+    #[test]
+    fn test_on_promote_fn_type_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<OnPromoteFn>();
     }
 }

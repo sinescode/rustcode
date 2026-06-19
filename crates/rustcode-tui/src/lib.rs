@@ -17,8 +17,13 @@
 //! Events are received from the server via SSE and dispatched to the UI.
 
 pub mod app;
+pub mod clipboard;
 pub mod components;
+pub mod editor;
 pub mod event;
 pub mod keymap;
+pub mod sse_client;
+pub mod theme;
 
 pub use app::TuiApp;
+pub use sse_client::SseClient;

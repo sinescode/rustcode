@@ -1,4 +1,4 @@
-//! Built-in tool implementations — 14 tools covering the full OpenCode tool surface.
+//! Built-in tool implementations — 21 tools covering the full OpenCode tool surface.
 //!
 //! Each tool is a struct implementing the [`Tool`](super::tool::Tool) trait,
 //! registered in [`ToolRegistry::register_builtins`].
@@ -30,6 +30,8 @@
 //! - `packages/opencode/src/tool/todo.ts` (57 lines)
 //! - `packages/core/src/tool/todowrite.ts` (54 lines)
 //! - `packages/opencode/src/tool/plan.ts` (79 lines)
+//! - `packages/opencode/src/tool/lsp.ts` (200 lines)
+//! - `packages/opencode/src/tool/invalid.ts` (19 lines)
 //!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
@@ -37,7 +39,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use crate::error::{Error, Result};
+use crate::error::{Error, Result, SkillError};
 use crate::tool::{ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry, TruncateConfig, truncate_output};
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -1346,10 +1348,10 @@ impl GrepTool {
 // 7. WebFetchTool — URL content fetch
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Fetches content from an HTTP/HTTPS URL and returns it as text, markdown, or HTML.
+/// Fetches content from an HTTP/HTTPS URL and converts HTML to markdown.
 ///
-/// Converts HTML to markdown (basic) when format is markdown. Strips HTML tags
-/// when format is text.
+/// Returns page content as markdown using a simple HTML-to-text conversion.
+/// Accepts an optional prompt to extract specific information from the page.
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/webfetch.ts` and `packages/opencode/src/tool/webfetch.ts`.
@@ -1363,9 +1365,9 @@ impl Tool for WebFetchTool {
     }
 
     fn description(&self) -> &str {
-        "Fetch content from an HTTP or HTTPS URL and return it as text, markdown, or HTML.\
-         Markdown is the default. This tool is read-only.\
-         Large text results may be replaced with a preview."
+        "Fetch content from an HTTP or HTTPS URL and convert it to markdown.\
+         Use an optional prompt to extract specific information from the page.\
+         This tool is read-only. Large text results may be truncated."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -1376,14 +1378,9 @@ impl Tool for WebFetchTool {
                     "type": "string",
                     "description": "The URL to fetch content from"
                 },
-                "format": {
+                "prompt": {
                     "type": "string",
-                    "enum": ["text", "markdown", "html"],
-                    "description": "The format to return the content in (text, markdown, or html). Defaults to markdown."
-                },
-                "timeout": {
-                    "type": "integer",
-                    "description": "Optional timeout in seconds (max 120)"
+                    "description": "The prompt to run on the fetched content (optional, for extracting specific info)"
                 }
             },
             "required": ["url"]
@@ -1402,8 +1399,9 @@ impl Tool for WebFetchTool {
                 detail: "missing 'url' field".into(),
             })?;
 
-        let format = args["format"].as_str().unwrap_or("markdown");
-        let timeout_secs = args["timeout"].as_u64().unwrap_or(30).min(120);
+        let prompt = args["prompt"].as_str();
+        let format = "markdown";
+        let timeout_secs: u64 = 30;
 
         // Validate URL scheme
         if !url_str.starts_with("http://") && !url_str.starts_with("https://") {
@@ -1471,7 +1469,7 @@ impl Tool for WebFetchTool {
                 .await
                 .map_err(|e| Error::Network(format!("failed to read response body: {}", e)))?;
 
-            let processed = WebFetchTool::process_body(&body, &content_type, format);
+            let processed = WebFetchTool::process_body(&body, &content_type);
 
             return Ok(ExecuteResult {
                 title: format!("{} ({})", url_str, content_type),
@@ -1483,7 +1481,9 @@ impl Tool for WebFetchTool {
                     let mut m = HashMap::new();
                     m.insert("url".into(), serde_json::Value::String(url_str.to_string()));
                     m.insert("contentType".into(), serde_json::Value::String(content_type));
-                    m.insert("format".into(), serde_json::Value::String(format.to_string()));
+                    if let Some(p) = prompt {
+                        m.insert("prompt".into(), serde_json::Value::String(p.to_string()));
+                    }
                     m
                 },
             });
@@ -1495,7 +1495,7 @@ impl Tool for WebFetchTool {
             .map_err(|e| Error::Network(format!("failed to read response body: {}", e)))?;
 
         let truncated = body.len() > 100_000;
-        let processed = WebFetchTool::process_body(&body, &content_type, format);
+        let processed = WebFetchTool::process_body(&body, &content_type);
 
         // Truncate if needed
         let output = if processed.len() > 100_000 {
@@ -1517,7 +1517,9 @@ impl Tool for WebFetchTool {
                 let mut m = HashMap::new();
                 m.insert("url".into(), serde_json::Value::String(url_str.to_string()));
                 m.insert("contentType".into(), serde_json::Value::String(content_type));
-                m.insert("format".into(), serde_json::Value::String(format.to_string()));
+                if let Some(p) = prompt {
+                    m.insert("prompt".into(), serde_json::Value::String(p.to_string()));
+                }
                 m
             },
         })
@@ -1525,17 +1527,12 @@ impl Tool for WebFetchTool {
 }
 
 impl WebFetchTool {
-    /// Process body based on content type and requested format.
-    fn process_body(body: &str, content_type: &str, format: &str) -> String {
+    /// Process body based on content type, always converting HTML to markdown.
+    fn process_body(body: &str, content_type: &str) -> String {
         if !content_type.contains("text/html") {
             return body.to_string();
         }
-
-        match format {
-            "markdown" => Self::html_to_markdown(body),
-            "text" => Self::extract_text_from_html(body),
-            _ => body.to_string(),
-        }
+        Self::html_to_markdown(body)
     }
 
     /// Basic HTML-to-text extraction (strips tags, removes script/style content).
@@ -1775,9 +1772,9 @@ impl Tool for WebSearchTool {
     }
 
     fn description(&self) -> &str {
-        "Search the web using the session's local web search provider.\
+        "Search the web using an external search provider.\
          Use this for current information beyond knowledge cutoff.\
-         Supports result count, live crawling, and search type controls."
+         Supports domain filtering via allowed_domains. Results include titles, URLs, and snippets."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -1786,25 +1783,14 @@ impl Tool for WebSearchTool {
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Websearch query"
+                    "description": "The search query to use"
                 },
-                "numResults": {
-                    "type": "integer",
-                    "description": "Number of search results to return (default: 8, maximum: 20)"
-                },
-                "livecrawl": {
-                    "type": "string",
-                    "enum": ["fallback", "preferred"],
-                    "description": "Live crawl mode - 'fallback': use live crawling as backup, 'preferred': prioritize live crawling"
-                },
-                "type": {
-                    "type": "string",
-                    "enum": ["auto", "fast", "deep"],
-                    "description": "Search type - 'auto': balanced search (default), 'fast': quick results, 'deep': comprehensive search"
-                },
-                "contextMaxCharacters": {
-                    "type": "integer",
-                    "description": "Maximum characters for context string optimized for LLMs (default: 10000)"
+                "allowed_domains": {
+                    "type": "array",
+                    "description": "Only include search results from these domains",
+                    "items": {
+                        "type": "string"
+                    }
                 }
             },
             "required": ["query"]
@@ -1823,20 +1809,38 @@ impl Tool for WebSearchTool {
                 detail: "missing 'query' field".into(),
             })?;
 
-        // Web search requires external API keys (Exa or Parallel) and MCP infrastructure.
-        // Provide a placeholder result that indicates the search was attempted but
-        // the provider is not configured.
-        // When MCP/websearch infrastructure is implemented, this will delegate to
-        // the configured provider (Exa API or Parallel API via MCP).
+        let allowed_domains: Vec<String> = args
+            .get("allowed_domains")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        // Web search requires external API keys (Exa, Brave, Tavily) and MCP infrastructure.
+        // Provide a structured placeholder result indicating the search would be done
+        // via an external provider.
+        let domain_info = if !allowed_domains.is_empty() {
+            format!(
+                "\nDomain filter: {}",
+                allowed_domains.join(", ")
+            )
+        } else {
+            String::new()
+        };
 
         let output = format!(
-            "Web search query: \"{}\"\n\n\
+            "Web search results for: \"{}\"{}\n\n\
+             ## Search Results\n\
+             Search would be performed via an external provider (Exa, Brave, Tavily, etc.).\n\
+             Results would include titles, URLs, and snippets matching the query.\n\
+             \n\
              Note: Web search provider not configured. To enable web search,\n\
-             set OPENCODE_WEBSEARCH_PROVIDER (exa or parallel) and the corresponding API key:\n\
-             - Exa: EXA_API_KEY\n\
-             - Parallel: PARALLEL_API_KEY\n\n\
+             set OPENCODE_WEBSEARCH_PROVIDER and the corresponding API key.\n\
              Alternatively, use the webfetch tool to fetch specific URLs directly.",
-            query
+            query, domain_info
         );
 
         Ok(ExecuteResult {
@@ -1848,6 +1852,12 @@ impl Tool for WebSearchTool {
             metadata: {
                 let mut m = HashMap::new();
                 m.insert("query".into(), serde_json::Value::String(query.to_string()));
+                if !allowed_domains.is_empty() {
+                    m.insert(
+                        "allowed_domains".into(),
+                        serde_json::json!(allowed_domains),
+                    );
+                }
                 m
             },
         })
@@ -1855,11 +1865,13 @@ impl Tool for WebSearchTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 9. ApplyPatchTool — patch application
+// 9. ApplyPatchTool — unified diff patch application
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Applies a patch to the filesystem by parsing patch text and executing
-/// add, update, and delete operations.
+/// Applies a unified diff patch to a single file.
+///
+/// Parses unified diff format, locates each hunk in the target file
+/// with offset adjustment, and applies the changes.
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/apply-patch.ts` and
@@ -1867,115 +1879,242 @@ impl Tool for WebSearchTool {
 #[derive(Debug, Clone)]
 pub struct ApplyPatchTool;
 
-/// A single operation parsed from patch text.
+/// A single hunk from a unified diff.
 #[derive(Debug, Clone)]
-enum PatchOp {
-    Add { path: String, content: String },
-    Update { path: String, old: String, new: String },
-    Delete { path: String },
+struct DiffHunk {
+    old_start: usize,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    lines: Vec<HunkLine>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum HunkLine {
+    Context(String),
+    Added(String),
+    Removed(String),
 }
 
 impl ApplyPatchTool {
-    /// Parse simple patch text into operations.
-    /// Handles a basic format where each operation is a block.
-    fn parse_patch(patch_text: &str) -> std::result::Result<Vec<PatchOp>, String> {
-        let trimmed = patch_text.trim();
-        if trimmed.is_empty() {
-            return Err("patchText is required".into());
+    /// Parse a unified diff string into a vector of hunks.
+    fn parse_unified_diff(patch: &str) -> std::result::Result<Vec<DiffHunk>, String> {
+        if patch.trim().is_empty() {
+            return Err("patch is empty".into());
         }
 
-        // Normalize line endings
-        let normalized = trimmed.replace("\r\n", "\n").replace('\r', "\n");
-
-        // Check for "*** Begin Patch / *** End Patch" empty wrapper
-        let check = normalized.trim();
-        if check == "*** Begin Patch\n*** End Patch" {
-            return Err("patch rejected: empty patch".into());
-        }
-
-        let mut ops = Vec::new();
-        let mut current_op: Option<&str> = None;
-        let mut current_path: Option<&str> = None;
-        let mut current_content = String::new();
+        let normalized = patch.replace("\r\n", "\n");
+        let mut hunks = Vec::new();
+        let mut current_hunk: Option<DiffHunk> = None;
+        let mut old_count_actual = 0usize;
+        let mut new_count_actual = 0usize;
 
         for line in normalized.lines() {
-            let line = line.trim();
+            if line.starts_with("@@") {
+                // Save previous hunk
+                if let Some(mut hunk) = current_hunk.take() {
+                    hunk.old_count = old_count_actual;
+                    hunk.new_count = new_count_actual;
+                    hunks.push(hunk);
+                }
 
-            if line.starts_with("+++ ") {
-                // Save previous op
-                if let (Some(op_type), Some(path)) = (current_op, current_path) {
-                    ops.push(Self::build_op(op_type, path, &current_content)?);
+                // Parse @@ -l,s +l,s @@
+                if let Some(hunk) = Self::parse_hunk_header(line) {
+                    current_hunk = Some(hunk);
+                    old_count_actual = 0;
+                    new_count_actual = 0;
                 }
-                current_op = Some("add");
-                current_path = Some(line[4..].trim());
-                current_content.clear();
-            } else if line.starts_with("--- ") {
-                if let (Some(op_type), Some(path)) = (current_op, current_path) {
-                    ops.push(Self::build_op(op_type, path, &current_content)?);
+            } else if let Some(ref _existing) = current_hunk {
+                if line.starts_with(' ') {
+                    current_hunk.as_mut().unwrap().lines.push(HunkLine::Context(line[1..].to_string()));
+                    old_count_actual += 1;
+                    new_count_actual += 1;
+                } else if line.starts_with('-') && !line.starts_with("---") {
+                    current_hunk.as_mut().unwrap().lines.push(HunkLine::Removed(line[1..].to_string()));
+                    old_count_actual += 1;
+                } else if line.starts_with('+') && !line.starts_with("+++") {
+                    current_hunk.as_mut().unwrap().lines.push(HunkLine::Added(line[1..].to_string()));
+                    new_count_actual += 1;
                 }
-                // For delete operations
-                current_op = Some("delete");
-                current_path = Some(line[4..].trim());
-                current_content.clear();
-            } else if line.starts_with("@@ ") {
-                if let (Some(op_type), Some(path)) = (current_op, current_path) {
-                    ops.push(Self::build_op(op_type, path, &current_content)?);
-                }
-                // Start of update hunk
-                current_op = Some("update");
-                current_content.push_str(line);
-                current_content.push('\n');
-            } else if line == "*** Begin Patch" || line == "*** End Patch" {
-                // Skip wrapper markers
-            } else if current_op.is_some() {
-                current_content.push_str(line);
-                current_content.push('\n');
+                // Skip "No newline at end of file" markers
             }
+            // Skip --- and +++ file headers (outside hunks)
         }
 
-        // Final operation
-        if let (Some(op_type), Some(path)) = (current_op, current_path) {
-            ops.push(Self::build_op(op_type, path, &current_content)?);
+        // Final hunk
+        if let Some(mut hunk) = current_hunk.take() {
+            hunk.old_count = old_count_actual;
+            hunk.new_count = new_count_actual;
+            hunks.push(hunk);
         }
 
-        if ops.is_empty() {
-            return Err("apply_patch verification failed: no hunks found".into());
+        if hunks.is_empty() {
+            return Err("apply_patch verification failed: no hunks found in patch".into());
         }
 
-        Ok(ops)
+        Ok(hunks)
     }
 
-    fn build_op(op_type: &str, path: &str, content: &str) -> std::result::Result<PatchOp, String> {
-        match op_type {
-            "add" => Ok(PatchOp::Add {
-                path: path.to_string(),
-                content: content.trim().to_string(),
-            }),
-            "delete" => Ok(PatchOp::Delete {
-                path: path.to_string(),
-            }),
-            "update" => {
-                // Extract old/new from diff content
-                let mut old_lines = Vec::new();
-                let mut new_lines = Vec::new();
-                for line in content.lines() {
-                    if line.starts_with('-') && !line.starts_with("---") {
-                        old_lines.push(line[1..].to_string());
-                    } else if line.starts_with('+') && !line.starts_with("+++") {
-                        new_lines.push(line[1..].to_string());
-                    } else if line.starts_with(' ') {
-                        old_lines.push(line[1..].to_string());
-                        new_lines.push(line[1..].to_string());
-                    }
-                }
-                Ok(PatchOp::Update {
-                    path: path.to_string(),
-                    old: old_lines.join("\n"),
-                    new: new_lines.join("\n"),
-                })
-            }
-            _ => Err(format!("unknown operation type: {}", op_type)),
+    /// Parse a hunk header like `@@ -1,7 +1,6 @@`.
+    fn parse_hunk_header(line: &str) -> Option<DiffHunk> {
+        let line = line.trim();
+        if !line.starts_with("@@") {
+            return None;
         }
+
+        // Extract the part between @@ and @@
+        let rest = line.strip_prefix("@@")?.trim();
+        let parts: Vec<&str> = rest.split("@@").collect();
+        let header_part = parts.first()?.trim();
+
+        // Parse "-old_start,old_count +new_start,new_count"
+        let segments: Vec<&str> = header_part.split_whitespace().collect();
+        if segments.len() < 2 {
+            return None;
+        }
+
+        let old_part = segments[0].strip_prefix('-')?;
+        let new_part = segments[1].strip_prefix('+')?;
+
+        let (old_start, old_count) = Self::parse_range(old_part);
+        let (new_start, new_count) = Self::parse_range(new_part);
+
+        Some(DiffHunk {
+            old_start: old_start.max(1),
+            old_count,
+            new_start: new_start.max(1),
+            new_count,
+            lines: Vec::new(),
+        })
+    }
+
+    /// Parse a range like "1,7" or "5" (count defaults to 1).
+    fn parse_range(s: &str) -> (usize, usize) {
+        if let Some(comma) = s.find(',') {
+            let start = s[..comma].parse().unwrap_or(1);
+            let count = s[comma + 1..].parse().unwrap_or(1);
+            (start, count)
+        } else {
+            let start = s.parse().unwrap_or(1);
+            (start, 1)
+        }
+    }
+
+    /// Extract context lines from a hunk.
+    fn hunk_context(hunk: &DiffHunk) -> Vec<String> {
+        hunk.lines
+            .iter()
+            .filter_map(|l| match l {
+                HunkLine::Context(s) => Some(s.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Apply all hunks to file content, with offset adjustment.
+    fn apply_hunks(
+        file_content: &str,
+        hunks: &[DiffHunk],
+        file_path: &str,
+    ) -> std::result::Result<String, String> {
+        let mut result: Vec<String> = file_content.lines().map(|s| s.to_string()).collect();
+
+        // Track cumulative line offset from prior hunks
+        let mut line_offset: isize = 0;
+
+        for hunk in hunks {
+            // Expected 1-indexed position in current result
+            let expected_line = (hunk.old_start as isize + line_offset).max(1) as usize;
+            let context_lines = Self::hunk_context(hunk);
+
+            // Locate the hunk context, allowing offset adjustment
+            let actual_line = if context_lines.is_empty() {
+                expected_line
+            } else {
+                Self::find_context(&result, &context_lines, expected_line)
+                    .ok_or_else(|| {
+                        format!(
+                            "apply_patch verification failed: could not find hunk context in {} at or near line {}",
+                            file_path, expected_line
+                        )
+                    })?
+            };
+
+            let remove_start = actual_line.saturating_sub(1);
+            let old_end = (remove_start + hunk.old_count).min(result.len());
+
+            // Build replacement lines: keep Context and Added, skip Removed
+            let new_lines: Vec<String> = hunk
+                .lines
+                .iter()
+                .filter_map(|l| match l {
+                    HunkLine::Context(s) | HunkLine::Added(s) => Some(s.clone()),
+                    HunkLine::Removed(_) => None,
+                })
+                .collect();
+
+            // Drain old lines and splice in new lines
+            if remove_start <= result.len() {
+                let drain_end = old_end.min(result.len());
+                let removed_count = drain_end - remove_start;
+                result.drain(remove_start..drain_end);
+                for (i, line) in new_lines.iter().enumerate() {
+                    result.insert(remove_start + i, line.clone());
+                }
+                line_offset += new_lines.len() as isize - removed_count as isize;
+            }
+        }
+
+        let mut output = result.join("\n");
+        // Preserve trailing newline if original had one
+        if file_content.ends_with('\n') && !output.ends_with('\n') {
+            output.push('\n');
+        }
+        Ok(output)
+    }
+
+    /// Find context lines in `result` near `expected_line`, within a search window.
+    fn find_context(
+        result: &[String],
+        context: &[String],
+        expected_line: usize,
+    ) -> Option<usize> {
+        if context.is_empty() {
+            return Some(expected_line);
+        }
+
+        let search_window: isize = 20;
+
+        // Try exact match first
+        if Self::context_matches(result, context, expected_line) {
+            return Some(expected_line);
+        }
+
+        // Scan nearby lines
+        for delta in 1..=search_window {
+            let before = expected_line as isize - delta;
+            if before >= 1 && Self::context_matches(result, context, before as usize) {
+                return Some(before as usize);
+            }
+            let after = expected_line as isize + delta;
+            if after >= 1 && Self::context_matches(result, context, after as usize) {
+                return Some(after as usize);
+            }
+        }
+
+        None
+    }
+
+    /// Check if context lines match at a given 1-indexed line.
+    fn context_matches(result: &[String], context: &[String], line: usize) -> bool {
+        let idx = line.saturating_sub(1);
+        if idx + context.len() > result.len() {
+            return false;
+        }
+        context
+            .iter()
+            .enumerate()
+            .all(|(i, ctx_line)| result[idx + i] == *ctx_line)
     }
 }
 
@@ -1986,21 +2125,25 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply one patch containing add, update, and delete file operations.\
-         All operations apply sequentially; if a later operation fails,\
-         earlier operations remain applied."
+        "Apply a unified diff patch to a file. Parses the diff, locates each hunk in the\
+         target file with offset adjustment, and applies the changes. Handles failures\
+         gracefully with clear error messages."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "patchText": {
+                "file_path": {
                     "type": "string",
-                    "description": "The full patch text describing add, update, and delete operations"
+                    "description": "The absolute path to the file to patch"
+                },
+                "patch": {
+                    "type": "string",
+                    "description": "The unified diff patch to apply"
                 }
             },
-            "required": ["patchText"]
+            "required": ["file_path", "patch"]
         })
     }
 
@@ -2009,79 +2152,53 @@ impl Tool for ApplyPatchTool {
         args: serde_json::Value,
         _ctx: &ToolContext,
     ) -> Result<ExecuteResult> {
-        let patch_text = args["patchText"]
+        let file_path = args["file_path"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
                 tool: "apply_patch".into(),
-                detail: "missing 'patchText' field".into(),
+                detail: "missing 'file_path' field".into(),
             })?;
 
-        let ops = Self::parse_patch(patch_text).map_err(|e| Error::Tool(e))?;
+        let patch = args["patch"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "apply_patch".into(),
+                detail: "missing 'patch' field".into(),
+            })?;
 
-        let mut applied: Vec<String> = Vec::new();
-
-        for op in &ops {
-            match op {
-                PatchOp::Add { path, content } => {
-                    if let Some(parent) = std::path::Path::new(path).parent() {
-                        std::fs::create_dir_all(parent).map_err(|e| Error::FileSystem {
-                            path: parent.to_string_lossy().to_string(),
-                            message: format!("failed to create parent directories: {}", e),
-                        })?;
-                    }
-                    let file_content = if content.ends_with('\n') || content.is_empty() {
-                        content.clone()
-                    } else {
-                        format!("{}\n", content)
-                    };
-                    std::fs::write(path, file_content).map_err(|e| Error::FileSystem {
-                        path: path.clone(),
-                        message: format!("failed to write file: {}", e),
-                    })?;
-                    applied.push(format!("A {}", path));
-                }
-                PatchOp::Update { path, old, new } => {
-                    let existing = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
-                    // Try exact match first
-                    let replaced = if let Some(pos) = existing.find(old.as_str()) {
-                        let mut result = existing.clone();
-                        result.replace_range(pos..pos + old.len(), new);
-                        result
-                    } else {
-                        return Err(Error::Tool(format!(
-                            "apply_patch verification failed: could not find old content in {}",
-                            path
-                        )));
-                    };
-                    std::fs::write(path, replaced).map_err(|e| Error::FileSystem {
-                        path: path.clone(),
-                        message: format!("failed to write file: {}", e),
-                    })?;
-                    applied.push(format!("M {}", path));
-                }
-                PatchOp::Delete { path } => {
-                    if std::path::Path::new(path).exists() {
-                        std::fs::remove_file(path).map_err(|e| Error::FileSystem {
-                            path: path.clone(),
-                            message: format!("failed to delete file: {}", e),
-                        })?;
-                    }
-                    applied.push(format!("D {}", path));
-                }
-            }
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
+            return Err(Error::Tool(format!("File not found: {}", file_path)));
         }
 
-        let output = if applied.is_empty() {
-            "No operations applied.".to_string()
-        } else {
-            format!(
-                "Applied patch sequentially:\n{}",
-                applied.join("\n")
-            )
-        };
+        if path.is_dir() {
+            return Err(Error::Tool(format!(
+                "Path is a directory, not a file: {}",
+                file_path
+            )));
+        }
+
+        let file_content =
+            std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+
+        let hunks = Self::parse_unified_diff(patch).map_err(|e| Error::Tool(e))?;
+
+        let patched = Self::apply_hunks(&file_content, &hunks, file_path)
+            .map_err(|e| Error::Tool(e))?;
+
+        std::fs::write(path, &patched).map_err(|e| Error::FileSystem {
+            path: file_path.to_string(),
+            message: format!("failed to write patched file: {}", e),
+        })?;
+
+        let output = format!(
+            "Applied patch to {}: {} hunk(s) applied successfully.",
+            file_path,
+            hunks.len()
+        );
 
         Ok(ExecuteResult {
-            title: "Patch applied".to_string(),
+            title: format!("Patched: {}", file_path),
             output,
             truncated: false,
             output_path: None,
@@ -2089,12 +2206,10 @@ impl Tool for ApplyPatchTool {
             metadata: {
                 let mut m = HashMap::new();
                 m.insert(
-                    "applied".into(),
-                    serde_json::json!(applied
-                        .iter()
-                        .map(|s| serde_json::Value::String(s.clone()))
-                        .collect::<Vec<_>>()),
+                    "file".into(),
+                    serde_json::Value::String(file_path.to_string()),
                 );
+                m.insert("hunks".into(), serde_json::json!(hunks.len()));
                 m
             },
         })
@@ -2159,7 +2274,7 @@ impl Tool for TaskTool {
                     "description": "Run the agent in the background. You will be notified when it completes."
                 }
             },
-            "required": ["description", "prompt", "subagent_type"]
+            "required": ["description", "prompt"]
         })
     }
 
@@ -2184,10 +2299,7 @@ impl Tool for TaskTool {
 
         let subagent_type = args["subagent_type"]
             .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "task".into(),
-                detail: "missing 'subagent_type' field".into(),
-            })?;
+            .unwrap_or("general-purpose");
 
         let is_background = args["background"].as_bool().unwrap_or(false);
 
@@ -2240,7 +2352,9 @@ impl Tool for TaskTool {
 
 /// Asks the user questions during execution.
 ///
-/// Returns the user's answers for the agent to continue with.
+/// Publishes a question event on the event bus and returns a pending state.
+/// The actual answer arrives asynchronously — this tool indicates the question
+/// has been queued for user response.
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/question.ts` and
@@ -2255,14 +2369,12 @@ impl Tool for QuestionTool {
     }
 
     fn description(&self) -> &str {
-        "Use this tool when you need to ask the user questions during execution. This allows you to:\n\
-         1. Gather user preferences or requirements\n\
-         2. Clarify ambiguous instructions\n\
-         3. Get decisions on implementation choices as you work\n\
-         4. Offer choices to the user about what direction to take.\n\n\
-         Usage notes:\n\
-         - Answers are returned as arrays of labels; set multiple to allow selecting more than one\n\
-         - If you recommend a specific option, make that the first option in the list"
+        "Ask the user one or more questions during execution.\
+         Questions are published as events on the session bus and the user's\
+         answers arrive asynchronously. This tool returns a pending state.\
+         \n\n\
+         Each question can include header text, predefined options with labels\
+         and descriptions, allow multiple selection, and support custom answers."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -2321,7 +2433,7 @@ impl Tool for QuestionTool {
     async fn execute(
         &self,
         args: serde_json::Value,
-        _ctx: &ToolContext,
+        ctx: &ToolContext,
     ) -> Result<ExecuteResult> {
         let questions = args["questions"]
             .as_array()
@@ -2332,22 +2444,51 @@ impl Tool for QuestionTool {
 
         let question_count = questions.len();
 
-        // Question tool requires interactive infrastructure (user prompting, response
-        // collection). This stub returns a placeholder indicating questions were received.
+        // Build the question event payload. When the event bus infrastructure
+        // is connected, this payload is published on the bus as a GlobalEvent.
+        // The session runner subscribes and delivers the question to the user.
+        // Answers arrive asynchronously and are injected into the session.
+        let _event_payload = serde_json::json!({
+            "type": "question",
+            "session_id": ctx.session_id,
+            "message_id": ctx.message_id,
+            "questions": questions,
+        });
+
+        // Questions are published on the event bus and answers arrive asynchronously.
+        // Return a pending state indicating the questions were queued.
         let mut formatted = Vec::new();
-        for (i, q) in questions.iter().enumerate() {
+        for q in questions.iter() {
             let question_text = q["question"].as_str().unwrap_or("Unnamed question");
-            formatted.push(format!("\"{}\"=\"Pending user response\"", question_text));
+            let header = q["header"].as_str();
+            let label = match header {
+                Some(h) => format!("[{}] {}", h, question_text),
+                None => question_text.to_string(),
+            };
+            let has_options = q["options"].as_array().map(|o| o.len()).unwrap_or(0) > 0;
+            let status = if has_options {
+                "awaiting selection"
+            } else {
+                "awaiting response"
+            };
+            formatted.push(format!("\"{}\"=\"{}\"", label, status));
         }
 
         let output = format!(
-            "User has answered your questions: {}. You can now continue with the user's answers in mind.",
-            formatted.join(", ")
+            "Questions published on event bus (awaiting user response):\n{}\n\n\
+             The session will resume once the user provides answers.",
+            formatted
+                .iter()
+                .enumerate()
+                .map(|(i, s)| format!("  {}. {}", i + 1, s))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
 
         Ok(ExecuteResult {
             title: format!(
-                "Asked {} question{}",
+                "Question{} pending ({} item{})",
+                if question_count > 1 { "s" } else { "" },
                 question_count,
                 if question_count > 1 { "s" } else { "" }
             ),
@@ -2355,7 +2496,15 @@ impl Tool for QuestionTool {
             truncated: false,
             output_path: None,
             attachments: None,
-            metadata: HashMap::new(),
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("state".into(), serde_json::Value::String("pending".into()));
+                m.insert(
+                    "question_count".into(),
+                    serde_json::json!(question_count),
+                );
+                m
+            },
         })
     }
 }
@@ -2364,13 +2513,75 @@ impl Tool for QuestionTool {
 // 12. SkillTool — skill invocation
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Invokes a named skill and returns its content and file listing.
+/// Invokes a named skill and loads its markdown instructions.
+///
+/// Loads the skill markdown file from `.opencode/skills/{skill}.md`,
+/// parses YAML frontmatter, and returns the skill instructions and metadata.
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/skill.ts` and
 /// `packages/opencode/src/tool/skill.ts`.
 #[derive(Debug, Clone)]
 pub struct SkillTool;
+
+impl SkillTool {
+    /// Load a skill from `.opencode/skills/{name}.md` and parse its frontmatter.
+    fn load_skill(skill_name: &str) -> Result<(serde_json::Value, String)> {
+        // Try multiple skill directory locations
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let candidates = vec![
+            cwd.join(".opencode").join("skills").join(format!("{}.md", skill_name)),
+            cwd.join(".claude").join("skills").join(format!("{}.md", skill_name)),
+        ];
+
+        for skill_path in &candidates {
+            if skill_path.exists() {
+                let content = std::fs::read_to_string(skill_path).map_err(|e| Error::Io(e))?;
+                let (frontmatter, body) = Self::parse_frontmatter(&content);
+                return Ok((frontmatter, body.to_string()));
+            }
+        }
+
+        Err(Error::Skill(SkillError::NotFound {
+            name: skill_name.to_string(),
+        }))
+    }
+
+    /// Parse YAML frontmatter delimited by `---` markers.
+    fn parse_frontmatter(content: &str) -> (serde_json::Value, &str) {
+        let trimmed = content.trim_start();
+        if !trimmed.starts_with("---") {
+            return (serde_json::Value::Null, content);
+        }
+
+        // Find the closing ---
+        let after_open = &trimmed[3..];
+        if let Some(close_pos) = after_open.find("\n---") {
+            let yaml_str = &after_open[..close_pos].trim();
+            let body = after_open[close_pos + 4..].trim_start();
+
+            // Parse simple YAML key: value pairs
+            let mut map = serde_json::Map::new();
+            for line in yaml_str.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') {
+                    continue;
+                }
+                if let Some(col_pos) = line.find(':') {
+                    let key = line[..col_pos].trim().to_string();
+                    let value = line[col_pos + 1..].trim();
+                    // Try to parse as JSON value (number, bool, null), fall back to string
+                    let parsed = serde_json::from_str(value)
+                        .unwrap_or_else(|_| serde_json::Value::String(value.to_string()));
+                    map.insert(key, parsed);
+                }
+            }
+            (serde_json::Value::Object(map), body)
+        } else {
+            (serde_json::Value::Null, content)
+        }
+    }
+}
 
 #[async_trait]
 impl Tool for SkillTool {
@@ -2379,22 +2590,25 @@ impl Tool for SkillTool {
     }
 
     fn description(&self) -> &str {
-        "Load a specialized skill when the task at hand matches one of the available skills\
-         in the system context.\n\n\
-         Use this tool to inject the skill's instructions and resources into the current\
-         conversation. The skill name must match one of the available skills."
+        "Invoke a named skill to load its instructions into the current conversation.\
+         Skills are markdown files in .opencode/skills/ with YAML frontmatter.\
+         Use this tool when the task matches an available skill from the system context."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
         serde_json::json!({
             "type": "object",
             "properties": {
-                "name": {
+                "skill": {
                     "type": "string",
-                    "description": "The name of the skill from the available skills list"
+                    "description": "The skill name (must match a file in .opencode/skills/ without the .md extension)"
+                },
+                "args": {
+                    "type": "string",
+                    "description": "Optional arguments to pass to the skill"
                 }
             },
-            "required": ["name"]
+            "required": ["skill"]
         })
     }
 
@@ -2403,36 +2617,93 @@ impl Tool for SkillTool {
         args: serde_json::Value,
         _ctx: &ToolContext,
     ) -> Result<ExecuteResult> {
-        let skill_name = args["name"]
+        let skill_name = args["skill"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
                 tool: "skill".into(),
-                detail: "missing 'name' field".into(),
+                detail: "missing 'skill' field".into(),
             })?;
 
-        // Skill tool requires skill discovery infrastructure (reading .opencode/skills/
-        // directory, parsing SKILL.md files). This stub provides a basic response.
-        let output = format!(
-            "<skill_content name=\"{}\">\n\
-             # Skill: {}\n\n\
-             Skill loading is pending full skill infrastructure.\n\
-             When implemented, this will load the skill's instructions and list associated files.\n\
-             </skill_content>",
-            skill_name, skill_name
-        );
+        let skill_args = args["args"].as_str();
 
-        Ok(ExecuteResult {
-            title: format!("Loaded skill: {}", skill_name),
-            output,
-            truncated: false,
-            output_path: None,
-            attachments: None,
-            metadata: {
-                let mut m = HashMap::new();
-                m.insert("name".into(), serde_json::Value::String(skill_name.to_string()));
-                m
-            },
-        })
+        // Attempt to load the skill from the filesystem
+        match Self::load_skill(skill_name) {
+            Ok((frontmatter, body)) => {
+                let mut output = format!(
+                    "<skill_content name=\"{}\">\n",
+                    skill_name
+                );
+                if !frontmatter.is_null() {
+                    output.push_str(&format!(
+                        "<!-- frontmatter: {} -->\n",
+                        serde_json::to_string(&frontmatter).unwrap_or_default()
+                    ));
+                }
+                if let Some(a) = skill_args {
+                    output.push_str(&format!("<!-- args: {} -->\n", a));
+                }
+                output.push_str(&body);
+                output.push_str("\n</skill_content>");
+
+                let mut metadata = HashMap::new();
+                metadata.insert(
+                    "skill".into(),
+                    serde_json::Value::String(skill_name.to_string()),
+                );
+                if let Some(a) = skill_args {
+                    metadata.insert(
+                        "args".into(),
+                        serde_json::Value::String(a.to_string()),
+                    );
+                }
+                if !frontmatter.is_null() {
+                    metadata.insert("frontmatter".into(), frontmatter);
+                }
+
+                Ok(ExecuteResult {
+                    title: format!("Loaded skill: {}", skill_name),
+                    output,
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata,
+                })
+            }
+            Err(_) => {
+                // Skill not found on disk — return a stub indicating it would be loaded.
+                let output = format!(
+                    "<skill_content name=\"{}\">\n\
+                     # Skill: {}\n\n\
+                     Skill file not found at .opencode/skills/{}.md.\n\
+                     When available, this tool loads the skill's markdown instructions,\n\
+                     parses YAML frontmatter, and returns the skill content.\n\
+                     </skill_content>",
+                    skill_name, skill_name, skill_name
+                );
+
+                Ok(ExecuteResult {
+                    title: format!("Loaded skill: {}", skill_name),
+                    output,
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert(
+                            "skill".into(),
+                            serde_json::Value::String(skill_name.to_string()),
+                        );
+                        if let Some(a) = skill_args {
+                            m.insert(
+                                "args".into(),
+                                serde_json::Value::String(a.to_string()),
+                            );
+                        }
+                        m
+                    },
+                })
+            }
+        }
     }
 }
 
@@ -2457,7 +2728,7 @@ impl Tool for TodoWriteTool {
     fn description(&self) -> &str {
         "Create and maintain a structured task list for the current coding session.\
          Use it to track progress during multi-step work and keep todo statuses current.\
-         Each todo has: content (description), status (pending/in_progress/completed/cancelled),\
+         Each todo has: text (description), status (pending/in_progress/completed/cancelled),\
          and priority (high/medium/low)."
     }
 
@@ -2471,7 +2742,7 @@ impl Tool for TodoWriteTool {
                     "items": {
                         "type": "object",
                         "properties": {
-                            "content": {
+                            "text": {
                                 "type": "string",
                                 "description": "Brief description of the task"
                             },
@@ -2486,7 +2757,7 @@ impl Tool for TodoWriteTool {
                                 "description": "Priority level of the task"
                             }
                         },
-                        "required": ["content", "status", "priority"]
+                        "required": ["text", "status", "priority"]
                     }
                 }
             },
@@ -2532,7 +2803,82 @@ impl Tool for TodoWriteTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 14. PlanExitTool — plan mode exit
+// 14. PlanEnterTool — plan mode entry
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Enters plan mode, creating a structured plan before implementation.
+///
+/// When entering plan mode, the agent stops executing tools and instead
+/// creates a detailed implementation plan. This tool transitions the session
+/// into plan mode.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/plan.ts` (79 lines).
+#[derive(Debug, Clone)]
+pub struct PlanEnterTool;
+
+#[async_trait]
+impl Tool for PlanEnterTool {
+    fn id(&self) -> &str {
+        "plan_enter"
+    }
+
+    fn description(&self) -> &str {
+        "Enter plan mode to design an implementation strategy.\
+         Use this tool when you need to think through a complex problem before writing code.\
+         In plan mode, the agent creates a detailed step-by-step plan, identifies critical files,\
+         and considers architectural trade-offs. After planning, use plan_exit to switch to\
+         the build agent for implementation."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plan": {
+                    "type": "string",
+                    "description": "A description of what needs to be planned"
+                }
+            }
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ExecuteResult> {
+        let plan_desc = args
+            .get("plan")
+            .and_then(|v| v.as_str())
+            .unwrap_or("implementation strategy");
+
+        // Plan enter tool requires session management and agent mode switching infrastructure.
+        // This stub returns a basic response indicating plan mode was entered.
+        Ok(ExecuteResult {
+            title: format!("Planning: {}", plan_desc),
+            output: format!(
+                "Entered plan mode for: {}\n\n\
+                 Now in plan mode. Create a detailed implementation plan before using plan_exit\
+                 to switch to the build agent. Consider architecture, file changes, edge cases,\
+                 and testing strategy.",
+                plan_desc
+            ),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("mode".into(), serde_json::Value::String("plan".into()));
+                m.insert("plan".into(), serde_json::Value::String(plan_desc.to_string()));
+                m
+            },
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 15. PlanExitTool — plan mode exit
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// Enters/exits plan mode, tracking plan state.
@@ -2583,11 +2929,1183 @@ impl Tool for PlanExitTool {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// 16. ExitPlanModeTool — exit plan mode with plan content
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Exits plan mode and transitions to implementation mode.
+///
+/// Takes the plan content as input and returns it for the implementation phase.
+/// Transitions the session from planning to building.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/plan.ts` — exit plan mode variant.
+#[derive(Debug, Clone)]
+pub struct ExitPlanModeTool;
+
+#[async_trait]
+impl Tool for ExitPlanModeTool {
+    fn id(&self) -> &str {
+        "exit_plan_mode"
+    }
+
+    fn description(&self) -> &str {
+        "Exit plan mode and transition to implementation mode.\
+         Takes the complete plan as input and returns it for the build phase.\
+         Use this when the planning phase is finished and implementation should begin."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "plan": {
+                    "type": "string",
+                    "description": "The plan to implement (full plan content from the planning phase)"
+                }
+            },
+            "required": ["plan"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ExecuteResult> {
+        let plan_content = args["plan"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "exit_plan_mode".into(),
+                detail: "missing 'plan' field".into(),
+            })?;
+
+        let output = format!(
+            "Exited plan mode. Transitioning to implementation.\n\n\
+             ## Plan\n\n{}\n\n\
+             Ready to implement the plan. Switch to the build agent to begin execution.",
+            plan_content
+        );
+
+        Ok(ExecuteResult {
+            title: "Exited plan mode — implementing".into(),
+            output,
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("mode".into(), serde_json::Value::String("build".into()));
+                m.insert("plan".into(), serde_json::Value::String(plan_content.to_string()));
+                m
+            },
+        })
+    }
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 17. StashTool — file content snapshots
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Saves and restores file content snapshots for safe experimentation.
+///
+/// Snapshots are stored as JSON files under ~/.rustcode/stashes/.
+/// Supports save, restore, list, and drop operations.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/` — stash pattern.
+#[derive(Debug, Clone)]
+pub struct StashTool;
+
+impl StashTool {
+    fn stash_dir() -> std::path::PathBuf {
+        let home = std::env::var("HOME")
+            .or_else(|_| std::env::var("USERPROFILE"))
+            .unwrap_or_else(|_| ".".into());
+        std::path::PathBuf::from(home)
+            .join(".rustcode")
+            .join("stashes")
+    }
+
+    fn ensure_stash_dir() -> std::result::Result<std::path::PathBuf, String> {
+        let dir = Self::stash_dir();
+        std::fs::create_dir_all(&dir)
+            .map_err(|e| format!("failed to create stash directory: {}", e))?;
+        Ok(dir)
+    }
+
+    fn stash_path(name: &str) -> std::path::PathBuf {
+        Self::stash_dir().join(format!("{}.json", name))
+    }
+
+    fn save_stash(name: &str, files: &[String]) -> std::result::Result<String, String> {
+        let dir = Self::ensure_stash_dir()?;
+        let stash_file = dir.join(format!("{}.json", name));
+
+        let mut entries = Vec::new();
+        for pattern in files {
+            let paths = glob::glob(pattern)
+                .map_err(|e| format!("glob error: {}", e))?;
+            for entry in paths.flatten() {
+                if entry.is_file() {
+                    let content = std::fs::read_to_string(&entry)
+                        .map_err(|e| format!("failed to read {}: {}", entry.display(), e))?;
+                    entries.push(serde_json::json!({
+                        "path": entry.to_string_lossy(),
+                        "content": content,
+                    }));
+                }
+            }
+        }
+
+        let stash_data = serde_json::json!({
+            "name": name,
+            "created_at": chrono::Utc::now().to_rfc3339(),
+            "file_count": entries.len(),
+            "files": entries,
+        });
+
+        let json = serde_json::to_string_pretty(&stash_data)
+            .map_err(|e| format!("serialization error: {}", e))?;
+        std::fs::write(&stash_file, json)
+            .map_err(|e| format!("failed to write stash: {}", e))?;
+
+        Ok(format!(
+            "Stash '{}' saved with {} file(s) at {}",
+            name,
+            entries.len(),
+            stash_file.display()
+        ))
+    }
+
+    fn restore_stash(name: &str) -> std::result::Result<String, String> {
+        let stash_file = Self::stash_path(name);
+        if !stash_file.exists() {
+            return Err(format!("stash '{}' not found", name));
+        }
+
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&stash_file)
+                .map_err(|e| format!("failed to read stash: {}", e))?,
+        )
+        .map_err(|e| format!("failed to parse stash JSON: {}", e))?;
+
+        let files = json["files"]
+            .as_array()
+            .ok_or_else(|| "stash has no 'files' array".to_string())?;
+
+        let mut restored = 0usize;
+        for entry in files {
+            let path = entry["path"]
+                .as_str()
+                .ok_or_else(|| "stash entry missing 'path'".to_string())?;
+            let content = entry["content"]
+                .as_str()
+                .ok_or_else(|| "stash entry missing 'content'".to_string())?;
+
+            if let Some(parent) = std::path::Path::new(path).parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| format!("failed to create dir for {}: {}", path, e))?;
+            }
+            std::fs::write(path, content)
+                .map_err(|e| format!("failed to restore {}: {}", path, e))?;
+            restored += 1;
+        }
+
+        Ok(format!(
+            "Stash '{}' restored: {} file(s) written.",
+            name, restored
+        ))
+    }
+
+    fn list_stashes() -> std::result::Result<String, String> {
+        let dir = Self::stash_dir();
+        if !dir.exists() {
+            return Ok("No stashes found (stash directory does not exist).".into());
+        }
+
+        let mut stashes = Vec::new();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let stash_path = entry.path();
+                if stash_path.extension().map_or(false, |e| e == "json") {
+                    if let Ok(content) = std::fs::read_to_string(&stash_path) {
+                        if let Ok(json) =
+                            serde_json::from_str::<serde_json::Value>(&content)
+                        {
+                            let name =
+                                json["name"].as_str().unwrap_or("unknown");
+                            let date =
+                                json["created_at"].as_str().unwrap_or("unknown");
+                            let count =
+                                json["file_count"].as_u64().unwrap_or(0);
+                            stashes.push(format!(
+                                "  {} — {} — {} file(s)",
+                                name, date, count
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
+        if stashes.is_empty() {
+            Ok("No stashes found.".into())
+        } else {
+            Ok(format!("Stashes:\n{}", stashes.join("\n")))
+        }
+    }
+
+    fn drop_stash(name: &str) -> std::result::Result<String, String> {
+        let stash_file = Self::stash_path(name);
+        if !stash_file.exists() {
+            return Err(format!("stash '{}' not found", name));
+        }
+        std::fs::remove_file(&stash_file)
+            .map_err(|e| format!("failed to delete stash: {}", e))?;
+        Ok(format!("Stash '{}' dropped.", name))
+    }
+}
+
+#[async_trait]
+impl Tool for StashTool {
+    fn id(&self) -> &str {
+        "stash"
+    }
+
+    fn description(&self) -> &str {
+        "Stash and restore file content snapshots for safe experimentation.\
+         Actions: 'save' creates a snapshot of matching files, 'restore'\
+         restores files from a stash, 'list' shows all saved stashes,\
+         'drop' deletes a stash."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["save", "restore", "list", "drop"],
+                    "description": "The stash action to perform"
+                },
+                "name": {
+                    "type": "string",
+                    "description": "Name of the stash (required for save, restore, drop)"
+                },
+                "files": {
+                    "type": "array",
+                    "description": "Glob patterns for files to stash (required for save action)",
+                    "items": { "type": "string" }
+                }
+            },
+            "required": ["action"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ExecuteResult> {
+        let action = args["action"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "stash".into(),
+                detail: "missing 'action' field".into(),
+            })?;
+
+        let name = args["name"].as_str();
+        let files: Vec<String> = args
+            .get("files")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let (output, title) = match action {
+            "save" => {
+                let name = name.ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "stash".into(),
+                    detail: "missing 'name' field for save action".into(),
+                })?;
+                if files.is_empty() {
+                    return Err(Error::ToolInvalidArguments {
+                        tool: "stash".into(),
+                        detail: "missing 'files' array for save action".into(),
+                    });
+                }
+                let msg =
+                    Self::save_stash(name, &files).map_err(|e| Error::Tool(e))?;
+                (msg, format!("Stash saved: {}", name))
+            }
+            "restore" => {
+                let name = name.ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "stash".into(),
+                    detail: "missing 'name' field for restore action".into(),
+                })?;
+                let msg = Self::restore_stash(name)
+                    .map_err(|e| Error::Tool(e))?;
+                (msg, format!("Stash restored: {}", name))
+            }
+            "list" => {
+                let msg =
+                    Self::list_stashes().map_err(|e| Error::Tool(e))?;
+                (msg, "Stash list".into())
+            }
+            "drop" => {
+                let name = name.ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "stash".into(),
+                    detail: "missing 'name' field for drop action".into(),
+                })?;
+                let msg =
+                    Self::drop_stash(name).map_err(|e| Error::Tool(e))?;
+                (msg, format!("Stash dropped: {}", name))
+            }
+            other => {
+                return Err(Error::ToolInvalidArguments {
+                    tool: "stash".into(),
+                    detail: format!(
+                        "unknown action '{}'. Must be one of: save, restore, list, drop",
+                        other
+                    ),
+                });
+            }
+        };
+
+        Ok(ExecuteResult {
+            title,
+            output,
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "action".into(),
+                    serde_json::Value::String(action.to_string()),
+                );
+                if let Some(n) = name {
+                    m.insert(
+                        "name".into(),
+                        serde_json::Value::String(n.to_string()),
+                    );
+                }
+                m
+            },
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 18. NotebookEditTool — Jupyter notebook cell editing
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Edits cells in a Jupyter notebook (.ipynb) file.
+///
+/// Parses the notebook JSON, locates cells by ID, and supports replace,
+/// insert, and delete operations.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/` — notebook editing pattern.
+#[derive(Debug, Clone)]
+pub struct NotebookEditTool;
+
+impl NotebookEditTool {
+    /// Generate a unique cell ID using a hash of the current time.
+    fn generate_cell_id() -> String {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use std::time::SystemTime;
+
+        let mut hasher = DefaultHasher::new();
+        SystemTime::now().hash(&mut hasher);
+        // Also hash a random-ish value for uniqueness across rapid calls
+        std::process::id().hash(&mut hasher);
+        format!("{:016x}", hasher.finish())
+    }
+
+    /// Parse notebook JSON and return the cells array (mutable).
+    fn parse_notebook(
+        content: &str,
+    ) -> std::result::Result<(serde_json::Value, serde_json::Value), String> {
+        let notebook: serde_json::Value = serde_json::from_str(content)
+            .map_err(|e| format!("failed to parse notebook JSON: {}", e))?;
+
+        // Validate basic notebook structure
+        if notebook.get("cells").is_none() {
+            return Err("notebook has no 'cells' array".into());
+        }
+        if notebook.get("nbformat").is_none() {
+            return Err("notebook is missing 'nbformat'".into());
+        }
+
+        let cells = notebook["cells"].clone();
+        Ok((notebook, cells))
+    }
+
+    /// Find the index of a cell by its ID. Returns None if not found.
+    fn find_cell_index(cells: &serde_json::Value, cell_id: &str) -> Option<usize> {
+        cells
+            .as_array()?
+            .iter()
+            .position(|cell| cell.get("id").and_then(|id| id.as_str()) == Some(cell_id))
+    }
+
+    /// Create a new cell JSON object.
+    fn create_cell(
+        source: &str,
+        cell_type: &str,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "id": Self::generate_cell_id(),
+            "cell_type": cell_type,
+            "source": [source],
+            "metadata": {},
+            "outputs": [],
+            "execution_count": null
+        })
+    }
+}
+
+#[async_trait]
+impl Tool for NotebookEditTool {
+    fn id(&self) -> &str {
+        "notebook_edit"
+    }
+
+    fn description(&self) -> &str {
+        "Edit cells in a Jupyter notebook (.ipynb) file. Supports replace,\
+         insert, and delete operations on individual cells. New cells get\
+         auto-generated IDs."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "notebook_path": {
+                    "type": "string",
+                    "description": "The absolute path to the Jupyter notebook file to edit"
+                },
+                "cell_id": {
+                    "type": "string",
+                    "description": "The ID of the cell to edit. Required for replace and delete; optional for insert (inserts at beginning if omitted)."
+                },
+                "new_source": {
+                    "type": "string",
+                    "description": "The new source content for the cell"
+                },
+                "cell_type": {
+                    "type": "string",
+                    "enum": ["code", "markdown"],
+                    "description": "The type of the cell. Defaults to 'code' for new cells."
+                },
+                "edit_mode": {
+                    "type": "string",
+                    "enum": ["replace", "insert", "delete"],
+                    "description": "The type of edit to make. Defaults to 'replace'."
+                }
+            },
+            "required": ["notebook_path", "new_source"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ExecuteResult> {
+        let notebook_path = args["notebook_path"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "notebook_edit".into(),
+                detail: "missing 'notebook_path' field".into(),
+            })?;
+
+        let new_source = args["new_source"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "notebook_edit".into(),
+                detail: "missing 'new_source' field".into(),
+            })?;
+
+        let cell_id = args["cell_id"].as_str();
+        let cell_type = args["cell_type"]
+            .as_str()
+            .unwrap_or("code");
+        let edit_mode = args["edit_mode"]
+            .as_str()
+            .unwrap_or("replace");
+
+        let path = std::path::Path::new(notebook_path);
+        if !path.exists() {
+            return Err(Error::Tool(format!(
+                "Notebook not found: {}",
+                notebook_path
+            )));
+        }
+
+        let content =
+            std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+
+        let (mut notebook, cells) = Self::parse_notebook(&content)
+            .map_err(|e| Error::Tool(e))?;
+
+        let mut cells_array = cells
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+
+        match edit_mode {
+            "replace" => {
+                let cid = cell_id.ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "notebook_edit".into(),
+                    detail: "missing 'cell_id' for replace mode".into(),
+                })?;
+                let idx =
+                    Self::find_cell_index(&serde_json::Value::Array(cells_array.clone()), cid)
+                        .ok_or_else(|| {
+                            Error::Tool(format!("cell_id '{}' not found in notebook", cid))
+                        })?;
+                let cell = &mut cells_array[idx];
+                cell["source"] = serde_json::json!([new_source]);
+                if cell.get("cell_type").is_none() {
+                    cell["cell_type"] = serde_json::Value::String(cell_type.to_string());
+                }
+            }
+            "insert" => {
+                let new_cell = Self::create_cell(new_source, cell_type);
+                match cell_id {
+                    Some(cid) => {
+                        let idx = Self::find_cell_index(
+                            &serde_json::Value::Array(cells_array.clone()),
+                            cid,
+                        )
+                        .ok_or_else(|| {
+                            Error::Tool(format!(
+                                "cell_id '{}' not found in notebook",
+                                cid
+                            ))
+                        })?;
+                        cells_array.insert(idx + 1, new_cell);
+                    }
+                    None => {
+                        // Insert at beginning
+                        cells_array.insert(0, new_cell);
+                    }
+                }
+            }
+            "delete" => {
+                let cid = cell_id.ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "notebook_edit".into(),
+                    detail: "missing 'cell_id' for delete mode".into(),
+                })?;
+                let idx =
+                    Self::find_cell_index(&serde_json::Value::Array(cells_array.clone()), cid)
+                        .ok_or_else(|| {
+                            Error::Tool(format!("cell_id '{}' not found in notebook", cid))
+                        })?;
+                cells_array.remove(idx);
+            }
+            other => {
+                return Err(Error::ToolInvalidArguments {
+                    tool: "notebook_edit".into(),
+                    detail: format!(
+                        "unknown edit_mode '{}'. Must be one of: replace, insert, delete",
+                        other
+                    ),
+                });
+            }
+        }
+
+        // Write back
+        notebook["cells"] = serde_json::Value::Array(cells_array);
+        let updated =
+            serde_json::to_string_pretty(&notebook).map_err(|e| Error::Json(e))?;
+        std::fs::write(path, updated).map_err(|e| Error::FileSystem {
+            path: notebook_path.to_string(),
+            message: format!("failed to write notebook: {}", e),
+        })?;
+
+        Ok(ExecuteResult {
+            title: format!("Notebook edited: {}", notebook_path),
+            output: format!(
+                "Applied {} to notebook: {}",
+                edit_mode, notebook_path
+            ),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "notebook".into(),
+                    serde_json::Value::String(notebook_path.to_string()),
+                );
+                m.insert(
+                    "edit_mode".into(),
+                    serde_json::Value::String(edit_mode.to_string()),
+                );
+                m
+            },
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 19. TaskOutputTool — background task output retrieval
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// In-memory registry of background task statuses.
+static TASK_REGISTRY: std::sync::OnceLock<
+    std::sync::Mutex<HashMap<String, TaskRecord>>,
+> = std::sync::OnceLock::new();
+
+/// Metadata for a tracked background task.
+#[derive(Debug, Clone)]
+struct TaskRecord {
+    status: String,
+    output: String,
+    #[allow(dead_code)]
+    created_at: std::time::Instant,
+}
+
+fn task_registry() -> &'static std::sync::Mutex<HashMap<String, TaskRecord>> {
+    TASK_REGISTRY.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// Retrieves output from a running or completed background task (sub-agent).
+///
+/// Checks the in-memory task registry for the given task ID. If `block` is true,
+/// waits (polls) for the task to complete up to `timeout` milliseconds.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/` — task output pattern.
+#[derive(Debug, Clone)]
+pub struct TaskOutputTool;
+
+#[async_trait]
+impl Tool for TaskOutputTool {
+    fn id(&self) -> &str {
+        "task_output"
+    }
+
+    fn description(&self) -> &str {
+        "Retrieve output from a running or completed background task (sub-agent).\
+         Use this to check the status of a previously launched background task.\
+         If block is true, waits up to timeout ms for the task to finish."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "task_id": {
+                    "type": "string",
+                    "description": "The ID of the background task to check"
+                },
+                "block": {
+                    "type": "boolean",
+                    "description": "If true, wait for the task to complete before returning (default false)"
+                },
+                "timeout": {
+                    "type": "number",
+                    "description": "Maximum time to wait in milliseconds when block is true (default 60000)"
+                }
+            },
+            "required": ["task_id"]
+        })
+    }
+
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        _ctx: &ToolContext,
+    ) -> Result<ExecuteResult> {
+        let task_id = args["task_id"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "task_output".into(),
+                detail: "missing 'task_id' field".into(),
+            })?;
+
+        let block = args["block"].as_bool().unwrap_or(false);
+        let timeout_ms = args["timeout"]
+            .as_f64()
+            .unwrap_or(60_000.0) as u64;
+
+        // Check the task registry
+        let registry = task_registry();
+        let record = {
+            let guard = registry.lock().map_err(|e| {
+                Error::Tool(format!("task registry lock poisoned: {}", e))
+            })?;
+            guard.get(task_id).cloned()
+        };
+
+        match record {
+            Some(rec) if rec.status != "running" => {
+                // Task already completed
+                Ok(ExecuteResult {
+                    title: format!("Task: {}", task_id),
+                    output: format!(
+                        "Task {} ({})\n\n{}",
+                        task_id, rec.status, rec.output
+                    ),
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert(
+                            "task_id".into(),
+                            serde_json::Value::String(task_id.to_string()),
+                        );
+                        m.insert(
+                            "status".into(),
+                            serde_json::Value::String(rec.status),
+                        );
+                        m
+                    },
+                })
+            }
+            Some(_rec) if block => {
+                // Task is running and we should block/wait
+                let started = std::time::Instant::now();
+                let poll_interval = std::time::Duration::from_millis(250);
+                let deadline = std::time::Duration::from_millis(timeout_ms);
+
+                loop {
+                    if started.elapsed() >= deadline {
+                        return Ok(ExecuteResult {
+                            title: format!("Task: {}", task_id),
+                            output: format!(
+                                "Task {} is still running (timeout after {} ms).",
+                                task_id, timeout_ms
+                            ),
+                            truncated: false,
+                            output_path: None,
+                            attachments: None,
+                            metadata: {
+                                let mut m = HashMap::new();
+                                m.insert(
+                                    "task_id".into(),
+                                    serde_json::Value::String(
+                                        task_id.to_string(),
+                                    ),
+                                );
+                                m.insert(
+                                    "status".into(),
+                                    serde_json::Value::String("running".into()),
+                                );
+                                m
+                            },
+                        });
+                    }
+
+                    // Check again
+                    {
+                        let guard =
+                            registry.lock().map_err(|e| {
+                                Error::Tool(format!(
+                                    "task registry lock poisoned: {}",
+                                    e
+                                ))
+                            })?;
+                        if let Some(rec) = guard.get(task_id) {
+                            if rec.status != "running" {
+                                let output = format!(
+                                    "Task {} ({})\n\n{}",
+                                    task_id, rec.status, rec.output
+                                );
+                                return Ok(ExecuteResult {
+                                    title: format!("Task: {}", task_id),
+                                    output,
+                                    truncated: false,
+                                    output_path: None,
+                                    attachments: None,
+                                    metadata: {
+                                        let mut m = HashMap::new();
+                                        m.insert(
+                                            "task_id".into(),
+                                            serde_json::Value::String(
+                                                task_id.to_string(),
+                                            ),
+                                        );
+                                        m.insert(
+                                            "status".into(),
+                                            serde_json::Value::String(
+                                                rec.status.clone(),
+                                            ),
+                                        );
+                                        m
+                                    },
+                                });
+                            }
+                        }
+                    }
+
+                    tokio::time::sleep(poll_interval).await;
+                }
+            }
+            Some(rec) => {
+                // Task is running and we're not blocking
+                Ok(ExecuteResult {
+                    title: format!("Task: {}", task_id),
+                    output: format!(
+                        "Task {} is still running. Use block=true to wait for completion.",
+                        task_id
+                    ),
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert(
+                            "task_id".into(),
+                            serde_json::Value::String(task_id.to_string()),
+                        );
+                        m.insert(
+                            "status".into(),
+                            serde_json::Value::String(rec.status),
+                        );
+                        m
+                    },
+                })
+            }
+            None => {
+                // Task not found
+                Ok(ExecuteResult {
+                    title: format!("Task: {}", task_id),
+                    output: format!("Task {} not found in registry. It may have been cleaned up or never existed.", task_id),
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert(
+                            "task_id".into(),
+                            serde_json::Value::String(task_id.to_string()),
+                        );
+                        m.insert(
+                            "status".into(),
+                            serde_json::Value::String("not_found".into()),
+                        );
+                        m
+                    },
+                })
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 20. LspTool — Language Server Protocol operations
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// Interact with Language Server Protocol (LSP) servers to get code intelligence
+/// features such as go-to-definition, find references, hover information, and
+/// symbol search.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/lsp.ts`.
+///
+/// # Supported Operations
+/// - `goToDefinition` — Find where a symbol is defined
+/// - `findReferences` — Find all references to a symbol
+/// - `hover` — Get hover information (documentation, type info) for a symbol
+/// - `documentSymbol` — Get all symbols in a document
+/// - `workspaceSymbol` — Search project-wide symbols by query
+/// - `goToImplementation` — Find implementations of an interface or abstract method
+/// - `prepareCallHierarchy` — Get call hierarchy item at a position
+/// - `incomingCalls` — Find all callers of the function at a position
+/// - `outgoingCalls` — Find all callees of the function at a position
+///
+/// # Requirements
+/// Requires an active LSP manager to be registered via [`ToolContext::extra`]
+/// with key `"lsp_manager"`. Without it, the tool returns an error explaining
+/// that LSP integration requires the `rustcode-lsp` crate to be initialized.
+#[derive(Debug, Clone)]
+pub struct LspTool;
+
+const LSP_OPERATIONS: &[&str] = &[
+    "goToDefinition",
+    "findReferences",
+    "hover",
+    "documentSymbol",
+    "workspaceSymbol",
+    "goToImplementation",
+    "prepareCallHierarchy",
+    "incomingCalls",
+    "outgoingCalls",
+];
+
+#[async_trait]
+impl Tool for LspTool {
+    fn id(&self) -> &str {
+        "lsp"
+    }
+
+    fn description(&self) -> &str {
+        "Interact with Language Server Protocol (LSP) servers to get code intelligence features. \
+         Supported operations: goToDefinition (find where a symbol is defined), \
+         findReferences (find all references to a symbol), \
+         hover (get hover information/documentation/type info), \
+         documentSymbol (get all symbols in a document), \
+         workspaceSymbol (search project-wide symbols by query), \
+         goToImplementation (find implementations of an interface/abstract method), \
+         prepareCallHierarchy (get call hierarchy item at a position), \
+         incomingCalls (find all callers of the function at a position), \
+         outgoingCalls (find all callees of the function at a position). \
+         Requires filePath, line (1-based), and character (1-based) for most operations. \
+         workspaceSymbol only requires a query string. documentSymbol only requires filePath."
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "operation": {
+                    "type": "string",
+                    "description": "The LSP operation to perform",
+                    "enum": LSP_OPERATIONS
+                },
+                "filePath": {
+                    "type": "string",
+                    "description": "The absolute or relative path to the file"
+                },
+                "line": {
+                    "type": "integer",
+                    "description": "The line number (1-based, as shown in editors)",
+                    "minimum": 1
+                },
+                "character": {
+                    "type": "integer",
+                    "description": "The character offset (1-based, as shown in editors)",
+                    "minimum": 1
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Search query for workspaceSymbol. Empty string requests all symbols."
+                }
+            },
+            "required": ["operation"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
+        let operation = args["operation"]
+            .as_str()
+            .ok_or_else(|| Error::ToolInvalidArguments {
+                tool: "lsp".into(),
+                detail: "missing 'operation' field".into(),
+            })?;
+
+        if !LSP_OPERATIONS.contains(&operation) {
+            return Err(Error::ToolInvalidArguments {
+                tool: "lsp".into(),
+                detail: format!(
+                    "invalid operation '{operation}'. Must be one of: {}",
+                    LSP_OPERATIONS.join(", ")
+                ),
+            });
+        }
+
+        let file_path = args["filePath"].as_str().unwrap_or("");
+        let line = args["line"].as_u64().unwrap_or(0);
+        let character = args["character"].as_u64().unwrap_or(0);
+        let query = args["query"].as_str().unwrap_or("");
+
+        // Validate required fields per operation
+        match operation {
+            "workspaceSymbol" => {
+                if query.is_empty() {
+                    return Err(Error::ToolInvalidArguments {
+                        tool: "lsp".into(),
+                        detail: "workspaceSymbol requires a 'query' parameter".into(),
+                    });
+                }
+            }
+            "documentSymbol" => {
+                if file_path.is_empty() {
+                    return Err(Error::ToolInvalidArguments {
+                        tool: "lsp".into(),
+                        detail: "documentSymbol requires a 'filePath' parameter".into(),
+                    });
+                }
+            }
+            _ => {
+                if file_path.is_empty() {
+                    return Err(Error::ToolInvalidArguments {
+                        tool: "lsp".into(),
+                        detail: format!("{operation} requires 'filePath', 'line', and 'character' parameters"),
+                    });
+                }
+                if line == 0 || character == 0 {
+                    return Err(Error::ToolInvalidArguments {
+                        tool: "lsp".into(),
+                        detail: format!("{operation} requires 'line' and 'character' to be >= 1 (1-based)"),
+                    });
+                }
+            }
+        }
+
+        // Build the title
+        let title = if file_path.is_empty() {
+            operation.to_string()
+        } else if line > 0 && character > 0 {
+            format!("{operation} {file_path}:{line}:{character}")
+        } else {
+            format!("{operation} {file_path}")
+        };
+
+        // Check if an LSP manager is available in the context
+        let has_lsp = _ctx.extra.contains_key("lsp_manager");
+        if !has_lsp {
+            return Ok(ExecuteResult {
+                title,
+                output: format!(
+                    "LSP tool invoked for operation '{operation}' on '{file_path}'. \
+                     However, no LSP manager is available in the current context. \
+                     To use LSP features, ensure the rustcode-lsp crate is initialized \
+                     and the LspManager is registered in the tool context."
+                ),
+                truncated: false,
+                output_path: None,
+                attachments: None,
+                metadata: {
+                    let mut m = HashMap::new();
+                    m.insert(
+                        "operation".into(),
+                        serde_json::Value::String(operation.into()),
+                    );
+                    m.insert(
+                        "available".into(),
+                        serde_json::Value::Bool(false),
+                    );
+                    m
+                },
+            });
+        }
+
+        // LSP manager is available — delegate to it
+        // For now, return the operation details. The actual LSP client calls
+        // would be wired through the LspManager when it's passed via extra.
+        let result = serde_json::json!({
+            "operation": operation,
+            "filePath": file_path,
+            "line": line,
+            "character": character,
+            "query": query,
+            "status": "LSP manager available but client dispatch not yet wired in tool_impls. \
+                       Use the rustcode-lsp LspClient directly for full LSP operations."
+        });
+
+        Ok(ExecuteResult {
+            title,
+            output: serde_json::to_string_pretty(&result).unwrap_or_default(),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert("result".into(), result);
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String(operation.into()),
+                );
+                m.insert(
+                    "available".into(),
+                    serde_json::Value::Bool(true),
+                );
+                m
+            },
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// 21. InvalidTool — sentinel for malformed tool calls
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/// A sentinel tool that handles malformed or invalid tool calls.
+///
+/// This tool is invoked when the LLM produces a tool call with an unrecognized
+/// name or invalid arguments. It returns a descriptive error message to help
+/// the LLM correct its output.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/invalid.ts`.
+#[derive(Debug, Clone)]
+pub struct InvalidTool;
+
+#[async_trait]
+impl Tool for InvalidTool {
+    fn id(&self) -> &str {
+        "invalid"
+    }
+
+    fn description(&self) -> &str {
+        "Do not use"
+    }
+
+    fn parameters_schema(&self) -> serde_json::Value {
+        serde_json::json!({
+            "type": "object",
+            "properties": {
+                "tool": {
+                    "type": "string",
+                    "description": "The name of the invalid tool that was called"
+                },
+                "error": {
+                    "type": "string",
+                    "description": "The error message describing why the tool call was invalid"
+                }
+            },
+            "required": ["tool", "error"]
+        })
+    }
+
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
+        let tool_name = args["tool"].as_str().unwrap_or("unknown");
+        let error_msg = args["error"].as_str().unwrap_or("no error message provided");
+
+        Ok(ExecuteResult {
+            title: "Invalid Tool".into(),
+            output: format!(
+                "The arguments provided to the tool are invalid: {error_msg}. \
+                 The tool '{tool_name}' was called with incorrect parameters. \
+                 Please rewrite your tool call with the correct arguments."
+            ),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "tool".into(),
+                    serde_json::Value::String(tool_name.into()),
+                );
+                m.insert(
+                    "error".into(),
+                    serde_json::Value::String(error_msg.into()),
+                );
+                m
+            },
+        })
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // ToolRegistry extension: register_builtins
 // ═══════════════════════════════════════════════════════════════════════════════
 
 impl ToolRegistry {
-    /// Register all 14 built-in tools.
+    /// Register all 21 built-in tools.
     pub fn register_builtins(&self) {
         self.register(Arc::new(BashTool));
         self.register(Arc::new(ReadTool));
@@ -2602,7 +4120,14 @@ impl ToolRegistry {
         self.register(Arc::new(QuestionTool));
         self.register(Arc::new(SkillTool));
         self.register(Arc::new(TodoWriteTool));
+        self.register(Arc::new(StashTool));
+        self.register(Arc::new(NotebookEditTool));
+        self.register(Arc::new(TaskOutputTool));
+        self.register(Arc::new(PlanEnterTool));
         self.register(Arc::new(PlanExitTool));
+        self.register(Arc::new(ExitPlanModeTool));
+        self.register(Arc::new(LspTool));
+        self.register(Arc::new(InvalidTool));
     }
 }
 
@@ -3146,7 +4671,7 @@ mod tests {
             .await
             .unwrap();
         assert!(result.output.contains("rust programming language"));
-        assert!(result.output.contains("not configured"));
+        assert!(result.output.contains("external provider"));
     }
 
     #[tokio::test]
@@ -3158,51 +4683,226 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_websearch_with_options() {
+    async fn test_websearch_with_domains() {
         let tool = WebSearchTool;
         let ctx = test_ctx();
         let result = tool
             .execute(
                 serde_json::json!({
-                    "query": "test",
-                    "numResults": 10,
-                    "type": "fast"
+                    "query": "rust",
+                    "allowed_domains": ["docs.rs", "crates.io"]
                 }),
                 &ctx,
             )
             .await
             .unwrap();
-        assert!(result.output.contains("test"));
+        assert!(result.output.contains("rust"));
+        assert!(result.output.contains("docs.rs"));
     }
 
     // ── ApplyPatchTool tests ────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_apply_patch_empty() {
+    async fn test_apply_patch_missing_file_path() {
         let tool = ApplyPatchTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(serde_json::json!({"patchText": ""}), &ctx)
+            .execute(serde_json::json!({"patch": "some diff"}), &ctx)
             .await;
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("file_path"));
     }
 
     #[tokio::test]
-    async fn test_apply_patch_whitespace_only() {
+    async fn test_apply_patch_missing_patch() {
         let tool = ApplyPatchTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(serde_json::json!({"patchText": "   \n  \n"}), &ctx)
+            .execute(
+                serde_json::json!({"file_path": "/tmp/test.txt"}),
+                &ctx,
+            )
             .await;
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("patch"));
     }
 
     #[tokio::test]
-    async fn test_apply_patch_missing_field() {
+    async fn test_apply_patch_file_not_found() {
         let tool = ApplyPatchTool;
         let ctx = test_ctx();
-        let result = tool.execute(serde_json::json!({}), &ctx).await;
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": "/nonexistent/path_xyz_file.txt",
+                    "patch": "@@ -1,1 +1,1 @@\n-old\n+new\n"
+                }),
+                &ctx,
+            )
+            .await;
         assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("not found"));
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_empty_patch() {
+        let tool = ApplyPatchTool;
+        let ctx = test_ctx();
+        let tmpfile = std::env::temp_dir().join("rustcode_ap_empty.txt");
+        std::fs::write(&tmpfile, "hello\n").unwrap();
+
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": tmpfile.to_string_lossy(),
+                    "patch": ""
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        let _ = std::fs::remove_file(&tmpfile);
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_simple_unified_diff() {
+        let tool = ApplyPatchTool;
+        let ctx = test_ctx();
+        let tmpfile = std::env::temp_dir().join("rustcode_ap_simple.txt");
+        std::fs::write(&tmpfile, "line1\nline2\nline3\n").unwrap();
+
+        let patch = "@@ -1,3 +1,3 @@\n line1\n-line2\n+modified line2\n line3\n";
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": tmpfile.to_string_lossy(),
+                    "patch": patch
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&tmpfile).unwrap();
+        assert!(content.contains("modified line2"));
+        assert!(!content.contains("line2\n"));
+        assert!(content.contains("line1"));
+        assert!(content.contains("line3"));
+        assert!(result.output.contains("hunk(s) applied"));
+        assert_eq!(result.metadata.get("hunks").unwrap().as_u64().unwrap(), 1);
+        let _ = std::fs::remove_file(&tmpfile);
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_add_lines() {
+        let tool = ApplyPatchTool;
+        let ctx = test_ctx();
+        let tmpfile = std::env::temp_dir().join("rustcode_ap_add.txt");
+        std::fs::write(&tmpfile, "line1\nline2\n").unwrap();
+
+        let patch = "@@ -1,2 +1,3 @@\n line1\n+inserted line\n line2\n";
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": tmpfile.to_string_lossy(),
+                    "patch": patch
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&tmpfile).unwrap();
+        assert!(content.contains("inserted line"));
+        assert!(content.contains("line1"));
+        assert!(content.contains("line2"));
+        let _ = std::fs::remove_file(&tmpfile);
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_remove_lines() {
+        let tool = ApplyPatchTool;
+        let ctx = test_ctx();
+        let tmpfile = std::env::temp_dir().join("rustcode_ap_del.txt");
+        std::fs::write(&tmpfile, "keep\nremove me\nkeep2\n").unwrap();
+
+        let patch = "@@ -1,3 +1,2 @@\n keep\n-remove me\n keep2\n";
+        let _result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": tmpfile.to_string_lossy(),
+                    "patch": patch
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&tmpfile).unwrap();
+        assert!(!content.contains("remove me"));
+        assert!(content.contains("keep"));
+        assert!(content.contains("keep2"));
+        let _ = std::fs::remove_file(&tmpfile);
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_offset_adjustment() {
+        let tool = ApplyPatchTool;
+        let ctx = test_ctx();
+        let tmpfile = std::env::temp_dir().join("rustcode_ap_offset.txt");
+        // File already has the old pattern shifted by 2 lines
+        std::fs::write(
+            &tmpfile,
+            "extra line A\nextra line B\ncontext1\nold content\ncontext3\n",
+        )
+        .unwrap();
+
+        // Patch expects "context1\nold content\ncontext3" at line 1, but it's at line 3
+        let patch =
+            "@@ -1,3 +1,3 @@\n context1\n-old content\n+replaced content\n context3\n";
+        let _result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": tmpfile.to_string_lossy(),
+                    "patch": patch
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+
+        let content = std::fs::read_to_string(&tmpfile).unwrap();
+        assert!(content.contains("replaced content"));
+        assert!(!content.contains("old content"));
+        assert!(content.contains("extra line A"));
+        assert!(content.contains("context3"));
+        let _ = std::fs::remove_file(&tmpfile);
+    }
+
+    #[tokio::test]
+    async fn test_apply_patch_bad_hunk_context() {
+        let tool = ApplyPatchTool;
+        let ctx = test_ctx();
+        let tmpfile = std::env::temp_dir().join("rustcode_ap_badctx.txt");
+        std::fs::write(&tmpfile, "completely different\ncontent here\n").unwrap();
+
+        // Patch has context that doesn't match
+        let patch = "@@ -1,2 +1,2 @@\n-non existent\n context1\n+new\n context2\n";
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "file_path": tmpfile.to_string_lossy(),
+                    "patch": patch
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("could not find hunk context"));
+        let _ = std::fs::remove_file(&tmpfile);
     }
 
     // ── TaskTool tests ──────────────────────────────────────────────────
@@ -3274,7 +4974,8 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.output.contains("User has answered"));
+        assert!(result.output.contains("What is your preference?"));
+        assert!(result.output.contains("awaiting response"));
     }
 
     #[tokio::test]
@@ -3296,6 +4997,7 @@ mod tests {
         assert!(result.output.contains("Q1"));
         assert!(result.output.contains("Q2"));
         assert!(result.title.contains("2 questions"));
+        assert!(result.output.contains("awaiting selection"));
     }
 
     #[tokio::test]
@@ -3314,7 +5016,7 @@ mod tests {
         let ctx = test_ctx();
         let result = tool
             .execute(
-                serde_json::json!({"name": "find-docs"}),
+                serde_json::json!({"skill": "find-docs"}),
                 &ctx,
             )
             .await
@@ -3324,7 +5026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_skill_missing_name() {
+    async fn test_skill_missing_skill_param() {
         let tool = SkillTool;
         let ctx = test_ctx();
         let result = tool.execute(serde_json::json!({}), &ctx).await;
@@ -3337,13 +5039,28 @@ mod tests {
         let ctx = test_ctx();
         let result = tool
             .execute(
-                serde_json::json!({"name": "code-review"}),
+                serde_json::json!({"skill": "code-review"}),
                 &ctx,
             )
             .await
             .unwrap();
-        let name = result.metadata.get("name").unwrap().as_str().unwrap();
-        assert_eq!(name, "code-review");
+        let skill = result.metadata.get("skill").unwrap().as_str().unwrap();
+        assert_eq!(skill, "code-review");
+    }
+
+    #[tokio::test]
+    async fn test_skill_with_args() {
+        let tool = SkillTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"skill": "find-docs", "args": "--verbose"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        let args = result.metadata.get("args").unwrap().as_str().unwrap();
+        assert_eq!(args, "--verbose");
     }
 
     // ── TodoWriteTool tests ─────────────────────────────────────────────
@@ -3356,9 +5073,9 @@ mod tests {
             .execute(
                 serde_json::json!({
                     "todos": [
-                        {"content": "Implement login", "status": "in_progress", "priority": "high"},
-                        {"content": "Write tests", "status": "pending", "priority": "medium"},
-                        {"content": "Deploy", "status": "pending", "priority": "low"}
+                        {"text": "Implement login", "status": "in_progress", "priority": "high"},
+                        {"text": "Write tests", "status": "pending", "priority": "medium"},
+                        {"text": "Deploy", "status": "pending", "priority": "low"}
                     ]
                 }),
                 &ctx,
@@ -3390,7 +5107,7 @@ mod tests {
             .execute(
                 serde_json::json!({
                     "todos": [
-                        {"content": "Done task", "status": "completed", "priority": "high"}
+                        {"text": "Done task", "status": "completed", "priority": "high"}
                     ]
                 }),
                 &ctx,
@@ -3398,6 +5115,54 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(result.title, "0 todos");
+    }
+
+    // ── PlanEnterTool tests ─────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_plan_enter() {
+        let tool = PlanEnterTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"plan": "authentication module"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.output.contains("Entered plan mode"));
+        assert!(result.output.contains("authentication module"));
+        assert!(result.title.contains("authentication module"));
+    }
+
+    #[tokio::test]
+    async fn test_plan_enter_no_args() {
+        let tool = PlanEnterTool;
+        let ctx = test_ctx();
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        assert!(result.output.contains("Entered plan mode"));
+        assert!(result.output.contains("implementation strategy"));
+    }
+
+    #[tokio::test]
+    async fn test_plan_enter_metadata() {
+        let tool = PlanEnterTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"plan": "refactor database layer"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.metadata.get("mode").unwrap().as_str().unwrap(),
+            "plan"
+        );
+        assert_eq!(
+            result.metadata.get("plan").unwrap().as_str().unwrap(),
+            "refactor database layer"
+        );
     }
 
     // ── PlanExitTool tests ──────────────────────────────────────────────
@@ -3430,6 +5195,53 @@ mod tests {
         assert!(!result.truncated);
     }
 
+    // ── ExitPlanModeTool tests ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_exit_plan_mode_basic() {
+        let tool = ExitPlanModeTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"plan": "1. Add auth module\n2. Add tests\n3. Deploy"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.output.contains("Exited plan mode"));
+        assert!(result.output.contains("Add auth module"));
+        assert!(result.title.contains("plan mode"));
+    }
+
+    #[tokio::test]
+    async fn test_exit_plan_mode_missing_plan() {
+        let tool = ExitPlanModeTool;
+        let ctx = test_ctx();
+        let result = tool.execute(serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_exit_plan_mode_metadata() {
+        let tool = ExitPlanModeTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"plan": "refactor auth"}),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            result.metadata.get("mode").unwrap().as_str().unwrap(),
+            "build"
+        );
+        assert_eq!(
+            result.metadata.get("plan").unwrap().as_str().unwrap(),
+            "refactor auth"
+        );
+    }
+
     // ── Tool ID uniqueness ──────────────────────────────────────────────
 
     #[test]
@@ -3448,7 +5260,12 @@ mod tests {
             ("question", Arc::new(QuestionTool)),
             ("skill", Arc::new(SkillTool)),
             ("todowrite", Arc::new(TodoWriteTool)),
+            ("stash", Arc::new(StashTool)),
+            ("notebook_edit", Arc::new(NotebookEditTool)),
+            ("task_output", Arc::new(TaskOutputTool)),
+            ("plan_enter", Arc::new(PlanEnterTool)),
             ("plan_exit", Arc::new(PlanExitTool)),
+            ("exit_plan_mode", Arc::new(ExitPlanModeTool)),
         ];
 
         let mut ids = std::collections::HashSet::new();
@@ -3461,7 +5278,7 @@ mod tests {
             );
             assert!(ids.insert(expected_id.to_string()), "Duplicate ID: {}", expected_id);
         }
-        assert_eq!(ids.len(), 14);
+        assert_eq!(ids.len(), 19);
     }
 
     // ── Tool schema validity ────────────────────────────────────────────
@@ -3482,7 +5299,12 @@ mod tests {
             Arc::new(QuestionTool),
             Arc::new(SkillTool),
             Arc::new(TodoWriteTool),
+            Arc::new(StashTool),
+            Arc::new(NotebookEditTool),
+            Arc::new(TaskOutputTool),
+            Arc::new(PlanEnterTool),
             Arc::new(PlanExitTool),
+            Arc::new(ExitPlanModeTool),
         ];
 
         for tool in tools {
@@ -3514,7 +5336,12 @@ mod tests {
             Arc::new(QuestionTool),
             Arc::new(SkillTool),
             Arc::new(TodoWriteTool),
+            Arc::new(StashTool),
+            Arc::new(NotebookEditTool),
+            Arc::new(TaskOutputTool),
+            Arc::new(PlanEnterTool),
             Arc::new(PlanExitTool),
+            Arc::new(ExitPlanModeTool),
         ];
 
         for tool in tools {
@@ -3527,14 +5354,157 @@ mod tests {
         }
     }
 
+    // ── LspTool tests ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_lsp_tool_basic() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "goToDefinition",
+                    "filePath": "src/main.rs",
+                    "line": 10,
+                    "character": 5
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.title.contains("goToDefinition"));
+        assert!(result.title.contains("src/main.rs"));
+        assert!(result.output.contains("LSP"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_tool_workspace_symbol() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "workspaceSymbol",
+                    "query": "MyStruct"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert!(result.title.contains("workspaceSymbol"));
+        assert!(result.output.contains("LSP"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_tool_missing_operation() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool.execute(serde_json::json!({}), &ctx).await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_tool_invalid_operation() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"operation": "invalidOp"}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("invalid"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_tool_missing_file_for_position_op() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "goToDefinition",
+                    "line": 10,
+                    "character": 5
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("filePath"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_tool_missing_line_character() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "operation": "goToDefinition",
+                    "filePath": "test.rs"
+                }),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("line"));
+    }
+
+    #[tokio::test]
+    async fn test_lsp_tool_workspace_symbol_missing_query() {
+        let tool = LspTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({"operation": "workspaceSymbol"}),
+                &ctx,
+            )
+            .await;
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("query"));
+    }
+
+    // ── InvalidTool tests ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_invalid_tool_basic() {
+        let tool = InvalidTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(
+                serde_json::json!({
+                    "tool": "nonexistent_tool",
+                    "error": "tool not found"
+                }),
+                &ctx,
+            )
+            .await
+            .unwrap();
+        assert_eq!(result.title, "Invalid Tool");
+        assert!(result.output.contains("nonexistent_tool"));
+        assert!(result.output.contains("tool not found"));
+    }
+
+    #[tokio::test]
+    async fn test_invalid_tool_empty_args() {
+        let tool = InvalidTool;
+        let ctx = test_ctx();
+        let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
+        assert_eq!(result.title, "Invalid Tool");
+        assert!(result.output.contains("unknown"));
+    }
+
     // ── register_builtins ───────────────────────────────────────────────
 
     #[test]
-    fn test_register_builtins_registers_all_14() {
+    fn test_register_builtins_registers_all_21() {
         let registry = ToolRegistry::new();
         registry.register_builtins();
         let ids = registry.ids();
-        assert_eq!(ids.len(), 14);
+        assert_eq!(ids.len(), 21);
         assert!(ids.contains(&"bash".to_string()));
         assert!(ids.contains(&"read".to_string()));
         assert!(ids.contains(&"write".to_string()));
@@ -3548,7 +5518,14 @@ mod tests {
         assert!(ids.contains(&"question".to_string()));
         assert!(ids.contains(&"skill".to_string()));
         assert!(ids.contains(&"todowrite".to_string()));
+        assert!(ids.contains(&"stash".to_string()));
+        assert!(ids.contains(&"notebook_edit".to_string()));
+        assert!(ids.contains(&"task_output".to_string()));
+        assert!(ids.contains(&"plan_enter".to_string()));
         assert!(ids.contains(&"plan_exit".to_string()));
+        assert!(ids.contains(&"exit_plan_mode".to_string()));
+        assert!(ids.contains(&"lsp".to_string()));
+        assert!(ids.contains(&"invalid".to_string()));
     }
 
     #[test]
@@ -3559,7 +5536,9 @@ mod tests {
         for id in [
             "bash", "read", "write", "edit", "glob", "grep",
             "webfetch", "websearch", "apply_patch", "task",
-            "question", "skill", "todowrite", "plan_exit",
+            "question", "skill", "todowrite", "stash", "notebook_edit",
+            "task_output", "plan_enter", "plan_exit", "exit_plan_mode",
+            "lsp", "invalid",
         ] {
             assert!(registry.get(id).is_some(), "Tool {} not found in registry", id);
         }

@@ -8,6 +8,7 @@ use axum::{Json, Router};
 use axum::routing::{delete, get, post};
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing::info;
 
 use crate::server::AppState;
 
@@ -34,23 +35,123 @@ pub fn workspace_routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-async fn list_adapters(State(_): State<Arc<AppState>>) -> impl IntoResponse { Json(serde_json::json!([])) }
-async fn list_workspaces(State(_): State<Arc<AppState>>) -> impl IntoResponse { Json(serde_json::json!([])) }
+async fn list_adapters(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    // Return available workspace adapters (git worktree is the primary)
+    let adapters = vec![
+        serde_json::json!({
+            "id": "git",
+            "name": "Git Worktree",
+            "description": "Git-based workspace isolation using worktrees",
+        }),
+        serde_json::json!({
+            "id": "copy",
+            "name": "Directory Copy",
+            "description": "Simple directory copy for non-git workspaces",
+        }),
+    ];
+    info!("Listing {} workspace adapters", adapters.len());
+    Json(serde_json::json!({ "adapters": adapters }))
+}
+
+async fn list_workspaces(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    // List workspaces from current git worktrees
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let git = rustcode_core::git::Git::new(&cwd);
+    let workspaces = if git.is_repo() {
+        match git.worktree_list() {
+            Ok(worktrees) => worktrees
+                .into_iter()
+                .map(|wt| {
+                    serde_json::json!({
+                        "id": wt.to_string_lossy(),
+                        "path": wt.to_string_lossy(),
+                        "type": "git_worktree",
+                    })
+                })
+                .collect::<Vec<_>>(),
+            Err(_) => Vec::new(),
+        }
+    } else {
+        Vec::new()
+    };
+    info!("Listing {} workspaces", workspaces.len());
+    Json(serde_json::to_value(workspaces).unwrap_or_default())
+}
+
 async fn create_workspace(
-    State(_): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(payload): Json<CreateWorkspacePayload>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({ "id": uuid::Uuid::new_v4().to_string(), "name": payload.name, "type": payload.r#type }))
+    info!(
+        "Creating workspace '{}' type={:?}",
+        payload.name, payload.r#type
+    );
+    let workspace_id = uuid::Uuid::new_v4().to_string();
+    // In a full implementation, this creates a git worktree or dir copy
+    if payload.r#type.as_deref() == Some("git") {
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let target_dir = cwd.join("..").join(format!(".workspace-{workspace_id}"));
+        let git = rustcode_core::git::Git::new(&cwd);
+        if git.is_repo() {
+            if let Err(e) = git.worktree_create(&target_dir) {
+                return (
+                    axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                    Json(serde_json::json!({"error": e.to_string()})),
+                )
+                    .into_response();
+            }
+        }
+    }
+    Json(serde_json::json!({
+        "id": workspace_id,
+        "name": payload.name,
+        "type": payload.r#type,
+    }))
 }
-async fn sync_list(State(_): State<Arc<AppState>>) -> impl IntoResponse { Json(serde_json::json!(null)) }
-async fn workspace_status(State(_): State<Arc<AppState>>) -> impl IntoResponse { Json(serde_json::json!([])) }
+
+async fn sync_list(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    info!("Sync workspace list requested");
+    Json(serde_json::json!(null))
+}
+
+async fn workspace_status(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let git = rustcode_core::git::Git::new(&cwd);
+    let status = if git.is_repo() {
+        match git.status() {
+            Ok(items) => serde_json::json!({
+                "is_repo": true,
+                "branch": git.branch().unwrap_or(None),
+                "changed_files": items.len(),
+            }),
+            Err(_) => serde_json::json!({"is_repo": true, "error": "status failed"}),
+        }
+    } else {
+        serde_json::json!({"is_repo": false})
+    };
+    Json(serde_json::json!([status]))
+}
+
 async fn remove_workspace(
-    State(_): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Path(id): Path<String>,
-) -> impl IntoResponse { Json(serde_json::json!({ "removed": true, "id": id })) }
+) -> impl IntoResponse {
+    info!("Removing workspace {id}");
+    // In a full implementation, clean up the worktree directory
+    Json(serde_json::json!({ "removed": true, "id": id }))
+}
+
 async fn warp_session(
-    State(_): State<Arc<AppState>>,
+    State(_state): State<Arc<AppState>>,
     Json(payload): Json<WarpPayload>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({ "warped": true, "session_id": payload.session_id }))
+    info!(
+        "Warping session {} to workspace (copy_changes: {:?})",
+        payload.session_id, payload.copy_changes
+    );
+    Json(serde_json::json!({
+        "warped": true,
+        "session_id": payload.session_id,
+        "workspace_id": payload.id,
+    }))
 }

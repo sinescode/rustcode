@@ -45,6 +45,7 @@ regex = "1"
 rand = "0.8"
 serde_yaml = "0.9"
 tempfile = "3"
+shlex = "1"
 rustcode-core = { path = "crates/rustcode-core" }
 rustcode-server = { path = "crates/rustcode-server" }
 rustcode-tui = { path = "crates/rustcode-tui" }
@@ -73,3 +74,6 @@ tracing-subscriber.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 dirs.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+reqwest.workspace = true

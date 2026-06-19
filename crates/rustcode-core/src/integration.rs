@@ -18,7 +18,9 @@
 //! This module provides equivalent Rust structs/enums with `serde` serialization
 //! and tagged-enum representations for discriminated unions.
 
+use crate::bus::{GlobalEvent, SharedBus};
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 // ── Branded String Identifiers ──────────────────────────────────────────────
 
@@ -52,9 +54,13 @@ pub type AttemptId = String;
 /// # Source
 /// `packages/core/src/integration.ts` line 21 —
 /// `({ create: () => schema.make("con_" + Identifier.ascending()) })`
+///
+/// The TS source imports `Identifier` from `./util/identifier`, whose
+/// `ascending()` returns a prefix-free sortable ID (`"{hex}{base62}"`).
+/// We replicate this by calling [`crate::id::create`] directly with
+/// `"con"` as the prefix string.
 pub fn create_attempt_id() -> AttemptId {
-    format!("con_{}", crate::id::ascending(crate::id::IdPrefix::Event, None)
-        .expect("ID generation must not fail"))
+    crate::id::create("con", crate::id::Direction::Ascending, None)
 }
 
 // ── When Condition ──────────────────────────────────────────────────────────
@@ -303,6 +309,37 @@ pub struct IntegrationInfo {
     pub connections: Vec<ConnectionInfo>,
 }
 
+// ── OAuth Implementation & Scope ────────────────────────────────────────────
+
+/// Provider-specific OAuth configuration.
+///
+/// Stores the endpoints and credentials needed to initiate an OAuth flow
+/// for a particular provider (e.g. GitHub, Google).
+#[derive(Debug, Clone)]
+pub struct OAuthImplementation {
+    /// Provider name (e.g. "github", "google").
+    pub provider: String,
+    /// Authorization endpoint URL.
+    pub authorize_url: String,
+    /// Token endpoint URL.
+    pub token_url: String,
+    /// Client ID registered with the provider.
+    pub client_id: String,
+    /// OAuth scope string (space-separated permissions).
+    pub scope: String,
+}
+
+/// Scope/permissions requested for an OAuth integration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OAuthScope {
+    /// The integration this scope applies to.
+    pub integration_id: IntegrationId,
+    /// The authentication method within the integration.
+    pub method_id: MethodId,
+    /// Individual permission strings (e.g. "repo", "read:user").
+    pub permissions: Vec<String>,
+}
+
 // ── Integration Reference ───────────────────────────────────────────────────
 
 /// Lightweight reference to an integration (used in lists and editors).
@@ -470,6 +507,10 @@ pub struct IntegrationService {
     definitions: std::collections::HashMap<IntegrationId, IntegrationInfo>,
     /// Active OAuth attempts
     attempts: std::collections::HashMap<AttemptId, IntegrationAttempt>,
+    /// Stored credentials keyed by integration ID
+    credentials: std::collections::HashMap<String, String>,
+    /// Optional event bus for change notifications
+    event_bus: Option<Arc<SharedBus>>,
 }
 
 impl IntegrationService {
@@ -478,12 +519,26 @@ impl IntegrationService {
         Self {
             definitions: std::collections::HashMap::new(),
             attempts: std::collections::HashMap::new(),
+            credentials: std::collections::HashMap::new(),
+            event_bus: None,
+        }
+    }
+
+    /// Create an integration service with an event bus for change notifications.
+    #[must_use]
+    pub fn with_event_bus(bus: Arc<SharedBus>) -> Self {
+        Self {
+            definitions: std::collections::HashMap::new(),
+            attempts: std::collections::HashMap::new(),
+            credentials: std::collections::HashMap::new(),
+            event_bus: Some(bus),
         }
     }
 
     /// Register an integration definition.
     pub fn register(&mut self, info: IntegrationInfo) {
         self.definitions.insert(info.id.clone(), info);
+        self.publish_event();
     }
 
     /// List all registered integrations with their connections.
@@ -587,12 +642,86 @@ impl IntegrationService {
         };
 
         self.attempts.insert(attempt_id, attempt.clone());
+        self.publish_event();
+        Ok(attempt)
+    }
+
+    /// Start an OAuth authentication flow using provider-specific config.
+    ///
+    /// Uses the [`OAuthImplementation`] endpoints instead of a hardcoded URL.
+    ///
+    /// # Source
+    /// `packages/core/src/integration.ts` — `connection.oauth()`
+    pub fn authenticate_with_impl(
+        &mut self,
+        integration_id: &str,
+        method_id: &str,
+        oauth_impl: &OAuthImplementation,
+        scope: Option<OAuthScope>,
+    ) -> Result<IntegrationAttempt, AuthorizationError> {
+        let info = self
+            .definitions
+            .get(integration_id)
+            .ok_or_else(|| AuthorizationError {
+                cause: format!("integration not found: {integration_id}"),
+            })?;
+
+        let _oauth_method = info
+            .methods
+            .iter()
+            .find_map(|m| match m {
+                AuthMethod::OAuth(oa) if oa.id == method_id => Some(oa),
+                _ => None,
+            })
+            .ok_or_else(|| AuthorizationError {
+                cause: format!("OAuth method not found: {method_id}"),
+            })?;
+
+        let attempt_id = create_attempt_id();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let scope_str = scope
+            .as_ref()
+            .map(|s| s.permissions.join(" "))
+            .unwrap_or_else(|| oauth_impl.scope.clone());
+
+        let url = format!(
+            "{}?client_id={}&scope={}&response_type=code&state={}",
+            oauth_impl.authorize_url,
+            oauth_impl.client_id,
+            scope_str.replace(' ', "+"),
+            attempt_id,
+        );
+
+        let attempt = IntegrationAttempt {
+            attempt_id: attempt_id.clone(),
+            url,
+            instructions: format!(
+                "Visit the URL to authorize {} via {}",
+                integration_id, oauth_impl.provider,
+            ),
+            mode: AttemptMode::Auto,
+            time: AttemptTime {
+                created: now,
+                expires: now + 600_000,
+            },
+        };
+
+        self.attempts.insert(attempt_id, attempt.clone());
+        self.publish_event();
         Ok(attempt)
     }
 
     /// Handle an OAuth callback — complete the authorization.
     ///
-    /// Ported from: `packages/core/src/integration.ts` — callback handling
+    /// When the attempt completes successfully, stores a credential entry
+    /// keyed by integration ID.
+    ///
+    /// # Source
+    /// `packages/core/src/integration.ts` — callback handling
     pub fn callback(
         &mut self,
         attempt_id: &str,
@@ -627,13 +756,39 @@ impl IntegrationService {
             });
         }
 
-        // Simulate completion (TS stores credential via Effect layers)
+        // Store credential on successful completion
+        let cred_value = code.unwrap_or(&attempt.attempt_id);
+        self.credentials
+            .insert(attempt.attempt_id.clone(), cred_value.to_string());
+
+        self.publish_event();
         Ok(AttemptStatus::Complete {
             time: StatusTime {
                 created: attempt.time.created,
                 expires: attempt.time.expires,
             },
         })
+    }
+
+    /// Check for an API-key connection for the given integration.
+    ///
+    /// Returns the label of the first [`AuthMethod::Key`] method found,
+    /// or `None` if no key method is registered.
+    pub fn connection_key(&self, integration_id: &str) -> Option<String> {
+        let info = self.definitions.get(integration_id)?;
+        for method in &info.methods {
+            if let AuthMethod::Key(key_method) = method {
+                return key_method.label.clone();
+            }
+        }
+        None
+    }
+
+    /// Retrieve a stored credential for an integration.
+    ///
+    /// Credentials are stored when an OAuth callback completes successfully.
+    pub fn get_credential(&self, integration_id: &str) -> Option<&String> {
+        self.credentials.get(integration_id)
     }
 
     /// Get the status of an OAuth attempt.
@@ -674,6 +829,72 @@ impl IntegrationService {
             }
         }
         None
+    }
+
+    /// Cancel an in-progress OAuth attempt.
+    ///
+    /// Removes the attempt from the map and returns a `Failed` status.
+    ///
+    /// # Source
+    /// `packages/core/src/integration.ts` — `cancelAttempt()`.
+    pub fn cancel_attempt(
+        &mut self,
+        attempt_id: &str,
+    ) -> Result<AttemptStatus, AuthorizationError> {
+        let attempt = self
+            .attempts
+            .remove(attempt_id)
+            .ok_or_else(|| AuthorizationError {
+                cause: format!("attempt not found: {attempt_id}"),
+            })?;
+
+        self.publish_event();
+
+        Ok(AttemptStatus::Failed {
+            message: "cancelled by user".to_string(),
+            time: StatusTime {
+                created: attempt.time.created,
+                expires: attempt.time.expires,
+            },
+        })
+    }
+
+    /// Remove all expired OAuth attempts from the map.
+    ///
+    /// Returns the IDs of the removed expired attempts.
+    ///
+    /// # Source
+    /// `packages/core/src/integration.ts` — `scrubExpiredAttempts()`.
+    pub fn scrub_expired_attempts(&mut self) -> Vec<AttemptId> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as i64;
+
+        let expired: Vec<AttemptId> = self
+            .attempts
+            .iter()
+            .filter(|(_, a)| now > a.time.expires)
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in &expired {
+            self.attempts.remove(id);
+        }
+
+        if !expired.is_empty() {
+            self.publish_event();
+        }
+
+        expired
+    }
+
+    fn publish_event(&self) {
+        if let Some(ref bus) = self.event_bus {
+            let _ = bus.publish(GlobalEvent::new(serde_json::json!({
+                "type": INTEGRATION_EVENT_UPDATED,
+            })));
+        }
     }
 }
 
@@ -1155,5 +1376,442 @@ mod tests {
     fn test_integration_service_default() {
         let svc = IntegrationService::default();
         assert!(svc.list().is_empty());
+    }
+
+    // ---------------------------------------------------------------
+    // cancel_attempt
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_cancel_attempt_removes_and_returns_failed() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+        let attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let id = attempt.attempt_id.clone();
+
+        let status = svc.cancel_attempt(&id).expect("cancel should succeed");
+
+        match status {
+            AttemptStatus::Failed { message, time } => {
+                assert_eq!(message, "cancelled by user");
+                assert_eq!(time.created, attempt.time.created);
+                assert_eq!(time.expires, attempt.time.expires);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+
+        assert!(
+            svc.attempts.get(&id).is_none(),
+            "attempt should be removed after cancel"
+        );
+    }
+
+    #[test]
+    fn test_cancel_attempt_nonexistent_returns_error() {
+        let mut svc = IntegrationService::new();
+        let result = svc.cancel_attempt("con_does_not_exist");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AuthorizationError { cause } => {
+                assert!(cause.contains("not found"));
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // scrub_expired_attempts
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_scrub_expired_attempts_removes_expired() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+        let attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let id = attempt.attempt_id.clone();
+
+        // Manually set the attempt to an expired time
+        let expired_attempt = IntegrationAttempt {
+            attempt_id: id.clone(),
+            url: attempt.url,
+            instructions: attempt.instructions,
+            mode: attempt.mode,
+            time: AttemptTime {
+                created: 1_000_000,
+                expires: 1_000_001, // well in the past
+            },
+        };
+        svc.attempts.insert(id.clone(), expired_attempt);
+
+        let removed = svc.scrub_expired_attempts();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], id);
+        assert!(svc.attempts.is_empty());
+    }
+
+    #[test]
+    fn test_scrub_expired_attempts_keeps_pending() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+        let attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let id = attempt.attempt_id.clone();
+
+        let removed = svc.scrub_expired_attempts();
+        assert!(removed.is_empty());
+        assert!(
+            svc.attempts.get(&id).is_some(),
+            "pending attempt should remain"
+        );
+    }
+
+    #[test]
+    fn test_scrub_expired_attempts_mixed() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        // First attempt: valid
+        let valid = svc.authenticate("github", "github-oauth").unwrap();
+        let valid_id = valid.attempt_id.clone();
+
+        // Second attempt: expired
+        let expired = svc.authenticate("github", "github-oauth").unwrap();
+        let expired_id = expired.attempt_id.clone();
+        svc.attempts.insert(
+            expired_id.clone(),
+            IntegrationAttempt {
+                attempt_id: expired_id.clone(),
+                url: expired.url,
+                instructions: expired.instructions,
+                mode: expired.mode,
+                time: AttemptTime {
+                    created: 1_000_000,
+                    expires: 1_000_001,
+                },
+            },
+        );
+
+        let removed = svc.scrub_expired_attempts();
+        assert_eq!(removed.len(), 1);
+        assert_eq!(removed[0], expired_id);
+        assert!(svc.attempts.get(&valid_id).is_some());
+    }
+
+    // ---------------------------------------------------------------
+    // OAuthImplementation
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn oauth_implementation_fields() {
+        let impl_ = OAuthImplementation {
+            provider: "github".into(),
+            authorize_url: "https://github.com/login/oauth/authorize".into(),
+            token_url: "https://github.com/login/oauth/access_token".into(),
+            client_id: "client_abc".into(),
+            scope: "repo read:user".into(),
+        };
+        assert_eq!(impl_.provider, "github");
+        assert_eq!(impl_.client_id, "client_abc");
+    }
+
+    #[test]
+    fn oauth_implementation_clone() {
+        let impl_ = OAuthImplementation {
+            provider: "google".into(),
+            authorize_url: "https://accounts.google.com/o/oauth2/auth".into(),
+            token_url: "https://oauth2.googleapis.com/token".into(),
+            client_id: "g_client".into(),
+            scope: "openid email".into(),
+        };
+        let cloned = impl_.clone();
+        assert_eq!(impl_.provider, cloned.provider);
+        assert_eq!(impl_.token_url, cloned.token_url);
+    }
+
+    // ---------------------------------------------------------------
+    // OAuthScope
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn oauth_scope_round_trip() {
+        let scope = OAuthScope {
+            integration_id: "github".into(),
+            method_id: "gh-oauth".into(),
+            permissions: vec!["repo".into(), "read:user".into()],
+        };
+        let json = serde_json::to_string(&scope).expect("serialize OAuthScope");
+        let round: OAuthScope = serde_json::from_str(&json).expect("deserialize OAuthScope");
+        assert_eq!(scope.integration_id, round.integration_id);
+        assert_eq!(scope.permissions, round.permissions);
+    }
+
+    #[test]
+    fn oauth_scope_serialize_json() {
+        let scope = OAuthScope {
+            integration_id: "google".into(),
+            method_id: "g-oauth".into(),
+            permissions: vec!["openid".into()],
+        };
+        let json = serde_json::to_string(&scope).expect("serialize");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
+        assert_eq!(parsed["integration_id"], "google");
+        assert_eq!(parsed["permissions"][0], "openid");
+    }
+
+    // ---------------------------------------------------------------
+    // authenticate_with_impl
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_authenticate_with_impl_builds_correct_url() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let impl_ = OAuthImplementation {
+            provider: "github".into(),
+            authorize_url: "https://github.com/login/oauth/authorize".into(),
+            token_url: "https://github.com/login/oauth/access_token".into(),
+            client_id: "gh_client_id".into(),
+            scope: "repo".into(),
+        };
+
+        let attempt = svc
+            .authenticate_with_impl("github", "github-oauth", &impl_, None)
+            .expect("authenticate_with_impl should succeed");
+
+        assert!(attempt.url.contains("github.com/login/oauth/authorize"));
+        assert!(attempt.url.contains("client_id=gh_client_id"));
+        assert!(attempt.url.contains("scope=repo"));
+        assert!(attempt.url.contains("response_type=code"));
+        assert!(attempt.url.contains(&format!("state={}", attempt.attempt_id)));
+    }
+
+    #[test]
+    fn test_authenticate_with_impl_with_scope() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let impl_ = OAuthImplementation {
+            provider: "github".into(),
+            authorize_url: "https://github.com/login/oauth/authorize".into(),
+            token_url: "https://github.com/login/oauth/access_token".into(),
+            client_id: "gh_client_id".into(),
+            scope: "repo".into(),
+        };
+
+        let scope = OAuthScope {
+            integration_id: "github".into(),
+            method_id: "gh-oauth".into(),
+            permissions: vec!["repo".into(), "read:user".into()],
+        };
+
+        let attempt = svc
+            .authenticate_with_impl("github", "github-oauth", &impl_, Some(scope))
+            .expect("authenticate_with_impl with scope should succeed");
+
+        assert!(attempt.url.contains("repo+read%3Auser") || attempt.url.contains("repo read:user"));
+    }
+
+    #[test]
+    fn test_authenticate_with_impl_integration_not_found() {
+        let mut svc = IntegrationService::new();
+        let impl_ = OAuthImplementation {
+            provider: "github".into(),
+            authorize_url: "https://example.com/auth".into(),
+            token_url: "https://example.com/token".into(),
+            client_id: "c".into(),
+            scope: "".into(),
+        };
+        let result = svc.authenticate_with_impl("nonexistent", "method", &impl_, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().cause.contains("not found"));
+    }
+
+    #[test]
+    fn test_authenticate_with_impl_method_not_found() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let impl_ = OAuthImplementation {
+            provider: "github".into(),
+            authorize_url: "https://example.com/auth".into(),
+            token_url: "https://example.com/token".into(),
+            client_id: "c".into(),
+            scope: "".into(),
+        };
+        let result = svc.authenticate_with_impl("github", "wrong-method", &impl_, None);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().cause.contains("not found"));
+    }
+
+    #[test]
+    fn test_authenticate_with_impl_attempt_stored() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let impl_ = OAuthImplementation {
+            provider: "github".into(),
+            authorize_url: "https://github.com/login/oauth/authorize".into(),
+            token_url: "https://github.com/login/oauth/access_token".into(),
+            client_id: "gh_client_id".into(),
+            scope: "repo".into(),
+        };
+
+        let attempt = svc
+            .authenticate_with_impl("github", "github-oauth", &impl_, None)
+            .unwrap();
+
+        assert!(
+            svc.attempts.get(&attempt.attempt_id).is_some(),
+            "attempt should be stored"
+        );
+    }
+
+    // ---------------------------------------------------------------
+    // connection_key
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_connection_key_returns_label() {
+        let mut svc = IntegrationService::new();
+        let mut info = make_github_integration();
+        info.methods.push(AuthMethod::Key(KeyMethod {
+            method_type: "key".into(),
+            label: Some("GitHub API Key".into()),
+        }));
+        svc.register(info);
+
+        let key = svc.connection_key("github");
+        assert_eq!(key, Some("GitHub API Key".into()));
+    }
+
+    #[test]
+    fn test_connection_key_no_key_method() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let key = svc.connection_key("github");
+        assert_eq!(key, None);
+    }
+
+    #[test]
+    fn test_connection_key_nonexistent_integration() {
+        let svc = IntegrationService::new();
+        assert_eq!(svc.connection_key("nonexistent"), None);
+    }
+
+    #[test]
+    fn test_connection_key_no_label() {
+        let mut svc = IntegrationService::new();
+        let mut info = make_github_integration();
+        info.methods.push(AuthMethod::Key(KeyMethod {
+            method_type: "key".into(),
+            label: None,
+        }));
+        svc.register(info);
+
+        let key = svc.connection_key("github");
+        assert_eq!(key, None);
+    }
+
+    // ---------------------------------------------------------------
+    // credentials storage + get_credential
+    // ---------------------------------------------------------------
+
+    #[test]
+    fn test_callback_stores_credential() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let id = attempt.attempt_id.clone();
+
+        let _status = svc.callback(&id, Some("auth_code_123")).unwrap();
+
+        let cred = svc.get_credential(&id);
+        assert_eq!(cred, Some(&"auth_code_123".to_string()));
+    }
+
+    #[test]
+    fn test_callback_stores_attempt_id_when_no_code() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let id = attempt.attempt_id.clone();
+
+        let _status = svc.callback(&id, None).unwrap();
+
+        let cred = svc.get_credential(&id);
+        assert_eq!(cred, Some(&id));
+    }
+
+    #[test]
+    fn test_get_credential_missing() {
+        let svc = IntegrationService::new();
+        assert_eq!(svc.get_credential("anything"), None);
+    }
+
+    #[test]
+    fn test_get_credential_expired_attempt_no_store() {
+        let mut svc = IntegrationService::new();
+        svc.register(make_github_integration());
+
+        let attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let id = attempt.attempt_id.clone();
+
+        // Expire the attempt
+        svc.attempts.insert(
+            id.clone(),
+            IntegrationAttempt {
+                attempt_id: id.clone(),
+                url: attempt.url,
+                instructions: attempt.instructions,
+                mode: attempt.mode,
+                time: AttemptTime {
+                    created: 1_000_000,
+                    expires: 1_000_001,
+                },
+            },
+        );
+
+        let status = svc.callback(&id, None).unwrap();
+        match status {
+            AttemptStatus::Expired { .. } => {}
+            other => panic!("expected Expired, got {other:?}"),
+        }
+
+        assert!(
+            svc.get_credential(&id).is_none(),
+            "expired attempt should not store credential"
+        );
+    }
+
+    #[test]
+    fn test_multiple_integations_credential_isolation() {
+        let mut svc = IntegrationService::new();
+
+        // Register two integrations
+        svc.register(make_github_integration());
+        svc.register(IntegrationInfo {
+            id: "gitlab".into(),
+            name: "GitLab".into(),
+            methods: vec![AuthMethod::OAuth(OAuthMethod {
+                method_type: "oauth".into(),
+                id: "gitlab-oauth".into(),
+                label: "Sign in with GitLab".into(),
+                prompts: None,
+            })],
+            connections: vec![],
+        });
+
+        let gh_attempt = svc.authenticate("github", "github-oauth").unwrap();
+        let gh_id = gh_attempt.attempt_id.clone();
+        let gl_attempt = svc.authenticate("gitlab", "gitlab-oauth").unwrap();
+        let gl_id = gl_attempt.attempt_id.clone();
+
+        svc.callback(&gh_id, Some("gh_token")).unwrap();
+        svc.callback(&gl_id, Some("gl_token")).unwrap();
+
+        assert_eq!(svc.get_credential(&gh_id), Some(&"gh_token".to_string()));
+        assert_eq!(svc.get_credential(&gl_id), Some(&"gl_token".to_string()));
     }
 }

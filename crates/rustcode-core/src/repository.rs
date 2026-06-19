@@ -8,6 +8,9 @@
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use serde::{Deserialize, Serialize};
+use std::fs::OpenOptions;
+use std::thread;
+use std::time::Duration;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Reference types — parsed repository identifiers
@@ -287,9 +290,10 @@ pub fn parse_remote_repository(input: &str) -> Result<RemoteReference, Repositor
 /// # Source
 /// `packages/core/src/repository.ts` lines 105–111.
 pub fn validate_branch(branch: &str) -> Result<(), RepositoryError> {
-    let valid = branch
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '.' || c == '-')
+    let valid = !branch.is_empty()
+        && branch
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '/' || c == '_' || c == '.' || c == '-')
         && !branch.starts_with('-')
         && !branch.contains("..");
 
@@ -417,6 +421,191 @@ pub enum RepositoryCacheError {
     },
 }
 
+impl RepositoryCacheError {
+    pub fn is_clone_error(&self) -> bool {
+        matches!(self, Self::CloneFailed { .. })
+    }
+
+    pub fn is_fetch_error(&self) -> bool {
+        matches!(self, Self::FetchFailed { .. })
+    }
+
+    pub fn is_lock_error(&self) -> bool {
+        matches!(self, Self::LockFailed { .. })
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// RepositoryCacheError — free-standing type guards
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Type guard: returns `true` if the error is a clone-related error.
+#[must_use]
+pub fn is_error(err: &RepositoryCacheError) -> bool {
+    matches!(
+        err,
+        RepositoryCacheError::CloneFailed { .. }
+            | RepositoryCacheError::FetchFailed { .. }
+            | RepositoryCacheError::CheckoutFailed { .. }
+            | RepositoryCacheError::ResetFailed { .. }
+            | RepositoryCacheError::LockFailed { .. }
+            | RepositoryCacheError::CacheOperation { .. }
+    )
+}
+
+/// Returns true if the error is specifically a clone failure.
+#[must_use]
+pub fn is_clone_error(err: &RepositoryCacheError) -> bool {
+    matches!(err, RepositoryCacheError::CloneFailed { .. })
+}
+
+/// Returns true if the error is specifically a fetch failure.
+#[must_use]
+pub fn is_fetch_error(err: &RepositoryCacheError) -> bool {
+    matches!(err, RepositoryCacheError::FetchFailed { .. })
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Cache Lock — process-wide file-based locking for cache operations
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Process-wide file lock for repository cache operations.
+///
+/// Creates a `.lock` file alongside the cache path using exclusive create
+/// (O_CREAT|O_EXCL) for atomic lock acquisition. The lock is automatically
+/// released when the `CacheLock` is dropped.
+///
+/// Ported from: `EffectFlock` in the TypeScript source.
+pub struct CacheLock {
+    lock_path: std::path::PathBuf,
+    _file: std::fs::File,
+}
+
+impl CacheLock {
+    /// Default retry interval for `wait_lock`.
+    const DEFAULT_RETRY_MS: u64 = 100;
+
+    /// Default maximum number of retries for `wait_lock`.
+    const DEFAULT_MAX_RETRIES: u32 = 30;
+
+    /// Attempt to acquire a non-blocking lock on the given cache path.
+    ///
+    /// Creates a `.lock` file next to the target path. Returns `Err` with
+    /// `RepositoryCacheError::LockFailed` if the lock is already held.
+    pub fn try_lock(cache_path: &Path) -> Result<Self, RepositoryCacheError> {
+        let lock_path = Self::lock_path_for(cache_path);
+        Self::ensure_parent_dir(&lock_path)?;
+
+        let file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&lock_path)
+            .map_err(|e| RepositoryCacheError::LockFailed {
+                local_path: cache_path.display().to_string(),
+                message: if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    "cache is locked by another process".into()
+                } else {
+                    format!("failed to create lock file: {e}")
+                },
+            })?;
+
+        Ok(Self { lock_path, _file: file })
+    }
+
+    /// Attempt to acquire a lock, retrying with exponential backoff.
+    ///
+    /// Blocks the current thread until the lock is acquired or the retry
+    /// limit is reached.
+    pub fn wait_lock(cache_path: &Path) -> Result<Self, RepositoryCacheError> {
+        Self::wait_lock_with_params(
+            cache_path,
+            Self::DEFAULT_RETRY_MS,
+            Self::DEFAULT_MAX_RETRIES,
+        )
+    }
+
+    /// Attempt to acquire a lock with configurable retry parameters.
+    pub fn wait_lock_with_params(
+        cache_path: &Path,
+        retry_ms: u64,
+        max_retries: u32,
+    ) -> Result<Self, RepositoryCacheError> {
+        let mut interval = Duration::from_millis(retry_ms);
+
+        for attempt in 0..max_retries {
+            match Self::try_lock(cache_path) {
+                Ok(lock) => return Ok(lock),
+                Err(_) if attempt + 1 < max_retries => {
+                    thread::sleep(interval);
+                    interval = (interval * 2).min(Duration::from_secs(5));
+                }
+                Err(e) => return Err(e),
+            }
+        }
+
+        Err(RepositoryCacheError::LockFailed {
+            local_path: cache_path.display().to_string(),
+            message: format!("failed to acquire lock after {max_retries} retries"),
+        })
+    }
+
+    /// Explicitly release the lock and remove the lock file.
+    ///
+    /// Called automatically on drop, but can be invoked explicitly for
+    /// early release.
+    pub fn unlock(self) -> Result<(), RepositoryCacheError> {
+        drop(self);
+        Ok(())
+    }
+
+    /// Return the filesystem path of the `.lock` file for a given cache path.
+    #[must_use]
+    pub fn lock_path_for(cache_path: &Path) -> PathBuf {
+        let mut p = cache_path.as_os_str().to_owned();
+        p.push(".lock");
+        PathBuf::from(p)
+    }
+
+    fn ensure_parent_dir(lock_path: &Path) -> Result<(), RepositoryCacheError> {
+        if let Some(parent) = lock_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| RepositoryCacheError::CacheOperation {
+                operation: "mkdir".into(),
+                path: parent.display().to_string(),
+                message: e.to_string(),
+            })?;
+        }
+        Ok(())
+    }
+}
+
+impl Drop for CacheLock {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_file(&self.lock_path);
+    }
+}
+
+/// Resolve the reset target based on the current branch of a local repository.
+///
+/// Returns `origin/HEAD` for detached HEAD or empty branch, otherwise `origin/{branch}`.
+fn resolve_reset_target(local_path: &Path) -> Result<String, RepositoryCacheError> {
+    let branch_output = std::process::Command::new("git")
+        .args(["rev-parse", "--abbrev-ref", "HEAD"])
+        .current_dir(local_path)
+        .output()
+        .map_err(|e| RepositoryCacheError::CacheOperation {
+            operation: "resolve_reset_target".into(),
+            path: local_path.display().to_string(),
+            message: e.to_string(),
+        })?;
+
+    let branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+    if branch == "HEAD" || branch.is_empty() {
+        Ok("origin/HEAD".to_string())
+    } else {
+        Ok(format!("origin/{branch}"))
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Internal helpers
 // ══════════════════════════════════════════════════════════════════════════════
@@ -465,9 +654,12 @@ fn is_safe_segment(segment: &str) -> bool {
 
 /// Generate the GitHub remote URL for a given pathname.
 fn github_remote_url(_host: &str, pathname: &str) -> String {
-    // In the TS source, this reads OPENCODE_REPO_CLONE_GITHUB_BASE_URL env var.
-    // Default: https://github.com/{pathname}.git
-    format!("https://github.com/{pathname}.git")
+    if let Ok(base_url) = std::env::var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL") {
+        let base = base_url.trim_end_matches('/');
+        format!("{base}/{pathname}.git")
+    } else {
+        format!("https://github.com/{pathname}.git")
+    }
 }
 
 struct RemoteBuildInput {
@@ -639,6 +831,8 @@ impl RepositoryService {
 
     /// Clone a repository (shallow, single-branch) into the cache.
     ///
+    /// Acquires a process-wide lock on the cache path before cloning.
+    ///
     /// # Source
     /// Ported from `packages/core/src/repository-cache.ts` `ensure()`.
     pub async fn clone(
@@ -647,6 +841,16 @@ impl RepositoryService {
         branch: Option<&str>,
     ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
         let local_path = self.cache_path(&RepositoryReference::Remote(reference.clone()));
+        let _lock = CacheLock::wait_lock(&local_path)?;
+        self.clone_inner(reference, branch, &local_path).await
+    }
+
+    async fn clone_inner(
+        &self,
+        reference: &RemoteReference,
+        branch: Option<&str>,
+        local_path: &Path,
+    ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
         let remote_url = &reference.base.remote;
 
         // Ensure parent directory exists
@@ -714,6 +918,8 @@ impl RepositoryService {
 
     /// Fetch updates for an already-cloned repository.
     ///
+    /// Acquires a process-wide lock on the cache path before fetching.
+    ///
     /// # Source
     /// Ported from `packages/core/src/repository-cache.ts` `refresh` logic.
     pub async fn fetch(
@@ -721,10 +927,18 @@ impl RepositoryService {
         reference: &RemoteReference,
     ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
         let local_path = self.cache_path(&RepositoryReference::Remote(reference.clone()));
+        let _lock = CacheLock::wait_lock(&local_path)?;
+        self.fetch_inner(reference, &local_path).await
+    }
 
+    async fn fetch_inner(
+        &self,
+        reference: &RemoteReference,
+        local_path: &Path,
+    ) -> Result<RepositoryCacheResult, RepositoryCacheError> {
         if !local_path.join(".git").exists() {
-            // Not cloned yet — clone it first
-            return self.clone(reference, None).await;
+            // Not cloned yet — clone it first (lock already held)
+            return self.clone_inner(reference, None, local_path).await;
         }
 
         // Run git fetch
@@ -745,9 +959,9 @@ impl RepositoryService {
             });
         }
 
-        // Reset to origin/HEAD
+        let reset_target = resolve_reset_target(local_path)?;
         let _ = std::process::Command::new("git")
-            .args(["reset", "--hard", "origin/HEAD"])
+            .args(["reset", "--hard", &reset_target])
             .current_dir(&local_path)
             .output();
 
@@ -802,6 +1016,8 @@ impl RepositoryService {
 
     /// Ensure a repository is cached and up-to-date (clone if missing, fetch if present).
     ///
+    /// Acquires a process-wide lock on the cache path for the duration of the operation.
+    ///
     /// # Source
     /// Ported from `packages/core/src/repository-cache.ts` `ensure()`.
     pub async fn ensure(
@@ -817,12 +1033,13 @@ impl RepositoryService {
         }
 
         let local_path = self.cache_path(&RepositoryReference::Remote(input.reference.clone()));
+        let _lock = CacheLock::wait_lock(&local_path)?;
         let needs_clone = !local_path.join(".git").exists();
 
         if needs_clone {
-            self.clone(&input.reference, input.branch.as_deref()).await
+            self.clone_inner(&input.reference, input.branch.as_deref(), &local_path).await
         } else if input.refresh {
-            self.fetch(&input.reference).await
+            self.fetch_inner(&input.reference, &local_path).await
         } else {
             let head = self.resolve_head(&local_path)?;
             let branch = self.resolve_branch(&local_path)?;
@@ -1256,6 +1473,112 @@ mod tests {
         assert!(err.to_string().contains("a/b"));
     }
 
+    // ── Free-standing type guards ─────────────────────────────────
+
+    #[test]
+    fn test_is_error_clone() {
+        let err = RepositoryCacheError::CloneFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_fetch() {
+        let err = RepositoryCacheError::FetchFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_checkout() {
+        let err = RepositoryCacheError::CheckoutFailed {
+            repository: "x/y".into(),
+            branch: "main".into(),
+            message: "boom".into(),
+        };
+        assert!(is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_reset() {
+        let err = RepositoryCacheError::ResetFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_lock() {
+        let err = RepositoryCacheError::LockFailed {
+            local_path: "/tmp/repo".into(),
+            message: "held".into(),
+        };
+        assert!(is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_cache_operation() {
+        let err = RepositoryCacheError::CacheOperation {
+            operation: "mkdir".into(),
+            path: "/tmp/repo".into(),
+            message: "perm denied".into(),
+        };
+        assert!(is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_invalid_repository() {
+        let err = RepositoryCacheError::InvalidRepository {
+            repository: "bad".into(),
+            message: "nope".into(),
+        };
+        assert!(!is_error(&err));
+    }
+
+    #[test]
+    fn test_is_error_invalid_branch() {
+        let err = RepositoryCacheError::InvalidBranch {
+            branch: "-bad".into(),
+            message: "nope".into(),
+        };
+        assert!(!is_error(&err));
+    }
+
+    #[test]
+    fn test_free_is_clone_error() {
+        let clone_err = RepositoryCacheError::CloneFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(is_clone_error(&clone_err));
+
+        let fetch_err = RepositoryCacheError::FetchFailed {
+            repository: "x/y".into(),
+            message: "net".into(),
+        };
+        assert!(!is_clone_error(&fetch_err));
+    }
+
+    #[test]
+    fn test_free_is_fetch_error() {
+        let fetch_err = RepositoryCacheError::FetchFailed {
+            repository: "x/y".into(),
+            message: "net".into(),
+        };
+        assert!(is_fetch_error(&fetch_err));
+
+        let clone_err = RepositoryCacheError::CloneFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(!is_fetch_error(&clone_err));
+    }
+
     // ── RepositoryService tests ───────────────────────────────────────
 
     fn setup_repo_cache() -> (tempfile::TempDir, RepositoryService) {
@@ -1354,11 +1677,19 @@ mod tests {
         assert!(validate_branch("1.0.0").is_ok());
 
         // Invalid cases
-        assert!(validate_branch("").is_ok()); // Empty is technically valid per our regex
+        assert!(validate_branch("").is_err()); // Empty is not a valid branch
         assert!(validate_branch("-starts-with-dash").is_err());
         assert!(validate_branch("has space").is_err());
         assert!(validate_branch("has..dots").is_err());
         assert!(validate_branch("has@at").is_err());
+    }
+
+    #[test]
+    fn test_validate_branch_empty_string_rejected() {
+        assert!(
+            validate_branch("").is_err(),
+            "Empty string should not be a valid branch name"
+        );
     }
 
     #[test]
@@ -1384,5 +1715,229 @@ mod tests {
         let ref_ = parse_repository("file:///home/dev/project").expect("parse");
         // File references have host="file"
         assert!(ref_.cache_identity().starts_with("file/"));
+    }
+
+    // ── CacheLock tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_cache_lock_acquisition() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cache_path = dir.path().join("some-repo");
+
+        let lock = CacheLock::try_lock(&cache_path).expect("should acquire lock");
+        assert!(CacheLock::lock_path_for(&cache_path).exists());
+        drop(lock);
+        assert!(!CacheLock::lock_path_for(&cache_path).exists());
+    }
+
+    #[test]
+    fn test_cache_lock_contention() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cache_path = dir.path().join("contended-repo");
+
+        let _lock1 = CacheLock::try_lock(&cache_path).expect("first lock");
+
+        // Second lock attempt on the same path should fail
+        let result = CacheLock::try_lock(&cache_path);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            RepositoryCacheError::LockFailed { local_path, message } => {
+                assert!(local_path.contains("contended-repo"));
+                assert!(message.contains("locked"));
+            }
+            other => panic!("expected LockFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_cache_lock_contention_via_thread() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cache_path = dir.path().join("threaded-repo");
+        let cache_path_clone = cache_path.clone();
+
+        // Hold the lock in the main thread
+        let _lock1 = CacheLock::try_lock(&cache_path).expect("main thread lock");
+
+        // Spawn a thread that tries to acquire the same lock — it should fail quickly
+        let handle = std::thread::spawn(move || {
+            CacheLock::wait_lock_with_params(&cache_path_clone, 10, 3)
+        });
+
+        let result = handle.join().expect("thread panicked");
+        assert!(result.is_err(), "should fail to acquire contended lock");
+    }
+
+    #[test]
+    fn test_cache_lock_release_allows_reacquire() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cache_path = dir.path().join("reacquire-repo");
+
+        {
+            let _lock = CacheLock::try_lock(&cache_path).expect("first lock");
+        }
+        // Lock should be released after drop
+        let lock2 = CacheLock::try_lock(&cache_path).expect("reacquire after drop");
+        drop(lock2);
+    }
+
+    #[test]
+    fn test_cache_lock_wait_lock_succeeds_after_release() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cache_path = dir.path().join("wait-repo");
+
+        {
+            let _lock = CacheLock::try_lock(&cache_path).expect("hold lock");
+        }
+
+        let lock = CacheLock::wait_lock(&cache_path).expect("should succeed after release");
+        drop(lock);
+    }
+
+    #[test]
+    fn test_cache_lock_explicit_unlock() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let cache_path = dir.path().join("explicit-repo");
+
+        let lock = CacheLock::try_lock(&cache_path).expect("lock");
+        let lock_path = CacheLock::lock_path_for(&cache_path);
+        assert!(lock_path.exists());
+
+        lock.unlock().expect("explicit unlock");
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn test_cache_lock_path_convention() {
+        let cache_path = PathBuf::from("/tmp/cache/github.com/owner/repo");
+        let lock_path = CacheLock::lock_path_for(&cache_path);
+        assert_eq!(lock_path, PathBuf::from("/tmp/cache/github.com/owner/repo.lock"));
+    }
+
+    // ── github_remote_url env var override ──────────────────────────
+
+    #[test]
+    fn test_github_remote_url_default() {
+        let url = github_remote_url("github.com", "owner/repo");
+        assert_eq!(url, "https://github.com/owner/repo.git");
+    }
+
+    #[test]
+    fn test_github_remote_url_env_override() {
+        std::env::set_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL", "https://my-ghe.internal.com/github");
+        let url = github_remote_url("github.com", "owner/repo");
+        assert_eq!(url, "https://my-ghe.internal.com/github/owner/repo.git");
+        std::env::remove_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL");
+    }
+
+    #[test]
+    fn test_github_remote_url_env_trailing_slash() {
+        std::env::set_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL", "https://mirror.example.com/");
+        let url = github_remote_url("github.com", "org/project");
+        assert_eq!(url, "https://mirror.example.com/org/project.git");
+        std::env::remove_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL");
+    }
+
+    // ── resolve_reset_target ────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_reset_target_on_branch() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo_path = dir.path().join("branch-repo");
+
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        std::fs::write(repo_path.join("file.txt"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+
+        let target = resolve_reset_target(&repo_path).expect("resolve reset target");
+        assert_eq!(target, "origin/main");
+    }
+
+    #[test]
+    fn test_resolve_reset_target_detached_head() {
+        let dir = tempfile::tempdir().expect("create temp dir");
+        let repo_path = dir.path().join("detached-repo");
+
+        std::process::Command::new("git")
+            .args(["init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git init");
+        std::fs::write(repo_path.join("file.txt"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "."])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init", "--quiet"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("git commit");
+
+        // Detach HEAD
+        let output = std::process::Command::new("git")
+            .args(["rev-parse", "HEAD"])
+            .current_dir(&repo_path)
+            .output()
+            .expect("get HEAD");
+        let head = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        std::process::Command::new("git")
+            .args(["checkout", "--detach", &head])
+            .current_dir(&repo_path)
+            .output()
+            .expect("detach HEAD");
+
+        let target = resolve_reset_target(&repo_path).expect("resolve reset target");
+        assert_eq!(target, "origin/HEAD");
+    }
+
+    // ── RepositoryCacheError type guards ────────────────────────────
+
+    #[test]
+    fn test_error_type_guards() {
+        let clone_err = RepositoryCacheError::CloneFailed {
+            repository: "x/y".into(),
+            message: "boom".into(),
+        };
+        assert!(clone_err.is_clone_error());
+        assert!(!clone_err.is_fetch_error());
+        assert!(!clone_err.is_lock_error());
+
+        let fetch_err = RepositoryCacheError::FetchFailed {
+            repository: "a/b".into(),
+            message: "net".into(),
+        };
+        assert!(!fetch_err.is_clone_error());
+        assert!(fetch_err.is_fetch_error());
+        assert!(!fetch_err.is_lock_error());
+
+        let lock_err = RepositoryCacheError::LockFailed {
+            local_path: "/tmp/repo".into(),
+            message: "held".into(),
+        };
+        assert!(!lock_err.is_clone_error());
+        assert!(!lock_err.is_fetch_error());
+        assert!(lock_err.is_lock_error());
+
+        let other_err = RepositoryCacheError::InvalidRepository {
+            repository: "bad".into(),
+            message: "nope".into(),
+        };
+        assert!(!other_err.is_clone_error());
+        assert!(!other_err.is_fetch_error());
+        assert!(!other_err.is_lock_error());
     }
 }

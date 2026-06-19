@@ -327,6 +327,29 @@ impl ToolRegistry {
             .collect()
     }
 
+    /// Lightweight listing: (id, description) pairs for prompt building.
+    pub fn list_tools_info(&self) -> Vec<ToolInfoBrief> {
+        let mut infos: Vec<ToolInfoBrief> = self
+            .tools
+            .iter()
+            .map(|r| {
+                let def = r.value();
+                ToolInfoBrief {
+                    id: def.id.clone(),
+                    description: def.description.clone(),
+                }
+            })
+            .collect();
+        infos.extend(self.plugin_tools.iter().map(|r| {
+            let p = r.value();
+            ToolInfoBrief {
+                id: p.id.clone(),
+                description: p.description.clone(),
+            }
+        }));
+        infos
+    }
+
     /// Get all LLM tool definitions for function calling.
     pub fn llm_definitions(&self) -> Vec<crate::provider::ToolDefinition> {
         let mut defs: Vec<_> = self
@@ -344,6 +367,37 @@ impl ToolRegistry {
         }
         defs
     }
+
+    /// Alias for `llm_definitions()` — canonical name used by SessionRunner.
+    pub fn to_definitions(&self) -> Vec<crate::provider::ToolDefinition> {
+        self.llm_definitions()
+    }
+
+    /// Execute a tool by name with the given arguments.
+    ///
+    /// Looks up the tool in both built-in and plugin registries, builds a
+    /// [`ToolContext`], and runs the tool's `execute` method.
+    pub async fn execute_by_name(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> crate::error::Result<ExecuteResult> {
+        let def = self
+            .get(name)
+            .ok_or_else(|| {
+                crate::error::Error::Tool(format!("tool not found: {name}"))
+            })?;
+        let tool = Arc::clone(&def.tool);
+        tool.execute(args, ctx).await
+    }
+}
+
+/// Brief tool metadata — used for prompt building.
+#[derive(Debug, Clone)]
+pub struct ToolInfoBrief {
+    pub id: String,
+    pub description: String,
 }
 
 impl Default for ToolRegistry {

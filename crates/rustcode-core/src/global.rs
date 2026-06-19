@@ -305,6 +305,25 @@ pub fn init_paths(p: GlobalPaths) {
 }
 
 // ---------------------------------------------------------------------------
+// Convenience free functions — lightweight accessors
+// ---------------------------------------------------------------------------
+
+/// Get the cache directory path.
+pub fn cache_dir() -> &'static str {
+    &paths().cache
+}
+
+/// Get the data directory path.
+pub fn data_dir() -> &'static str {
+    &paths().data
+}
+
+/// Get the binary installation directory path.
+pub fn bin_dir() -> String {
+    format!("{}/bin", data_dir())
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -467,5 +486,24 @@ mod tests {
         let result = xdg_dir("XDG_TEST_VAR_NONEXISTENT", "/home/test", ".local/share", "testapp");
         assert!(result.starts_with("/home/test"));
         assert!(result.contains("testapp"));
+    }
+
+    // ── Free functions ──────────────────────────────────────────
+
+    #[test]
+    fn test_cache_dir_matches_paths() {
+        assert_eq!(cache_dir(), paths().cache);
+    }
+
+    #[test]
+    fn test_data_dir_matches_paths() {
+        assert_eq!(data_dir(), paths().data);
+    }
+
+    #[test]
+    fn test_bin_dir_is_data_bin() {
+        let bd = bin_dir();
+        assert!(bd.starts_with(data_dir()));
+        assert!(bd.ends_with("/bin"));
     }
 }

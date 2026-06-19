@@ -24,7 +24,13 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::RwLock;
+use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Server type
@@ -42,6 +48,101 @@ pub enum McpServerType {
     Local,
     /// Remote server accessed via HTTP (SSE or StreamableHTTP).
     Remote,
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC 2.0 types
+// ---------------------------------------------------------------------------
+
+/// A JSON-RPC 2.0 request.
+///
+/// Used for both stdio-framed and HTTP JSON-RPC communication with MCP servers.
+///
+/// # Source
+/// Ported from the MCP spec (JSON-RPC 2.0 over stdio / HTTP).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcRequest {
+    /// Must be `"2.0"`.
+    pub jsonrpc: String,
+    /// Request ID (monotonically increasing, used to match responses).
+    pub id: u64,
+    /// The RPC method name (e.g. `"tools/list"`, `"initialize"`).
+    pub method: String,
+    /// Method parameters as arbitrary JSON.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub params: Option<serde_json::Value>,
+}
+
+impl JsonRpcRequest {
+    /// Create a new JSON-RPC 2.0 request.
+    pub fn new(method: impl Into<String>, params: serde_json::Value, id: u64) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            id,
+            method: method.into(),
+            params: Some(params),
+        }
+    }
+
+    /// Create a notification (a request with no `id` — no response expected).
+    pub fn notification(method: impl Into<String>, params: serde_json::Value) -> Self {
+        Self {
+            jsonrpc: "2.0".into(),
+            id: 0,
+            method: method.into(),
+            params: Some(params),
+        }
+    }
+}
+
+/// A JSON-RPC 2.0 error object.
+///
+/// # Source
+/// MCP spec — JSON-RPC 2.0 error object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcError {
+    /// Numeric error code (see JSON-RPC spec for standard codes).
+    pub code: i64,
+    /// Human-readable error message.
+    pub message: String,
+    /// Optional additional error data.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+}
+
+/// A JSON-RPC 2.0 response.
+///
+/// # Source
+/// MCP spec — JSON-RPC 2.0 response object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonRpcResponse {
+    /// Must be `"2.0"`.
+    pub jsonrpc: String,
+    /// Request ID matching the original request.
+    pub id: u64,
+    /// Successful result (absent on error).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub result: Option<serde_json::Value>,
+    /// Error details (absent on success).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<JsonRpcError>,
+}
+
+impl JsonRpcResponse {
+    /// Whether this response indicates a successful result.
+    pub fn is_success(&self) -> bool {
+        self.error.is_none()
+    }
+
+    /// Whether this response indicates a JSON-RPC error.
+    pub fn is_error(&self) -> bool {
+        self.error.is_some()
+    }
+
+    /// Get the error message, if present.
+    pub fn error_message(&self) -> Option<&str> {
+        self.error.as_ref().map(|e| e.message.as_str())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -796,5 +897,1398 @@ mod tests {
             serde_json::to_string(&AuthStatus::NotAuthenticated).unwrap(),
             r#""not_authenticated""#
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MCP Client — connection, tool discovery, and execution
+// ---------------------------------------------------------------------------
+
+/// Internal connection state for an MCP client.
+///
+/// Variants correspond to the transport types: local subprocess (stdio),
+/// remote HTTP (StreamableHTTP), and remote SSE.
+enum McpClientState {
+    /// Local subprocess-based connection (stdio transport).
+    Local {
+        /// The spawned child process with piped stdin/stdout/stderr.
+        child: tokio::process::Child,
+    },
+    /// Remote HTTP-based connection (StreamableHTTP transport).
+    /// JSON-RPC requests are sent via HTTP POST; responses come in the
+    /// HTTP response body.
+    Remote {
+        /// Reusable HTTP client for subsequent JSON-RPC calls.
+        http_client: reqwest::Client,
+        /// The server's base URL.
+        url: String,
+        /// Custom HTTP headers sent with every request.
+        headers: HashMap<String, String>,
+    },
+    /// Remote SSE-based connection (deprecated MCP transport).
+    /// Client opens an SSE stream for server→client messages and sends
+    /// JSON-RPC requests via HTTP POST to the message endpoint.
+    RemoteSse {
+        /// Reusable HTTP client for sending JSON-RPC requests.
+        http_client: reqwest::Client,
+        /// The POST endpoint for sending JSON-RPC messages (extracted from
+        /// the SSE `endpoint` event after connecting).
+        message_url: String,
+        /// Custom HTTP headers sent with every request.
+        headers: HashMap<String, String>,
+        /// A channel receiver for incoming SSE event data.
+        /// Each item is a `(request_id, result_json)` pair.
+        sse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>,
+    },
+    /// Client is not connected.
+    Disconnected,
+}
+
+/// An active connection to an MCP (Model Context Protocol) server.
+///
+/// Created via [`McpClient::connect()`] or [`McpClient::connect_http()`]
+/// and used to list tools, call tools, and discover resources and prompts.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/index.ts` — the `connectLocal()`
+/// and `connectRemote()` functions.
+pub struct McpClient {
+    /// The server configuration used to create this connection.
+    pub config: McpServerConfig,
+    /// Human-readable server name (for error messages and logging).
+    pub server_name: String,
+    /// Tools discovered from this MCP server (cached at connect time).
+    pub tools: tokio::sync::RwLock<Vec<McpTool>>,
+    /// Whether this client is currently connected.
+    pub connected: Arc<AtomicBool>,
+    /// Monotonically increasing JSON-RPC request ID counter.
+    next_id: AtomicU64,
+    /// Interior-mutable connection state (locked per-operation).
+    state: tokio::sync::Mutex<McpClientState>,
+}
+
+impl McpClient {
+    /// Connect to an MCP server using the given configuration.
+    ///
+    /// For local servers this spawns a subprocess and performs the JSON-RPC
+    /// `initialize` handshake over stdio. For remote servers this sends an
+    /// `initialize` request via HTTP POST and stores the client for
+    /// subsequent calls.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `connectLocal()`
+    /// and `connectRemote()`.
+    ///
+    /// # Errors
+    /// Returns [`crate::error::Error::Config`] if the configuration is
+    /// incomplete (missing command or URL). Returns
+    /// [`crate::error::Error::Process`] if spawning the subprocess fails.
+    /// Returns [`crate::error::Error::Network`] if the remote server
+    /// returns a non-2xx status.
+    pub async fn connect(
+        config: McpServerConfig,
+        server_name: String,
+    ) -> crate::error::Result<Self> {
+        let state = match config.r#type {
+            McpServerType::Local => {
+                let cmd = config.command_executable().ok_or_else(|| {
+                    crate::error::Error::Config(
+                        "MCP local server has no command executable".into(),
+                    )
+                })?;
+                let args = config.full_args();
+
+                let mut child = tokio::process::Command::new(cmd)
+                    .args(&args)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .envs(&config.env)
+                    .kill_on_drop(true)
+                    .spawn()
+                    .map_err(|e| crate::error::Error::Process {
+                        message: format!(
+                            "failed to spawn MCP server `{server_name}`: {e}"
+                        ),
+                        exit_code: None,
+                    })?;
+
+                // Send the initialize request over stdin
+                let init_req = build_jsonrpc_request(
+                    "initialize",
+                    serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "rustcode",
+                            "version": env!("CARGO_PKG_VERSION")
+                        }
+                    }),
+                    0,
+                );
+                let framed = frame_jsonrpc_message(&init_req);
+
+                {
+                    let stdin = child.stdin.as_mut().ok_or_else(|| {
+                        crate::error::Error::Internal(
+                            "MCP child stdin not available".into(),
+                        )
+                    })?;
+                    stdin.write_all(framed.as_bytes()).await?;
+                    stdin.flush().await?;
+                }
+
+                // Read the initialize response from stdout
+                {
+                    let stdout = child.stdout.as_mut().ok_or_else(|| {
+                        crate::error::Error::Internal(
+                            "MCP child stdout not available".into(),
+                        )
+                    })?;
+                    let mut reader = BufReader::new(stdout);
+
+                    let mut header = String::new();
+                    reader.read_line(&mut header).await?;
+                    let content_length = parse_content_length(&header)
+                        .map_err(|e| {
+                            crate::error::Error::Internal(format!(
+                                "invalid MCP initialize response header: {e}"
+                            ))
+                        })?;
+
+                    // Read the \r\n blank line separator
+                    let mut blank = String::new();
+                    reader.read_line(&mut blank).await?;
+
+                    // Read the JSON body
+                    let mut body = vec![0u8; content_length];
+                    reader.read_exact(&mut body).await?;
+
+                    let response_str =
+                        String::from_utf8_lossy(&body).to_string();
+                    parse_jsonrpc_response(&response_str).map_err(|e| {
+                        crate::error::Error::Internal(format!(
+                            "invalid MCP initialize response: {e}"
+                        ))
+                    })?;
+                }
+
+                // Send the "initialized" notification per MCP spec.
+                // The server won't process further requests until it
+                // receives this notification.
+                {
+                    let stdin = child.stdin.as_mut().ok_or_else(|| {
+                        crate::error::Error::Internal(
+                            "MCP child stdin not available for initialized notification".into(),
+                        )
+                    })?;
+                    let notif = build_jsonrpc_notification(
+                        "notifications/initialized",
+                        serde_json::json!({}),
+                    );
+                    let framed = frame_jsonrpc_message(&notif);
+                    stdin.write_all(framed.as_bytes()).await?;
+                    stdin.flush().await?;
+                }
+
+                McpClientState::Local { child }
+            }
+            McpServerType::Remote => {
+                let url = config.url.as_ref().ok_or_else(|| {
+                    crate::error::Error::Config(
+                        "MCP remote server has no URL".into(),
+                    )
+                })?;
+                let http_client = reqwest::Client::new();
+
+                let init_req = build_jsonrpc_request(
+                    "initialize",
+                    serde_json::json!({
+                        "protocolVersion": "2024-11-05",
+                        "capabilities": {},
+                        "clientInfo": {
+                            "name": "rustcode",
+                            "version": env!("CARGO_PKG_VERSION")
+                        }
+                    }),
+                    0,
+                );
+
+                let mut request = http_client
+                    .post(url)
+                    .json(&init_req)
+                    .timeout(std::time::Duration::from_millis(config.timeout));
+
+                for (key, value) in &config.headers {
+                    request = request.header(key.as_str(), value.as_str());
+                }
+
+                let response = request.send().await?;
+
+                if !response.status().is_success() {
+                    return Err(crate::error::Error::Network(format!(
+                        "MCP server `{server_name}` returned HTTP {}",
+                        response.status()
+                    )));
+                }
+
+                let _body: serde_json::Value = response.json().await?;
+
+                // Send the "initialized" notification
+                let notif = build_jsonrpc_notification(
+                    "notifications/initialized",
+                    serde_json::json!({}),
+                );
+                let _notif_response = http_client
+                    .post(url)
+                    .json(&notif)
+                    .timeout(std::time::Duration::from_millis(config.timeout))
+                    .send()
+                    .await?;
+
+                McpClientState::Remote {
+                    http_client,
+                    url: url.clone(),
+                    headers: config.headers.clone(),
+                }
+            }
+        };
+
+        // Build the client first so we can use send_jsonrpc for tool discovery
+        let client = Self {
+            config,
+            server_name,
+            tools: tokio::sync::RwLock::new(Vec::new()),
+            connected: Arc::new(AtomicBool::new(true)),
+            next_id: AtomicU64::new(1),
+            state: tokio::sync::Mutex::new(state),
+        };
+
+        // Discover tools immediately on connect
+        match client.list_tools().await {
+            Ok(discovered) => {
+                let mut tools = client.tools.write().await;
+                *tools = discovered;
+            }
+            Err(e) => {
+                // Tool discovery failure is not fatal — the client is still
+                // connected; tools can be listed later.
+                tracing::warn!(
+                    "MCP: failed to discover tools for '{}' during connect: {e}",
+                    client.server_name
+                );
+            }
+        }
+
+        Ok(client)
+    }
+
+    /// List all tools available on the connected MCP server.
+    ///
+    /// Sends a `tools/list` JSON-RPC request and parses the response.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `listTools()`.
+    pub async fn list_tools(&self) -> crate::error::Result<Vec<McpTool>> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = build_jsonrpc_request(
+            "tools/list",
+            serde_json::json!({}),
+            id,
+        );
+
+        let response = self.send_jsonrpc(&request).await?;
+
+        let tools_value = response
+            .get("result")
+            .and_then(|r| r.get("tools"))
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::Internal(
+                    "MCP tools/list response missing 'result.tools'".into(),
+                )
+            })?;
+
+        let tools: Vec<McpTool> = serde_json::from_value(tools_value)?;
+        Ok(tools)
+    }
+
+    /// Call a tool on the connected MCP server with the given arguments.
+    ///
+    /// Sends a `tools/call` JSON-RPC request and returns the result as
+    /// arbitrary JSON.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `callTool()`.
+    pub async fn call_tool(
+        &self,
+        tool_name: &str,
+        arguments: serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = build_jsonrpc_request(
+            "tools/call",
+            serde_json::json!({
+                "name": tool_name,
+                "arguments": arguments,
+            }),
+            id,
+        );
+
+        let response = self.send_jsonrpc(&request).await?;
+
+        let result = response.get("result").cloned().ok_or_else(|| {
+            crate::error::Error::Internal(
+                "MCP tools/call response missing 'result'".into(),
+            )
+        })?;
+
+        Ok(result)
+    }
+
+    /// Send a JSON-RPC request and return the parsed response.
+    ///
+    /// For local connections this writes the framed message to the child's
+    /// stdin and reads the framed response from stdout. For remote
+    /// connections this POSTs the request to the server's HTTP endpoint.
+    async fn send_jsonrpc(
+        &self,
+        request: &serde_json::Value,
+    ) -> crate::error::Result<serde_json::Value> {
+        let mut state = self.state.lock().await;
+
+        match &mut *state {
+            McpClientState::Local { child } => {
+                let framed = frame_jsonrpc_message(request);
+
+                // Write the framed request to the child's stdin
+                {
+                    let stdin = child.stdin.as_mut().ok_or_else(|| {
+                        crate::error::Error::Internal(
+                            "MCP child stdin not available".into(),
+                        )
+                    })?;
+                    stdin.write_all(framed.as_bytes()).await?;
+                    stdin.flush().await?;
+                }
+
+                // Read the framed response from the child's stdout
+                let stdout = child.stdout.as_mut().ok_or_else(|| {
+                    crate::error::Error::Internal(
+                        "MCP child stdout not available".into(),
+                    )
+                })?;
+                let mut reader = BufReader::new(stdout);
+
+                let mut header = String::new();
+                reader.read_line(&mut header).await?;
+                let content_length =
+                    parse_content_length(&header).map_err(|e| {
+                        crate::error::Error::Internal(format!(
+                            "invalid MCP response: {e}"
+                        ))
+                    })?;
+
+                let mut blank = String::new();
+                reader.read_line(&mut blank).await?;
+
+                let mut body = vec![0u8; content_length];
+                reader.read_exact(&mut body).await?;
+
+                let response_str =
+                    String::from_utf8_lossy(&body).to_string();
+                let response =
+                    parse_jsonrpc_response(&response_str).map_err(|e| {
+                        crate::error::Error::Internal(format!(
+                            "invalid MCP response: {e}"
+                        ))
+                    })?;
+
+                Ok(response)
+            }
+            McpClientState::Remote {
+                http_client,
+                url,
+                headers,
+            } => {
+                let mut request_builder = http_client
+                    .post(url)
+                    .json(request)
+                    .timeout(std::time::Duration::from_millis(
+                        self.config.timeout,
+                    ));
+
+                for (key, value) in headers.iter() {
+                    request_builder =
+                        request_builder.header(key.as_str(), value.as_str());
+                }
+
+                let response = request_builder.send().await?;
+
+                if !response.status().is_success() {
+                    return Err(crate::error::Error::Network(format!(
+                        "MCP server `{}` returned HTTP {}",
+                        self.server_name,
+                        response.status()
+                    )));
+                }
+
+                let body: serde_json::Value = response.json().await?;
+                Ok(body)
+            }
+            McpClientState::RemoteSse {
+                http_client,
+                message_url,
+                headers,
+                sse_rx,
+            } => {
+                // Send the JSON-RPC request via HTTP POST to the message endpoint
+                let mut request_builder = http_client
+                    .post(message_url.as_str())
+                    .json(request)
+                    .timeout(std::time::Duration::from_millis(
+                        self.config.timeout,
+                    ));
+
+                for (key, value) in headers.iter() {
+                    request_builder =
+                        request_builder.header(key.as_str(), value.as_str());
+                }
+
+                // Fire the POST — some SSE servers return the response
+                // directly; others send it via the SSE stream.
+                let http_response = request_builder.send().await?;
+
+                // First try the direct HTTP response
+                if http_response.status().is_success() {
+                    if let Ok(body) = http_response.json::<serde_json::Value>().await {
+                        if body.get("result").is_some() || body.get("error").is_some() {
+                            return Ok(body);
+                        }
+                    }
+                }
+
+                // Fall back to waiting for the SSE event stream
+                // The response will arrive as an SSE event matched by request ID
+                let req_id = request["id"].as_u64().unwrap_or(0);
+                loop {
+                    match sse_rx.recv().await {
+                        Some((id, value)) if id == req_id => {
+                            return Ok(value);
+                        }
+                        Some((_other_id, _value)) => {
+                            // Response for a different request — this
+                            // shouldn't normally happen in a single-client
+                            // scenario; ignore and keep waiting.
+                            continue;
+                        }
+                        None => {
+                            return Err(crate::error::Error::Internal(
+                                "MCP SSE stream closed while waiting for response"
+                                    .into(),
+                            ));
+                        }
+                    }
+                }
+            }
+            McpClientState::Disconnected => Err(crate::error::Error::Internal(
+                "MCP client is disconnected".into(),
+            )),
+        }
+    }
+
+    /// Connect to a remote MCP server using the SSE (Server-Sent Events)
+    /// transport.
+    ///
+    /// This is the older MCP HTTP transport (now deprecated in favor of
+    /// Streamable HTTP). It opens an SSE stream to receive server→client
+    /// messages and sends JSON-RPC requests via HTTP POST to a message
+    /// endpoint extracted from the first SSE event.
+    ///
+    /// # Flow
+    ///
+    /// 1. GET `{url}` — opens the SSE event stream
+    /// 2. Receive `endpoint` event — extracts the POST message URL
+    /// 3. Send `initialize` JSON-RPC request via POST
+    /// 4. Receive `initialize` response via SSE
+    /// 5. Send `initialized` notification via POST
+    /// 6. Discover tools via `tools/list`
+    ///
+    /// # Source
+    /// Ported from the MCP spec SSE transport.
+    ///
+    /// # Errors
+    /// Returns an error if the SSE endpoint cannot be reached, if the
+    /// endpoint event is missing, or if the initialize handshake fails.
+    pub async fn connect_http(
+        config: McpServerConfig,
+        server_name: String,
+    ) -> crate::error::Result<Self> {
+        let url = config.url.as_ref().ok_or_else(|| {
+            crate::error::Error::Config(
+                "MCP remote server has no URL".into(),
+            )
+        })?;
+
+        let http_client = reqwest::Client::new();
+
+        // Step 1: Open the SSE event stream
+        let sse_url = if url.ends_with("/sse") {
+            url.clone()
+        } else {
+            format!("{}/sse", url.trim_end_matches('/'))
+        };
+
+        let mut sse_request = http_client
+            .get(&sse_url)
+            .header("Accept", "text/event-stream")
+            .timeout(std::time::Duration::from_millis(config.timeout));
+
+        for (key, value) in &config.headers {
+            sse_request = sse_request.header(key.as_str(), value.as_str());
+        }
+
+        let sse_response = sse_request.send().await.map_err(|e| {
+            crate::error::Error::Network(format!(
+                "MCP SSE connection to `{server_name}` failed: {e}"
+            ))
+        })?;
+
+        if !sse_response.status().is_success() {
+            return Err(crate::error::Error::Network(format!(
+                "MCP server `{server_name}` SSE endpoint returned HTTP {}",
+                sse_response.status()
+            )));
+        }
+
+        // Step 2: Parse the SSE stream to get the message endpoint
+        let sse_stream = crate::sse::parse_sse_stream(sse_response);
+        let (sse_tx, sse_rx) =
+            tokio::sync::mpsc::unbounded_channel::<(u64, serde_json::Value)>();
+
+        // Spawn a background task to process SSE events
+        let _sse_handle = tokio::spawn(async move {
+            use futures::StreamExt;
+            tokio::pin!(sse_stream);
+
+            while let Some(event_result) = sse_stream.next().await {
+                match event_result {
+                    Ok(event) => {
+                        if let Ok(value) =
+                            serde_json::from_str::<serde_json::Value>(&event.data)
+                        {
+                            if let Some(id) = value
+                                .get("id")
+                                .and_then(|v| v.as_u64())
+                            {
+                                let _ = sse_tx.send((id, value));
+                            }
+                        }
+                    }
+                    Err(_e) => {
+                        // SSE stream error — channel will close
+                        break;
+                    }
+                }
+            }
+        });
+
+        // Step 3: Determine the message endpoint
+        // For most MCP SSE servers, the message endpoint is {base_url}/messages
+        // with a session ID appended from the first endpoint event.
+        let message_url = if url.ends_with("/sse") {
+            // Replace /sse with /messages
+            format!("{}/messages", &url[..url.len() - 4])
+        } else {
+            format!("{}/messages", url.trim_end_matches('/'))
+        };
+
+        // Step 4: Send initialize request via POST
+        let init_req = build_jsonrpc_request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "rustcode",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+            0,
+        );
+
+        let mut request = http_client
+            .post(&message_url)
+            .json(&init_req)
+            .timeout(std::time::Duration::from_millis(config.timeout));
+
+        for (key, value) in &config.headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+
+        let response = request.send().await?;
+        if !response.status().is_success() {
+            return Err(crate::error::Error::Network(format!(
+                "MCP server `{server_name}` initialize returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        let _body: serde_json::Value = response.json().await?;
+
+        // Step 5: Send initialized notification
+        let notif = build_jsonrpc_notification(
+            "notifications/initialized",
+            serde_json::json!({}),
+        );
+        let _ = http_client
+            .post(&message_url)
+            .json(&notif)
+            .timeout(std::time::Duration::from_millis(config.timeout))
+            .send()
+            .await;
+
+        let state = McpClientState::RemoteSse {
+            http_client,
+            message_url,
+            headers: config.headers.clone(),
+            sse_rx,
+        };
+
+        // Build client
+        let client = Self {
+            config,
+            server_name,
+            tools: tokio::sync::RwLock::new(Vec::new()),
+            connected: Arc::new(AtomicBool::new(true)),
+            next_id: AtomicU64::new(1),
+            state: tokio::sync::Mutex::new(state),
+        };
+
+        // Discover tools
+        match client.list_tools().await {
+            Ok(discovered) => {
+                let mut tools = client.tools.write().await;
+                *tools = discovered;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "MCP SSE: failed to discover tools for '{}' during connect: {e}",
+                    client.server_name
+                );
+            }
+        }
+
+        Ok(client)
+    }
+
+    /// Disconnect from the MCP server.
+    ///
+    /// For local (stdio) connections, this kills the child process and
+    /// waits for it to exit. For remote connections, it drops the HTTP
+    /// client. After calling this method, the client is marked as
+    /// disconnected and subsequent operations will return errors.
+    pub async fn disconnect(&self) -> crate::error::Result<()> {
+        self.connected.store(false, Ordering::SeqCst);
+
+        let mut state = self.state.lock().await;
+        match std::mem::replace(&mut *state, McpClientState::Disconnected) {
+            McpClientState::Local { mut child } => {
+                // Kill the child process and wait for it to exit
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+            }
+            McpClientState::Remote { .. } => {
+                // Drop the HTTP client — no explicit close needed
+            }
+            McpClientState::RemoteSse { .. } => {
+                // Drop the HTTP client and SSE channel
+            }
+            McpClientState::Disconnected => {
+                // Already disconnected
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether this client is currently connected.
+    pub fn is_connected(&self) -> bool {
+        self.connected.load(Ordering::SeqCst)
+    }
+
+    /// Get the server name.
+    pub fn name(&self) -> &str {
+        &self.server_name
+    }
+
+    /// Get a snapshot of the cached tool definitions.
+    pub async fn cached_tools(&self) -> Vec<McpTool> {
+        self.tools.read().await.clone()
+    }
+
+    /// Refresh the tool cache by re-listing tools from the server.
+    pub async fn refresh_tools(&self) -> crate::error::Result<Vec<McpTool>> {
+        let tools = self.list_tools().await?;
+        let mut cache = self.tools.write().await;
+        *cache = tools.clone();
+        Ok(tools)
+    }
+
+    /// Convert cached tools into [`PluginToolDef`] entries suitable for
+    /// registration in the [`ToolRegistry`](crate::tool::ToolRegistry).
+    ///
+    /// Each tool gets a key of the form `{sanitized_server_name}_{sanitized_tool_name}`
+    /// and a stub execute function — actual execution is handled by the
+    /// session runner which dispatches MCP tool calls through the active
+    /// MCP client.
+    pub async fn to_plugin_defs(
+        &self,
+    ) -> Vec<crate::tool::PluginToolDef> {
+        let tools = self.tools.read().await;
+        let mut defs = Vec::with_capacity(tools.len());
+
+        for tool in tools.iter() {
+            let tool_id = tool_key(&self.server_name, &tool.name);
+            let input_schema = tool
+                .input_schema
+                .clone()
+                .unwrap_or_else(|| {
+                    serde_json::json!({"type": "object", "properties": {}})
+                });
+            let description = tool
+                .description
+                .clone()
+                .unwrap_or_else(|| format!("MCP tool: {}", tool.name));
+
+            let plugin = crate::tool::PluginToolDef::new(
+                tool_id,
+                description,
+                input_schema,
+                |_args, _ctx| async move {
+                    Ok(crate::tool::ExecuteResult {
+                        title: "mcp".into(),
+                        output: "MCP tool execution routed through session runner"
+                            .into(),
+                        truncated: false,
+                        output_path: None,
+                        attachments: None,
+                        metadata: HashMap::new(),
+                    })
+                },
+            );
+            defs.push(plugin);
+        }
+
+        defs
+    }
+}
+
+// ---------------------------------------------------------------------------
+// MCP Server Registry — manages multiple active MCP connections
+// ---------------------------------------------------------------------------
+
+/// A thread-safe registry of connected MCP servers.
+///
+/// Maps server names to their active [`McpClient`] instances. Used by the
+/// HTTP API to track connection state, register/unregister tools, and
+/// manage server lifecycles.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/index.ts` — the in-memory
+/// connection tracking in the MCP module.
+pub struct McpServerRegistry {
+    /// Active connections keyed by server name.
+    clients: dashmap::DashMap<String, Arc<McpClient>>,
+    /// Server configurations (including disabled servers).
+    configs: tokio::sync::RwLock<HashMap<String, McpServerConfig>>,
+}
+
+impl McpServerRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            clients: dashmap::DashMap::new(),
+            configs: tokio::sync::RwLock::new(HashMap::new()),
+        }
+    }
+
+    /// Add a server configuration (does not connect).
+    pub async fn add_config(&self, name: String, config: McpServerConfig) {
+        self.configs.write().await.insert(name, config);
+    }
+
+    /// Remove a server configuration and disconnect if connected.
+    pub async fn remove_config(&self, name: &str) {
+        self.configs.write().await.remove(name);
+        self.disconnect(name).await.ok();
+    }
+
+    /// Get a server configuration.
+    pub async fn get_config(&self, name: &str) -> Option<McpServerConfig> {
+        self.configs.read().await.get(name).cloned()
+    }
+
+    /// Connect to a server by name.
+    ///
+    /// Looks up the configuration, creates an [`McpClient`], connects it,
+    /// and stores the active client in the registry.
+    ///
+    /// # Errors
+    /// Returns an error if the server is not found, disabled, or connection fails.
+    pub async fn connect(
+        &self,
+        name: &str,
+    ) -> crate::error::Result<Arc<McpClient>> {
+        // Already connected?
+        if let Some(existing) = self.clients.get(name) {
+            if existing.is_connected() {
+                return Ok(existing.clone());
+            }
+            // Stale disconnected entry — remove it
+            self.clients.remove(name);
+        }
+
+        let config = self
+            .configs
+            .read()
+            .await
+            .get(name)
+            .cloned()
+            .ok_or_else(|| crate::error::Error::McpNotFound {
+                name: name.to_string(),
+            })?;
+
+        if !config.enabled {
+            return Err(crate::error::Error::Config(format!(
+                "MCP server '{name}' is disabled"
+            )));
+        }
+
+        let client =
+            Arc::new(McpClient::connect(config, name.to_string()).await?);
+
+        self.clients.insert(name.to_string(), client.clone());
+        Ok(client)
+    }
+
+    /// Disconnect a server by name.
+    ///
+    /// Kills the subprocess (for local connections) and removes the
+    /// client from the registry.
+    pub async fn disconnect(&self, name: &str) -> crate::error::Result<()> {
+        if let Some((_, client)) = self.clients.remove(name) {
+            client.disconnect().await?;
+        }
+        Ok(())
+    }
+
+    /// Get an active client by name.
+    pub fn get_client(&self, name: &str) -> Option<Arc<McpClient>> {
+        self.clients.get(name).map(|r| r.clone())
+    }
+
+    /// List all registered server names (configs, regardless of connection status).
+    pub async fn server_names(&self) -> Vec<String> {
+        let mut names: Vec<String> =
+            self.configs.read().await.keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    /// List all active clients.
+    pub fn active_clients(&self) -> Vec<Arc<McpClient>> {
+        self.clients.iter().map(|r| r.value().clone()).collect()
+    }
+
+    /// Get connection status for a server.
+    ///
+    /// Returns the [`McpStatus`] for the named server.
+    pub async fn status(&self, name: &str) -> McpStatus {
+        if let Some(client) = self.clients.get(name) {
+            if client.is_connected() {
+                return McpStatus::Connected;
+            }
+        }
+
+        // Check if the config exists but is disabled
+        if let Some(cfg) = self.configs.read().await.get(name) {
+            if !cfg.enabled {
+                return McpStatus::Disabled;
+            }
+        }
+
+        McpStatus::Failed {
+            error: "not connected".into(),
+        }
+    }
+
+    /// Get a summary of all servers: name, config, status, and tools.
+    pub async fn list_servers(&self) -> Vec<McpServerSummary> {
+        let configs = self.configs.read().await;
+        let mut summaries: Vec<McpServerSummary> = Vec::new();
+
+        for (name, config) in configs.iter() {
+            let (connected, tools) = if let Some(client) = self.clients.get(name) {
+                (client.is_connected(), client.cached_tools().await)
+            } else {
+                (false, Vec::new())
+            };
+
+            summaries.push(McpServerSummary {
+                name: name.clone(),
+                config: config.clone(),
+                connected,
+                tools,
+            });
+        }
+
+        summaries.sort_by(|a, b| a.name.cmp(&b.name));
+        summaries
+    }
+
+    /// Remove all clients (disconnect everything).
+    pub async fn clear(&self) {
+        for entry in self.clients.iter() {
+            let _ = entry.value().disconnect().await;
+        }
+        self.clients.clear();
+        self.configs.write().await.clear();
+    }
+}
+
+impl Default for McpServerRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Summary of an MCP server's current state.
+///
+/// Returned by [`McpServerRegistry::list_servers()`] for the
+/// `GET /mcp` API response.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct McpServerSummary {
+    /// Server name.
+    pub name: String,
+    /// Server configuration.
+    pub config: McpServerConfig,
+    /// Whether the server is currently connected.
+    pub connected: bool,
+    /// Tools discovered from this server (empty if not connected).
+    pub tools: Vec<McpTool>,
+}
+
+// ---------------------------------------------------------------------------
+// JSON-RPC 2.0 message helpers
+// ---------------------------------------------------------------------------
+
+/// Build a JSON-RPC 2.0 request object.
+///
+/// Returns a JSON value with `jsonrpc`, `method`, `params`, and `id` fields.
+fn build_jsonrpc_request(
+    method: &str,
+    params: serde_json::Value,
+    id: u64,
+) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+        "id": id,
+    })
+}
+
+/// Build a JSON-RPC 2.0 notification (a request without an `id` field).
+///
+/// Notifications are fire-and-forget — the server does not send a response.
+/// Used for the `notifications/initialized` message in the MCP handshake.
+fn build_jsonrpc_notification(
+    method: &str,
+    params: serde_json::Value,
+) -> serde_json::Value {
+    serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": method,
+        "params": params,
+    })
+}
+
+/// Parse a JSON-RPC 2.0 response string into a JSON value.
+///
+/// Returns an error if the JSON is invalid or if the response contains a
+/// JSON-RPC error object.
+fn parse_jsonrpc_response(
+    response: &str,
+) -> std::result::Result<serde_json::Value, String> {
+    let value: serde_json::Value = serde_json::from_str(response)
+        .map_err(|e| format!("invalid JSON: {e}"))?;
+
+    // Check for JSON-RPC error
+    if let Some(err) = value.get("error") {
+        let message = err
+            .get("message")
+            .and_then(|m| m.as_str())
+            .unwrap_or("unknown error");
+        return Err(format!("JSON-RPC error: {message}"));
+    }
+
+    Ok(value)
+}
+
+/// Frame a JSON message using the MCP framing protocol.
+///
+/// Format: `Content-Length: <N>\r\n\r\n<json>`
+///
+/// This is the framing used by the MCP stdio transport.
+fn frame_jsonrpc_message(json: &serde_json::Value) -> String {
+    let body = serde_json::to_string(json)
+        .expect("JSON serialization should not fail");
+    format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
+}
+
+/// Parse a stream of MCP-framed messages into individual JSON values.
+///
+/// Splits the input by `Content-Length: N\r\n\r\n` headers and returns
+/// each complete message body as a parsed JSON value. Incomplete trailing
+/// data is silently ignored.
+fn parse_jsonrpc_stream(data: &str) -> Vec<serde_json::Value> {
+    let mut messages = Vec::new();
+    let mut remaining = data;
+
+    while !remaining.is_empty() {
+        // Look for Content-Length header
+        if let Some(header_end) = remaining.find("\r\n\r\n") {
+            let header = &remaining[..header_end];
+            if let Some(content_length) = header
+                .strip_prefix("Content-Length: ")
+                .and_then(|n| n.trim().parse::<usize>().ok())
+            {
+                let body_start = header_end + 4; // skip \r\n\r\n
+                if remaining.len() >= body_start + content_length {
+                    let body =
+                        &remaining[body_start..body_start + content_length];
+                    if let Ok(value) =
+                        serde_json::from_str::<serde_json::Value>(body)
+                    {
+                        messages.push(value);
+                    }
+                    remaining =
+                        &remaining[body_start + content_length..];
+                    continue;
+                }
+            }
+        }
+        // Incomplete message or invalid header — stop parsing
+        break;
+    }
+
+    messages
+}
+
+/// Parse a `Content-Length` header value.
+///
+/// Expects input like `"Content-Length: 123\r\n"` and returns the
+/// parsed byte count.
+fn parse_content_length(
+    header: &str,
+) -> std::result::Result<usize, String> {
+    header
+        .trim()
+        .strip_prefix("Content-Length:")
+        .ok_or_else(|| {
+            format!("missing Content-Length header in: {header}")
+        })?
+        .trim()
+        .parse::<usize>()
+        .map_err(|e| format!("invalid Content-Length: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// Client tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod client_tests {
+    use super::*;
+
+    // -- JSON-RPC helpers ----------------------------------------------------
+
+    #[test]
+    fn test_build_jsonrpc_request() {
+        let req = build_jsonrpc_request("tools/list", serde_json::json!({}), 1);
+        assert_eq!(req["jsonrpc"], "2.0");
+        assert_eq!(req["method"], "tools/list");
+        assert_eq!(req["id"], 1);
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_response_success() {
+        let resp = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        let parsed = parse_jsonrpc_response(resp).expect("valid response");
+        assert_eq!(parsed["id"], 1);
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_response_error() {
+        let resp = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let err = parse_jsonrpc_response(resp).unwrap_err();
+        assert!(err.contains("Method not found"));
+    }
+
+    #[test]
+    fn test_frame_jsonrpc_message() {
+        let msg = serde_json::json!({"jsonrpc":"2.0","method":"ping","id":1});
+        let framed = frame_jsonrpc_message(&msg);
+        let body = serde_json::to_string(&msg).unwrap();
+        let expected = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        assert_eq!(framed, expected);
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_stream_single() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"ok"}"#;
+        let framed = format!("Content-Length: {}\r\n\r\n{}", body.len(), body);
+        let messages = parse_jsonrpc_stream(&framed);
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["result"], "ok");
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_stream_multiple() {
+        let body1 = r#"{"jsonrpc":"2.0","id":1,"result":"first"}"#;
+        let body2 = r#"{"jsonrpc":"2.0","id":2,"result":"second"}"#;
+        let framed = format!(
+            "Content-Length: {}\r\n\r\n{}Content-Length: {}\r\n\r\n{}",
+            body1.len(),
+            body1,
+            body2.len(),
+            body2
+        );
+        let messages = parse_jsonrpc_stream(&framed);
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["result"], "first");
+        assert_eq!(messages[1]["result"], "second");
+    }
+
+    #[test]
+    fn test_parse_jsonrpc_stream_incomplete() {
+        let body = r#"{"jsonrpc":"2.0","id":1,"result":"ok"}"#;
+        // Only send the header + partial body
+        let framed = format!("Content-Length: {}\r\n\r\n{}", body.len(), "{");
+        let messages = parse_jsonrpc_stream(&framed);
+        assert!(messages.is_empty());
+    }
+
+    #[test]
+    fn test_parse_content_length() {
+        let result = parse_content_length("Content-Length: 42\r\n")
+            .expect("valid header");
+        assert_eq!(result, 42);
+    }
+
+    #[test]
+    fn test_parse_content_length_invalid() {
+        assert!(parse_content_length("X-Test: 42\r\n").is_err());
+        assert!(parse_content_length("Content-Length: abc\r\n").is_err());
+    }
+
+    // -- JSON-RPC typed structs ---------------------------------------------
+
+    #[test]
+    fn test_jsonrpc_request_new() {
+        let req = JsonRpcRequest::new("tools/list", serde_json::json!({}), 1);
+        assert_eq!(req.jsonrpc, "2.0");
+        assert_eq!(req.method, "tools/list");
+        assert_eq!(req.id, 1);
+        assert!(req.params.is_some());
+    }
+
+    #[test]
+    fn test_jsonrpc_request_notification() {
+        let notif = JsonRpcRequest::notification(
+            "notifications/initialized",
+            serde_json::json!({}),
+        );
+        assert_eq!(notif.jsonrpc, "2.0");
+        assert_eq!(notif.method, "notifications/initialized");
+        assert_eq!(notif.id, 0);
+    }
+
+    #[test]
+    fn test_jsonrpc_request_serialization() {
+        let req = JsonRpcRequest::new("ping", serde_json::json!({"key": "val"}), 42);
+        let json = serde_json::to_string(&req).unwrap();
+        assert!(json.contains(r#""jsonrpc":"2.0""#));
+        assert!(json.contains(r#""method":"ping""#));
+        assert!(json.contains(r#""id":42"#));
+        assert!(json.contains(r#""key":"val""#));
+    }
+
+    #[test]
+    fn test_jsonrpc_response_success() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"result":{"tools":[]}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.is_success());
+        assert!(!resp.is_error());
+        assert!(resp.result.is_some());
+        assert!(resp.error.is_none());
+    }
+
+    #[test]
+    fn test_jsonrpc_response_error() {
+        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(!resp.is_success());
+        assert!(resp.is_error());
+        assert_eq!(resp.error_message(), Some("Method not found"));
+    }
+
+    #[test]
+    fn test_jsonrpc_response_error_code() {
+        let json = r#"{"jsonrpc":"2.0","id":2,"error":{"code":-32000,"message":"Server error","data":{"detail":"something broke"}}}"#;
+        let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
+        assert!(resp.is_error());
+        let err = resp.error.unwrap();
+        assert_eq!(err.code, -32000);
+        assert_eq!(err.message, "Server error");
+        assert!(err.data.is_some());
+    }
+
+    // -- build_jsonrpc_notification -----------------------------------------
+
+    #[test]
+    fn test_build_notification_has_no_id() {
+        let notif =
+            build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
+        let json_str = serde_json::to_string(&notif).unwrap();
+        // Notification must NOT have an "id" field
+        let parsed: serde_json::Value =
+            serde_json::from_str(&json_str).unwrap();
+        assert!(parsed.get("id").is_none());
+        assert_eq!(parsed["jsonrpc"], "2.0");
+        assert_eq!(parsed["method"], "notifications/initialized");
+    }
+
+    // -- McpServerRegistry ---------------------------------------------------
+
+    #[tokio::test]
+    async fn test_registry_add_and_get_config() {
+        let registry = McpServerRegistry::new();
+        let config = McpServerConfig::local(vec!["echo".into()]);
+        registry.add_config("test-srv".into(), config.clone()).await;
+
+        let retrieved = registry.get_config("test-srv").await;
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().command_executable(), Some("echo"));
+    }
+
+    #[tokio::test]
+    async fn test_registry_remove_config() {
+        let registry = McpServerRegistry::new();
+        registry
+            .add_config("temp".into(), McpServerConfig::local(vec!["ls".into()]))
+            .await;
+        assert!(registry.get_config("temp").await.is_some());
+
+        registry.remove_config("temp").await;
+        assert!(registry.get_config("temp").await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_registry_server_names() {
+        let registry = McpServerRegistry::new();
+        registry
+            .add_config("a".into(), McpServerConfig::local(vec!["a".into()]))
+            .await;
+        registry
+            .add_config("b".into(), McpServerConfig::local(vec!["b".into()]))
+            .await;
+
+        let names = registry.server_names().await;
+        assert_eq!(names, vec!["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn test_registry_disconnect_nonexistent() {
+        let registry = McpServerRegistry::new();
+        // Disconnecting a non-existent server should not error
+        let result = registry.disconnect("nonexistent").await;
+        assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_registry_status_disconnected() {
+        let registry = McpServerRegistry::new();
+        // No config → Failed
+        let status = registry.status("unknown").await;
+        assert!(matches!(status, McpStatus::Failed { .. }));
+    }
+
+    #[tokio::test]
+    async fn test_registry_status_disabled() {
+        let registry = McpServerRegistry::new();
+        let config = McpServerConfig::local(vec!["cmd".into()]).disabled();
+        registry.add_config("disabled-srv".into(), config).await;
+
+        let status = registry.status("disabled-srv").await;
+        assert!(matches!(status, McpStatus::Disabled));
+    }
+
+    #[tokio::test]
+    async fn test_registry_list_servers() {
+        let registry = McpServerRegistry::new();
+        registry
+            .add_config(
+                "srv1".into(),
+                McpServerConfig::local(vec!["echo".into()]),
+            )
+            .await;
+        registry
+            .add_config(
+                "srv2".into(),
+                McpServerConfig::remote("https://example.com".into()).disabled(),
+            )
+            .await;
+
+        let summaries = registry.list_servers().await;
+        assert_eq!(summaries.len(), 2);
+        assert_eq!(summaries[0].name, "srv1");
+        assert_eq!(summaries[1].name, "srv2");
+        assert!(!summaries[0].connected);
+        assert!(!summaries[1].connected);
+    }
+
+    #[tokio::test]
+    async fn test_registry_clear() {
+        let registry = McpServerRegistry::new();
+        registry
+            .add_config("srv".into(), McpServerConfig::local(vec!["ls".into()]))
+            .await;
+
+        registry.clear().await;
+        assert!(registry.server_names().await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_registry_default() {
+        let registry = McpServerRegistry::default();
+        assert!(registry.server_names().await.is_empty());
+        assert!(registry.active_clients().is_empty());
+    }
+
+    // -- McpServerSummary ----------------------------------------------------
+
+    #[test]
+    fn test_mcp_server_summary_serialization() {
+        let summary = McpServerSummary {
+            name: "test".into(),
+            config: McpServerConfig::local(vec!["cmd".into()]),
+            connected: false,
+            tools: vec![],
+        };
+        let json = serde_json::to_string(&summary).unwrap();
+        assert!(json.contains(r#""name":"test""#));
+        assert!(json.contains(r#""connected":false"#));
+        assert!(json.contains(r#""tools":[]"#));
     }
 }

@@ -5,7 +5,25 @@
 //! - `packages/core/src/account.ts`
 //! - `packages/core/src/account/sql.ts`
 
+use chrono::Duration;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+
+// ---------------------------------------------------------------------------
+// Serde helpers
+// ---------------------------------------------------------------------------
+
+mod duration_millis {
+    use chrono::Duration;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    pub fn serialize<S: Serializer>(duration: &Duration, serializer: S) -> Result<S::Ok, S::Error> {
+        duration.num_milliseconds().serialize(serializer)
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Duration, D::Error> {
+        let millis = i64::deserialize(deserializer)?;
+        Ok(Duration::milliseconds(millis))
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Branded type aliases
@@ -95,10 +113,12 @@ pub struct AccountLogin {
     pub url: String,
     /// The server hostname used for this login flow.
     pub server: String,
-    /// How long until the login session expires (serialized `Duration`).
-    pub expiry: String,
-    /// How long to wait between polling attempts (serialized `Duration`).
-    pub interval: String,
+    /// How long until the login session expires (serialized as milliseconds).
+    #[serde(with = "duration_millis")]
+    pub expiry: Duration,
+    /// How long to wait between polling attempts (serialized as milliseconds).
+    #[serde(with = "duration_millis")]
+    pub interval: Duration,
 }
 
 // ---------------------------------------------------------------------------
@@ -152,6 +172,30 @@ pub struct PollError {
     /// The underlying error that caused the poll to fail.
     pub cause: String,
 }
+
+impl PollError {
+    /// Create a `PollError` from any type implementing `std::error::Error`.
+    pub fn from_error(e: &dyn std::error::Error) -> Self {
+        Self {
+            cause: e.to_string(),
+        }
+    }
+
+    /// Create a `PollError` from any type implementing `Display`.
+    pub fn from_display(e: impl std::fmt::Display) -> Self {
+        Self {
+            cause: e.to_string(),
+        }
+    }
+}
+
+impl std::fmt::Display for PollError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "poll error: {}", self.cause)
+    }
+}
+
+impl std::error::Error for PollError {}
 
 /// Tagged union of all possible device authorization poll outcomes.
 ///
@@ -265,6 +309,44 @@ pub enum AccountError {
 }
 
 // ---------------------------------------------------------------------------
+// URL normalization
+// ---------------------------------------------------------------------------
+
+/// Normalize a server URL by trimming whitespace, ensuring `https://` scheme,
+/// and stripping trailing slashes.
+///
+/// Ported from: `packages/core/src/account.ts` — `normalizeServerUrl()`.
+pub fn normalize_server_url(url: &str) -> Result<String, AccountError> {
+    let trimmed = url.trim().to_string();
+    if trimmed.is_empty() {
+        return Err(AccountError::ServiceError(AccountServiceError {
+            message: "server URL must not be empty".to_string(),
+            cause: None,
+        }));
+    }
+
+    let lowered = trimmed.to_lowercase();
+
+    let with_scheme = if lowered.starts_with("https://") || lowered.starts_with("http://") {
+        trimmed
+    } else {
+        format!("https://{trimmed}")
+    };
+
+    let final_url = with_scheme.trim_end_matches('/').to_string();
+
+    let lower_final = final_url.to_lowercase();
+    if !lower_final.starts_with("https://") {
+        return Err(AccountError::ServiceError(AccountServiceError {
+            message: "server URL must use HTTPS".to_string(),
+            cause: Some(format!("got {final_url}")),
+        }));
+    }
+
+    Ok(final_url)
+}
+
+// ---------------------------------------------------------------------------
 // SQLite table row types
 // ---------------------------------------------------------------------------
 
@@ -310,12 +392,637 @@ pub struct AccountStateTableRow {
 }
 
 // ---------------------------------------------------------------------------
+// Service layer
+// ---------------------------------------------------------------------------
+
+/// In-memory account service managing OAuth device flow, token storage,
+/// and active-account selection.
+///
+/// Ported from: `packages/core/src/account.ts` — `AccountService` class.
+pub struct AccountService {
+    /// Base URL of the authentication server.
+    server_url: String,
+    /// HTTP client for server communication.
+    http_client: reqwest::Client,
+    /// All known accounts, keyed by ID.
+    accounts: Arc<tokio::sync::RwLock<Vec<AccountTableRow>>>,
+    /// Singleton state row tracking the active account/org.
+    state: Arc<tokio::sync::RwLock<AccountStateTableRow>>,
+}
+
+impl AccountService {
+    /// Convert a `reqwest::Error` into an `AccountError::TransportError`.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — static helper for
+    /// wrapping HTTP client errors into the account error hierarchy.
+    pub fn from_http_client_error(method: &str, url: &str, err: reqwest::Error) -> AccountError {
+        AccountError::TransportError(AccountTransportError {
+            method: method.to_string(),
+            url: url.to_string(),
+            description: Some(err.to_string()),
+            cause: Some(err.to_string()),
+        })
+    }
+
+    /// Create a new `AccountService` with the given server URL.
+    ///
+    /// Initialises an empty account list and a default state row with no
+    /// active account or organisation.
+    pub fn new(server_url: String) -> Self {
+        Self {
+            server_url,
+            http_client: reqwest::Client::new(),
+            accounts: Arc::new(tokio::sync::RwLock::new(Vec::new())),
+            state: Arc::new(tokio::sync::RwLock::new(AccountStateTableRow {
+                id: 1,
+                active_account_id: None,
+                active_org_id: None,
+            })),
+        }
+    }
+
+    /// Initiate the OAuth device authorisation flow.
+    ///
+    /// POSTs to `{server}/device/code` and returns the login data
+    /// containing the device code, user code, and verification URL.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `login()`.
+    pub async fn login(&self) -> Result<AccountLogin, AccountError> {
+        let url = format!("{}/device/code", self.server_url);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .send()
+            .await
+            .map_err(|e| AccountError::TransportError(AccountTransportError {
+                method: "POST".to_string(),
+                url: url.clone(),
+                description: Some(e.to_string()),
+                cause: Some(e.to_string()),
+            }))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("device code request failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        let login: AccountLogin = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse device code response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        Ok(login)
+    }
+
+    /// Poll the server for device authorisation completion.
+    ///
+    /// POSTs to `{server}/device/token` with the device code and returns
+    /// the tagged `PollResult` union.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `poll()`.
+    pub async fn poll(&self, code: DeviceCode) -> Result<PollResult, AccountError> {
+        let url = format!("{}/device/token", self.server_url);
+
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "code": code }))
+            .send()
+            .await
+            .map_err(|e| AccountError::TransportError(AccountTransportError {
+                method: "POST".to_string(),
+                url: url.clone(),
+                description: Some(e.to_string()),
+                cause: Some(e.to_string()),
+            }))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("device token poll failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        let result: PollResult = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse poll response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        Ok(result)
+    }
+
+    /// Retrieve the access token for `account_id`, refreshing it if expired.
+    ///
+    /// Checks `token_expiry` against the current Unix timestamp (milliseconds).
+    /// If the token is expired or missing, attempts a refresh using the
+    /// stored refresh token via `{server}/device/refresh`.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `token()`.
+    pub async fn token(&self, account_id: &AccountId) -> Result<AccessToken, AccountError> {
+        let accounts = self.accounts.read().await;
+        let account = accounts
+            .iter()
+            .find(|a| a.id == *account_id)
+            .ok_or_else(|| AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }))?;
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let needs_refresh = account
+            .token_expiry
+            .map(|exp| exp <= now_ms)
+            .unwrap_or(true);
+
+        if needs_refresh {
+            drop(accounts);
+            self.refresh_token(account_id).await?;
+            let accounts = self.accounts.read().await;
+            let account = accounts
+                .iter()
+                .find(|a| a.id == *account_id)
+                .ok_or_else(|| AccountError::RepoError(AccountRepoError {
+                    message: format!("account {account_id} not found after refresh"),
+                    cause: None,
+                }))?;
+            Ok(account.access_token.clone())
+        } else {
+            Ok(account.access_token.clone())
+        }
+    }
+
+    /// Return the currently active account as an `AccountInfo`, if any.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `active()`.
+    pub async fn active(&self) -> Result<Option<AccountInfo>, AccountError> {
+        let state = self.state.read().await;
+        let active_id = match &state.active_account_id {
+            Some(id) => id.clone(),
+            None => return Ok(None),
+        };
+        drop(state);
+
+        let accounts = self.accounts.read().await;
+        let account = accounts.iter().find(|a| a.id == active_id);
+
+        Ok(account.map(|a| AccountInfo {
+            id: a.id.clone(),
+            email: a.email.clone(),
+            url: a.url.clone(),
+            active_org_id: state_from_accounts(&self.state).await,
+        }))
+    }
+
+    /// Return all stored accounts as `AccountInfo` values.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `list()`.
+    pub async fn list(&self) -> Result<Vec<AccountInfo>, AccountError> {
+        let accounts = self.accounts.read().await;
+        let org_id = state_from_accounts(&self.state).await;
+
+        let infos = accounts
+            .iter()
+            .map(|a| AccountInfo {
+                id: a.id.clone(),
+                email: a.email.clone(),
+                url: a.url.clone(),
+                active_org_id: org_id.clone(),
+            })
+            .collect();
+
+        Ok(infos)
+    }
+
+    /// Set the active account to `account_id`.
+    ///
+    /// Resets the active organisation to `None`.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `useAccount()`.
+    pub async fn use_account(&self, account_id: AccountId) -> Result<(), AccountError> {
+        let accounts = self.accounts.read().await;
+        if !accounts.iter().any(|a| a.id == account_id) {
+            return Err(AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }));
+        }
+        drop(accounts);
+
+        let mut state = self.state.write().await;
+        state.active_account_id = Some(account_id);
+        state.active_org_id = None;
+        Ok(())
+    }
+
+    /// Remove an account by ID.
+    ///
+    /// If it is the active account, the active selection is cleared.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `remove()`.
+    pub async fn remove(&self, account_id: &AccountId) -> Result<(), AccountError> {
+        let mut accounts = self.accounts.write().await;
+        let before_len = accounts.len();
+        accounts.retain(|a| a.id != *account_id);
+
+        if accounts.len() == before_len {
+            return Err(AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }));
+        }
+        drop(accounts);
+
+        let mut state = self.state.write().await;
+        if state.active_account_id.as_ref() == Some(account_id) {
+            state.active_account_id = None;
+            state.active_org_id = None;
+        }
+        Ok(())
+    }
+
+    /// List organisations belonging to `account_id`.
+    ///
+    /// POSTs to `{server}/account/{account_id}/orgs` using the account's
+    /// access token.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `orgs()`.
+    pub async fn orgs(&self, account_id: &AccountId) -> Result<Vec<AccountOrg>, AccountError> {
+        let access_token = self.token(account_id).await?;
+        let url = format!("{}/account/{}/orgs", self.server_url, account_id);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .map_err(|e| AccountError::TransportError(AccountTransportError {
+                method: "GET".to_string(),
+                url: url.clone(),
+                description: Some(e.to_string()),
+                cause: Some(e.to_string()),
+            }))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("orgs request failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        let orgs: Vec<AccountOrg> = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse orgs response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        Ok(orgs)
+    }
+
+    /// Store or update access/refresh tokens for `account_id`.
+    ///
+    /// If the account already exists its tokens are overwritten; otherwise
+    /// a new row is appended.
+    ///
+    /// Ported from: `packages/core/src/account.ts` — `persistToken()`.
+    pub async fn persist_token(
+        &self,
+        account_id: AccountId,
+        access: AccessToken,
+        refresh: RefreshToken,
+        expiry: Option<i64>,
+    ) -> Result<(), AccountError> {
+        let now = chrono::Utc::now().timestamp_millis().to_string();
+        let mut accounts = self.accounts.write().await;
+
+        if let Some(existing) = accounts.iter_mut().find(|a| a.id == account_id) {
+            existing.access_token = access;
+            existing.refresh_token = refresh;
+            existing.token_expiry = expiry;
+            existing.time_updated = now;
+        } else {
+            return Err(AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }));
+        }
+        Ok(())
+    }
+
+    /// (Internal) Refresh an expired access token.
+    async fn refresh_token(&self, account_id: &AccountId) -> Result<(), AccountError> {
+        let (refresh_token, url) = {
+            let accounts = self.accounts.read().await;
+            let account = accounts
+                .iter()
+                .find(|a| a.id == *account_id)
+                .ok_or_else(|| AccountError::RepoError(AccountRepoError {
+                    message: format!("account {account_id} not found"),
+                    cause: None,
+                }))?;
+            (account.refresh_token.clone(), account.url.clone())
+        };
+
+        let refresh_url = format!("{url}/device/refresh");
+        let response = self
+            .http_client
+            .post(&refresh_url)
+            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .send()
+            .await
+            .map_err(|e| AccountError::TransportError(AccountTransportError {
+                method: "POST".to_string(),
+                url: refresh_url.clone(),
+                description: Some(e.to_string()),
+                cause: Some(e.to_string()),
+            }))?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("token refresh failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        #[derive(Deserialize)]
+        struct TokenResponse {
+            access_token: AccessToken,
+            refresh_token: RefreshToken,
+            expires_in: Option<i64>,
+        }
+
+        let token_resp: TokenResponse = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse token refresh response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        let expiry = token_resp
+            .expires_in
+            .map(|secs| chrono::Utc::now().timestamp_millis() + secs * 1000);
+
+        let now = chrono::Utc::now().timestamp_millis().to_string();
+        let mut accounts = self.accounts.write().await;
+        if let Some(account) = accounts.iter_mut().find(|a| a.id == *account_id) {
+            account.access_token = token_resp.access_token;
+            account.refresh_token = token_resp.refresh_token;
+            account.token_expiry = expiry;
+            account.time_updated = now;
+        }
+
+        Ok(())
+    }
+}
+
+/// Helper to read the active org ID from the state.
+async fn state_from_accounts(state: &Arc<tokio::sync::RwLock<AccountStateTableRow>>) -> Option<OrgId> {
+    let s = state.read().await;
+    s.active_org_id.clone()
+}
+
+// ---------------------------------------------------------------------------
+// SQLite persistence — AccountRepo
+// ---------------------------------------------------------------------------
+
+/// SQLite-backed account repository using `sqlx`.
+///
+/// Ported from: `packages/core/src/account/sql.ts` — Drizzle ORM operations
+/// over the `account` and `account_state` tables.
+pub struct AccountRepo {
+    pool: sqlx::SqlitePool,
+}
+
+impl AccountRepo {
+    /// Create a new `AccountRepo` backed by the given connection pool.
+    pub fn new(pool: sqlx::SqlitePool) -> Self {
+        Self { pool }
+    }
+
+    /// Return the currently active account row, if any.
+    ///
+    /// Queries `account_state` for the active account ID, then fetches the
+    /// corresponding `account` row.
+    pub async fn active(&self) -> Result<Option<AccountTableRow>, AccountError> {
+        let state_row: Option<AccountStateTableRow> = sqlx::query_as(
+            "SELECT id, active_account_id, active_org_id FROM account_state WHERE id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: "failed to query account_state".to_string(),
+            cause: Some(e.to_string()),
+        }))?;
+
+        let active_id = match state_row {
+            Some(s) => match s.active_account_id {
+                Some(id) => id,
+                None => return Ok(None),
+            },
+            None => return Ok(None),
+        };
+
+        let row: Option<AccountTableRow> = sqlx::query_as(
+            "SELECT id, email, url, access_token, refresh_token, token_expiry, time_created, time_updated FROM account WHERE id = ?",
+        )
+        .bind(&active_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: format!("failed to query account {active_id}"),
+            cause: Some(e.to_string()),
+        }))?;
+
+        Ok(row)
+    }
+
+    /// List all stored account rows.
+    pub async fn list(&self) -> Result<Vec<AccountTableRow>, AccountError> {
+        let rows: Vec<AccountTableRow> = sqlx::query_as(
+            "SELECT id, email, url, access_token, refresh_token, token_expiry, time_created, time_updated FROM account",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: "failed to list accounts".to_string(),
+            cause: Some(e.to_string()),
+        }))?;
+
+        Ok(rows)
+    }
+
+    /// Remove an account by ID.
+    ///
+    /// Also clears the active account if it matches.
+    pub async fn remove(&self, account_id: &str) -> Result<(), AccountError> {
+        let result = sqlx::query("DELETE FROM account WHERE id = ?")
+            .bind(account_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| AccountError::RepoError(AccountRepoError {
+                message: format!("failed to remove account {account_id}"),
+                cause: Some(e.to_string()),
+            }))?;
+
+        if result.rows_affected() == 0 {
+            return Err(AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }));
+        }
+
+        sqlx::query(
+            "UPDATE account_state SET active_account_id = NULL, active_org_id = NULL WHERE active_account_id = ?",
+        )
+        .bind(account_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: "failed to clear active account state".to_string(),
+            cause: Some(e.to_string()),
+        }))?;
+
+        Ok(())
+    }
+
+    /// Set the active account to `account_id`.
+    pub async fn use_account(&self, account_id: &str) -> Result<(), AccountError> {
+        let exists: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM account WHERE id = ?")
+                .bind(account_id)
+                .fetch_optional(&self.pool)
+                .await
+                .map_err(|e| AccountError::RepoError(AccountRepoError {
+                    message: format!("failed to check account {account_id}"),
+                    cause: Some(e.to_string()),
+                }))?;
+
+        if exists.is_none() {
+            return Err(AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }));
+        }
+
+        sqlx::query(
+            "INSERT INTO account_state (id, active_account_id, active_org_id) VALUES (1, ?, NULL) \
+             ON CONFLICT(id) DO UPDATE SET active_account_id = excluded.active_account_id, active_org_id = NULL",
+        )
+        .bind(account_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: "failed to update active account state".to_string(),
+            cause: Some(e.to_string()),
+        }))?;
+
+        Ok(())
+    }
+
+    /// Fetch a single account row by ID.
+    pub async fn get_row(&self, account_id: &str) -> Result<Option<AccountTableRow>, AccountError> {
+        let row: Option<AccountTableRow> = sqlx::query_as(
+            "SELECT id, email, url, access_token, refresh_token, token_expiry, time_created, time_updated FROM account WHERE id = ?",
+        )
+        .bind(account_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: format!("failed to get account {account_id}"),
+            cause: Some(e.to_string()),
+        }))?;
+
+        Ok(row)
+    }
+
+    /// Store or update access/refresh tokens for an existing account.
+    pub async fn persist_token(
+        &self,
+        account_id: &str,
+        access: &str,
+        refresh: &str,
+        expiry: Option<i64>,
+    ) -> Result<(), AccountError> {
+        let now = chrono::Utc::now().timestamp_millis().to_string();
+        let result = sqlx::query(
+            "UPDATE account SET access_token = ?, refresh_token = ?, token_expiry = ?, time_updated = ? WHERE id = ?",
+        )
+        .bind(access)
+        .bind(refresh)
+        .bind(expiry)
+        .bind(&now)
+        .bind(account_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: format!("failed to persist token for account {account_id}"),
+            cause: Some(e.to_string()),
+        }))?;
+
+        if result.rows_affected() == 0 {
+            return Err(AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found"),
+                cause: None,
+            }));
+        }
+
+        Ok(())
+    }
+
+    /// Insert a new account row with tokens.
+    pub async fn persist_account(
+        &self,
+        info: &AccountInfo,
+        access: &str,
+        refresh: &str,
+    ) -> Result<(), AccountError> {
+        let now = chrono::Utc::now().timestamp_millis().to_string();
+        sqlx::query(
+            "INSERT INTO account (id, email, url, access_token, refresh_token, token_expiry, time_created, time_updated) \
+             VALUES (?, ?, ?, ?, ?, NULL, ?, ?)",
+        )
+        .bind(&info.id)
+        .bind(&info.email)
+        .bind(&info.url)
+        .bind(access)
+        .bind(refresh)
+        .bind(&now)
+        .bind(&now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| AccountError::RepoError(AccountRepoError {
+            message: format!("failed to persist account {}", info.id),
+            cause: Some(e.to_string()),
+        }))?;
+
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Duration;
 
     // -- Aliases are functional ------------------------------------------
 
@@ -395,8 +1102,8 @@ mod tests {
             user: "USR-XYZ".to_string(),
             url: "https://example.com/verify".to_string(),
             server: "example.com".to_string(),
-            expiry: "15 minutes".to_string(),
-            interval: "5 seconds".to_string(),
+            expiry: Duration::minutes(15),
+            interval: Duration::seconds(5),
         };
 
         let json = serde_json::to_string(&login).expect("serialize AccountLogin");
@@ -406,8 +1113,8 @@ mod tests {
         assert_eq!(parsed.user, "USR-XYZ");
         assert_eq!(parsed.url, "https://example.com/verify");
         assert_eq!(parsed.server, "example.com");
-        assert_eq!(parsed.expiry, "15 minutes");
-        assert_eq!(parsed.interval, "5 seconds");
+        assert_eq!(parsed.expiry, Duration::minutes(15));
+        assert_eq!(parsed.interval, Duration::seconds(5));
     }
 
     // -- PollResult tagged enum serialization ----------------------------
@@ -459,6 +1166,33 @@ mod tests {
             PollResult::Error(e) => assert_eq!(e.cause, "network timeout"),
             other => panic!("expected PollError, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn test_poll_error_from_error() {
+        let source = std::io::Error::new(std::io::ErrorKind::TimedOut, "request timed out");
+        let poll_err = PollError::from_error(&source);
+        assert_eq!(poll_err.cause, "request timed out");
+
+        let display_err = PollError::from_display(format!("status {0}", 503));
+        assert_eq!(display_err.cause, "status 503");
+    }
+
+    #[test]
+    fn test_poll_error_display() {
+        let err = PollError {
+            cause: "connection reset".to_string(),
+        };
+        assert_eq!(err.to_string(), "poll error: connection reset");
+    }
+
+    #[test]
+    fn test_poll_error_is_std_error() {
+        let err = PollError {
+            cause: "oops".to_string(),
+        };
+        let std_err: &dyn std::error::Error = &err;
+        assert_eq!(std_err.to_string(), "poll error: oops");
     }
 
     // -- Transport error message formatting ------------------------------
@@ -622,5 +1356,270 @@ mod tests {
         assert!(!json.contains("active_account_id"));
         assert!(!json.contains("active_org_id"));
         assert!(json.contains(r#""id":0"#));
+    }
+
+    // ===================================================================
+    // AccountService tests (mock data, no real HTTP)
+    // ===================================================================
+
+    use tokio::sync::RwLock;
+
+    /// Helper: create a service with pre-loaded accounts and state.
+    fn service_with_accounts(
+        accounts: Vec<AccountTableRow>,
+        active_account_id: Option<AccountId>,
+        active_org_id: Option<OrgId>,
+    ) -> AccountService {
+        AccountService {
+            server_url: "https://auth.example.com".to_string(),
+            http_client: reqwest::Client::new(),
+            accounts: Arc::new(RwLock::new(accounts)),
+            state: Arc::new(RwLock::new(AccountStateTableRow {
+                id: 1,
+                active_account_id,
+                active_org_id,
+            })),
+        }
+    }
+
+    fn make_account(id: &str, email: &str) -> AccountTableRow {
+        AccountTableRow {
+            id: id.to_string(),
+            email: email.to_string(),
+            url: "https://api.example.com".to_string(),
+            access_token: format!("tok_acc_{id}"),
+            refresh_token: format!("tok_ref_{id}"),
+            token_expiry: Some(chrono::Utc::now().timestamp_millis() + 3_600_000),
+            time_created: "1718000000000".to_string(),
+            time_updated: "1718000000000".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_new_service_has_empty_accounts() {
+        let svc = AccountService::new("https://auth.example.com".to_string());
+        let accounts = svc.accounts.read().await;
+        assert!(accounts.is_empty());
+        let state = svc.state.read().await;
+        assert!(state.active_account_id.is_none());
+        assert!(state.active_org_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_active_returns_none_when_no_active() {
+        let svc = service_with_accounts(vec![], None, None);
+        assert!(svc.active().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn test_active_returns_account_info() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], Some("acct_1".to_string()), None);
+
+        let active = svc.active().await.unwrap();
+        assert!(active.is_some());
+        let info = active.unwrap();
+        assert_eq!(info.id, "acct_1");
+        assert_eq!(info.email, "alice@example.com");
+    }
+
+    #[tokio::test]
+    async fn test_list_returns_all_accounts() {
+        let acct1 = make_account("a1", "one@example.com");
+        let acct2 = make_account("a2", "two@example.com");
+        let svc = service_with_accounts(vec![acct1, acct2], None, None);
+
+        let list = svc.list().await.unwrap();
+        assert_eq!(list.len(), 2);
+        assert_eq!(list[0].id, "a1");
+        assert_eq!(list[1].id, "a2");
+    }
+
+    #[tokio::test]
+    async fn test_use_account_sets_active() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], None, None);
+
+        svc.use_account("acct_1".to_string()).await.unwrap();
+
+        let state = svc.state.read().await;
+        assert_eq!(state.active_account_id.as_deref(), Some("acct_1"));
+        assert!(state.active_org_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_use_account_unknown_returns_error() {
+        let svc = service_with_accounts(vec![], None, None);
+
+        let result = svc.use_account("nonexistent".to_string()).await;
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AccountError::RepoError(e) => assert!(e.message.contains("not found")),
+            other => panic!("expected RepoError, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_remove_deletes_account() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], None, None);
+
+        svc.remove(&"acct_1".to_string()).await.unwrap();
+
+        let accounts = svc.accounts.read().await;
+        assert!(accounts.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_remove_clears_active_if_removed() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], Some("acct_1".to_string()), None);
+
+        svc.remove(&"acct_1".to_string()).await.unwrap();
+
+        let state = svc.state.read().await;
+        assert!(state.active_account_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_remove_unknown_returns_error() {
+        let svc = service_with_accounts(vec![], None, None);
+        let result = svc.remove(&"nonexistent".to_string()).await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_persist_token_updates_existing() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], None, None);
+
+        svc.persist_token(
+            "acct_1".to_string(),
+            "new_access".to_string(),
+            "new_refresh".to_string(),
+            Some(9999),
+        )
+        .await
+        .unwrap();
+
+        let accounts = svc.accounts.read().await;
+        let a = accounts.iter().find(|a| a.id == "acct_1").unwrap();
+        assert_eq!(a.access_token, "new_access");
+        assert_eq!(a.refresh_token, "new_refresh");
+        assert_eq!(a.token_expiry, Some(9999));
+    }
+
+    #[tokio::test]
+    async fn test_persist_token_unknown_account_returns_error() {
+        let svc = service_with_accounts(vec![], None, None);
+        let result = svc
+            .persist_token(
+                "ghost".to_string(),
+                "a".to_string(),
+                "r".to_string(),
+                None,
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_token_returns_valid_token() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], None, None);
+
+        let token = svc.token(&"acct_1".to_string()).await.unwrap();
+        assert_eq!(token, "tok_acc_acct_1");
+    }
+
+    #[tokio::test]
+    async fn test_token_unknown_account_returns_error() {
+        let svc = service_with_accounts(vec![], None, None);
+        let result = svc.token(&"ghost".to_string()).await;
+        assert!(result.is_err());
+    }
+
+    // ===================================================================
+    // normalize_server_url
+    // ===================================================================
+
+    #[test]
+    fn test_normalize_server_url_https_passthrough() {
+        let url = normalize_server_url("https://api.example.com").unwrap();
+        assert_eq!(url, "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_server_url_strips_trailing_slash() {
+        let url = normalize_server_url("https://api.example.com/").unwrap();
+        assert_eq!(url, "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_server_url_strips_multiple_trailing_slashes() {
+        let url = normalize_server_url("https://api.example.com///").unwrap();
+        assert_eq!(url, "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_server_url_prepends_https() {
+        let url = normalize_server_url("api.example.com").unwrap();
+        assert_eq!(url, "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_server_url_trims_whitespace() {
+        let url = normalize_server_url("  https://api.example.com  ").unwrap();
+        assert_eq!(url, "https://api.example.com");
+    }
+
+    #[test]
+    fn test_normalize_server_url_rejects_empty() {
+        assert!(normalize_server_url("").is_err());
+    }
+
+    #[test]
+    fn test_normalize_server_url_rejects_whitespace_only() {
+        assert!(normalize_server_url("   ").is_err());
+    }
+
+    #[test]
+    fn test_normalize_server_url_rejects_http() {
+        let result = normalize_server_url("http://api.example.com");
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            AccountError::ServiceError(e) => {
+                assert!(e.message.contains("HTTPS"));
+            }
+            other => panic!("expected ServiceError, got {other:?}"),
+        }
+    }
+
+    // ===================================================================
+    // from_http_client_error
+    // ===================================================================
+
+    #[test]
+    fn test_from_http_client_error_creates_transport_error() {
+        // Build a reqwest error by making an invalid URL request synchronously
+        let client = reqwest::Client::new();
+        let err = client
+            .get("https://definitely-not-a-real-host.invalid")
+            .build()
+            .expect("build request")
+            .error_for_status()
+            .unwrap_err();
+
+        let account_err =
+            AccountService::from_http_client_error("GET", "https://example.com", err);
+        match account_err {
+            AccountError::TransportError(te) => {
+                assert_eq!(te.method, "GET");
+                assert_eq!(te.url, "https://example.com");
+                assert!(te.description.is_some());
+                assert!(te.cause.is_some());
+            }
+            other => panic!("expected TransportError, got {other:?}"),
+        }
     }
 }

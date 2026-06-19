@@ -140,6 +140,36 @@ pub enum TuiAction {
 
     /// Custom command string (from server events).
     CustomCommand(String),
+
+    // ── New component actions ────────────────────────────────────
+    /// Toggle the diff viewer overlay.
+    DiffView,
+    /// Show session list as a dialog (vs logging-only SessionList).
+    SessionListDialog,
+    /// Push a dialog onto the dialog stack.
+    DialogPush(DialogTarget),
+    /// Toggle sidebar panel (cycle tabs).
+    SidebarNextPanel,
+    SidebarPrevPanel,
+
+    // ── New integrations ──────────────────────────────────────────
+    /// Toggle audio notification on stream completion.
+    AudioToggle,
+    /// Open the current file in an external editor.
+    OpenInEditor,
+}
+
+/// Target dialog type for the dialog stack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogTarget {
+    ModelSelector,
+    AgentSelector,
+    SessionList,
+    ThemePicker,
+    Export,
+    Timeline,
+    Subagent,
+    Stash,
 }
 
 /// Map a crossterm `KeyEvent` to a `TuiAction`, if there is a binding.
@@ -179,8 +209,19 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::CommandPalette),
 
-        // ── Status ────────────────────────────────────────────────
-        // <leader>s is implemented in the app layer; raw binding:
+        // ── Help ──────────────────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('h'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if false => None, // Ctrl+H is used for backspace in terminals
+        // Help is accessed via leader+h or F1
+
+        KeyEvent {
+            code: KeyCode::F(1),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::Help),
 
         // ── Session rename ────────────────────────────────────────
         KeyEvent {
@@ -259,6 +300,19 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::ScrollDown),
 
+        // ── Half-page scroll ──────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('u'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::ScrollHalfPageUp),
+
+        KeyEvent {
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if false => None, // Ctrl+D is used for Quit
+
         // ── Suspend terminal ──────────────────────────────────────
         KeyEvent {
             code: KeyCode::Char('z'),
@@ -266,41 +320,19 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::Suspend),
 
-        // ── Agent list ────────────────────────────────────────────
-        // <leader>a
+        // ── Toggle timestamps ─────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('s'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::ToggleTimestamps),
 
-        // ── Model list ────────────────────────────────────────────
-        // <leader>m
-
-        // ── Session list ──────────────────────────────────────────
-        // <leader>l
-
-        // ── Session new ───────────────────────────────────────────
-        // <leader>n
-
-        // ── Session compact ───────────────────────────────────────
-        // <leader>c
-
-        // ── Sidebar toggle ────────────────────────────────────────
-        // <leader>b
-
-        // ── Session export ────────────────────────────────────────
-        // <leader>x
-
-        // ── Session undo ──────────────────────────────────────────
-        // <leader>u
-
-        // ── Session redo ──────────────────────────────────────────
-        // <leader>r
-
-        // ── Copy message ──────────────────────────────────────────
-        // <leader>y
-
-        // ── Toggle conceal ────────────────────────────────────────
-        // <leader>h
-
-        // ── Session fork ──────────────────────────────────────────
-        // <leader>g  (timeline)
+        // ── Toggle thinking ───────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('y'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::ToggleThinking),
 
         // ── Session delete ────────────────────────────────────────
         KeyEvent {
@@ -309,8 +341,46 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::SessionDelete),
 
-        // ── Theme switch ──────────────────────────────────────────
-        // <leader>t
+        // ── Session fork ──────────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::SessionFork),
+
+        // ── Next/prev message ─────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('n'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::ScrollNextMessage),
+
+        KeyEvent {
+            code: KeyCode::Char('p'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } if false => None, // Ctrl+P is used for CommandPalette
+
+        // ── Toggle sidebar (direct) ───────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('b'),
+            modifiers: KeyModifiers::ALT,
+            ..
+        } => Some(TuiAction::ToggleSidebar),
+
+        // ── Diff viewer ───────────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('o'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::DiffView),
+
+        // ── Session list dialog ────────────────────────────────────
+        KeyEvent {
+            code: KeyCode::Char('l'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::SessionListDialog),
 
         _ => None,
     }
@@ -334,7 +404,7 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::Status),
 
-        // <leader> + e → external editor
+        // <leader> + e → external editor / export
         KeyEvent {
             code: KeyCode::Char('e'),
             modifiers: KeyModifiers::NONE,
@@ -390,7 +460,7 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::SessionCompact),
 
-        // <leader> + q → session list (queued)
+        // <leader> + q → quit
         KeyEvent {
             code: KeyCode::Char('q'),
             modifiers: KeyModifiers::NONE,
@@ -411,8 +481,12 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::SessionRedo),
 
-        // <leader> + y → copy
-        // Returns an action that can be handled by the app
+        // <leader> + y → copy message
+        KeyEvent {
+            code: KeyCode::Char('y'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::CustomCommand("copy".into())),
 
         // <leader> + h → toggle conceal
         KeyEvent {
@@ -435,6 +509,125 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::SessionExport),
 
+        // <leader> + w → toggle tool details
+        KeyEvent {
+            code: KeyCode::Char('w'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleToolDetails),
+
+        // <leader> + i → toggle timestamps
+        KeyEvent {
+            code: KeyCode::Char('i'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleTimestamps),
+
+        // <leader> + k → toggle thinking
+        KeyEvent {
+            code: KeyCode::Char('k'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleThinking),
+
+        // <leader> + v → toggle scrollbar
+        KeyEvent {
+            code: KeyCode::Char('v'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleScrollbar),
+
+        // <leader> + p → command palette (alternative)
+        KeyEvent {
+            code: KeyCode::Char('p'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::CommandPalette),
+
+        // <leader> + f → session fork
+        KeyEvent {
+            code: KeyCode::Char('f'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::SessionFork),
+
+        // <leader> + d → session delete
+        KeyEvent {
+            code: KeyCode::Char('d'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::SessionDelete),
+
+        // <leader> + / → help
+        KeyEvent {
+            code: KeyCode::Char('?'),
+            modifiers: KeyModifiers::SHIFT,
+            ..
+        } => Some(TuiAction::Help),
+
+        // <leader> + j → toggle animations
+        KeyEvent {
+            code: KeyCode::Char('j'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleAnimations),
+
+        // <leader> + o → toggle file context
+        KeyEvent {
+            code: KeyCode::Char('o'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleFileContext),
+
+        // <leader> + z → toggle diff wrap
+        KeyEvent {
+            code: KeyCode::Char('z'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ToggleDiffWrap),
+
+        // <leader> + E → open in editor
+        KeyEvent {
+            code: KeyCode::Char('E'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::OpenInEditor),
+
+        // <leader> + A → toggle audio notifications
+        KeyEvent {
+            code: KeyCode::Char('A'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::AudioToggle),
+
+        // <leader> + . → model selector dialog
+        KeyEvent {
+            code: KeyCode::Char('.'),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::DialogPush(DialogTarget::ModelSelector)),
+
+        // <leader> + , → agent selector dialog
+        KeyEvent {
+            code: KeyCode::Char(','),
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::DialogPush(DialogTarget::AgentSelector)),
+
+        // <leader> + tab → next sidebar panel
+        KeyEvent {
+            code: KeyCode::Tab,
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::SidebarNextPanel),
+
+        // <leader> + S-Tab → prev sidebar panel
+        KeyEvent {
+            code: KeyCode::BackTab,
+            modifiers: KeyModifiers::SHIFT,
+            ..
+        } => Some(TuiAction::SidebarPrevPanel),
+
         // <leader> + 1-9 → quick switch
         KeyEvent {
             code: KeyCode::Char(c @ '1'..='9'),
@@ -451,6 +644,106 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::ChildFirst),
 
+        // <leader> + right → next child
+        KeyEvent {
+            code: KeyCode::Right,
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ChildNext),
+
+        // <leader> + left → prev child
+        KeyEvent {
+            code: KeyCode::Left,
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::ChildPrev),
+
+        // <leader> + up → parent session
+        KeyEvent {
+            code: KeyCode::Up,
+            modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::Parent),
+
         _ => None,
     }
+}
+
+/// Returns all known keybindings for display in the help overlay.
+pub fn all_bindings() -> Vec<KeyBinding> {
+    vec![
+        // App-level
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), description: "Quit", group: "App" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), description: "Quit", group: "App" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), description: "Command palette", group: "App" },
+        KeyBinding { key: KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE), description: "Help", group: "App" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), description: "Interrupt / dismiss", group: "App" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), description: "Suspend", group: "App" },
+
+        // Session
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), description: "Rename session", group: "Session" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL), description: "Background subagents", group: "Session" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL), description: "Fork session", group: "Session" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), description: "Delete session", group: "Session" },
+
+        // Navigation
+        KeyBinding { key: KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), description: "Scroll up", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), description: "Scroll down", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), description: "Page up", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), description: "Page down", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), description: "First message", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::End, KeyModifiers::NONE), description: "Last message", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL), description: "First message", group: "Navigation" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), description: "Next message", group: "Navigation" },
+
+        // Agent/Model
+        KeyBinding { key: KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), description: "Next agent", group: "Agent" },
+        KeyBinding { key: KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT), description: "Prev agent", group: "Agent" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL), description: "Cycle variant", group: "Agent" },
+
+        // Toggles
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL), description: "Toggle timestamps", group: "Toggles" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), description: "Toggle thinking", group: "Toggles" },
+    ]
+}
+
+/// Returns all leader-chord bindings for display in the help overlay.
+pub fn all_leader_bindings() -> Vec<KeyBinding> {
+    vec![
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), description: "Status", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE), description: "Export session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE), description: "Theme switch", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE), description: "Toggle sidebar", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), description: "New session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), description: "Session list", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), description: "Agent list", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), description: "Model list", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), description: "Compact session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), description: "Quit", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE), description: "Undo", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), description: "Redo", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE), description: "Copy message", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), description: "Toggle conceal", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), description: "Session timeline", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), description: "Export session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE), description: "Toggle tool details", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), description: "Toggle timestamps", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE), description: "Toggle thinking", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), description: "Toggle scrollbar", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE), description: "Command palette", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE), description: "Fork session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), description: "Delete session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT), description: "Help", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), description: "Toggle animations", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), description: "Toggle file context", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), description: "Toggle diff wrap", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE), description: "Quick switch 1", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE), description: "Quick switch N", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), description: "First child", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), description: "Next child", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), description: "Prev child", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), description: "Parent session", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE), description: "Open in editor", group: "Leader" },
+        KeyBinding { key: KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE), description: "Toggle audio", group: "Leader" },
+    ]
 }

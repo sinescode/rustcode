@@ -18,6 +18,7 @@
 
 use crate::id::{self, Direction, IdPrefix};
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::broadcast;
 
@@ -80,6 +81,112 @@ impl GlobalEvent {
     pub fn id(&self) -> Option<&str> {
         self.payload.get("id")?.as_str()
     }
+
+    /// Extract the event type from the payload, if present.
+    pub fn event_type(&self) -> Option<&str> {
+        self.payload.get("type")?.as_str()
+    }
+
+    /// Create a GlobalEvent from a typed TUI bus event payload.
+    ///
+    /// Serializes the typed event to JSON and wraps it in a `GlobalEvent`.
+    /// The event's `type` tag becomes the JSON `"type"` field.
+    pub fn from_tui(event: &TuiBusEvent) -> Result<Self, serde_json::Error> {
+        let payload = serde_json::to_value(event)?;
+        Ok(Self::new(payload))
+    }
+
+    /// Attempt to deserialize the payload as a typed TUI bus event.
+    pub fn try_as_tui(&self) -> Option<TuiBusEvent> {
+        serde_json::from_value(self.payload.clone()).ok()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TUI Bus Event Payloads
+// ---------------------------------------------------------------------------
+
+/// Typed event payloads for TUI-related bus events.
+///
+/// These payloads are serialized to/from the `GlobalEvent.payload` JSON.
+/// Both the server's TUI routes and the TUI's `handle_bus_event` use these types
+/// to ensure they speak the same protocol.
+///
+/// # Source
+/// Ported from `packages/opencode/src/server/tui-event.ts` and
+/// `packages/opencode/src/server/routes/instance/httpapi/groups/tui.ts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type")]
+pub enum TuiBusEvent {
+    /// Append text to the TUI prompt.
+    ///
+    /// # Source
+    /// `TuiEvent.PromptAppend` in `tui-event.ts`.
+    #[serde(rename = "tui.prompt.append")]
+    TuiPromptAppend {
+        #[serde(default)]
+        text: String,
+    },
+
+    /// Execute a command in the TUI.
+    ///
+    /// # Source
+    /// `TuiEvent.CommandExecute` in `tui-event.ts`.
+    #[serde(rename = "tui.command.execute")]
+    TuiCommandExecute {
+        #[serde(default)]
+        command: String,
+    },
+
+    /// Show a toast notification in the TUI.
+    ///
+    /// # Source
+    /// `TuiEvent.ToastShow` in `tui-event.ts`.
+    #[serde(rename = "tui.toast.show")]
+    TuiToastShow {
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        variant: String,
+        #[serde(default)]
+        duration: Option<u64>,
+    },
+
+    /// Navigate the TUI to a specific session.
+    ///
+    /// # Source
+    /// `TuiEvent.SessionSelect` in `tui-event.ts`.
+    #[serde(rename = "tui.session.select")]
+    TuiSessionSelect {
+        #[serde(default)]
+        session_id: String,
+    },
+
+    /// Open the help overlay.
+    #[serde(rename = "tui.open.help")]
+    TuiHelpOpen,
+
+    /// Open the sessions list.
+    #[serde(rename = "tui.open.sessions")]
+    TuiSessionsOpen,
+
+    /// Open the themes picker.
+    #[serde(rename = "tui.open.themes")]
+    TuiThemesOpen,
+
+    /// Open the models list.
+    #[serde(rename = "tui.open.models")]
+    TuiModelsOpen,
+
+    /// Submit the current prompt.
+    #[serde(rename = "tui.prompt.submit")]
+    TuiPromptSubmit,
+
+    /// Clear the current prompt.
+    #[serde(rename = "tui.prompt.clear")]
+    TuiPromptClear,
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +309,14 @@ impl SharedBus {
 impl Default for SharedBus {
     fn default() -> Self {
         Self::new(1024)
+    }
+}
+
+impl fmt::Debug for SharedBus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("SharedBus")
+            .field("receiver_count", &self.receiver_count())
+            .finish()
     }
 }
 

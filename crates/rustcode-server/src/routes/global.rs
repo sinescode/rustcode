@@ -10,12 +10,13 @@
 //! - `POST /global/dispose`  — dispose instance
 //! - `POST /global/upgrade`  — upgrade opencode
 
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::response::IntoResponse;
 use axum::{Json, Router};
-use axum::routing::{get, patch, post};
+use axum::routing::{get, patch, post, put};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tracing::info;
 
 use crate::server::AppState;
 
@@ -78,6 +79,7 @@ pub fn global_routes(state: Arc<AppState>) -> Router {
         .route("/global/config", get(global_config_get).patch(global_config_update))
         .route("/global/dispose", post(global_dispose))
         .route("/global/upgrade", post(global_upgrade))
+        .route("/auth/{provider_id}", put(put_auth))
         .with_state(state)
 }
 
@@ -121,20 +123,121 @@ async fn global_config_get(State(_): State<Arc<AppState>>) -> impl IntoResponse 
 /// # Source
 /// `global.ts` line 105 — `HttpApiEndpoint.patch("configUpdate", GlobalPaths.config, ...)`.
 async fn global_config_update(
-    State(_): State<Arc<AppState>>,
-    Json(_payload): Json<ConfigUpdatePayload>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<serde_json::Value>,
 ) -> impl IntoResponse {
-    Json(serde_json::json!({
-        "schema": "opencode.json",
-        "version": env!("CARGO_PKG_VERSION"),
-    }))
+    // Parse the full JSON body as ConfigV1.Info
+    let incoming: rustcode_core::config::Info = match serde_json::from_value(payload) {
+        Ok(info) => info,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "Invalid config payload",
+                    "detail": e.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+
+    // Apply env-var side effects from key scalar fields
+    if let Some(ref shell) = incoming.shell {
+        info!(%shell, "Global config: setting shell");
+        std::env::set_var("SHELL", shell);
+    }
+    if let Some(ref log_level) = incoming.log_level {
+        let level_str = format!("{:?}", log_level).to_uppercase();
+        info!(%level_str, "Global config: setting log_level");
+        std::env::set_var("RUST_LOG", &level_str);
+    }
+    if let Some(ref agent) = incoming.default_agent {
+        info!(%agent, "Global config: setting default_agent");
+    }
+    if let Some(ref username) = incoming.username {
+        info!(%username, "Global config: setting username");
+    }
+
+    // Determine global config path:
+    //   ~/.config/opencode/config.json   (preferred)
+    //   ~/.config/opencode/opencode.json (fallback)
+    let config_dir = match rustcode_core::config::Config::global_config_dir() {
+        Ok(dir) => dir,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "Cannot determine config directory",
+                    "detail": e.to_string(),
+                })),
+            )
+                .into_response();
+        }
+    };
+    let path = {
+        let json = config_dir.join("config.json");
+        let opencode = config_dir.join("opencode.json");
+        if json.exists() { json } else { opencode }
+    };
+
+    // Load existing global config from the file and deep-merge the incoming patch
+    let mut merged = match rustcode_core::config::Config::load_from_file(&path) {
+        Ok(existing) => existing,
+        Err(e) => {
+            tracing::warn!("Could not load existing global config (will start fresh): {e}");
+            rustcode_core::config::Info::default()
+        }
+    };
+    rustcode_core::config::merge_info(&mut merged, &incoming);
+
+    let key_count = serde_json::to_value(&merged)
+        .ok()
+        .and_then(|v| v.as_object().map(|o| o.len()))
+        .unwrap_or(0);
+    info!(
+        "Writing global config to `{}` ({} top-level keys after merge)",
+        path.display(),
+        key_count,
+    );
+
+    match rustcode_core::config::Config::save_to_file(&path, &merged) {
+        Ok(()) => {
+            let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                "type": "global.config.updated",
+                "version": state.version,
+            }));
+            let _ = state.bus.publish(event);
+
+            Json(serde_json::json!({
+                "schema": "opencode.json",
+                "version": state.version,
+                "updated": true,
+                "path": path.to_string_lossy(),
+            }))
+            .into_response()
+        }
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "Failed to write global config",
+                "detail": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
 
 /// `POST /global/dispose` — dispose all instances.
 ///
 /// # Source
 /// `global.ts` line 116 — `HttpApiEndpoint.post("dispose", GlobalPaths.dispose, ...)`.
-async fn global_dispose(State(_): State<Arc<AppState>>) -> impl IntoResponse {
+async fn global_dispose(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    tracing::info!("Global dispose: shutting down all instances");
+    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+        "type": "global.disposed",
+        "version": state.version,
+    }));
+    let _ = state.bus.publish(event);
     Json(serde_json::json!(true))
 }
 
@@ -151,4 +254,34 @@ async fn global_upgrade(
         "success": false,
         "error": format!("upgrade to {target} not yet implemented in rustcode-server"),
     }))
+}
+
+/// `PUT /auth/{provider_id}` — write auth credentials for a provider.
+///
+/// Accepts arbitrary JSON as the credential value and persists it to
+/// `{data_dir}/opencode/auth.json`.
+///
+/// # Source
+/// Ported from `packages/opencode/src/auth/index.ts` — `put()`.
+async fn put_auth(
+    Path(provider_id): Path<String>,
+    Json(credentials): Json<serde_json::Value>,
+) -> impl IntoResponse {
+    info!("Writing auth credentials for provider `{provider_id}`");
+
+    match rustcode_core::config::Config::save_auth(&provider_id, &credentials) {
+        Ok(()) => Json(serde_json::json!({
+            "saved": true,
+            "provider_id": provider_id,
+        }))
+        .into_response(),
+        Err(e) => (
+            axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "Failed to save auth credentials",
+                "detail": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }

@@ -7,6 +7,8 @@
 //!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 use crate::project::{ProjectId, ProjectVcs};
@@ -243,9 +245,107 @@ impl From<LocationRef> for LocationServiceKey {
         }
     }
 }
+
+/// Internal entry stored in [`LocationServiceMap`].
+struct LocationServiceEntry {
+    location: LocationFull,
+    last_accessed: std::time::Instant,
+}
+
+/// A map of location service keys to resolved locations with idle TTL eviction.
+///
+/// Entries are evicted after being idle for longer than the configured TTL.
+/// The default TTL is 60 minutes.
+///
+/// # Source
+/// `packages/core/src/location-layer.ts` — `LocationServiceMap` (LayerMap with 60-min idle TTL).
+pub struct LocationServiceMap {
+    entries: std::collections::HashMap<LocationServiceKey, LocationServiceEntry>,
+    ttl: std::time::Duration,
+}
+
+impl Default for LocationServiceMap {
+    fn default() -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            ttl: std::time::Duration::from_secs(60 * 60),
+        }
+    }
+}
+
+impl LocationServiceMap {
+    /// Create a new map with the given TTL.
+    #[must_use]
+    pub fn new(ttl: std::time::Duration) -> Self {
+        Self {
+            entries: std::collections::HashMap::new(),
+            ttl,
+        }
+    }
+
+    /// Get an existing entry or resolve and insert a new one.
+    ///
+    /// If the key exists and has not expired, its `last_accessed` time is
+    /// refreshed and the cached location is returned. Otherwise, the resolver
+    /// is called. If it returns `Some`, the result is inserted and returned.
+    /// If it returns `None`, `None` is returned.
+    pub fn get_or_resolve(
+        &mut self,
+        key: LocationServiceKey,
+        resolver: impl FnOnce() -> Option<LocationFull>,
+    ) -> Option<LocationFull> {
+        if let Some(entry) = self.entries.get_mut(&key) {
+            if entry.last_accessed.elapsed() < self.ttl {
+                entry.last_accessed = std::time::Instant::now();
+                return Some(entry.location.clone());
+            }
+            self.entries.remove(&key);
+        }
+
+        let location = resolver()?;
+        self.entries.insert(
+            key,
+            LocationServiceEntry {
+                location: location.clone(),
+                last_accessed: std::time::Instant::now(),
+            },
+        );
+        Some(location)
+    }
+
+    /// Remove all entries that have been idle longer than the TTL.
+    pub fn evict_expired(&mut self) {
+        let ttl = self.ttl;
+        self.entries
+            .retain(|_, entry| entry.last_accessed.elapsed() < ttl);
+    }
+
+    /// Return the number of entries in the map (including potentially expired ones).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Return `true` if the map contains no entries.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
 // ══════════════════════════════════════════════════════════════════════════════
 // Location Resolver
 // ══════════════════════════════════════════════════════════════════════════════
+
+/// Error produced when a location cannot be resolved.
+///
+/// # Source
+/// `packages/core/src/location-layer.ts` — `Unresolvable`.
+#[derive(Debug, Clone, thiserror::Error, Serialize, Deserialize)]
+pub enum LocationError {
+    #[error("directory could not be resolved to a project: {directory}")]
+    Unresolvable { directory: String },
+}
 
 /// Resolve a [`LocationRef`] into a [`LocationFull`].
 ///
@@ -268,6 +368,66 @@ pub fn resolve_location(
             directory: project_directory,
         },
         vcs,
+    })
+}
+
+/// Resolve a [`LocationRef`] into a [`LocationFull`], returning an error on failure.
+///
+/// Like [`resolve_location`] but returns [`LocationError::Unresolvable`] instead
+/// of `None` when the resolver cannot map the directory.
+///
+/// # Source
+/// `packages/core/src/location-layer.ts` — `layer`.
+pub fn location_layer(
+    ref_: &LocationRef,
+    project_resolver: impl FnOnce(&str) -> Option<(ProjectId, String, Option<ProjectVcs>)>,
+) -> Result<LocationFull, LocationError> {
+    let (project_id, project_directory, vcs) =
+        project_resolver(&ref_.directory).ok_or_else(|| LocationError::Unresolvable {
+            directory: ref_.directory.clone(),
+        })?;
+    Ok(LocationFull {
+        directory: ref_.directory.clone(),
+        workspace_id: ref_.workspace_id.clone(),
+        project: LocationProjectRef {
+            id: project_id,
+            directory: project_directory,
+        },
+        vcs,
+    })
+}
+
+/// Trait for resolving directories to project information.
+///
+/// # Source
+/// `packages/core/src/location.ts` — `layer` (Project.Service integration).
+pub trait ProjectResolver {
+    fn resolve(&self, directory: &str) -> Option<(ProjectId, String, Option<ProjectVcs>)>;
+}
+
+/// Create a location layer that resolves via [`ProjectResolver`].
+///
+/// Ported from: `packages/core/src/location.ts` — `layer`.
+///
+/// # Source
+/// `packages/core/src/location-layer.ts` — `layer`.
+pub fn layer(
+    ref_: &LocationRef,
+    project_service: &dyn ProjectResolver,
+) -> Result<LocationFull, LocationError> {
+    let resolved = project_service
+        .resolve(&ref_.directory)
+        .ok_or_else(|| LocationError::Unresolvable {
+            directory: ref_.directory.clone(),
+        })?;
+    Ok(LocationFull {
+        directory: ref_.directory.clone(),
+        workspace_id: ref_.workspace_id.clone(),
+        project: LocationProjectRef {
+            id: resolved.0,
+            directory: resolved.1,
+        },
+        vcs: resolved.2,
     })
 }
 
@@ -360,6 +520,11 @@ impl MutationService {
 
     /// Resolve a mutation input path against the location root.
     ///
+    /// Performs lexical path normalization and filesystem validation:
+    /// - Rejects relative paths that escape the location root
+    /// - Detects symlinks inside the location that point outside it (`LocationEscape`)
+    /// - Checks that ancestors are directories (`NonDirectoryAncestor`)
+    ///
     /// Returns a [`MutationTarget`] with the canonical path, permission
     /// resource, and optional external directory authorization when the
     /// target is outside the root.
@@ -367,6 +532,28 @@ impl MutationService {
     /// # Source
     /// `packages/core/src/location-mutation.ts` lines 119–149 — `resolve`.
     pub fn resolve(
+        &self,
+        input: &MutationResolveInput,
+    ) -> Result<MutationTarget, MutationPathError> {
+        self.resolve_with_fs(input)
+    }
+
+    /// Resolve a mutation input path with filesystem validation.
+    ///
+    /// This method performs the same lexical check as [`resolve`] but additionally:
+    /// - Uses `std::fs::canonicalize()` to follow symlinks
+    /// - Returns `LocationEscape` if a symlink inside the location points outside it
+    /// - Uses `std::fs::metadata()` to verify ancestors are directories
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MutationPathError::RelativeEscape`] if a relative path escapes the root.
+    /// Returns [`MutationPathError::LocationEscape`] if a symlink escapes the location.
+    /// Returns [`MutationPathError::NonDirectoryAncestor`] if an ancestor is not a directory.
+    ///
+    /// # Source
+    /// `packages/core/src/fs-util.ts` — `FSUtil.Service` (`realPath()`, `stat()`).
+    pub fn resolve_with_fs(
         &self,
         input: &MutationResolveInput,
     ) -> Result<MutationTarget, MutationPathError> {
@@ -386,26 +573,51 @@ impl MutationService {
             return Err(MutationPathError::relative_escape(&input.path));
         }
 
+        // Filesystem checks for paths that are lexically inside the location.
+        let canonical = if lexically_internal {
+            let lex_path = Path::new(&absolute);
+
+            // Check ancestors are directories.
+            self.check_ancestor_directories(lex_path)?;
+
+            // Canonicalize to follow symlinks — only if the path exists.
+            match std::fs::canonicalize(lex_path) {
+                Ok(canon_buf) => {
+                    let canon_str = path_to_string(&canon_buf);
+                    let canon_normalized = path_normalize(&canon_str);
+
+                    // If canonical path escapes the location root, it's a symlink escape.
+                    if !path_contains(&self.location_root, &canon_normalized) {
+                        return Err(MutationPathError::location_escape(&absolute));
+                    }
+
+                    canon_normalized
+                }
+                // Path doesn't exist yet — use the lexical path as canonical.
+                Err(_) => absolute.clone(),
+            }
+        } else {
+            absolute.clone()
+        };
+
         // Permission resource: location-relative for internal, canonical for external.
         let resource = if lexically_internal {
-            let rel = if absolute == self.location_root {
+            let rel = if canonical == self.location_root {
                 ".".to_string()
             } else {
-                absolute[self.location_root.len() + 1..].to_string()
+                canonical[self.location_root.len() + 1..].to_string()
             };
             slash_path(&rel)
         } else {
-            slash_path(&absolute)
+            slash_path(&canonical)
         };
 
         // External directory authorization when outside the location root.
         let external_directory = if !lexically_internal {
-            // When kind is Directory, use the target directory itself;
-            // otherwise use the parent directory as the approval boundary.
             let external_dir = if input.kind == Some(MutationKind::Directory) {
-                absolute.clone()
+                canonical.clone()
             } else {
-                let parts: Vec<&str> = absolute.split('/').collect();
+                let parts: Vec<&str> = canonical.split('/').collect();
                 if parts.len() <= 1 {
                     "/".to_string()
                 } else {
@@ -424,11 +636,50 @@ impl MutationService {
         };
 
         Ok(MutationTarget {
-            canonical: absolute,
+            canonical,
             resource,
             external_directory,
         })
     }
+
+    /// Check that every ancestor directory component of `path` is actually a
+    /// directory on the filesystem. Stops at the filesystem root.
+    ///
+    /// Returns `Ok(())` if all ancestors are directories (or don't exist yet).
+    /// Returns `NonDirectoryAncestor` if any component is a file.
+    fn check_ancestor_directories(&self, path: &Path) -> Result<(), MutationPathError> {
+        // Walk up from the path to the location root, checking each component.
+        let mut current = path.to_path_buf();
+        loop {
+            if !current.starts_with(&self.location_root) {
+                break;
+            }
+            if current == Path::new(&self.location_root) {
+                break;
+            }
+            // Check if this component exists and is not a directory.
+            if let Ok(meta) = std::fs::metadata(&current) {
+                if !meta.is_dir() {
+                    return Err(MutationPathError::non_directory_ancestor(
+                        path_to_string(&current),
+                    ));
+                }
+            }
+            // If metadata fails (e.g., parent doesn't exist yet), that's fine —
+            // the file creation will handle it.
+            match current.parent() {
+                Some(parent) => current = parent.to_path_buf(),
+                None => break,
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Convert a `PathBuf` to a `String`, normalizing the path.
+fn path_to_string(p: &PathBuf) -> String {
+    let s = p.to_string_lossy().to_string();
+    path_normalize(&s)
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1092,5 +1343,426 @@ mod tests {
     #[test]
     fn test_slash_path_no_backslashes() {
         assert_eq!(slash_path("/usr/local/bin"), "/usr/local/bin");
+    }
+
+    // ── MutationService::resolve_with_fs — symlink escape ──────────
+
+    #[test]
+    fn test_resolve_with_fs_symlink_escape() {
+        let tmp = std::env::temp_dir().join("rustcode_test_symlink_escape");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("location/link_target")).expect("create dirs");
+        std::fs::write(tmp.join("location/link_target/file.txt"), "data").expect("write file");
+        std::fs::create_dir_all(tmp.join("outside")).expect("create outside");
+
+        // Create a symlink inside location pointing outside
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(tmp.join("outside"), tmp.join("location/link")).expect("symlink");
+
+        let location_dir = tmp.join("location");
+        let svc = MutationService::new(location_dir.to_string_lossy());
+
+        let input = MutationResolveInput {
+            path: "link/file.txt".into(),
+            kind: Some(MutationKind::File),
+        };
+
+        #[cfg(unix)]
+        {
+            let err = svc.resolve_with_fs(&input).expect_err("symlink escape should fail");
+            match err {
+                MutationPathError::LocationEscape { path } => {
+                    assert!(path.contains("link/file.txt"));
+                }
+                other => panic!("expected LocationEscape, got {other:?}"),
+            }
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_resolve_with_fs_symlink_stays_inside() {
+        let tmp = std::env::temp_dir().join("rustcode_test_symlink_inside");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("location/subdir")).expect("create dirs");
+        std::fs::write(tmp.join("location/subdir/file.txt"), "data").expect("write file");
+
+        // Create a symlink inside location pointing to another location inside
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            tmp.join("location/subdir"),
+            tmp.join("location/link"),
+        )
+        .expect("symlink");
+
+        let location_dir = tmp.join("location");
+        let svc = MutationService::new(location_dir.to_string_lossy());
+
+        let input = MutationResolveInput {
+            path: "link/file.txt".into(),
+            kind: Some(MutationKind::File),
+        };
+
+        #[cfg(unix)]
+        {
+            let target = svc.resolve_with_fs(&input).expect("resolve symlink staying inside");
+            assert!(target.canonical.contains("subdir/file.txt"));
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── MutationService::resolve_with_fs — non-directory ancestor ──
+
+    #[test]
+    fn test_resolve_with_fs_non_directory_ancestor() {
+        let tmp = std::env::temp_dir().join("rustcode_test_non_dir_ancestor");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create dirs");
+
+        // Create a file where a directory component should be
+        std::fs::write(tmp.join("not_a_dir"), "file content").expect("write file");
+
+        let location_dir = tmp.to_path_buf();
+        let svc = MutationService::new(location_dir.to_string_lossy());
+
+        let input = MutationResolveInput {
+            path: "not_a_dir/child/file.txt".into(),
+            kind: Some(MutationKind::File),
+        };
+
+        let err = svc
+            .resolve_with_fs(&input)
+            .expect_err("non-directory ancestor should fail");
+        match err {
+            MutationPathError::NonDirectoryAncestor { path } => {
+                assert!(path.contains("not_a_dir"));
+            }
+            other => panic!("expected NonDirectoryAncestor, got {other:?}"),
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn test_resolve_with_fs_missing_path_ok() {
+        let tmp = std::env::temp_dir().join("rustcode_test_missing_path");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).expect("create dirs");
+
+        let location_dir = tmp.to_path_buf();
+        let svc = MutationService::new(location_dir.to_string_lossy());
+
+        // Path doesn't exist yet — should succeed (no fs check failure)
+        let input = MutationResolveInput {
+            path: "new_dir/file.txt".into(),
+            kind: Some(MutationKind::File),
+        };
+
+        let target = svc.resolve_with_fs(&input).expect("missing path should resolve");
+        assert_eq!(
+            target.canonical,
+            tmp.join("new_dir/file.txt").to_string_lossy()
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── MutationService::resolve delegates to resolve_with_fs ─────
+
+    #[test]
+    fn test_resolve_delegates_to_resolve_with_fs() {
+        let tmp = std::env::temp_dir().join("rustcode_test_resolve_delegates");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("location")).expect("create dirs");
+        std::fs::write(tmp.join("location/file.txt"), "data").expect("write file");
+
+        let location_dir = tmp.join("location");
+        let svc = MutationService::new(location_dir.to_string_lossy());
+
+        let input = MutationResolveInput {
+            path: "file.txt".into(),
+            kind: Some(MutationKind::File),
+        };
+
+        // Both resolve and resolve_with_fs should return the same result
+        let target_resolve = svc.resolve(&input).expect("resolve");
+        let target_fs = svc.resolve_with_fs(&input).expect("resolve_with_fs");
+        assert_eq!(target_resolve.canonical, target_fs.canonical);
+        assert_eq!(target_resolve.resource, target_fs.resource);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    // ── location_layer ──────────────────────────────────────────────
+
+    #[test]
+    fn test_location_layer_success() {
+        let ref_ = LocationRef::new("/home/user/project");
+        let full = location_layer(&ref_, |dir| {
+            Some((
+                ProjectId::new("proj_layer"),
+                dir.to_string(),
+                Some(ProjectVcs::git("/home/user/project/.git")),
+            ))
+        })
+        .expect("layer should resolve");
+        assert_eq!(full.directory, "/home/user/project");
+        assert_eq!(full.project.id.0, "proj_layer");
+        assert!(full.vcs.is_some());
+    }
+
+    #[test]
+    fn test_location_layer_unresolvable() {
+        let ref_ = LocationRef::new("/unknown/dir");
+        let err = location_layer(&ref_, |_| None).expect_err("should fail");
+        match err {
+            LocationError::Unresolvable { directory } => {
+                assert_eq!(directory, "/unknown/dir");
+            }
+        }
+    }
+
+    #[test]
+    fn test_location_layer_with_workspace() {
+        let ws = WorkspaceId::ascending("wrk_layer").expect("valid");
+        let ref_ = LocationRef::with_workspace("/ws/proj", ws);
+        let full = location_layer(&ref_, |_dir| {
+            Some((ProjectId::new("p_layer"), "/ws/proj".to_string(), None))
+        })
+        .expect("layer should resolve");
+        assert_eq!(
+            full.workspace_id.expect("has workspace").as_str(),
+            "wrk_layer"
+        );
+    }
+
+    #[test]
+    fn test_location_error_display() {
+        let err = LocationError::Unresolvable {
+            directory: "/foo".into(),
+        };
+        assert!(err.to_string().contains("/foo"));
+        assert!(err.to_string().contains("could not be resolved"));
+    }
+
+    // ── layer() with ProjectResolver ────────────────────────────────
+
+    struct MockProjectResolver;
+
+    impl ProjectResolver for MockProjectResolver {
+        fn resolve(&self, directory: &str) -> Option<(ProjectId, String, Option<ProjectVcs>)> {
+            match directory {
+                "/home/user/project" => Some((
+                    ProjectId::new("proj_mock"),
+                    directory.to_string(),
+                    Some(ProjectVcs::git("/home/user/project/.git")),
+                )),
+                "/ws/proj" => Some((
+                    ProjectId::new("p_ws_mock"),
+                    directory.to_string(),
+                    None,
+                )),
+                _ => None,
+            }
+        }
+    }
+
+    #[test]
+    fn test_layer_success() {
+        let ref_ = LocationRef::new("/home/user/project");
+        let resolver = MockProjectResolver;
+        let full = layer(&ref_, &resolver).expect("layer should resolve");
+        assert_eq!(full.directory, "/home/user/project");
+        assert_eq!(full.project.id.0, "proj_mock");
+        assert_eq!(full.project.directory, "/home/user/project");
+        assert!(full.vcs.is_some());
+        assert!(full.workspace_id.is_none());
+    }
+
+    #[test]
+    fn test_layer_unresolvable() {
+        let ref_ = LocationRef::new("/unknown/dir");
+        let resolver = MockProjectResolver;
+        let err = layer(&ref_, &resolver).expect_err("should fail");
+        match err {
+            LocationError::Unresolvable { directory } => {
+                assert_eq!(directory, "/unknown/dir");
+            }
+        }
+    }
+
+    #[test]
+    fn test_layer_with_workspace() {
+        let ws = WorkspaceId::ascending("wrk_layer_dyn").expect("valid");
+        let ref_ = LocationRef::with_workspace("/ws/proj", ws);
+        let resolver = MockProjectResolver;
+        let full = layer(&ref_, &resolver).expect("layer should resolve");
+        assert_eq!(
+            full.workspace_id.expect("has workspace").as_str(),
+            "wrk_layer_dyn"
+        );
+        assert_eq!(full.project.id.0, "p_ws_mock");
+    }
+
+    #[test]
+    fn test_layer_no_vcs() {
+        let ref_ = LocationRef::new("/ws/proj");
+        let resolver = MockProjectResolver;
+        let full = layer(&ref_, &resolver).expect("layer should resolve");
+        assert!(full.vcs.is_none());
+    }
+
+    // ── LocationServiceMap ─────────────────────────────────────────
+
+    fn make_key(dir: &str) -> LocationServiceKey {
+        LocationServiceKey {
+            directory: dir.into(),
+            workspace_id: None,
+        }
+    }
+
+    #[test]
+    fn test_service_map_get_or_resolve_insert() {
+        let mut map = LocationServiceMap::new(std::time::Duration::from_secs(60));
+        let key = make_key("/app");
+        let result = map.get_or_resolve(key.clone(), || {
+            Some(LocationFull {
+                directory: "/app".into(),
+                workspace_id: None,
+                project: LocationProjectRef {
+                    id: ProjectId::new("p1"),
+                    directory: "/app".into(),
+                },
+                vcs: None,
+            })
+        });
+        assert!(result.is_some());
+        let loc = result.unwrap();
+        assert_eq!(loc.project.id.0, "p1");
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_service_map_get_or_resolve_cached() {
+        let mut map = LocationServiceMap::new(std::time::Duration::from_secs(60));
+        let key = make_key("/app");
+
+        // First call inserts
+        map.get_or_resolve(key.clone(), || {
+            Some(LocationFull {
+                directory: "/app".into(),
+                workspace_id: None,
+                project: LocationProjectRef {
+                    id: ProjectId::new("p1"),
+                    directory: "/app".into(),
+                },
+                vcs: None,
+            })
+        });
+
+        // Second call should hit cache, resolver should NOT be called
+        let result = map.get_or_resolve(key, || panic!("resolver should not be called"));
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().project.id.0, "p1");
+    }
+
+    #[test]
+    fn test_service_map_get_or_resolve_returns_none() {
+        let mut map = LocationServiceMap::new(std::time::Duration::from_secs(60));
+        let key = make_key("/unknown");
+        let result = map.get_or_resolve(key, || None);
+        assert!(result.is_none());
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn test_service_map_len_and_is_empty() {
+        let mut map = LocationServiceMap::new(std::time::Duration::from_secs(60));
+        assert!(map.is_empty());
+        assert_eq!(map.len(), 0);
+
+        map.get_or_resolve(make_key("/a"), || {
+            Some(LocationFull {
+                directory: "/a".into(),
+                workspace_id: None,
+                project: LocationProjectRef {
+                    id: ProjectId::new("pa"),
+                    directory: "/a".into(),
+                },
+                vcs: None,
+            })
+        });
+        assert!(!map.is_empty());
+        assert_eq!(map.len(), 1);
+
+        map.get_or_resolve(make_key("/b"), || {
+            Some(LocationFull {
+                directory: "/b".into(),
+                workspace_id: None,
+                project: LocationProjectRef {
+                    id: ProjectId::new("pb"),
+                    directory: "/b".into(),
+                },
+                vcs: None,
+            })
+        });
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn test_service_map_evict_expired() {
+        let mut map = LocationServiceMap::new(std::time::Duration::from_secs(0));
+        map.get_or_resolve(make_key("/expired"), || {
+            Some(LocationFull {
+                directory: "/expired".into(),
+                workspace_id: None,
+                project: LocationProjectRef {
+                    id: ProjectId::new("pe"),
+                    directory: "/expired".into(),
+                },
+                vcs: None,
+            })
+        });
+        assert_eq!(map.len(), 1);
+
+        // TTL is 0 seconds, so the entry is already expired
+        map.evict_expired();
+        assert!(map.is_empty());
+        assert_eq!(map.len(), 0);
+    }
+
+    #[test]
+    fn test_service_map_evict_preserves_fresh() {
+        let mut map = LocationServiceMap::new(std::time::Duration::from_secs(60));
+        map.get_or_resolve(make_key("/fresh"), || {
+            Some(LocationFull {
+                directory: "/fresh".into(),
+                workspace_id: None,
+                project: LocationProjectRef {
+                    id: ProjectId::new("pf"),
+                    directory: "/fresh".into(),
+                },
+                vcs: None,
+            })
+        });
+        assert_eq!(map.len(), 1);
+
+        // Entry was just inserted, so it should NOT be evicted
+        map.evict_expired();
+        assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn test_service_map_default_ttl() {
+        let map = LocationServiceMap::default();
+        assert_eq!(map.ttl, std::time::Duration::from_secs(60 * 60));
+        assert!(map.is_empty());
     }
 }

@@ -132,7 +132,7 @@ fn msg_text(content: &crate::provider::MessageContent) -> String {
     }
 }
 
-fn make_simple_model(id: &str, name: &str, provider_id: &str, base_url: &str, family: &str, ctx: u64, out: u64) -> Model {
+pub(crate) fn make_simple_model(id: &str, name: &str, provider_id: &str, base_url: &str, family: &str, ctx: u64, out: u64) -> Model {
     Model {
         id: id.into(), provider_id: provider_id.into(), name: name.into(),
         api: crate::provider::ApiInfo { id: id.into(), url: base_url.into(), npm: format!("@ai-sdk/{provider_id}") },

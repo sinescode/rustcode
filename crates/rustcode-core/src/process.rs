@@ -4,6 +4,7 @@
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use serde::{Deserialize, Serialize};
+use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
 // Error types
@@ -13,18 +14,18 @@ use serde::{Deserialize, Serialize};
 ///
 /// Ported from: `process.ts` — `AppProcessError`
 #[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-#[error("process '{command}' exited with code {exit_code:?}")]
-pub struct AppProcessError {
-    /// The command that was executed
-    pub command: String,
-    /// Exit code (None if killed by signal)
-    pub exit_code: Option<i32>,
-    /// Captured stderr
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub stderr: Option<String>,
-    /// Underlying cause
-    #[serde(skip)]
-    pub cause: Option<String>,
+pub enum AppProcessError {
+    #[error("process '{command}' exited with code {exit_code:?}")]
+    Exited {
+        command: String,
+        exit_code: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        stderr: Option<String>,
+        #[serde(skip)]
+        cause: Option<String>,
+    },
+    #[error("spawn failed: {message}")]
+    SpawnFailed { message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -45,9 +46,12 @@ pub struct RunOptions {
     /// Input to pipe to stdin
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stdin: Option<StdinInput>,
-    /// Timeout in milliseconds
+    /// Timeout duration
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub timeout_ms: Option<u64>,
+    pub timeout: Option<DurationInput>,
+    /// Cancellation token to abort the process
+    #[serde(skip)]
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 /// Input to pipe to a process's stdin.
@@ -58,6 +62,44 @@ pub enum StdinInput {
     Text(String),
     /// Binary input (base64 encoded in serde)
     Binary(Vec<u8>),
+    /// Streaming input from an mpsc channel
+    Stream(tokio::sync::mpsc::Receiver<Vec<u8>>),
+}
+
+/// Duration specification for timeouts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum DurationInput {
+    Milliseconds(u64),
+    Seconds(u64),
+    Minutes(u64),
+    String(String),
+}
+
+impl DurationInput {
+    pub fn as_millis(&self) -> u64 {
+        match self {
+            Self::Milliseconds(ms) => *ms,
+            Self::Seconds(s) => s * 1000,
+            Self::Minutes(m) => m * 60_000,
+            Self::String(s) => parse_duration_string(s),
+        }
+    }
+}
+
+fn parse_duration_string(s: &str) -> u64 {
+    let s = s.trim().to_lowercase();
+    if let Some(n) = s.strip_suffix("ms") {
+        n.parse().unwrap_or(0)
+    } else if let Some(n) = s.strip_suffix("s") {
+        n.parse::<u64>().unwrap_or(0) * 1000
+    } else if let Some(n) = s.strip_suffix("m") {
+        n.parse::<u64>().unwrap_or(0) * 60_000
+    } else if let Some(n) = s.strip_suffix("h") {
+        n.parse::<u64>().unwrap_or(0) * 3_600_000
+    } else {
+        s.parse().unwrap_or(0)
+    }
 }
 
 /// Options for running a process in streaming mode.
@@ -74,6 +116,9 @@ pub struct RunStreamOptions {
     /// Maximum error bytes to buffer
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_error_bytes: Option<usize>,
+    /// Cancellation token to abort the process
+    #[serde(skip)]
+    pub cancellation_token: Option<CancellationToken>,
 }
 
 fn is_false(b: &bool) -> bool {
@@ -127,7 +172,7 @@ pub fn require_success(result: RunResult) -> Result<RunResult, AppProcessError> 
     if result.exit_code == 0 {
         Ok(result)
     } else {
-        Err(AppProcessError {
+        Err(AppProcessError::Exited {
             command: result.command.clone(),
             exit_code: Some(result.exit_code),
             stderr: result.stderr_str().map(|s| s.to_string()),
@@ -146,7 +191,7 @@ pub fn require_exit_in(
     if ok_codes.contains(&result.exit_code) {
         Ok(result)
     } else {
-        Err(AppProcessError {
+        Err(AppProcessError::Exited {
             command: result.command.clone(),
             exit_code: Some(result.exit_code),
             stderr: result.stderr_str().map(|s| s.to_string()),
@@ -159,11 +204,11 @@ pub fn require_exit_in(
 // Process command
 // ---------------------------------------------------------------------------
 
-/// A command to execute as a child process.
+/// A single command to execute as a child process.
 ///
 /// Ported from: `process.ts` — `ChildProcess.Command`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ProcessCommand {
+pub struct StandardCommand {
     /// The executable to run
     pub command: String,
     /// Arguments to pass
@@ -177,7 +222,7 @@ pub struct ProcessCommand {
     pub cwd: Option<String>,
 }
 
-impl ProcessCommand {
+impl StandardCommand {
     /// Create a simple command with no arguments.
     pub fn new(command: impl Into<String>) -> Self {
         Self {
@@ -201,13 +246,76 @@ impl ProcessCommand {
     }
 }
 
-impl std::fmt::Display for ProcessCommand {
+impl std::fmt::Display for StandardCommand {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.command)?;
         for arg in &self.args {
             write!(f, " {arg}")?;
         }
         Ok(())
+    }
+}
+
+/// A command to execute — either a single command or a piped pipeline.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ProcessCommand {
+    Standard(StandardCommand),
+    Piped(PipedCommand),
+}
+
+/// A piped command: left side feeds into right side.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PipedCommand {
+    pub left: Box<ProcessCommand>,
+    pub right: Box<StandardCommand>,
+}
+
+impl ProcessCommand {
+    /// Create a simple command (wraps `StandardCommand::new`).
+    pub fn new(command: impl Into<String>) -> Self {
+        Self::Standard(StandardCommand::new(command))
+    }
+
+    /// Add an argument (only for `Standard` variant).
+    pub fn arg(self, arg: impl Into<String>) -> Self {
+        match self {
+            Self::Standard(cmd) => Self::Standard(cmd.arg(arg)),
+            Self::Piped(_) => self,
+        }
+    }
+
+    /// Set the working directory (only for `Standard` variant).
+    pub fn cwd(self, dir: impl Into<String>) -> Self {
+        match self {
+            Self::Standard(cmd) => Self::Standard(cmd.cwd(dir)),
+            Self::Piped(_) => self,
+        }
+    }
+
+    /// Get the inner `StandardCommand` if this is a `Standard` variant.
+    pub fn as_standard(&self) -> Option<&StandardCommand> {
+        match self {
+            Self::Standard(cmd) => Some(cmd),
+            Self::Piped(_) => None,
+        }
+    }
+
+    /// Get the inner `StandardCommand` if this is a `Standard` variant (mutable).
+    pub fn as_standard_mut(&mut self) -> Option<&mut StandardCommand> {
+        match self {
+            Self::Standard(cmd) => Some(cmd),
+            Self::Piped(_) => None,
+        }
+    }
+}
+
+impl std::fmt::Display for ProcessCommand {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Standard(cmd) => write!(f, "{cmd}"),
+            Self::Piped(pipe) => write!(f, "{} | {}", pipe.left, pipe.right),
+        }
     }
 }
 
@@ -226,6 +334,57 @@ pub enum ProcessStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Wrap any display error into an `AppProcessError::SpawnFailed`.
+pub fn wrap_error(error: impl std::fmt::Display) -> AppProcessError {
+    AppProcessError::SpawnFailed {
+        message: error.to_string(),
+    }
+}
+
+/// Extract the exit code from an `ExitStatus`, returning `128 + signal` if
+/// the process was killed by a signal on Unix.
+pub fn exit_code_from_status(status: &std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        if let Some(signal) = status.signal() {
+            return Some(128 + signal);
+        }
+    }
+    status.code()
+}
+
+/// Send SIGTERM to an entire process group (negative pid) on Unix,
+/// or `/T` (tree kill) on Windows.
+pub async fn kill_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        let _ = tokio::process::Command::new("kill")
+            .args(["-TERM", &format!("-{pid}")])
+            .output()
+            .await;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/pid", &pid.to_string(), "/f", "/t"])
+            .output()
+            .await;
+    }
+}
+
+/// Detach a child process handle so the OS does not wait for it on drop.
+///
+/// In tokio, the `Child` handle is dropped (which detaches the child when
+/// `kill_on_drop` is false) — this function documents the intent.
+pub fn unref(child: &mut tokio::process::Child) {
+    child.kill_on_drop(false);
+}
+
+// ---------------------------------------------------------------------------
 // ProcessService
 // ---------------------------------------------------------------------------
 
@@ -237,17 +396,21 @@ pub struct ProcessService;
 impl ProcessService {
     /// Internal helper: spawn a child process from a ProcessCommand.
     fn spawn_child(cmd: &ProcessCommand) -> Result<tokio::process::Child, std::io::Error> {
-        let mut c = tokio::process::Command::new(&cmd.command);
-        c.args(&cmd.args);
+        let std_cmd = match cmd {
+            ProcessCommand::Standard(s) => s,
+            ProcessCommand::Piped(pipe) => &pipe.right,
+        };
+        let mut c = tokio::process::Command::new(&std_cmd.command);
+        c.args(&std_cmd.args);
         c.stdout(std::process::Stdio::piped());
         c.stderr(std::process::Stdio::piped());
         c.stdin(std::process::Stdio::piped());
         c.kill_on_drop(true);
 
-        if let Some(ref cwd) = cmd.cwd {
+        if let Some(ref cwd) = std_cmd.cwd {
             c.current_dir(cwd);
         }
-        for (k, v) in &cmd.env {
+        for (k, v) in &std_cmd.env {
             c.env(k, v);
         }
         c.spawn()
@@ -260,14 +423,14 @@ impl ProcessService {
         cmd: &ProcessCommand,
         opts: &RunOptions,
     ) -> Result<RunResult, AppProcessError> {
-        let mut child = Self::spawn_child(cmd).map_err(|e| AppProcessError {
+        let mut child = Self::spawn_child(cmd).map_err(|e| AppProcessError::Exited {
             command: cmd.to_string(),
             exit_code: None,
             stderr: None,
             cause: Some(e.to_string()),
         })?;
 
-        let timeout_ms = opts.timeout_ms.unwrap_or(0);
+        let timeout_ms = opts.timeout.as_ref().map_or(0, |t| t.as_millis());
         let max_output = opts.max_output_bytes.unwrap_or(usize::MAX);
         let max_error = opts.max_error_bytes.unwrap_or(usize::MAX);
 
@@ -282,9 +445,14 @@ impl ProcessService {
                     StdinInput::Binary(b) => {
                         let _ = stdin.write_all(b);
                     }
+                    StdinInput::Stream(_rx) => {
+                        // Stream stdin is handled by spawn_with_stream_stdin
+                    }
                 }
             }
         }
+
+        let cancelled = opts.cancellation_token.clone();
 
         let result = if timeout_ms > 0 {
             match tokio::time::timeout(
@@ -296,8 +464,7 @@ impl ProcessService {
                 Ok(Ok(output)) => Ok(output),
                 Ok(Err(e)) => Err(e),
                 Err(_) => {
-                    child.kill().await.ok();
-                    return Err(AppProcessError {
+                    return Err(AppProcessError::Exited {
                         command: cmd.to_string(),
                         exit_code: None,
                         stderr: Some("process timed out".into()),
@@ -305,16 +472,25 @@ impl ProcessService {
                     });
                 }
             }
+        } else if let Some(ref token) = cancelled {
+            tokio::select! {
+                output = child.wait_with_output() => {
+                    output.map_err(|e| e)
+                }
+                _ = token.cancelled() => {
+                    return Err(AppProcessError::Exited {
+                        command: cmd.to_string(),
+                        exit_code: None,
+                        stderr: Some("process cancelled".into()),
+                        cause: Some("cancellation token triggered".into()),
+                    });
+                }
+            }
         } else {
             child
                 .wait_with_output()
                 .await
-                .map_err(|e| AppProcessError {
-                    command: cmd.to_string(),
-                    exit_code: None,
-                    stderr: None,
-                    cause: Some(e.to_string()),
-                })
+                .map_err(|e| e)
         };
 
         match result {
@@ -332,16 +508,18 @@ impl ProcessService {
                     output.stderr
                 };
 
+                let exit_code = exit_code_from_status(&output.status).unwrap_or(-1);
+
                 Ok(RunResult {
                     command: cmd.to_string(),
-                    exit_code: output.status.code().unwrap_or(-1),
+                    exit_code,
                     stdout,
                     stderr,
                     stdout_truncated: stdout_len > max_output,
                     stderr_truncated: stderr_len > max_error,
                 })
             }
-            Err(e) => Err(AppProcessError {
+            Err(e) => Err(AppProcessError::Exited {
                 command: cmd.to_string(),
                 exit_code: None,
                 stderr: None,
@@ -353,6 +531,8 @@ impl ProcessService {
     /// Run a process and stream output lines as they become available.
     ///
     /// Returns a stream of (line, is_stderr) tuples and the child process handle.
+    /// The caller **must** call `child.wait()` after consuming the stream to
+    /// obtain the exit status.
     ///
     /// Ported from: `process.ts` — `runStream()`
     pub async fn run_stream(
@@ -368,7 +548,7 @@ impl ProcessService {
         use futures::StreamExt;
         use tokio::io::{AsyncBufReadExt, BufReader};
 
-        let mut child = Self::spawn_child(cmd).map_err(|e| AppProcessError {
+        let mut child = Self::spawn_child(cmd).map_err(|e| AppProcessError::Exited {
             command: cmd.to_string(),
             exit_code: None,
             stderr: None,
@@ -379,18 +559,36 @@ impl ProcessService {
         let stderr = child.stderr.take();
 
         let max_error = opts.max_error_bytes.unwrap_or(1024 * 1024);
+        let cancel_token = opts.cancellation_token.clone();
 
         let (tx, rx) = tokio::sync::mpsc::channel::<Result<(String, bool), std::io::Error>>(64);
 
         // Spawn stdout reader
         if let Some(stdout) = stdout {
             let tx = tx.clone();
+            let token = cancel_token.clone();
             tokio::spawn(async move {
                 let reader = BufReader::new(stdout);
                 let mut lines = reader.lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if tx.send(Ok((line, false))).await.is_err() {
-                        break;
+                loop {
+                    tokio::select! {
+                        result = lines.next_line() => {
+                            match result {
+                                Ok(Some(line)) => {
+                                    if tx.send(Ok((line, false))).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => break,
+                                Err(e) => {
+                                    let _ = tx.send(Err(e)).await;
+                                    break;
+                                }
+                            }
+                        }
+                        _ = async {}, if token.as_ref().is_some_and(|t| t.is_cancelled()) => {
+                            break;
+                        }
                     }
                 }
             });
@@ -422,6 +620,48 @@ impl ProcessService {
         Ok((stream, child))
     }
 
+    /// After a streaming run completes, validate the exit code against the
+    /// allowed set in `RunStreamOptions::ok_exit_codes`.
+    ///
+    /// If the process exited with an error code, remaining stderr is collected
+    /// and included in the error.
+    pub async fn validate_exit(
+        child: &mut tokio::process::Child,
+        cmd: &ProcessCommand,
+        opts: &RunStreamOptions,
+    ) -> Result<i32, AppProcessError> {
+        let status = child.wait().await.map_err(|e| AppProcessError::Exited {
+            command: cmd.to_string(),
+            exit_code: None,
+            stderr: None,
+            cause: Some(e.to_string()),
+        })?;
+
+        let exit_code = exit_code_from_status(&status).unwrap_or(-1);
+
+        if let Some(ref codes) = opts.ok_exit_codes {
+            if !codes.contains(&exit_code) {
+                let mut stderr = String::new();
+                if let Some(ref mut reader) = child.stderr {
+                    let _ = tokio::io::AsyncReadExt::read_to_string(reader, &mut stderr)
+                        .await;
+                }
+                return Err(AppProcessError::Exited {
+                    command: cmd.to_string(),
+                    exit_code: Some(exit_code),
+                    stderr: if stderr.is_empty() {
+                        None
+                    } else {
+                        Some(stderr)
+                    },
+                    cause: None,
+                });
+            }
+        }
+
+        Ok(exit_code)
+    }
+
     /// Validate that a process result has a successful exit code.
     ///
     /// Ported from: `process.ts` — `requireSuccess()`
@@ -429,7 +669,7 @@ impl ProcessService {
         if result.exit_code == 0 {
             Ok(())
         } else {
-            Err(AppProcessError {
+            Err(AppProcessError::Exited {
                 command: result.command.clone(),
                 exit_code: Some(result.exit_code),
                 stderr: result.stderr_str().map(|s| s.to_string()),
@@ -526,9 +766,10 @@ mod tests {
     #[test]
     fn test_process_command_default_args() {
         let cmd = ProcessCommand::new("echo");
-        assert!(cmd.args.is_empty());
-        assert!(cmd.env.is_empty());
-        assert!(cmd.cwd.is_none());
+        let std_cmd = cmd.as_standard().unwrap();
+        assert!(std_cmd.args.is_empty());
+        assert!(std_cmd.env.is_empty());
+        assert!(std_cmd.cwd.is_none());
     }
 
     #[test]
@@ -536,7 +777,7 @@ mod tests {
         let opts = RunOptions::default();
         assert!(opts.max_output_bytes.is_none());
         assert!(opts.stdin.is_none());
-        assert!(opts.timeout_ms.is_none());
+        assert!(opts.timeout.is_none());
     }
 
     #[test]
@@ -547,7 +788,7 @@ mod tests {
 
     #[test]
     fn test_app_process_error_display() {
-        let err = AppProcessError {
+        let err = AppProcessError::Exited {
             command: "bad_cmd".into(),
             exit_code: Some(127),
             stderr: Some("command not found".into()),
@@ -615,13 +856,18 @@ mod tests {
     async fn test_process_service_run_with_timeout() {
         let cmd = ProcessCommand::new("sleep").arg("10");
         let opts = RunOptions {
-            timeout_ms: Some(100),
+            timeout: Some(DurationInput::Milliseconds(100)),
             ..RunOptions::default()
         };
         let result = ProcessService::run(&cmd, &opts).await;
         assert!(result.is_err());
         let err = result.unwrap_err();
-        assert_eq!(err.stderr.as_deref(), Some("process timed out"));
+        match &err {
+            AppProcessError::Exited { stderr, .. } => {
+                assert_eq!(stderr.as_deref(), Some("process timed out"));
+            }
+            _ => panic!("expected Exited variant"),
+        }
     }
 
     #[tokio::test]
@@ -645,17 +891,260 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_service_run_with_env() {
-        let mut cmd = ProcessCommand::new("sh");
-        cmd.args = vec!["-c".into(), "echo $MY_VAR".into()];
-        cmd.env = {
-            let mut env = std::collections::HashMap::new();
-            env.insert("MY_VAR".into(), "test_value".into());
-            env
+        let cmd = ProcessCommand::Standard(
+            StandardCommand::new("sh")
+                .arg("-c")
+                .arg("echo $MY_VAR")
+        );
+        let mut env = std::collections::HashMap::new();
+        env.insert("MY_VAR".into(), "test_value".into());
+        let mut std_cmd = match &cmd {
+            ProcessCommand::Standard(s) => s.clone(),
+            _ => unreachable!(),
         };
+        std_cmd.env = env;
+        let cmd = ProcessCommand::Standard(std_cmd);
         let opts = RunOptions::default();
         let result = ProcessService::run(&cmd, &opts).await.expect("should run");
         assert_eq!(result.exit_code, 0);
         let stdout = result.stdout_str().expect("valid utf8");
         assert!(stdout.contains("test_value"));
+    }
+
+    #[test]
+    fn test_wrap_error() {
+        let err = wrap_error("something went wrong");
+        match &err {
+            AppProcessError::SpawnFailed { message } => {
+                assert_eq!(message, "something went wrong");
+            }
+            _ => panic!("expected SpawnFailed variant"),
+        }
+    }
+
+    #[test]
+    fn test_exit_code_from_status_success() {
+        let status = std::process::Command::new("true")
+            .status()
+            .expect("should run true");
+        let code = exit_code_from_status(&status);
+        assert_eq!(code, Some(0));
+    }
+
+    #[test]
+    fn test_exit_code_from_status_nonzero() {
+        let status = std::process::Command::new("sh")
+            .args(["-c", "exit 42"])
+            .status()
+            .expect("should run sh");
+        let code = exit_code_from_status(&status);
+        assert_eq!(code, Some(42));
+    }
+
+    #[tokio::test]
+    async fn test_kill_group() {
+        // Spawn a process, get its pid, then kill the group
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("should spawn");
+        let pid = child.id().expect("should have pid");
+        kill_group(pid).await;
+        let status = child.wait().await.expect("should wait");
+        // Process should be terminated (signal on unix, non-zero on windows)
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::ExitStatusExt;
+            assert!(status.signal().is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn test_unref_detaches_child() {
+        let mut child = tokio::process::Command::new("sleep")
+            .arg("60")
+            .spawn()
+            .expect("should spawn");
+        unref(&mut child);
+        // After unref, drop should not kill the process
+        // (the OS will clean it up when it exits)
+        child.kill().await.expect("should kill");
+    }
+
+    #[tokio::test]
+    async fn test_run_with_cancellation_token() {
+        let cmd = ProcessCommand::new("sleep").arg("60");
+        let token = CancellationToken::new();
+        let opts = RunOptions {
+            cancellation_token: Some(token.clone()),
+            ..RunOptions::default()
+        };
+
+        // Cancel immediately
+        token.cancel();
+
+        let result = ProcessService::run(&cmd, &opts).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match &err {
+            AppProcessError::Exited { cause, .. } => {
+                assert!(cause.as_deref().unwrap_or("").contains("cancellation"));
+            }
+            _ => panic!("expected Exited variant"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_run_stream_with_cancellation_token() {
+        use futures::StreamExt;
+        let cmd = ProcessCommand::new("sleep").arg("60");
+        let token = CancellationToken::new();
+        let opts = RunStreamOptions {
+            cancellation_token: Some(token.clone()),
+            ..RunStreamOptions::default()
+        };
+
+        let (_stream, _child) = ProcessService::run_stream(&cmd, &opts)
+            .await
+            .expect("should start streaming");
+
+        // Cancel — the stream reader tasks will stop
+        token.cancel();
+        // Give a moment for cancellation to propagate
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+
+    #[tokio::test]
+    async fn test_validate_exit_ok() {
+        let cmd = ProcessCommand::new("true");
+        let opts = RunStreamOptions {
+            ok_exit_codes: Some(vec![0]),
+            ..RunStreamOptions::default()
+        };
+
+        let mut child = ProcessService::spawn_child(&cmd).expect("should spawn");
+        let code = ProcessService::validate_exit(&mut child, &cmd, &opts)
+            .await
+            .expect("should validate ok");
+        assert_eq!(code, 0);
+    }
+
+    #[tokio::test]
+    async fn test_validate_exit_bad_code() {
+        let cmd = ProcessCommand::Standard(
+            StandardCommand::new("sh").arg("-c").arg("exit 1"),
+        );
+        let opts = RunStreamOptions {
+            ok_exit_codes: Some(vec![0, 2]),
+            ..RunStreamOptions::default()
+        };
+
+        let mut child = ProcessService::spawn_child(&cmd).expect("should spawn");
+        let result = ProcessService::validate_exit(&mut child, &cmd, &opts).await;
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        match &err {
+            AppProcessError::Exited { exit_code, .. } => {
+                assert_eq!(*exit_code, Some(1));
+            }
+            _ => panic!("expected Exited variant"),
+        }
+    }
+
+    #[test]
+    fn test_duration_input_millis() {
+        assert_eq!(DurationInput::Milliseconds(500).as_millis(), 500);
+    }
+
+    #[test]
+    fn test_duration_input_seconds() {
+        assert_eq!(DurationInput::Seconds(5).as_millis(), 5000);
+    }
+
+    #[test]
+    fn test_duration_input_minutes() {
+        assert_eq!(DurationInput::Minutes(2).as_millis(), 120_000);
+    }
+
+    #[test]
+    fn test_duration_input_string_seconds() {
+        assert_eq!(DurationInput::String("30s".into()).as_millis(), 30_000);
+    }
+
+    #[test]
+    fn test_duration_input_string_minutes() {
+        assert_eq!(DurationInput::String("5m".into()).as_millis(), 300_000);
+    }
+
+    #[test]
+    fn test_duration_input_string_hours() {
+        assert_eq!(DurationInput::String("2h".into()).as_millis(), 7_200_000);
+    }
+
+    #[test]
+    fn test_duration_input_string_millis() {
+        assert_eq!(DurationInput::String("150ms".into()).as_millis(), 150);
+    }
+
+    #[test]
+    fn test_duration_input_string_plain() {
+        assert_eq!(DurationInput::String("5000".into()).as_millis(), 5000);
+    }
+
+    #[test]
+    fn test_duration_input_string_with_text() {
+        assert_eq!(
+            DurationInput::String("30 seconds".into()).as_millis(),
+            30_000
+        );
+    }
+
+    #[test]
+    fn test_piped_command_display() {
+        let left = ProcessCommand::new("cat").arg("file.txt");
+        let right = StandardCommand::new("grep").arg("pattern");
+        let piped = ProcessCommand::Piped(PipedCommand {
+            left: Box::new(left),
+            right: Box::new(right),
+        });
+        let display = piped.to_string();
+        assert!(display.contains("|"));
+        assert!(display.contains("cat"));
+        assert!(display.contains("grep"));
+    }
+
+    #[test]
+    fn test_process_command_as_standard() {
+        let cmd = ProcessCommand::new("echo");
+        assert!(cmd.as_standard().is_some());
+
+        let piped = ProcessCommand::Piped(PipedCommand {
+            left: Box::new(ProcessCommand::new("cat")),
+            right: Box::new(StandardCommand::new("wc")),
+        });
+        assert!(piped.as_standard().is_none());
+    }
+
+    #[test]
+    fn test_app_process_error_spawn_failed_display() {
+        let err = AppProcessError::SpawnFailed {
+            message: "permission denied".into(),
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("permission denied"));
+        assert!(msg.contains("spawn failed"));
+    }
+
+    #[test]
+    fn test_app_process_error_exited_display() {
+        let err = AppProcessError::Exited {
+            command: "ls".into(),
+            exit_code: Some(2),
+            stderr: None,
+            cause: None,
+        };
+        let msg = err.to_string();
+        assert!(msg.contains("ls"));
+        assert!(msg.contains("2"));
     }
 }

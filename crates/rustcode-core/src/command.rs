@@ -5,11 +5,23 @@
 //!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Command Info
 // ══════════════════════════════════════════════════════════════════════════════
+
+/// The origin of a command definition.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CommandSource {
+    #[serde(rename = "command")]
+    Command,
+    #[serde(rename = "mcp")]
+    Mcp,
+    #[serde(rename = "skill")]
+    Skill,
+}
 
 /// Definition of a named command that the agent can execute.
 ///
@@ -38,19 +50,29 @@ pub struct CommandInfo {
     /// Whether this command should be executed as a subtask.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub subtask: bool,
+
+    /// Where this command was defined.
+    pub source: CommandSource,
+
+    /// Placeholders extracted from the template (e.g. `$1`, `$ARGUMENTS`).
+    pub hints: Vec<String>,
 }
 
 impl CommandInfo {
     /// Create a new command with required fields.
     #[must_use]
     pub fn new(name: impl Into<String>, template: impl Into<String>) -> Self {
+        let template_val = template.into();
+        let hints = hints(&template_val);
         Self {
             name: name.into(),
-            template: template.into(),
+            template: template_val,
             description: None,
             agent: None,
             model: None,
             subtask: false,
+            source: CommandSource::Command,
+            hints,
         }
     }
 }
@@ -90,6 +112,49 @@ impl std::fmt::Display for CommandModelRef {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}:{}", self.provider_id, self.model_id)
     }
+}
+
+/// Extract placeholder hints from a command template.
+///
+/// Finds numbered placeholders (`$1`, `$2`, …) and the special `$ARGUMENTS`
+/// token, returning them sorted and deduplicated.
+pub fn hints(template: &str) -> Vec<String> {
+    let mut result = Vec::new();
+    let re = Regex::new(r"\$\d+").expect("valid regex");
+    let mut unique: Vec<&str> = re.find_iter(template).map(|m| m.as_str()).collect();
+    unique.sort();
+    unique.dedup();
+    result.extend(unique.into_iter().map(|s| s.to_string()));
+    if template.contains("$ARGUMENTS") {
+        result.push("$ARGUMENTS".to_string());
+    }
+    result
+}
+
+/// Return the built-in commands shipped with rustcode.
+pub fn built_in_commands() -> Vec<CommandInfo> {
+    vec![
+        CommandInfo {
+            name: "init".into(),
+            description: Some("Initialize a new project".into()),
+            template: "Initialize the project based on the current directory".into(),
+            source: CommandSource::Command,
+            hints: vec![],
+            agent: None,
+            model: None,
+            subtask: false,
+        },
+        CommandInfo {
+            name: "review".into(),
+            description: Some("Review code changes".into()),
+            template: "Review the recent code changes and provide feedback".into(),
+            source: CommandSource::Command,
+            hints: vec![],
+            agent: None,
+            model: None,
+            subtask: false,
+        },
+    ]
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -212,6 +277,57 @@ pub struct CommandExecuteResult {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// Command loading stubs
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Load commands from MCP prompt definitions.
+pub fn load_mcp_commands(mcp_prompts: &[(String, String)]) -> Vec<CommandInfo> {
+    mcp_prompts
+        .iter()
+        .map(|(name, template)| CommandInfo {
+            name: name.clone(),
+            description: Some(format!("MCP command: {}", name)),
+            template: template.clone(),
+            source: CommandSource::Mcp,
+            hints: hints(template),
+            model: None,
+            agent: None,
+            subtask: false,
+        })
+        .collect()
+}
+
+/// Load commands from skill definitions.
+pub fn load_skill_commands(skills: &[(String, String)]) -> Vec<CommandInfo> {
+    skills
+        .iter()
+        .map(|(name, template)| CommandInfo {
+            name: name.clone(),
+            description: Some(format!("Skill command: {}", name)),
+            template: template.clone(),
+            source: CommandSource::Skill,
+            hints: hints(template),
+            model: None,
+            agent: None,
+            subtask: false,
+        })
+        .collect()
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Command executed event
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Event emitted when a command is executed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CommandExecutedEvent {
+    pub session_id: String,
+    pub command_name: String,
+    pub arguments: Vec<String>,
+    pub timestamp: i64,
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // Tests
 // ══════════════════════════════════════════════════════════════════════════════
 
@@ -238,6 +354,8 @@ mod tests {
             agent: Some("build".into()),
             model: Some(CommandModelRef::new("anthropic", "claude-sonnet-4")),
             subtask: true,
+            source: CommandSource::Command,
+            hints: vec![],
         };
         let json = serde_json::to_string(&cmd).expect("serialize");
         assert!(json.contains("deploy"));
@@ -441,5 +559,154 @@ mod tests {
         let parsed: CommandUpdateInput = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.name, "cmd");
         assert_eq!(parsed.agent.as_deref(), Some("build"));
+    }
+
+    // ── hints() ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_hints_empty_template() {
+        let h = hints("hello world");
+        assert!(h.is_empty());
+    }
+
+    #[test]
+    fn test_hints_numbered_placeholders() {
+        let h = hints("run $1 then $2");
+        assert_eq!(h, vec!["$1", "$2"]);
+    }
+
+    #[test]
+    fn test_hints_dedup() {
+        let h = hints("$1 do $1 again");
+        assert_eq!(h, vec!["$1"]);
+    }
+
+    #[test]
+    fn test_hints_arguments() {
+        let h = hints("$ARGUMENTS");
+        assert_eq!(h, vec!["$ARGUMENTS"]);
+    }
+
+    #[test]
+    fn test_hints_mixed() {
+        let h = hints("$2 test $1 $ARGUMENTS $2");
+        assert_eq!(h, vec!["$1", "$2", "$ARGUMENTS"]);
+    }
+
+    // ── built_in_commands() ──────────────────────────────────────
+
+    #[test]
+    fn test_built_in_commands_count() {
+        let cmds = built_in_commands();
+        assert_eq!(cmds.len(), 2);
+    }
+
+    #[test]
+    fn test_built_in_commands_names() {
+        let cmds = built_in_commands();
+        let names: Vec<&str> = cmds.iter().map(|c| c.name.as_str()).collect();
+        assert!(names.contains(&"init"));
+        assert!(names.contains(&"review"));
+    }
+
+    #[test]
+    fn test_built_in_commands_have_source() {
+        let cmds = built_in_commands();
+        for cmd in &cmds {
+            assert_eq!(cmd.source, CommandSource::Command);
+        }
+    }
+
+    #[test]
+    fn test_built_in_commands_have_descriptions() {
+        let cmds = built_in_commands();
+        for cmd in &cmds {
+            assert!(cmd.description.is_some());
+        }
+    }
+
+    // ── CommandSource ────────────────────────────────────────────
+
+    #[test]
+    fn test_command_source_serde() {
+        let json = serde_json::to_string(&CommandSource::Mcp).expect("serialize");
+        assert_eq!(json, "\"mcp\"");
+        let parsed: CommandSource = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed, CommandSource::Mcp);
+    }
+
+    #[test]
+    fn test_command_source_roundtrip() {
+        let sources = vec![CommandSource::Command, CommandSource::Mcp, CommandSource::Skill];
+        for source in sources {
+            let json = serde_json::to_string(&source).expect("serialize");
+            let parsed: CommandSource = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(parsed, source);
+        }
+    }
+
+    // ── load_mcp_commands / load_skill_commands ──────────────────
+
+    #[test]
+    fn test_load_mcp_commands() {
+        let prompts = vec![
+            ("explain".into(), "Explain $ARGUMENTS".into()),
+            ("review".into(), "Review $1".into()),
+        ];
+        let cmds = load_mcp_commands(&prompts);
+        assert_eq!(cmds.len(), 2);
+        assert_eq!(cmds[0].source, CommandSource::Mcp);
+        assert_eq!(cmds[0].description, Some("MCP command: explain".into()));
+        assert_eq!(cmds[0].hints, vec!["$ARGUMENTS"]);
+        assert!(cmds[0].model.is_none());
+    }
+
+    #[test]
+    fn test_load_skill_commands() {
+        let skills = vec![
+            ("format".into(), "Format $1".into()),
+        ];
+        let cmds = load_skill_commands(&skills);
+        assert_eq!(cmds.len(), 1);
+        assert_eq!(cmds[0].source, CommandSource::Skill);
+        assert_eq!(cmds[0].description, Some("Skill command: format".into()));
+        assert_eq!(cmds[0].hints, vec!["$1"]);
+    }
+
+    #[test]
+    fn test_load_mcp_commands_empty() {
+        let cmds = load_mcp_commands(&[]);
+        assert!(cmds.is_empty());
+    }
+
+    // ── CommandExecutedEvent ─────────────────────────────────────
+
+    #[test]
+    fn test_command_executed_event_serde() {
+        let event = CommandExecutedEvent {
+            session_id: "sess-123".into(),
+            command_name: "deploy".into(),
+            arguments: vec!["prod".into(), "--force".into()],
+            timestamp: 1700000000,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        let parsed: CommandExecutedEvent = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(parsed.session_id, "sess-123");
+        assert_eq!(parsed.command_name, "deploy");
+        assert_eq!(parsed.arguments, vec!["prod", "--force"]);
+        assert_eq!(parsed.timestamp, 1700000000);
+    }
+
+    #[test]
+    fn test_command_executed_event_empty_args() {
+        let event = CommandExecutedEvent {
+            session_id: "s1".into(),
+            command_name: "init".into(),
+            arguments: vec![],
+            timestamp: 0,
+        };
+        let json = serde_json::to_string(&event).expect("serialize");
+        assert!(json.contains("init"));
+        assert!(json.contains("[]"));
     }
 }

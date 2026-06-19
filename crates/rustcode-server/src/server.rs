@@ -5,6 +5,7 @@
 use axum::Router;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::signal;
 use tracing::{error, info};
@@ -30,17 +31,39 @@ pub struct AppState {
     /// Permission service for evaluating and managing permissions.
     pub permissions: Arc<rustcode_core::permission::PermissionService>,
 
+    /// Question service for managing pending user Q&A.
+    pub questions: Arc<rustcode_core::question::QuestionService>,
+
     /// Session runner for executing prompts against LLMs.
     pub runner: Arc<rustcode_core::session_runner::SessionRunner>,
 
     /// Registered LLM providers (provider_id → provider).
     pub providers: std::collections::HashMap<
         String,
-        Box<dyn rustcode_core::provider::Provider>,
+        Arc<dyn rustcode_core::provider::Provider>,
     >,
 
     /// Server version string.
     pub version: String,
+
+    /// Server start time for uptime calculation.
+    pub start_time: Instant,
+
+    /// Agent service for listing/managing agents (optional — may be
+    /// unset if agent config has not been loaded).
+    pub agent_service: Option<Arc<rustcode_core::agent::AgentService>>,
+
+    /// Command definitions loaded from project and global config.
+    pub command_data: Arc<rustcode_core::command::CommandData>,
+
+    /// Integration service for third-party OAuth/API-key connections.
+    pub integration_service: Arc<rustcode_core::integration::IntegrationService>,
+
+    /// Reference service for code references and context items.
+    pub reference_service: Arc<rustcode_core::reference::ReferenceService>,
+
+    /// Feature flags exposed via the metadata endpoint.
+    pub server_features: Vec<String>,
 }
 
 impl AppState {
@@ -50,20 +73,33 @@ impl AppState {
         sessions: Arc<rustcode_core::session::SessionManager>,
         tools: Arc<rustcode_core::tool::ToolRegistry>,
         permissions: Arc<rustcode_core::permission::PermissionService>,
+        questions: Arc<rustcode_core::question::QuestionService>,
         runner: Arc<rustcode_core::session_runner::SessionRunner>,
         providers: std::collections::HashMap<
             String,
-            Box<dyn rustcode_core::provider::Provider>,
+            Arc<dyn rustcode_core::provider::Provider>,
         >,
+        agent_service: Option<Arc<rustcode_core::agent::AgentService>>,
+        command_data: Arc<rustcode_core::command::CommandData>,
+        integration_service: Arc<rustcode_core::integration::IntegrationService>,
+        reference_service: Arc<rustcode_core::reference::ReferenceService>,
+        server_features: Vec<String>,
     ) -> Self {
         Self {
             bus,
             sessions,
             tools,
             permissions,
+            questions,
             runner,
             providers,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            start_time: Instant::now(),
+            agent_service,
+            command_data,
+            integration_service,
+            reference_service,
+            server_features,
         }
     }
 }
@@ -103,27 +139,40 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         // ── Global routes (no auth middleware) ──────────────────────────
         .merge(routes::global::global_routes(state.clone()))
+        .merge(routes::health::health_routes(state.clone()))
         // ── Control routes ──────────────────────────────────────────────
         .merge(routes::control::control_routes(state.clone()))
         // ── Control-plane routes ────────────────────────────────────────
         .merge(routes::control_plane::control_plane_routes(state.clone()))
         // ── Instance routes (workspace-scoped) ──────────────────────────
-        .merge(routes::session::session_routes(state.clone()))
-        .merge(routes::question::question_routes(state.clone()))
+        .merge(routes::agent::agent_routes(state.clone()))
+        .merge(routes::command::command_routes(state.clone()))
         .merge(routes::config::config_routes(state.clone()))
-        .merge(routes::file::file_routes(state.clone()))
-        .merge(routes::project::project_routes(state.clone()))
-        .merge(routes::provider::provider_routes(state.clone()))
-        .merge(routes::mcp::mcp_routes(state.clone()))
-        .merge(routes::permission::permission_routes(state.clone()))
-        .merge(routes::tui::tui_routes(state.clone()))
-        .merge(routes::sync::sync_routes(state.clone()))
-        .merge(routes::instance::instance_routes(state.clone()))
+        .merge(routes::credential::credential_routes(state.clone()))
         .merge(routes::experimental::experimental_routes(state.clone()))
-        .merge(routes::workspace::workspace_routes(state.clone()))
+        .merge(routes::file::file_routes(state.clone()))
+        .merge(routes::instance::instance_routes(state.clone()))
+        .merge(routes::integration::integration_routes(state.clone()))
+        .merge(routes::mcp::mcp_routes(state.clone()))
+        .merge(routes::model::model_routes(state.clone()))
+        .merge(routes::permission::permission_routes(state.clone()))
+        .merge(routes::project::project_routes(state.clone()))
         .merge(routes::project_copy::project_copy_routes(state.clone()))
+        .merge(routes::provider::provider_routes(state.clone()))
+        .merge(routes::pty::pty_routes(state.clone()))
+        .merge(routes::question::question_routes(state.clone()))
+        .merge(routes::reference::reference_routes(state.clone()))
+        .merge(routes::session::session_routes(state.clone()))
+        .merge(routes::skill::skill_routes(state.clone()))
+        .merge(routes::sync::sync_routes(state.clone()))
+        .merge(routes::tui::tui_routes(state.clone()))
+        .merge(routes::workspace::workspace_routes(state.clone()))
         // ── Event stream (SSE) ──────────────────────────────────────────
         .merge(routes::event::event_routes(state.clone()))
+        // ── Metadata ─────────────────────────────────────────────────────
+        .merge(routes::metadata::metadata_routes(state.clone()))
+        // ── Structured query ─────────────────────────────────────────────
+        .merge(routes::query::query_routes(state.clone()))
         // ── CORS ────────────────────────────────────────────────────────
         .layer(cors)
 }

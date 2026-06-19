@@ -249,6 +249,11 @@ pub fn overlaps(a: &Path, b: &Path) -> bool {
     contains(a, b) || contains(b, a)
 }
 
+/// Ensure a directory exists, creating it recursively if necessary.
+pub fn ensure_dir(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(path)
+}
+
 /// Check if `parent` path contains `child` path.
 ///
 /// Ported from: `fs-util.ts` — `contains()`
@@ -402,5 +407,23 @@ mod tests {
             assert_eq!(back.name, name);
             assert_eq!(back.entry_type, entry.entry_type);
         }
+    }
+
+    #[test]
+    fn test_ensure_dir_creates_nested() {
+        let tmp = std::env::temp_dir().join("rustcode_test_ensure_dir_nested");
+        let nested = tmp.join("a").join("b").join("c");
+        ensure_dir(&nested).expect("create nested dir");
+        assert!(nested.is_dir());
+        std::fs::remove_dir_all(&tmp).ok();
+    }
+
+    #[test]
+    fn test_ensure_dir_existing() {
+        let tmp = std::env::temp_dir().join("rustcode_test_ensure_dir_existing");
+        ensure_dir(&tmp).expect("create dir");
+        // Second call should succeed (already exists)
+        ensure_dir(&tmp).expect("ensure existing dir");
+        std::fs::remove_dir_all(&tmp).ok();
     }
 }
