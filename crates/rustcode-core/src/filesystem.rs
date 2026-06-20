@@ -299,7 +299,7 @@ pub fn is_ignored(filepath: &str, opts: Option<&IgnoreMatchOptions>) -> bool {
     let extra: &[String] = opts.and_then(|o| o.extra.as_deref()).unwrap_or(&[]);
     for pattern in IGNORE_FILES
         .iter()
-        .map(|s| *s)
+        .copied()
         .chain(extra.iter().map(|s| s.as_str()))
     {
         if glob_matches(pattern, filepath) {

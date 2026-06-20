@@ -678,7 +678,7 @@ impl MutationService {
 }
 
 /// Convert a `PathBuf` to a `String`, normalizing the path.
-fn path_to_string(p: &PathBuf) -> String {
+fn path_to_string(p: &Path) -> String {
     let s = p.to_string_lossy().to_string();
     path_normalize(&s)
 }

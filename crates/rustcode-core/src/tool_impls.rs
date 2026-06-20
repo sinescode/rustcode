@@ -419,7 +419,7 @@ impl Tool for ReadTool {
             return Err(Error::Tool(msg));
         }
 
-        let metadata = path.metadata().map_err(|e| Error::Io(e))?;
+        let metadata = path.metadata().map_err(Error::Io)?;
 
         if metadata.is_dir() {
             // List directory
@@ -533,7 +533,7 @@ impl Tool for ReadTool {
         }
 
         // Read text file
-        let content = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+        let content = std::fs::read_to_string(path).map_err(Error::Io)?;
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
@@ -899,7 +899,7 @@ impl Tool for EditTool {
             )));
         }
 
-        let source_content = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+        let source_content = std::fs::read_to_string(path).map_err(Error::Io)?;
 
         // Detect and normalize line endings
         let ending = Self::detect_line_ending(&source_content);
@@ -1932,12 +1932,12 @@ impl ApplyPatchTool {
                     new_count_actual = 0;
                 }
             } else if let Some(ref _existing) = current_hunk {
-                if line.starts_with(' ') {
+                if let Some(stripped) = line.strip_prefix(' ') {
                     current_hunk
                         .as_mut()
                         .unwrap()
                         .lines
-                        .push(HunkLine::Context(line[1..].to_string()));
+                        .push(HunkLine::Context(stripped.to_string()));
                     old_count_actual += 1;
                     new_count_actual += 1;
                 } else if line.starts_with('-') && !line.starts_with("---") {
@@ -2189,12 +2189,11 @@ impl Tool for ApplyPatchTool {
             )));
         }
 
-        let file_content = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+        let file_content = std::fs::read_to_string(path).map_err(Error::Io)?;
 
-        let hunks = Self::parse_unified_diff(patch).map_err(|e| Error::Tool(e))?;
+        let hunks = Self::parse_unified_diff(patch).map_err(Error::Tool)?;
 
-        let patched =
-            Self::apply_hunks(&file_content, &hunks, file_path).map_err(|e| Error::Tool(e))?;
+        let patched = Self::apply_hunks(&file_content, &hunks, file_path).map_err(Error::Tool)?;
 
         std::fs::write(path, &patched).map_err(|e| Error::FileSystem {
             path: file_path.to_string(),
@@ -2539,7 +2538,7 @@ impl SkillTool {
 
         for skill_path in &candidates {
             if skill_path.exists() {
-                let content = std::fs::read_to_string(skill_path).map_err(|e| Error::Io(e))?;
+                let content = std::fs::read_to_string(skill_path).map_err(Error::Io)?;
                 let (frontmatter, body) = Self::parse_frontmatter(&content);
                 return Ok((frontmatter, body.to_string()));
             }
@@ -2768,7 +2767,7 @@ impl Tool for TodoWriteTool {
             .filter(|t| t["status"].as_str() != Some("completed"))
             .count();
 
-        let output = serde_json::to_string_pretty(todos).map_err(|e| Error::Json(e))?;
+        let output = serde_json::to_string_pretty(todos).map_err(Error::Json)?;
 
         Ok(ExecuteResult {
             title: format!("{} todos", incomplete_count),
@@ -3102,7 +3101,7 @@ impl StashTool {
         if let Ok(entries) = std::fs::read_dir(&dir) {
             for entry in entries.flatten() {
                 let stash_path = entry.path();
-                if stash_path.extension().map_or(false, |e| e == "json") {
+                if stash_path.extension().is_some_and(|e| e == "json") {
                     if let Ok(content) = std::fs::read_to_string(&stash_path) {
                         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
                             let name = json["name"].as_str().unwrap_or("unknown");
@@ -3199,7 +3198,7 @@ impl Tool for StashTool {
                         detail: "missing 'files' array for save action".into(),
                     });
                 }
-                let msg = Self::save_stash(name, &files).map_err(|e| Error::Tool(e))?;
+                let msg = Self::save_stash(name, &files).map_err(Error::Tool)?;
                 (msg, format!("Stash saved: {}", name))
             }
             "restore" => {
@@ -3207,11 +3206,11 @@ impl Tool for StashTool {
                     tool: "stash".into(),
                     detail: "missing 'name' field for restore action".into(),
                 })?;
-                let msg = Self::restore_stash(name).map_err(|e| Error::Tool(e))?;
+                let msg = Self::restore_stash(name).map_err(Error::Tool)?;
                 (msg, format!("Stash restored: {}", name))
             }
             "list" => {
-                let msg = Self::list_stashes().map_err(|e| Error::Tool(e))?;
+                let msg = Self::list_stashes().map_err(Error::Tool)?;
                 (msg, "Stash list".into())
             }
             "drop" => {
@@ -3219,7 +3218,7 @@ impl Tool for StashTool {
                     tool: "stash".into(),
                     detail: "missing 'name' field for drop action".into(),
                 })?;
-                let msg = Self::drop_stash(name).map_err(|e| Error::Tool(e))?;
+                let msg = Self::drop_stash(name).map_err(Error::Tool)?;
                 (msg, format!("Stash dropped: {}", name))
             }
             other => {
@@ -3394,9 +3393,9 @@ impl Tool for NotebookEditTool {
             )));
         }
 
-        let content = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+        let content = std::fs::read_to_string(path).map_err(Error::Io)?;
 
-        let (mut notebook, cells) = Self::parse_notebook(&content).map_err(|e| Error::Tool(e))?;
+        let (mut notebook, cells) = Self::parse_notebook(&content).map_err(Error::Tool)?;
 
         let mut cells_array = cells.as_array().cloned().unwrap_or_default();
 
@@ -3461,7 +3460,7 @@ impl Tool for NotebookEditTool {
 
         // Write back
         notebook["cells"] = serde_json::Value::Array(cells_array);
-        let updated = serde_json::to_string_pretty(&notebook).map_err(|e| Error::Json(e))?;
+        let updated = serde_json::to_string_pretty(&notebook).map_err(Error::Json)?;
         std::fs::write(path, updated).map_err(|e| Error::FileSystem {
             path: notebook_path.to_string(),
             message: format!("failed to write notebook: {}", e),

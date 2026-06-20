@@ -563,7 +563,7 @@ pub fn derive(path: &str, chunks: &[UpdateFileChunk], original: &str) -> PatchRe
 
     // Split into lines, removing a trailing empty line (matching TS behavior)
     let mut file_lines: Vec<String> = source_text.lines().map(String::from).collect();
-    if file_lines.last().map_or(false, |l| l.is_empty()) {
+    if file_lines.last().is_some_and(|l| l.is_empty()) {
         file_lines.pop();
     }
 
@@ -573,12 +573,12 @@ pub fn derive(path: &str, chunks: &[UpdateFileChunk], original: &str) -> PatchRe
     let mut updated = file_lines;
     for (start, remove_count, insert_lines) in replacements.into_iter().rev() {
         let end = (start + remove_count).min(updated.len());
-        let insert = insert_lines.into_iter().map(String::from);
+        let insert = insert_lines.into_iter();
         updated.splice(start..end, insert);
     }
 
     // Ensure trailing newline (as TS does: if last line is not empty, push "")
-    if updated.last().map_or(true, |l| !l.is_empty()) {
+    if updated.last().is_none_or(|l| !l.is_empty()) {
         updated.push(String::new());
     }
 
@@ -608,7 +608,7 @@ fn compute_replacements(
     for chunk in chunks {
         // If a change_context hint is provided, locate it first
         if let Some(ref ctx) = chunk.change_context {
-            let context_pos = seek(lines, &[ctx.clone()], line_index, false);
+            let context_pos = seek(lines, std::slice::from_ref(ctx), line_index, false);
             match context_pos {
                 Some(pos) => line_index = pos + 1,
                 None => {
@@ -633,9 +633,9 @@ fn compute_replacements(
         let mut found = seek(lines, &old_lines, line_index, eof);
 
         // Retry without trailing empty line (matching TS fallback)
-        if found.is_none() && old_lines.last().map_or(false, |l| l.is_empty()) {
+        if found.is_none() && old_lines.last().is_some_and(|l| l.is_empty()) {
             old_lines.pop();
-            if new_lines.last().map_or(false, |l| l.is_empty()) {
+            if new_lines.last().is_some_and(|l| l.is_empty()) {
                 new_lines.pop();
             }
             found = seek(lines, &old_lines, line_index, eof);

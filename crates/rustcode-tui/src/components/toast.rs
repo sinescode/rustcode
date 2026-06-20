@@ -212,6 +212,10 @@ impl ToastState {
         self.toasts.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.toasts.is_empty()
+    }
+
     /// Clear all toasts immediately.
     pub fn clear(&mut self) {
         self.toasts.clear();

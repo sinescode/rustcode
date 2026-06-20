@@ -797,7 +797,7 @@ impl IntegrationService {
     /// Prefers OAuth, then Key, then Env. Returns the method type string.
     pub fn resolve_auth_method(&self, integration_id: &str) -> Option<&str> {
         let info = self.definitions.get(integration_id)?;
-        for method in &info.methods {
+        if let Some(method) = info.methods.first() {
             match method {
                 AuthMethod::OAuth(_) => return Some("oauth"),
                 AuthMethod::Key(_) => return Some("key"),
@@ -1366,7 +1366,7 @@ mod tests {
         }
 
         assert!(
-            svc.attempts.get(&id).is_none(),
+            !svc.attempts.contains_key(&id),
             "attempt should be removed after cancel"
         );
     }
@@ -1376,11 +1376,8 @@ mod tests {
         let mut svc = IntegrationService::new();
         let result = svc.cancel_attempt("con_does_not_exist");
         assert!(result.is_err());
-        match result.unwrap_err() {
-            AuthorizationError { cause } => {
-                assert!(cause.contains("not found"));
-            }
-        }
+        let AuthorizationError { cause } = result.unwrap_err();
+        assert!(cause.contains("not found"));
     }
 
     // ---------------------------------------------------------------
@@ -1423,7 +1420,7 @@ mod tests {
         let removed = svc.scrub_expired_attempts();
         assert!(removed.is_empty());
         assert!(
-            svc.attempts.get(&id).is_some(),
+            svc.attempts.contains_key(&id),
             "pending attempt should remain"
         );
     }
@@ -1457,7 +1454,7 @@ mod tests {
         let removed = svc.scrub_expired_attempts();
         assert_eq!(removed.len(), 1);
         assert_eq!(removed[0], expired_id);
-        assert!(svc.attempts.get(&valid_id).is_some());
+        assert!(svc.attempts.contains_key(&valid_id));
     }
 
     // ---------------------------------------------------------------
@@ -1631,7 +1628,7 @@ mod tests {
             .unwrap();
 
         assert!(
-            svc.attempts.get(&attempt.attempt_id).is_some(),
+            svc.attempts.contains_key(&attempt.attempt_id),
             "attempt should be stored"
         );
     }

@@ -199,6 +199,10 @@ impl DialogState {
         self.stack.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.stack.is_empty()
+    }
+
     /// Handle a key event for the topmost dialog.
     ///
     /// Returns `true` if the key was consumed by the dialog system.
@@ -244,12 +248,8 @@ pub fn render_dialog_frame(
     dialog_type: DialogType,
     extra_height: u16,
 ) -> Rect {
-    let dialog_width = (area.width as f64 * dialog_type.width_ratio())
-        .min(100.0)
-        .max(30.0) as u16;
-    let base_height = (area.height as f64 * dialog_type.height_ratio())
-        .min(40.0)
-        .max(10.0) as u16;
+    let dialog_width = (area.width as f64 * dialog_type.width_ratio()).clamp(30.0, 100.0) as u16;
+    let base_height = (area.height as f64 * dialog_type.height_ratio()).clamp(10.0, 40.0) as u16;
     let dialog_height = base_height + extra_height;
 
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;

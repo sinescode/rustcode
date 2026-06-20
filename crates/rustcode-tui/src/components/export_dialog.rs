@@ -415,8 +415,8 @@ pub fn render_export_dialog(f: &mut Frame, area: Rect, state: &ExportState) {
         return;
     }
 
-    let dialog_width = (area.width as f64 * 0.65).min(90.0).max(50.0) as u16;
-    let dialog_height = (area.height as f64 * 0.75).min(35.0).max(20.0) as u16;
+    let dialog_width = (area.width as f64 * 0.65).clamp(50.0, 90.0) as u16;
+    let dialog_height = (area.height as f64 * 0.75).clamp(20.0, 35.0) as u16;
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 

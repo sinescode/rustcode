@@ -228,7 +228,7 @@ impl OpenAIProvider {
                     let mut media_parts: Vec<OpenAIUserContentPart> = Vec::new();
                     for part in content_parts(content) {
                         match part {
-                            ContentPart::Text { text } => text_parts.push_str(&text),
+                            ContentPart::Text { text } => text_parts.push_str(text),
                             ContentPart::Image { image } => {
                                 media_parts.push(OpenAIUserContentPart::ImageUrl {
                                     image_url: OpenAIImageUrl {
@@ -244,7 +244,7 @@ impl OpenAIProvider {
                         }
                     }
                     if !pending_images.is_empty() {
-                        media_parts.extend(pending_images.drain(..));
+                        media_parts.append(&mut pending_images);
                     }
                     if media_parts.is_empty() {
                         result.push(OpenAIChatMessage::User {
@@ -266,8 +266,8 @@ impl OpenAIProvider {
                     let mut reasoning = String::new();
                     for part in content_parts(content) {
                         match part {
-                            ContentPart::Text { text: t } => text.push_str(&t),
-                            ContentPart::Reasoning { text: r, .. } => reasoning.push_str(&r),
+                            ContentPart::Text { text: t } => text.push_str(t),
+                            ContentPart::Reasoning { text: r, .. } => reasoning.push_str(r),
                             ContentPart::ToolCallPart {
                                 tool_call_id,
                                 tool_name,
@@ -431,14 +431,14 @@ fn events_from_chat(event: OpenAIChatEvent, state: &mut ChatStreamState) -> Vec<
         }
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
-                if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
+                if let Some(name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
                     state.tool_stream.set_identity(
                         td.index,
-                        name.clone(),
+                        name,
                         td.id.clone().unwrap_or_default(),
                     );
                 }
-                if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
+                if let Some(args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
                         if !state.step_started {
                             events.push(LlmEvent::StepStart { index: 0 });
@@ -636,14 +636,11 @@ impl Provider for OpenAIProvider {
         let mut events = Vec::new();
         let mut usage = None;
         while let Some(r) = stream.next().await {
-            match r {
-                Ok(ev) => {
-                    if let Some(u) = ev.usage() {
-                        usage = Some(u.clone());
-                    }
-                    events.push(ev);
+            if let Ok(ev) = r {
+                if let Some(u) = ev.usage() {
+                    usage = Some(u.clone());
                 }
-                Err(_) => {}
+                events.push(ev);
             }
         }
         Ok(crate::provider::LlmResponse { events, usage })

@@ -566,15 +566,33 @@ mod tests {
 
     #[test]
     fn test_constants_are_nonzero() {
-        assert!(DEFAULT_COMPACTION_BUFFER > 0);
-        assert!(DEFAULT_KEEP_TOKENS > 0);
-        assert!(TOOL_OUTPUT_MAX_CHARS > 0);
-        assert!(SUMMARY_OUTPUT_TOKENS > 0);
-        assert!(PRUNE_MINIMUM_TOKENS > 0);
-        assert!(PRUNE_PROTECT_TOKENS > 0);
-        assert!(DEFAULT_TAIL_TURNS > 0);
-        assert!(MIN_PRESERVE_RECENT_TOKENS > 0);
-        assert!(MAX_PRESERVE_RECENT_TOKENS > 0);
+        const {
+            assert!(DEFAULT_COMPACTION_BUFFER > 0);
+        }
+        const {
+            assert!(DEFAULT_KEEP_TOKENS > 0);
+        }
+        const {
+            assert!(TOOL_OUTPUT_MAX_CHARS > 0);
+        }
+        const {
+            assert!(SUMMARY_OUTPUT_TOKENS > 0);
+        }
+        const {
+            assert!(PRUNE_MINIMUM_TOKENS > 0);
+        }
+        const {
+            assert!(PRUNE_PROTECT_TOKENS > 0);
+        }
+        const {
+            assert!(DEFAULT_TAIL_TURNS > 0);
+        }
+        const {
+            assert!(MIN_PRESERVE_RECENT_TOKENS > 0);
+        }
+        const {
+            assert!(MAX_PRESERVE_RECENT_TOKENS > 0);
+        }
     }
 
     #[test]

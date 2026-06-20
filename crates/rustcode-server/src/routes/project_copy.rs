@@ -15,6 +15,7 @@ use tracing::info;
 use crate::server::AppState;
 
 /// In-memory store for project copies.
+#[allow(dead_code)]
 type CopyStore = HashMap<String, ProjectCopyInfo>;
 
 /// Payload for creating a project copy.
@@ -37,6 +38,7 @@ pub struct GenerateNamePayload {
 
 /// Information about a project copy.
 #[derive(Debug, Clone, serde::Serialize)]
+#[allow(dead_code)]
 struct ProjectCopyInfo {
     id: String,
     name: String,

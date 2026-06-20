@@ -86,7 +86,7 @@ impl ConversationState {
         self.auto_scroll = false;
     }
 
-    /// Check if we're at the bottom (auto-scroll position).
+    #[allow(dead_code)]
     fn is_at_bottom(&self) -> bool {
         self.scroll_offset == 0
     }

@@ -275,7 +275,7 @@ impl WorktreeManager {
 
         // Ensure the worktree root directory exists
         let root = self.worktree_root();
-        std::fs::create_dir_all(&root).map_err(|e| crate::error::Error::Io(e))?;
+        std::fs::create_dir_all(&root).map_err(crate::error::Error::Io)?;
 
         self.candidate(name, detached, 26)
     }
@@ -405,7 +405,7 @@ impl WorktreeManager {
         let entry = entries.iter().find(|e| {
             e.path
                 .as_ref()
-                .map_or(false, |p| Self::canonical(Path::new(p)) == directory)
+                .is_some_and(|p| Self::canonical(Path::new(p)) == directory)
         });
 
         match entry.and_then(|e| e.path.as_deref()) {
@@ -436,7 +436,7 @@ impl WorktreeManager {
                 let still_exists = next_entries.iter().any(|e| {
                     e.path
                         .as_ref()
-                        .map_or(false, |p| Self::canonical(Path::new(p)) == directory)
+                        .is_some_and(|p| Self::canonical(Path::new(p)) == directory)
                 });
 
                 if still_exists {
@@ -497,7 +497,7 @@ impl WorktreeManager {
         let entry = entries.iter().find(|e| {
             e.path
                 .as_ref()
-                .map_or(false, |p| Self::canonical(Path::new(p)) == directory)
+                .is_some_and(|p| Self::canonical(Path::new(p)) == directory)
         });
 
         let worktree_path = match entry.and_then(|e| e.path.as_deref()) {

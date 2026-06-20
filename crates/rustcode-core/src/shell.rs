@@ -300,7 +300,7 @@ pub fn select(shell_path: Option<&str>) -> Option<ShellItem> {
     }
     #[cfg(target_os = "linux")]
     {
-        return ShellItem::from_path("/bin/bash").or_else(|| ShellItem::from_path("/bin/sh"));
+        ShellItem::from_path("/bin/bash").or_else(|| ShellItem::from_path("/bin/sh"))
     }
     #[cfg(target_os = "windows")]
     {
@@ -313,7 +313,7 @@ pub fn select(shell_path: Option<&str>) -> Option<ShellItem> {
 }
 
 /// Shell execution environment configuration.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ShellConfig {
     /// Name/path of the preferred shell
     pub shell: Option<String>,
@@ -325,18 +325,6 @@ pub struct ShellConfig {
     pub init_command: Option<String>,
     /// Timeout for shell commands (seconds)
     pub timeout_seconds: Option<u64>,
-}
-
-impl Default for ShellConfig {
-    fn default() -> Self {
-        Self {
-            shell: None,
-            env: std::collections::HashMap::new(),
-            cwd: None,
-            init_command: None,
-            timeout_seconds: None,
-        }
-    }
 }
 
 /// Result of a shell command execution.
@@ -502,7 +490,7 @@ impl ShellService {
         cmd.kill_on_drop(true);
 
         let start = std::time::Instant::now();
-        let child = cmd.spawn().map_err(|e| ShellError::Io(e))?;
+        let child = cmd.spawn().map_err(ShellError::Io)?;
         let child_id = child.id();
 
         let result = tokio::time::timeout(std::time::Duration::from_millis(timeout), async {
@@ -774,8 +762,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_detect_with_config_shell() {
-        let mut config = ShellConfig::default();
-        config.shell = Some("/bin/sh".to_string());
+        let config = ShellConfig {
+            shell: Some("/bin/sh".to_string()),
+            ..Default::default()
+        };
         let service = ShellService::new(config);
         let shells = service.detect();
         assert_eq!(shells.len(), 1);
@@ -855,8 +845,10 @@ mod tests {
 
     #[tokio::test]
     async fn test_shell_service_execute_with_cwd() {
-        let mut config = ShellConfig::default();
-        config.cwd = Some(std::path::PathBuf::from("/tmp"));
+        let config = ShellConfig {
+            cwd: Some(std::path::PathBuf::from("/tmp")),
+            ..Default::default()
+        };
         let service = ShellService::new(config);
         let result = service.execute("pwd", None).await;
         match result {

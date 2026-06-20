@@ -1077,7 +1077,7 @@ mod tests {
         let names: Vec<&str> = list.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names[0], "plan");
         // Verify the rest are alphabetical
-        let mut rest = names[1..].to_vec();
+        let rest = names[1..].to_vec();
         let mut sorted_rest = rest.clone();
         sorted_rest.sort();
         assert_eq!(rest, sorted_rest);
@@ -1087,8 +1087,10 @@ mod tests {
     fn test_user_config_disables_agent() {
         let (worktree, data_dir, tmp_dir) = test_dirs();
         let mut cfg = empty_config();
-        let mut disable_agent = config::AgentConfig::default();
-        disable_agent.disable = Some(true);
+        let disable_agent = config::AgentConfig {
+            disable: Some(true),
+            ..Default::default()
+        };
         cfg.agent.insert("general".into(), disable_agent);
 
         let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
@@ -1100,9 +1102,11 @@ mod tests {
     fn test_user_config_adds_custom_agent() {
         let (worktree, data_dir, tmp_dir) = test_dirs();
         let mut cfg = empty_config();
-        let mut custom = config::AgentConfig::default();
-        custom.description = Some("Custom test agent".into());
-        custom.mode = Some(AgentMode::Subagent);
+        let custom = config::AgentConfig {
+            description: Some("Custom test agent".into()),
+            mode: Some(AgentMode::Subagent),
+            ..Default::default()
+        };
         cfg.agent.insert("my-custom".into(), custom);
 
         let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
@@ -1116,9 +1120,11 @@ mod tests {
     fn test_user_config_overrides_builtin() {
         let (worktree, data_dir, tmp_dir) = test_dirs();
         let mut cfg = empty_config();
-        let mut build_cfg = config::AgentConfig::default();
-        build_cfg.description = Some("Overridden description".into());
-        build_cfg.temperature = Some(0.8);
+        let build_cfg = config::AgentConfig {
+            description: Some("Overridden description".into()),
+            temperature: Some(0.8),
+            ..Default::default()
+        };
         cfg.agent.insert("build".into(), build_cfg);
 
         let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
@@ -1288,20 +1294,20 @@ mod tests {
     #[test]
     fn test_all_prompts_are_non_empty() {
         assert!(
-            PROMPT_EXPLORE.len() > 0,
+            !PROMPT_EXPLORE.is_empty(),
             "PROMPT_EXPLORE should not be empty"
         );
         assert!(
-            PROMPT_COMPACTION.len() > 0,
+            !PROMPT_COMPACTION.is_empty(),
             "PROMPT_COMPACTION should not be empty"
         );
         assert!(
-            PROMPT_SUMMARY.len() > 0,
+            !PROMPT_SUMMARY.is_empty(),
             "PROMPT_SUMMARY should not be empty"
         );
-        assert!(PROMPT_TITLE.len() > 0, "PROMPT_TITLE should not be empty");
+        assert!(!PROMPT_TITLE.is_empty(), "PROMPT_TITLE should not be empty");
         assert!(
-            PROMPT_GENERATE.len() > 0,
+            !PROMPT_GENERATE.is_empty(),
             "PROMPT_GENERATE should not be empty"
         );
     }
@@ -1464,9 +1470,10 @@ mod tests {
     fn test_apply_config_override_steps_via_max_steps() {
         let (worktree, data_dir, tmp_dir) = test_dirs();
         let mut cfg = empty_config();
-        let mut agent_cfg = config::AgentConfig::default();
-        // Set max_steps (deprecated field) but NOT steps — should still apply via fallback
-        agent_cfg.max_steps = Some(42);
+        let agent_cfg = config::AgentConfig {
+            max_steps: Some(42),
+            ..Default::default()
+        };
         cfg.agent.insert("build".into(), agent_cfg);
         let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
         let build = svc.get("build").expect("build should exist");
@@ -1481,9 +1488,11 @@ mod tests {
     fn test_deprecated_mode_field_applies_agent_overrides() {
         let (worktree, data_dir, tmp_dir) = test_dirs();
         let mut cfg = empty_config();
-        let mut mode_cfg = config::AgentConfig::default();
-        mode_cfg.description = Some("From deprecated mode field".into());
-        mode_cfg.temperature = Some(0.3);
+        let mode_cfg = config::AgentConfig {
+            description: Some("From deprecated mode field".into()),
+            temperature: Some(0.3),
+            ..Default::default()
+        };
         cfg.mode.insert("build".into(), mode_cfg);
         let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
         let build = svc.get("build").expect("build should exist");

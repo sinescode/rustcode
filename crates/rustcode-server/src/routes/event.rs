@@ -134,15 +134,9 @@ fn bus_rx_to_receiver(
 ) -> tokio::sync::broadcast::Receiver<rustcode_core::bus::GlobalEvent> {
     let (tx, rx) = tokio::sync::broadcast::channel(256);
     tokio::spawn(async move {
-        loop {
-            match sub.recv().await {
-                Some(event) => {
-                    if tx.send(event).is_err() {
-                        // All receivers dropped
-                        break;
-                    }
-                }
-                None => break, // Bus closed
+        while let Some(event) = sub.recv().await {
+            if tx.send(event).is_err() {
+                break;
             }
         }
     });

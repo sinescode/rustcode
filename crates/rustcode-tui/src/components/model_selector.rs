@@ -33,6 +33,7 @@ const MAX_DISPLAY: usize = 30;
 
 /// A flattened entry in the model list — either a provider header or a model row.
 #[derive(Debug, Clone)]
+#[allow(clippy::large_enum_variant)]
 pub enum ModelListEntry {
     /// Provider group header.
     ProviderHeader {
@@ -409,8 +410,8 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
         return;
     }
 
-    let dialog_width = (area.width as f64 * 0.6).min(90.0).max(50.0) as u16;
-    let dialog_height = (area.height as f64 * 0.7).min(35.0).max(18.0) as u16;
+    let dialog_width = (area.width as f64 * 0.6).clamp(50.0, 90.0) as u16;
+    let dialog_height = (area.height as f64 * 0.7).clamp(18.0, 35.0) as u16;
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 

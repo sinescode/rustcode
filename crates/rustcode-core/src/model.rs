@@ -95,7 +95,7 @@ pub mod well_known_providers {
 /// # Source
 /// Ported from `packages/core/src/model.ts` lines 16–21
 /// (`Capabilities` struct — `tools`, `input`, `output`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Capabilities {
     /// Whether the model supports tool calling
     #[serde(default)]
@@ -106,16 +106,6 @@ pub struct Capabilities {
     /// MIME patterns the model produces as output
     #[serde(default)]
     pub output: Vec<String>,
-}
-
-impl Default for Capabilities {
-    fn default() -> Self {
-        Self {
-            tools: false,
-            input: vec![],
-            output: vec![],
-        }
-    }
 }
 
 // ── Model cost ──────────────────────────────────────────────────────────
@@ -355,7 +345,7 @@ const fn default_enabled() -> bool {
 /// # Source
 /// Ported from `packages/core/src/model.ts` lines 62–66
 /// (`request: { ...ModelRequest.Request.fields, variant?: String }`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelRequestConfig {
     /// Default HTTP headers for API calls
     #[serde(default)]
@@ -430,18 +420,6 @@ impl ModelInfo {
     }
 }
 
-impl Default for ModelRequestConfig {
-    fn default() -> Self {
-        Self {
-            headers: HashMap::new(),
-            body: HashMap::new(),
-            generation: GenerationParams::default(),
-            options: HashMap::new(),
-            variant: None,
-        }
-    }
-}
-
 // ── Model parsing ───────────────────────────────────────────────────────
 
 /// Parsed model reference from a string like `"anthropic/claude-sonnet-4-20250514"`.
@@ -484,7 +462,7 @@ pub fn parse_model_ref(input: &str) -> Option<ParsedModelRef> {
 /// # Source
 /// Ported from `packages/core/src/model-request.ts` lines 5–14
 /// (`Generation` struct).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GenerationParams {
     /// Maximum tokens to generate
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -512,27 +490,12 @@ pub struct GenerationParams {
     pub stop: Option<Vec<String>>,
 }
 
-impl Default for GenerationParams {
-    fn default() -> Self {
-        Self {
-            max_tokens: None,
-            temperature: None,
-            top_p: None,
-            top_k: None,
-            frequency_penalty: None,
-            presence_penalty: None,
-            seed: None,
-            stop: None,
-        }
-    }
-}
-
 /// Full model request configuration (headers + body + generation + options).
 ///
 /// # Source
 /// Ported from `packages/core/src/model-request.ts` lines 17–30
 /// (`Request` struct).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ModelRequest {
     /// HTTP headers to send with the request
     #[serde(default)]
@@ -546,17 +509,6 @@ pub struct ModelRequest {
     /// Additional provider-specific options
     #[serde(default)]
     pub options: HashMap<String, serde_json::Value>,
-}
-
-impl Default for ModelRequest {
-    fn default() -> Self {
-        Self {
-            headers: HashMap::new(),
-            body: HashMap::new(),
-            generation: GenerationParams::default(),
-            options: HashMap::new(),
-        }
-    }
 }
 
 /// Map of known generation parameter key names to their canonical field names.
@@ -675,7 +627,7 @@ pub fn normalize_ai_sdk_options(
     input: &HashMap<String, serde_json::Value>,
 ) -> NormalizedOptions {
     let gen_keys = generation_key_map();
-    let semantics = package_name.map_or(HashMap::new(), |p| ai_sdk_semantics(p));
+    let semantics = package_name.map_or(HashMap::new(), ai_sdk_semantics);
 
     let mut generation: HashMap<String, serde_json::Value> = HashMap::new();
     let mut options: HashMap<String, serde_json::Value> = HashMap::new();

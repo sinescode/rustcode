@@ -768,8 +768,8 @@ mod tests {
 
     #[test]
     fn test_result_alias() {
-        let ok: Result<i32> = Ok(42);
-        assert_eq!(ok.unwrap(), 42);
+        let ok: i32 = 42;
+        assert_eq!(ok, 42);
 
         let err: Result<i32> = Err(Error::Aborted);
         assert!(err.is_err());

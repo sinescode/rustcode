@@ -966,9 +966,8 @@ mod tests {
 
         // Ask a question concurrently
         let svc_clone = Arc::clone(&svc);
-        let handle = {
-            tokio::spawn(async move { svc_clone.ask("ses_test", questions, None).await })
-        };
+        let handle =
+            { tokio::spawn(async move { svc_clone.ask("ses_test", questions, None).await }) };
 
         // Give the ask a moment to register
         tokio::task::yield_now().await;
@@ -1004,9 +1003,8 @@ mod tests {
         let questions = vec![QuestionInfo::new("Confirm?", "Confirm")];
 
         let svc_clone = Arc::clone(&svc);
-        let handle = {
-            tokio::spawn(async move { svc_clone.ask("ses_test", questions, None).await })
-        };
+        let handle =
+            { tokio::spawn(async move { svc_clone.ask("ses_test", questions, None).await }) };
 
         tokio::task::yield_now().await;
 

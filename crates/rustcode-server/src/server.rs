@@ -65,6 +65,7 @@ pub struct AppState {
 
 impl AppState {
     /// Create a new `AppState` with the given components.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         bus: rustcode_core::bus::SharedBus,
         sessions: Arc<rustcode_core::session::SessionManager>,

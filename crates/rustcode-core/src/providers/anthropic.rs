@@ -239,6 +239,7 @@ struct AnthropicErrorDetail {
 /// Delta in a content block delta event.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::enum_variant_names)]
 enum AnthropicDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
@@ -332,14 +333,12 @@ fn build_anthropic_messages(
     let start = msg_count.saturating_sub(2);
     for msg in &mut anthropic_messages[start..] {
         if let AnthropicMessageContent::Blocks(blocks) = &mut msg.content {
-            if let Some(last) = blocks.last_mut() {
-                match last {
-                    AnthropicContentBlock::Text { cache_control, .. }
-                    | AnthropicContentBlock::Image { cache_control, .. } => {
-                        *cache_control = Some(ephemeral.clone());
-                    }
-                    _ => {}
-                }
+            if let Some(
+                AnthropicContentBlock::Text { cache_control, .. }
+                | AnthropicContentBlock::Image { cache_control, .. },
+            ) = blocks.last_mut()
+            {
+                *cache_control = Some(ephemeral.clone());
             }
         }
     }
@@ -1155,19 +1154,10 @@ fn classify_http_error(status: u16, error_type: &str, message: &str) -> LlmError
                 crate::error::AuthErrorKind::InsufficientPermissions
             },
         },
-        429 => {
-            if error_type == "rate_limit_error" {
-                LlmErrorReason::RateLimit {
-                    message: message.into(),
-                    retry_after_ms: None,
-                }
-            } else {
-                LlmErrorReason::RateLimit {
-                    message: message.into(),
-                    retry_after_ms: None,
-                }
-            }
-        }
+        429 => LlmErrorReason::RateLimit {
+            message: message.into(),
+            retry_after_ms: None,
+        },
         400 | 413 => {
             if crate::error::is_context_overflow(message) {
                 LlmErrorReason::InvalidRequest {
@@ -1259,6 +1249,7 @@ fn build_model_catalog() -> Vec<Model> {
 }
 
 /// Helper to create a Model with consistent defaults.
+#[allow(clippy::too_many_arguments)]
 fn make_model(
     id: &str,
     name: &str,

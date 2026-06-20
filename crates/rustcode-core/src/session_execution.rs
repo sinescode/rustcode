@@ -154,7 +154,7 @@ pub fn coalesce_demand(left: Option<&Demand>, right: &Demand) -> Demand {
                 (Some(l), Some(r)) => Some(l.max(r)),
             },
         },
-        _ => right.clone(),
+        _ => *right,
     }
 }
 

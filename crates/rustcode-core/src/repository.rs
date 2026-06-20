@@ -869,8 +869,8 @@ impl RepositoryService {
         // Check if already cloned
         if local_path.join(".git").exists() {
             // Already exists — just fetch if requested
-            let head = self.resolve_head(&local_path)?;
-            let current_branch = self.resolve_branch(&local_path)?;
+            let head = self.resolve_head(local_path)?;
+            let current_branch = self.resolve_branch(local_path)?;
             return Ok(RepositoryCacheResult {
                 repository: reference.base.label.clone(),
                 host: reference.base.host.clone(),
@@ -905,8 +905,8 @@ impl RepositoryService {
             });
         }
 
-        let head = self.resolve_head(&local_path)?;
-        let current_branch = self.resolve_branch(&local_path)?;
+        let head = self.resolve_head(local_path)?;
+        let current_branch = self.resolve_branch(local_path)?;
 
         Ok(RepositoryCacheResult {
             repository: reference.base.label.clone(),
@@ -947,7 +947,7 @@ impl RepositoryService {
         // Run git fetch
         let output = std::process::Command::new("git")
             .args(["fetch", "--depth=1", "origin"])
-            .current_dir(&local_path)
+            .current_dir(local_path)
             .output()
             .map_err(|e| RepositoryCacheError::FetchFailed {
                 repository: reference.base.label.clone(),
@@ -965,11 +965,11 @@ impl RepositoryService {
         let reset_target = resolve_reset_target(local_path)?;
         let _ = std::process::Command::new("git")
             .args(["reset", "--hard", &reset_target])
-            .current_dir(&local_path)
+            .current_dir(local_path)
             .output();
 
-        let head = self.resolve_head(&local_path)?;
-        let current_branch = self.resolve_branch(&local_path)?;
+        let head = self.resolve_head(local_path)?;
+        let current_branch = self.resolve_branch(local_path)?;
 
         Ok(RepositoryCacheResult {
             repository: reference.base.label.clone(),

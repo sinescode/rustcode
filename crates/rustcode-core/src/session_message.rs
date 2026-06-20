@@ -83,6 +83,7 @@ pub struct Prompt {
 /// `packages/core/src/session/message.ts` lines 178–191 `Message`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum SessionMessage {
     /// Agent was switched
     #[serde(rename = "agent-switched")]
@@ -300,6 +301,7 @@ pub struct AssistantTime {
 /// `packages/core/src/session/message.ts` lines 137–140 `AssistantContent`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::large_enum_variant)]
 pub enum AssistantContent {
     /// Plain text output
     #[serde(rename = "text")]

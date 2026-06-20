@@ -204,8 +204,8 @@ impl NpmConfig {
         if let Ok(content) = npmrc {
             for line in content.lines() {
                 let line = line.trim();
-                if line.starts_with("registry=") {
-                    registry = line[9..].to_string();
+                if let Some(stripped) = line.strip_prefix("registry=") {
+                    registry = stripped.to_string();
                 }
             }
         }
@@ -237,8 +237,8 @@ impl NpmConfig {
         let mut registry = "https://registry.npmjs.org".to_string();
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("registry=") {
-                registry = line[9..].to_string();
+            if let Some(stripped) = line.strip_prefix("registry=") {
+                registry = stripped.to_string();
             }
         }
         Ok(Self {
@@ -343,8 +343,8 @@ pub fn parse_specifier(spec: &str) -> Result<NpmPackageSpecifier, NpmInstallFail
             name: spec.to_string(),
         });
     }
-    if spec.starts_with('@') {
-        if let Some(at_pos) = spec[1..].find('@') {
+    if let Some(stripped) = spec.strip_prefix('@') {
+        if let Some(at_pos) = stripped.find('@') {
             let name = &spec[..=at_pos];
             let version = &spec[at_pos + 2..];
             return Ok(NpmPackageSpecifier {

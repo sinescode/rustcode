@@ -1913,7 +1913,7 @@ mod tests {
             pattern: "*.md".into(),
             action: PermissionAction::Allow,
         }];
-        let merged = merge_rulesets(&[rules.clone()]);
+        let merged = merge_rulesets(std::slice::from_ref(&rules));
         assert_eq!(merged, rules);
     }
 

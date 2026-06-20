@@ -564,9 +564,9 @@ fn reconcile_observation(
 ) -> Result<ReconcileResult, SystemContextError> {
     let current_keys: HashSet<_> = entries
         .iter()
-        .filter_map(|e| match e {
-            Entry::Available(a) => Some(a.key.clone()),
-            Entry::Unavailable { key } => Some(key.clone()),
+        .map(|e| match e {
+            Entry::Available(a) => a.key.clone(),
+            Entry::Unavailable { key } => key.clone(),
         })
         .collect();
 
@@ -583,12 +583,10 @@ fn reconcile_observation(
 
     // Second pass: check removed keys have removal text.
     for key in previous.keys() {
-        if !current_keys.contains(key) {
-            if previous[key].removal.is_none() {
-                return Ok(ReconcileResult::ReplacementReady {
-                    generation: initialize_observation(entries)?,
-                });
-            }
+        if !current_keys.contains(key) && previous[key].removal.is_none() {
+            return Ok(ReconcileResult::ReplacementReady {
+                generation: initialize_observation(entries)?,
+            });
         }
     }
 

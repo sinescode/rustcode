@@ -446,12 +446,15 @@ impl InputState {
 
     /// Delete the word before the cursor.
     fn delete_word_backward(&mut self) {
-        // Skip whitespace
-        while self.cursor > 0 && self.text.as_bytes().get(self.cursor - 1) == Some(&b' ') {
+        // Delete the character at cursor position (if cursor points to a char)
+        if self.cursor < self.text.len() {
+            self.text.remove(self.cursor);
+        } else if self.cursor > 0 {
+            // cursor is past the end, delete last char
             self.cursor -= 1;
             self.text.remove(self.cursor);
         }
-        // Delete word characters (alphanumeric + underscores)
+        // Delete preceding word characters (alphanumeric + underscores)
         while self.cursor > 0 {
             let prev = self.text.as_bytes().get(self.cursor - 1).copied();
             match prev {

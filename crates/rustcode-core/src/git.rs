@@ -648,7 +648,7 @@ impl Git {
     /// `packages/opencode/src/git/index.ts` lines 322–324.
     pub fn apply_patch(&self, patch_text: &str) -> Result<GitResult, GitError> {
         let mut cmd = Command::new("git");
-        cmd.args(&["apply", "-"])
+        cmd.args(["apply", "-"])
             .current_dir(&self.worktree)
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
@@ -692,7 +692,7 @@ impl Git {
             self.worktree.clone()
         };
 
-        let store = resolve_path(&self.worktree, &common_dir.text().trim());
+        let store = resolve_path(&self.worktree, common_dir.text().trim());
 
         Ok(Some(Repo { directory, store }))
     }
@@ -827,7 +827,7 @@ impl Git {
         let dir_str = directory.to_string_lossy().to_string();
         args.push(&dir_str);
 
-        let result = self.run(&args.iter().map(|s| *s).collect::<Vec<_>>())?;
+        let result = self.run(&args.to_vec())?;
         if result.exit_code != 0 {
             let msg = result.stderr_text().trim().to_string();
             let msg_lower = msg.to_lowercase();

@@ -154,7 +154,7 @@ impl JsonRpcResponse {
 /// # Source
 /// Ported from `packages/opencode/src/mcp/oauth-provider.ts`
 /// `McpOAuthConfig` interface.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct McpOAuthConfig {
     /// Pre-registered client ID (for servers that don't support dynamic registration).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -255,18 +255,6 @@ where
         OAuthField::Bool(false) | OAuthField::Null => Ok(None),
         OAuthField::Bool(true) => Ok(Some(McpOAuthConfig::default())),
         OAuthField::Config(cfg) => Ok(Some(cfg)),
-    }
-}
-
-impl Default for McpOAuthConfig {
-    fn default() -> Self {
-        Self {
-            client_id: None,
-            client_secret: None,
-            scope: None,
-            callback_port: None,
-            redirect_uri: None,
-        }
     }
 }
 

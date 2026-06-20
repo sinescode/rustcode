@@ -71,7 +71,7 @@ impl GlobalPaths {
         let cache = xdg_dir("XDG_CACHE_HOME", &home, ".cache", APP_NAME);
         let config = xdg_dir("XDG_CONFIG_HOME", &home, ".config", APP_NAME);
         let state = xdg_dir("XDG_STATE_HOME", &home, ".local/state", APP_NAME);
-        let tmp = std::path::PathBuf::from(std::env::temp_dir()).join(APP_NAME);
+        let tmp = std::env::temp_dir().join(APP_NAME);
 
         let bin = std::path::PathBuf::from(&cache).join("bin");
         let log = std::path::PathBuf::from(&data).join("log");

@@ -306,12 +306,6 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::ScrollHalfPageUp),
 
-        KeyEvent {
-            code: KeyCode::Char('d'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } if false => None, // Ctrl+D is used for Quit
-
         // ── Suspend terminal ──────────────────────────────────────
         KeyEvent {
             code: KeyCode::Char('z'),
@@ -353,12 +347,6 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             modifiers: KeyModifiers::CONTROL,
             ..
         } => Some(TuiAction::ScrollNextMessage),
-
-        KeyEvent {
-            code: KeyCode::Char('p'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } if false => None, // Ctrl+P is used for CommandPalette
 
         // ── Toggle sidebar (direct) ───────────────────────────────
         KeyEvent {

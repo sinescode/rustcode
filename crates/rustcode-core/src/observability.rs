@@ -25,12 +25,15 @@ use std::collections::HashMap;
 /// # Source
 /// Ported from `packages/core/src/observability/logging.ts` lines 56–65
 /// (`minimumLogLevel()` — mapped from `OPENCODE_LOG_LEVEL` env var).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+)]
 #[serde(rename_all = "lowercase")]
 pub enum LogLevel {
     /// Verbose diagnostic output
     Debug,
     /// General information
+    #[default]
     Info,
     /// Warnings that don't prevent operation
     Warn,
@@ -64,12 +67,6 @@ impl std::fmt::Display for LogLevel {
             LogLevel::Warn => write!(f, "Warn"),
             LogLevel::Error => write!(f, "Error"),
         }
-    }
-}
-
-impl Default for LogLevel {
-    fn default() -> Self {
-        LogLevel::Info
     }
 }
 
@@ -209,7 +206,7 @@ fn urlencoding_decode(input: &str) -> Option<String> {
 /// # Source
 /// Ported from `packages/core/src/observability/otlp.ts` lines 7–18
 /// (`endpoint`, `headers`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct OtlpConfig {
     /// The OTLP endpoint base URL (e.g., `https://otlp.example.com`).
     /// Logs are sent to `{endpoint}/v1/logs`, traces to `{endpoint}/v1/traces`.
@@ -221,16 +218,6 @@ pub struct OtlpConfig {
     pub headers: HashMap<String, String>,
     /// Whether OTLP export is enabled.
     pub enabled: bool,
-}
-
-impl Default for OtlpConfig {
-    fn default() -> Self {
-        Self {
-            endpoint: None,
-            headers: HashMap::new(),
-            enabled: false,
-        }
-    }
 }
 
 impl OtlpConfig {
@@ -377,7 +364,7 @@ fn uuid_v4_short(n: usize) -> String {
 /// # Source
 /// Ported from `packages/core/src/observability.ts` lines 10–21
 /// (the composed `layer`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct ObservabilityConfig {
     /// Logging configuration
     #[serde(default)]
@@ -388,16 +375,6 @@ pub struct ObservabilityConfig {
     /// OpenTelemetry resource descriptor
     #[serde(default)]
     pub resource: OtelResource,
-}
-
-impl Default for ObservabilityConfig {
-    fn default() -> Self {
-        Self {
-            logging: LoggingConfig::default(),
-            otlp: OtlpConfig::default(),
-            resource: OtelResource::default(),
-        }
-    }
 }
 
 impl ObservabilityConfig {

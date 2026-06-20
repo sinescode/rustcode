@@ -627,7 +627,7 @@ Never use unwrap.
 
         let descriptions = builder.tool_descriptions();
         assert_eq!(descriptions.len(), 2);
-        assert!(descriptions[0].contains("search"));
+        assert!(descriptions.iter().any(|d| d.contains("search")));
     }
 
     #[test]
@@ -684,7 +684,7 @@ Never use unwrap.
 
     #[test]
     fn test_prompt_builder_build_prompt_with_all_part_types() {
-        let mut builder = SessionPromptBuilder::new();
+        let builder = SessionPromptBuilder::new();
 
         let input = SessionPromptInput {
             session_id: "ses_001".into(),

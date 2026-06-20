@@ -190,13 +190,10 @@ impl InstructionDiscovery {
                 }
             }
 
-            match project_root {
-                Some(stop) => {
-                    if current == stop {
-                        break;
-                    }
+            if let Some(stop) = project_root {
+                if current == stop {
+                    break;
                 }
-                None => {}
             }
 
             match current.parent() {
@@ -669,10 +666,9 @@ mod tests {
 
     #[test]
     fn test_load_all_combines_global_and_project() {
-        let tmp = std::env::temp_dir().join("rustcode_test_load_all");
-        let _ = fs::remove_dir_all(&tmp);
-        let global_config = tmp.join("global");
-        let project = tmp.join("project");
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let global_config = tmp.path().join("global");
+        let project = tmp.path().join("project");
         let nested = project.join("src");
         fs::create_dir_all(&nested).expect("create dirs");
         fs::create_dir_all(&global_config).expect("create dirs");
@@ -689,8 +685,6 @@ mod tests {
         assert!(contents.contains(&"global"));
         assert!(contents.contains(&"project"));
         assert!(contents.contains(&"nested"));
-
-        let _ = fs::remove_dir_all(&tmp);
     }
 
     #[test]

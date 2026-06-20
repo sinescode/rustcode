@@ -46,14 +46,13 @@ async fn list_skills(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let disable_external = std::env::var("OPENCODE_DISABLE_EXTERNAL_SKILLS").is_ok();
     let extra_paths: Vec<PathBuf> = Vec::new();
-
-    let files = rustcode_core::skill::discover_skill_files(
-        &cwd,
-        &cwd,
-        &home,
-        &extra_paths,
+    let config = rustcode_core::skill::SkillDiscoveryConfig {
         disable_external,
-    );
+        ..Default::default()
+    };
+
+    let files =
+        rustcode_core::skill::discover_skill_files(&cwd, &cwd, &home, &extra_paths, &config);
 
     let mut skills: Vec<serde_json::Value> = Vec::new();
     for file_path in &files {

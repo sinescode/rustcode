@@ -492,7 +492,7 @@ fn events_from_gemini(ev: GeminiEvent, state: &mut GeminiStreamState) -> Vec<Llm
     }
 
     // Emit finish on stream end (candidates empty and finishReason set)
-    if candidate.map_or(true, |c| c.content.is_none())
+    if candidate.is_none_or(|c| c.content.is_none())
         && state.finish_reason.is_some()
         && !state.finished
     {

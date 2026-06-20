@@ -306,7 +306,7 @@ impl SessionRunner {
             });
 
             let mut tool_result_parts: Vec<ToolResultPart> = Vec::new();
-            for (_key, tc) in &pending_tool_calls {
+            for tc in pending_tool_calls.values() {
                 let ctx = ToolContext {
                     session_id: input.session_id.clone(),
                     message_id: String::new(),

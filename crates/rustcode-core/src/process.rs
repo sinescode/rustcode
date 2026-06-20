@@ -479,10 +479,10 @@ impl ProcessService {
             if let Some(mut stdin) = child.stdin.take() {
                 match stdin_input {
                     StdinInput::Text(s) => {
-                        let _ = stdin.write_all(s.as_bytes());
+                        drop(stdin.write_all(s.as_bytes()));
                     }
                     StdinInput::Binary(b) => {
-                        let _ = stdin.write_all(b);
+                        drop(stdin.write_all(b));
                     }
                     StdinInput::Stream(_rx) => {
                         // Stream stdin is handled by spawn_with_stream_stdin
@@ -514,7 +514,7 @@ impl ProcessService {
         } else if let Some(ref token) = cancelled {
             tokio::select! {
                 output = child.wait_with_output() => {
-                    output.map_err(|e| e)
+                    output
                 }
                 _ = token.cancelled() => {
                     return Err(AppProcessError::Exited {
@@ -526,7 +526,7 @@ impl ProcessService {
                 }
             }
         } else {
-            child.wait_with_output().await.map_err(|e| e)
+            child.wait_with_output().await
         };
 
         match result {
@@ -643,10 +643,8 @@ impl ProcessService {
                     if total > max_error {
                         break;
                     }
-                    if include_stderr {
-                        if tx.send(Ok((line, true))).await.is_err() {
-                            break;
-                        }
+                    if include_stderr && tx.send(Ok((line, true))).await.is_err() {
+                        break;
                     }
                 }
             });

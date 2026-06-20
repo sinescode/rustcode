@@ -34,6 +34,7 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 ///     released: chrono::DateTime<chrono::Utc>,
 /// }
 /// ```
+#[allow(non_snake_case)]
 pub mod DateTimeUtcFromMillis {
     use super::*;
 
@@ -63,6 +64,7 @@ pub mod DateTimeUtcFromMillis {
 /// # Source
 /// Ported from `packages/core/src/v2-schema.ts` — the optional variant
 /// used when a `DateTimeUtcFromMillis` field may be absent.
+#[allow(non_snake_case)]
 pub mod OptionDateTimeUtcFromMillis {
     use super::*;
 

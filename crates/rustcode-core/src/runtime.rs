@@ -87,7 +87,7 @@ pub fn default_db_path() -> PathBuf {
 /// Creates the parent directory if it does not exist.  If provider detection
 /// finds no API keys the map will be empty — callers should print a helpful
 /// message listing the expected env vars.
-pub fn initialize_runtime(config: &Config) -> anyhow::Result<RuntimeContext> {
+pub fn initialize_runtime(config: &crate::config::Info) -> anyhow::Result<RuntimeContext> {
     initialize_runtime_with_path(&default_db_path(), config)
 }
 
@@ -97,7 +97,7 @@ pub fn initialize_runtime(config: &Config) -> anyhow::Result<RuntimeContext> {
 /// or one-shot runs that don't need persistence).
 pub fn initialize_runtime_with_path(
     db_path: &Path,
-    config: &Config,
+    config: &crate::config::Info,
 ) -> anyhow::Result<RuntimeContext> {
     let is_memory = db_path == Path::new(":memory:");
 
@@ -237,7 +237,7 @@ impl RuntimeContext {
 
     /// True when the database is file-backed (persistent), false for `:memory:`.
     pub fn is_persistent(&self) -> bool {
-        self.db_path != PathBuf::from(":memory:")
+        self.db_path.to_str() != Some(":memory:")
     }
 }
 
@@ -258,10 +258,10 @@ mod tests {
     fn test_memory_runtime() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
-        let config = Config::new(PathBuf::new(), None);
+        let config = crate::config::Config::load().unwrap_or_default();
         let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         assert!(!ctx.is_persistent());
-        assert!(ctx.db_path == PathBuf::from(":memory:"));
+        assert!(ctx.db_path == std::path::Path::new(":memory:"));
     }
 
     #[test]
@@ -281,7 +281,7 @@ mod tests {
     fn test_default_model_known() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
-        let config = Config::new(PathBuf::new(), None);
+        let config = crate::config::Config::load().unwrap_or_default();
         let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         assert_eq!(
             ctx.default_model_for("anthropic"),
@@ -294,7 +294,7 @@ mod tests {
     fn test_has_providers_empty() {
         let rt = tokio::runtime::Runtime::new().unwrap();
         let _guard = rt.enter();
-        let config = Config::new(PathBuf::new(), None);
+        let config = crate::config::Config::load().unwrap_or_default();
         let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         let expected =
             std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("OPENAI_API_KEY").is_ok();

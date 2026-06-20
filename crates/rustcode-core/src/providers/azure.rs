@@ -274,7 +274,7 @@ impl AzureProvider {
                         }
                     }
                     if !pending_images.is_empty() {
-                        media_parts.extend(pending_images.drain(..));
+                        media_parts.append(&mut pending_images);
                     }
                     if media_parts.is_empty() {
                         result.push(AzureChatMessage::User {
@@ -461,14 +461,14 @@ fn events_from_chat(event: AzureChatEvent, state: &mut ChatStreamState) -> Vec<L
         }
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
-                if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
+                if let Some(name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
                     state.tool_stream.set_identity(
                         td.index,
-                        name.clone(),
+                        name,
                         td.id.clone().unwrap_or_default(),
                     );
                 }
-                if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
+                if let Some(args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
                         if !state.step_started {
                             events.push(LlmEvent::StepStart { index: 0 });
@@ -589,6 +589,7 @@ fn build_model_catalog(base_url: &str) -> Vec<Model> {
     ]
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_model(
     id: &str,
     name: &str,
@@ -785,14 +786,11 @@ impl Provider for AzureProvider {
         let mut events = Vec::new();
         let mut usage = None;
         while let Some(r) = stream.next().await {
-            match r {
-                Ok(ev) => {
-                    if let Some(u) = ev.usage() {
-                        usage = Some(u.clone());
-                    }
-                    events.push(ev);
+            if let Ok(ev) = r {
+                if let Some(u) = ev.usage() {
+                    usage = Some(u.clone());
                 }
-                Err(_) => {}
+                events.push(ev);
             }
         }
         Ok(crate::provider::LlmResponse { events, usage })

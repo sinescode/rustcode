@@ -189,6 +189,7 @@ pub struct FindInput {
     pub signal: Option<bool>,
     /// Optional callback invoked for each file entry found.
     #[serde(skip, default)]
+    #[allow(clippy::type_complexity)]
     pub on_entry: Option<Box<dyn Fn(&RipgrepEntry) + Send + Sync>>,
 }
 
@@ -670,9 +671,9 @@ impl RipgrepService {
         let limit = input.limit as usize;
         let mut items = Vec::new();
         let mut truncated = false;
-        let mut lines_iter = output.lines();
+        let lines_iter = output.lines();
 
-        while let Some(line) = lines_iter.next() {
+        for line in lines_iter {
             if items.len() >= limit {
                 truncated = true;
                 break;
@@ -800,7 +801,7 @@ impl RipgrepService {
 
         let paths: Vec<String> = output
             .lines()
-            .map(|s| normalize_path(s))
+            .map(normalize_path)
             .take(input.limit as usize)
             .collect();
 
@@ -836,7 +837,7 @@ impl RipgrepService {
                     })
                 } else {
                     Err(RipgrepError {
-                        message: format!("rg exited with code 2"),
+                        message: "rg exited with code 2".to_string(),
                         cause: Some(stderr),
                     })
                 }
@@ -869,7 +870,7 @@ impl RipgrepService {
         let exit_code = output.status.code().unwrap_or(1);
 
         match exit_code {
-            0 | 1 | 2 => Ok(RgGrepOutput {
+            0..=2 => Ok(RgGrepOutput {
                 stdout: String::from_utf8_lossy(&output.stdout).to_string(),
                 exit_code,
             }),
@@ -1713,7 +1714,11 @@ mod tests {
     fn test_cached_binary_path_returns_option() {
         let path = cached_binary_path();
         // Should return Some if rg is on PATH, or None if not
-        if std::process::Command::new("rg").arg("--version").output().is_ok() {
+        if std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             assert!(
                 path.is_some(),
                 "rg is installed, cached_binary_path should be Some"
@@ -1822,7 +1827,11 @@ mod tests {
     #[test]
     fn test_resolve_binary_from_path_ok() {
         let result = RipgrepService::resolve_binary_from_path();
-        if std::process::Command::new("rg").arg("--version").output().is_ok() {
+        if std::process::Command::new("rg")
+            .arg("--version")
+            .output()
+            .is_ok()
+        {
             assert!(result.is_ok());
         }
     }

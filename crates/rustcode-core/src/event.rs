@@ -649,6 +649,7 @@ impl EventPubSub {
     /// Publish an event to all subscribers of this type.
     ///
     /// Returns the number of receivers that received the message.
+    #[allow(clippy::result_large_err)]
     pub fn publish(
         &self,
         event: EventPayload,
@@ -2136,7 +2137,8 @@ mod tests {
 
         // Can't easily test async listener in unit test without channels.
         // Verify listener registration doesn't panic.
-        ev.listen(Arc::new(|_payload| Box::pin(async { Ok(()) })))
+        let _ = ev
+            .listen(Arc::new(|_payload| Box::pin(async { Ok(()) })))
             .await;
 
         // Publish should succeed even with a listener registered

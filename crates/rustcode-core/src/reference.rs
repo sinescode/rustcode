@@ -580,7 +580,7 @@ pub fn render_reference_guidance(references: &[ReferenceSummary]) -> String {
 /// `packages/core/src/reference/guidance.ts` lines 57–61.
 #[must_use]
 pub fn reference_update_message(current: &[ReferenceSummary]) -> String {
-    let lines = vec![
+    let lines = [
         "The available project references have changed. This list supersedes the previous reference list."
             .to_string(),
         render_reference_guidance(current),

@@ -302,6 +302,12 @@ pub struct BackgroundJobService {
     jobs: Arc<RwLock<HashMap<String, ActiveJob>>>,
 }
 
+impl Default for BackgroundJobService {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl BackgroundJobService {
     /// Create a new, empty job service.
     pub fn new() -> Self {

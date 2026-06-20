@@ -1444,9 +1444,7 @@ mod tests {
             "env": {"PYTHONPATH": "/opt/mcp", "DEBUG": "1"}
         });
         let config = parse_claude_server_entry("py-srv", &value).expect("valid config");
-        assert_eq!(config.env.get("PYTHONPATH"), Some(&"Debug".to_string()));
-        // Wait, let me check - the env map is HashMap<String, String>, so:
-        // Actually looking at the code, env is inserted via with_env which sets self.env
+        assert_eq!(config.env.get("DEBUG"), Some(&"1".to_string()));
         assert_eq!(
             config.env.get("PYTHONPATH").map(|s| s.as_str()),
             Some("/opt/mcp")

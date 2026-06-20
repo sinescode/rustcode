@@ -206,6 +206,7 @@ impl Default for ProviderPluginRegistry {
 /// ```
 type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
+#[allow(clippy::type_complexity)]
 pub struct ClosureProviderPlugin {
     id: String,
     name: String,
@@ -614,6 +615,7 @@ impl PluginHook {
     }
 
     /// Parse a hook name string into a [`PluginHook`], returning `None` if unknown.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "dispose" => Some(Self::Dispose),
@@ -1092,6 +1094,7 @@ impl PluginV2Hook {
     }
 
     /// Parse a hook name string.
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s {
             "catalog.transform" => Some(Self::CatalogTransform),
@@ -1266,8 +1269,8 @@ pub fn parse_specifier(spec: &str) -> ParsedSpec {
     }
 
     // Handle scoped packages: `@scope/name@version`
-    if spec.starts_with('@') {
-        if let Some(at_pos) = spec[1..].find('@') {
+    if let Some(stripped) = spec.strip_prefix('@') {
+        if let Some(at_pos) = stripped.find('@') {
             let pkg = spec[..=at_pos].to_string();
             let version = spec[1 + at_pos + 1..].to_string();
             if version.is_empty() {
@@ -1927,6 +1930,7 @@ impl PluginManager {
     /// Record metadata for a plugin after loading.
     ///
     /// Computes the fingerprint and state transition.
+    #[allow(clippy::too_many_arguments)]
     pub fn touch_meta(
         &mut self,
         id: &str,
@@ -2192,7 +2196,7 @@ impl PluginErrorTracker {
 }
 
 /// Parsed package.json for a plugin.
-#[derive(Debug, Clone, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Deserialize)]
 pub struct PluginPackageJson {
     /// Package name.
     #[serde(default)]
@@ -2233,21 +2237,6 @@ pub struct PluginEngines {
     /// Required opencode version (semver range).
     #[serde(default)]
     pub opencode: Option<String>,
-}
-
-impl Default for PluginPackageJson {
-    fn default() -> Self {
-        Self {
-            name: None,
-            version: None,
-            description: None,
-            main: None,
-            exports: None,
-            engines: None,
-            opencode_id: None,
-            themes: None,
-        }
-    }
 }
 
 /// A theme definition from a plugin's package.json.
@@ -2719,7 +2708,7 @@ pub fn read_plugin_manifest(
     let mut targets = Vec::new();
 
     // Check for server target
-    if let Some(entrypoint) = resolve_package_entrypoint(&pkg, PluginKind::Server).ok() {
+    if let Ok(entrypoint) = resolve_package_entrypoint(&pkg, PluginKind::Server) {
         if !entrypoint.is_empty() {
             targets.push(PluginTarget {
                 kind: PluginKind::Server,
@@ -2907,7 +2896,7 @@ pub fn patch_plugin_config(
             })?;
         }
 
-        results.push((target.kind.clone(), config_path.display().to_string()));
+        results.push((target.kind, config_path.display().to_string()));
     }
 
     Ok(results)

@@ -73,7 +73,7 @@ pub fn parse_sse_stream(
 ) -> impl Stream<Item = Result<SseEvent, SseError>> + Send + Unpin {
     let byte_stream = body
         .bytes_stream()
-        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
+        .map(|result| result.map_err(std::io::Error::other));
 
     let reader = StreamReader::new(byte_stream);
     let lines = tokio_util::io::ReaderStream::new(reader);
@@ -288,11 +288,12 @@ mod tests {
             done: false,
         };
 
-        let events: Vec<SseEvent> = futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
-            .await
-            .into_iter()
-            .filter_map(|r| r.ok())
-            .collect();
+        let events: Vec<SseEvent> =
+            futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
+                .await
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .collect();
 
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].data, "hello world");
@@ -314,11 +315,12 @@ mod tests {
             done: false,
         };
 
-        let events: Vec<SseEvent> = futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
-            .await
-            .into_iter()
-            .filter_map(|r| r.ok())
-            .collect();
+        let events: Vec<SseEvent> =
+            futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
+                .await
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .collect();
 
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type.as_deref(), Some("message_start"));
@@ -341,11 +343,12 @@ mod tests {
             done: false,
         };
 
-        let events: Vec<SseEvent> = futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
-            .await
-            .into_iter()
-            .filter_map(|r| r.ok())
-            .collect();
+        let events: Vec<SseEvent> =
+            futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
+                .await
+                .into_iter()
+                .filter_map(|r| r.ok())
+                .collect();
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].data, "line1\nline2\nline3");

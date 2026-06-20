@@ -54,14 +54,12 @@ pub fn format_tokens(count: u64) -> String {
 /// ```
 pub fn format_cost(dollars: f64) -> String {
     if dollars < 0.0 {
-        return format!("-$0.00");
+        return "-$0.00".to_string();
     }
     if dollars < 0.005 {
         return "<$0.01".to_string();
     }
-    if dollars < 1.0 {
-        format!("${:.2}", dollars)
-    } else if dollars < 1_000.0 {
+    if dollars < 1_000.0 {
         format!("${:.2}", dollars)
     } else {
         // Compact K/M suffix for large costs

@@ -106,7 +106,11 @@ pub struct ToolOutputStorageError {
 
 impl std::fmt::Display for ToolOutputStorageError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "tool output storage error in {}: {}", self.operation, self.cause)
+        write!(
+            f,
+            "tool output storage error in {}: {}",
+            self.operation, self.cause
+        )
     }
 }
 

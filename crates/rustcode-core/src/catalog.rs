@@ -504,7 +504,7 @@ impl CatalogService {
             .flat_map(|r| r.models.values())
             .cloned()
             .collect();
-        models.sort_by(|a, b| b.released.unwrap_or(0).cmp(&a.released.unwrap_or(0)));
+        models.sort_by_key(|b| std::cmp::Reverse(b.released.unwrap_or(0)));
         models
     }
 

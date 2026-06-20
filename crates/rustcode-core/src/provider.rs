@@ -1056,10 +1056,7 @@ pub fn normalize_messages(messages: &[ChatMessage], model: &Model) -> Vec<ChatMe
     let model_id_lower = model.api.id.to_lowercase();
     let provider_lower = model.provider_id.to_lowercase();
 
-    let mut msgs: Vec<ChatMessage> = messages
-        .iter()
-        .map(|m| sanitize_message_surrogates(m))
-        .collect();
+    let mut msgs: Vec<ChatMessage> = messages.iter().map(sanitize_message_surrogates).collect();
 
     // Tool call ID scrubbing for Claude models
     if provider_lower.contains("anthropic") || model_id_lower.contains("claude") {
@@ -1099,10 +1096,7 @@ pub fn normalize_messages(messages: &[ChatMessage], model: &Model) -> Vec<ChatMe
 
     // DeepSeek: ensure assistant messages have a reasoning part
     if model_id_lower.contains("deepseek") {
-        msgs = msgs
-            .into_iter()
-            .map(|msg| ensure_deepseek_reasoning(msg))
-            .collect();
+        msgs = msgs.into_iter().map(ensure_deepseek_reasoning).collect();
     }
 
     msgs

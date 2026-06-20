@@ -277,7 +277,7 @@ impl WorkspaceService {
         name: &str,
         workspace_type: &str,
     ) -> Result<WorkspaceRecord, WorkspaceServiceError> {
-        let id = if let Some(ref input) = input {
+        let id = if let Some(input) = input {
             input.id.clone().unwrap_or_else(|| {
                 WorkspaceId::create().expect("workspace ID generation should not fail")
             })
@@ -439,13 +439,13 @@ impl WorkspaceAdapter for MemoryWorkspaceAdapter {
                 results.retain(|r| r.id.as_str().contains(search.as_str()));
             }
             // Sort by most recently used
-            results.sort_by(|a, b| b.time_used.cmp(&a.time_used));
+            results.sort_by_key(|b| std::cmp::Reverse(b.time_used));
             // Apply limit
             if let Some(limit) = input.limit {
                 results.truncate(limit);
             }
         } else {
-            results.sort_by(|a, b| b.time_used.cmp(&a.time_used));
+            results.sort_by_key(|b| std::cmp::Reverse(b.time_used));
         }
 
         Ok(results)

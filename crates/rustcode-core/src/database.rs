@@ -264,19 +264,14 @@ pub struct PathsOverride {
 /// # Source
 /// Ported from `packages/core/src/database/sqlite.ts`
 /// (the dual `Native` / `Drizzle` services).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SqliteMode {
     /// Local file-based SQLite (via `sqlx` or `rusqlite`)
+    #[default]
     File,
     /// In-memory SQLite (for testing)
     Memory,
-}
-
-impl Default for SqliteMode {
-    fn default() -> Self {
-        Self::File
-    }
 }
 
 /// Database connection configuration.
@@ -1129,6 +1124,7 @@ impl DatabaseService {
     // ── Session CRUD ─────────────────────────────────────────────────
 
     /// Insert a new session row.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_session(
         &self,
         id: &str,
@@ -1346,6 +1342,7 @@ impl DatabaseService {
     // ── Session message CRUD ─────────────────────────────────────────
 
     /// Insert a session_message record.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_session_message(
         &self,
         id: &str,
@@ -1434,6 +1431,7 @@ impl DatabaseService {
     // ── Message v2 (structured JSON data) ────────────────────────────
     /// Insert a message using the new structured schema.
     /// Fields are serialized into the `data` JSON column.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_message_v2(
         &self,
         id: &str,
@@ -1465,6 +1463,7 @@ impl DatabaseService {
     // ── Part v2 (structured JSON data) ───────────────────────────────
     /// Insert a part using the new structured schema.
     /// Fields are serialized into the `data` JSON column.
+    #[allow(clippy::too_many_arguments)]
     pub async fn insert_part_v2(
         &self,
         id: &str,

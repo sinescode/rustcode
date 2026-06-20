@@ -18,7 +18,7 @@ use futures::StreamExt;
 use rustcode_core::config::Config;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use sqlx::Column;
@@ -1281,9 +1281,9 @@ async fn async_main(cli: Cli) {
 /// Dispatch to the appropriate subcommand handler.
 ///
 /// Each handler returns an exit code (0 = success, non-zero = failure).
-async fn dispatch(cmd: &Commands, print_logs: bool, config: &Config) -> i32 {
+async fn dispatch(cmd: &Commands, print_logs: bool, config: &rustcode_core::config::Info) -> i32 {
     match cmd {
-        Commands::Acp(args) => cmd_acp(args).await,
+        Commands::Acp(args) => cmd_acp(args, config).await,
         Commands::Mcp { cmd: mcp_cmd } => cmd_mcp(mcp_cmd).await,
         Commands::Tui(args) => cmd_tui(args, print_logs, config).await,
         Commands::Attach(args) => cmd_attach(args).await,
@@ -1322,8 +1322,7 @@ async fn dispatch(cmd: &Commands, print_logs: bool, config: &Config) -> i32 {
 /// Parse "provider/model" string into (provider_id, model_id).
 fn parse_model_spec(spec: &str) -> Option<(&str, &str)> {
     let (provider, model) = spec.split_once('/')?;
-    
-    
+
     if provider.is_empty() || model.is_empty() {
         return None;
     }
@@ -1376,7 +1375,7 @@ fn format_size(bytes: u64) -> String {
 }
 
 /// Shorten a path by replacing the home directory with ~.
-fn shorten_path(p: &PathBuf) -> String {
+fn shorten_path(p: &Path) -> String {
     let s = p.display().to_string();
     if let Ok(home) = std::env::var("HOME") {
         if s.starts_with(&home) {
@@ -1411,7 +1410,7 @@ async fn run_gh(args: &[&str]) -> std::io::Result<std::process::Output> {
 /// - **Local**: resolves providers/models locally and runs the agentic loop.
 /// - **SSE attach** (`--attach <url>`): connects to a remote server via SSE,
 ///   sends the prompt via HTTP POST, and streams results back.
-async fn cmd_run(args: &RunArgs, config: &Config) -> i32 {
+async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     let msg = args.message.join(" ");
 
     // ── validation ──────────────────────────────────────────────────
@@ -2169,6 +2168,7 @@ struct ToolCallInfo {
 ///
 /// Filters by `sessionID`, dispatches by event type, and updates
 /// the shared accumulators and counters.
+#[allow(clippy::too_many_arguments)]
 fn handle_sse_event(
     event_type: &str,
     data: &str,
@@ -2353,7 +2353,7 @@ fn handle_sse_event(
 /// `tui` — Start OpenCode TUI.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/tui.ts`
-async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &Config) -> i32 {
+async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::config::Info) -> i32 {
     if args.fork && !args.r#continue && args.session.is_none() {
         eprintln!("Error: --fork requires --continue or --session");
         return 1;
@@ -2457,30 +2457,25 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &Config) -> i32 {
         let bus_clone = bus.clone();
         Some(tokio::spawn(async move {
             let mut sub = bus_clone.subscribe();
-            loop {
-                match sub.recv().await {
-                    Some(event) => {
-                        let evt_type = event
-                            .payload
-                            .get("type")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or("");
-                        // Forward session.next.* events and other structured events
-                        if evt_type.starts_with("session.next.")
-                            || evt_type.starts_with("session.")
-                            || evt_type == "server.connected"
-                            || evt_type == "server.heartbeat"
-                        {
-                            // Skip ephemeral heartbeats to keep output clean
-                            if evt_type == "server.heartbeat" {
-                                continue;
-                            }
-                            if let Ok(line) = serde_json::to_string(&event.payload) {
-                                println!("{line}");
-                            }
-                        }
+            while let Some(event) = sub.recv().await {
+                let evt_type = event
+                    .payload
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                // Forward session.next.* events and other structured events
+                if evt_type.starts_with("session.next.")
+                    || evt_type.starts_with("session.")
+                    || evt_type == "server.connected"
+                    || evt_type == "server.heartbeat"
+                {
+                    // Skip ephemeral heartbeats to keep output clean
+                    if evt_type == "server.heartbeat" {
+                        continue;
                     }
-                    None => break, // Bus closed
+                    if let Ok(line) = serde_json::to_string(&event.payload) {
+                        println!("{line}");
+                    }
                 }
             }
         }))
@@ -2593,7 +2588,7 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &Config) -> i32 {
 /// `serve` — Start a headless OpenCode server.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/serve.ts`
-async fn cmd_serve(args: &NetworkArgs, config: &Config) -> i32 {
+async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i32 {
     let hostname = if args.mdns && args.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
@@ -2736,7 +2731,7 @@ fn build_command_data() -> rustcode_core::command::CommandData {
 /// `web` — Start server and open web interface.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/web.ts`
-async fn cmd_web(args: &NetworkArgs, config: &Config) -> i32 {
+async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i32 {
     let hostname = if args.mdns && args.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
@@ -2836,7 +2831,7 @@ fn get_network_ips() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 /// `models` — List all available models from detected providers.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/models.ts`
-async fn cmd_models(args: &ModelsArgs, config: &Config) -> i32 {
+async fn cmd_models(args: &ModelsArgs, _config: &rustcode_core::config::Info) -> i32 {
     if args.refresh {
         eprintln!("Models cache refresh requested — not yet wired to models.dev API.");
     }
@@ -3093,7 +3088,7 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
             } else {
                 let session_where = where_clauses
                     .iter()
-                    .map(|c| c.replace("s.", "s."))
+                    .map(String::as_str)
                     .collect::<Vec<_>>()
                     .join(" AND ");
                 if session_where.is_empty() {
@@ -3943,7 +3938,7 @@ fn get_agents_dir_global() -> PathBuf {
 }
 
 /// Read the mode from an agent markdown file's YAML frontmatter.
-fn read_agent_mode(path: &PathBuf) -> String {
+fn read_agent_mode(path: &Path) -> String {
     match std::fs::read_to_string(path) {
         Ok(content) => {
             // Simple YAML frontmatter parser (--- ... ---)
@@ -4473,10 +4468,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     );
                 }
                 // If env args look like command args, use them as command
-                let command: Vec<String> = env
-                    .iter()
-                    .filter(|e| !e.contains('=')).cloned()
-                    .collect();
+                let command: Vec<String> =
+                    env.iter().filter(|e| !e.contains('=')).cloned().collect();
                 if !command.is_empty() {
                     config.insert(
                         "command".into(),
@@ -4657,11 +4650,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                     "local" => "see global config".to_string(),
                                     _ => "unknown".to_string(),
                                 };
-                                let status = if connection_type == "remote" {
-                                    "configured"
-                                } else {
-                                    "configured"
-                                };
+                                let status = "configured";
                                 let name_trunc = if name.len() > 19 {
                                     format!("{}...", &name[..16])
                                 } else {
@@ -5513,7 +5502,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 /// newline-delimited JSON (NDJSON) on stdin/stdout.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/acp.ts`
-async fn cmd_acp(args: &AcpArgs) -> i32 {
+async fn cmd_acp(args: &AcpArgs, config: &rustcode_core::config::Info) -> i32 {
     let cwd = args.cwd.clone().unwrap_or_else(|| {
         std::env::current_dir()
             .map(|p| p.display().to_string())
@@ -6194,10 +6183,7 @@ async fn cmd_console_login(server_url: &str) -> i32 {
         let orgs_url = format!("{server_url}/api/orgs");
         let orgs_body: Vec<serde_json::Value> =
             match client.get(&orgs_url).bearer_auth(access_token).send().await {
-                Ok(r) => match r.json().await {
-                    Ok(v) => v,
-                    Err(_) => vec![],
-                },
+                Ok(r) => r.json().await.unwrap_or_default(),
                 Err(e) => {
                     eprintln!("Warning: Failed to fetch organizations: {e}");
                     vec![]
@@ -6460,10 +6446,7 @@ async fn cmd_console_switch() -> i32 {
             Err(_) => continue,
         };
 
-        let orgs: Vec<serde_json::Value> = match orgs_resp.json().await {
-            Ok(v) => v,
-            Err(_) => vec![],
-        };
+        let orgs: Vec<serde_json::Value> = orgs_resp.json().await.unwrap_or_default();
 
         for org in &orgs {
             let org_id = org["id"].as_str().unwrap_or("").to_string();
@@ -6566,10 +6549,7 @@ async fn cmd_console_orgs() -> i32 {
             Err(_) => continue,
         };
 
-        let orgs: Vec<serde_json::Value> = match orgs_resp.json().await {
-            Ok(v) => v,
-            Err(_) => vec![],
-        };
+        let orgs: Vec<serde_json::Value> = orgs_resp.json().await.unwrap_or_default();
 
         if orgs.is_empty() {
             eprintln!("  {email}: No organizations");
@@ -7196,7 +7176,7 @@ async fn cmd_uninstall(args: &UninstallArgs) -> i32 {
 }
 
 /// Calculate total directory size recursively.
-fn dir_size(path: &PathBuf) -> Result<u64, std::io::Error> {
+fn dir_size(path: &Path) -> Result<u64, std::io::Error> {
     let mut total: u64 = 0;
     if path.is_dir() {
         for entry in std::fs::read_dir(path)? {

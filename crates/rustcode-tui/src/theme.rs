@@ -208,15 +208,13 @@ pub const ALL_THEMES: &[&Theme] = &[
 // ── Theme State ──────────────────────────────────────────────────────────────
 
 /// Persistent theme state managed by the TUI app.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct ThemeState {
     /// Index into `ALL_THEMES` for the currently active theme.
     theme_index: usize,
     /// Whether the theme has been locked (prevents cycling/switching).
     locked: bool,
 }
-
 
 impl ThemeState {
     /// Create a new ThemeState with the default (dark) theme.

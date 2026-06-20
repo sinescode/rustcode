@@ -373,8 +373,8 @@ pub fn render_session_list(f: &mut Frame, area: Rect, state: &SessionListState) 
         return;
     }
 
-    let dialog_width = (area.width as f64 * 0.65).min(80.0).max(40.0) as u16;
-    let dialog_height = (area.height as f64 * 0.7).min(30.0).max(15.0) as u16;
+    let dialog_width = (area.width as f64 * 0.65).clamp(40.0, 80.0) as u16;
+    let dialog_height = (area.height as f64 * 0.7).clamp(15.0, 30.0) as u16;
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 
@@ -401,7 +401,9 @@ pub fn render_session_list(f: &mut Frame, area: Rect, state: &SessionListState) 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_bottom(" j/k:nav  Enter:select  Ctrl+D:delete  Ctrl+X:pin  /:search  Esc:close ".to_string())
+        .title_bottom(
+            " j/k:nav  Enter:select  Ctrl+D:delete  Ctrl+X:pin  /:search  Esc:close ".to_string(),
+        )
         .border_style(Style::default().fg(Color::Cyan))
         .style(Style::default().bg(Color::Black));
 

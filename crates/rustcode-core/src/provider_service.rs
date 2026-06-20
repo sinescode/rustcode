@@ -44,7 +44,7 @@ pub struct ProviderCatalog {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` `Service.init()`.
-pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
+pub async fn init_providers(config: &crate::config::Info) -> Result<ProviderCatalog, Error> {
     let registry = ProviderPluginRegistry::new();
 
     // Phase 1: Auto-detect providers from environment
@@ -58,8 +58,7 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
     // Phase 2: Merge config-defined providers
     let mut model_overrides: HashMap<String, ModelConfig> = HashMap::new();
 
-    let info = config.get();
-    for (provider_id, provider_cfg) in &info.provider {
+    for (provider_id, provider_cfg) in &config.provider {
         // Collect model overrides
         for (model_id, model_cfg) in &provider_cfg.models {
             let key = format!("{provider_id}/{model_id}");
@@ -84,7 +83,7 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
         let mut options = HashMap::new();
 
         // Merge config headers into the context
-        if let Some(cfg) = info.provider.get(provider_id) {
+        if let Some(cfg) = config.provider.get(provider_id) {
             // Provider-level options
             if let Some(ref opts) = cfg.options {
                 if let Some(ref key) = opts.api_key {
@@ -120,14 +119,14 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
 
     // Phase 4: Apply plugin discover_models hooks
     for provider_id in catalog.keys() {
-        let base_url = info
+        let base_url = config
             .provider
             .get(provider_id)
             .and_then(|p| p.options.as_ref())
             .and_then(|o| o.base_url.clone())
             .unwrap_or_default();
 
-        let api_key = info
+        let api_key = config
             .provider
             .get(provider_id)
             .and_then(|p| p.options.as_ref())
@@ -154,7 +153,7 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
 
     // Phase 5: Apply plugin load_auth hooks
     for provider_id in catalog.keys() {
-        let env_vars: Vec<String> = info
+        let env_vars: Vec<String> = config
             .provider
             .get(provider_id)
             .map(|p| p.env.clone())
@@ -172,11 +171,11 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
     }
 
     // Phase 6: Apply enabled/disabled filters
-    let disabled = info.disabled_providers.clone();
-    let enabled = if info.enabled_providers.is_empty() {
+    let disabled = config.disabled_providers.clone();
+    let enabled = if config.enabled_providers.is_empty() {
         None
     } else {
-        Some(info.enabled_providers.clone())
+        Some(config.enabled_providers.clone())
     };
 
     for id in &disabled {

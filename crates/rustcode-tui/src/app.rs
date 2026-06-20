@@ -116,6 +116,7 @@ pub struct TuiApp {
     // Backend services
     bus: Option<SharedBus>,
     sessions: Option<Arc<SessionManager>>,
+    #[allow(dead_code)]
     runner: Option<Arc<rustcode_core::session_runner::SessionRunner>>,
     providers: HashMap<String, Arc<dyn Provider>>,
     default_provider: Option<String>,
@@ -472,14 +473,9 @@ impl TuiApp {
             bus_rx = Some(local_bus_rx);
 
             tokio::spawn(async move {
-                loop {
-                    match bus_sub.recv().await {
-                        Some(event) => {
-                            if bus_tx.send(event).is_err() {
-                                break;
-                            }
-                        }
-                        None => break,
+                while let Some(event) = bus_sub.recv().await {
+                    if bus_tx.send(event).is_err() {
+                        break;
                     }
                 }
             });
@@ -1396,25 +1392,8 @@ impl TuiApp {
         self.toast.tick();
         self.sync_sidebar_state();
 
-        let any_overlay = self.permission.visible
-            || self.question.visible
-            || self.command_palette_visible
-            || self.help_visible
-            || self.status_dialog_visible
-            || self.dialog.is_active()
-            || self.diff.visible
-            || self.session_list_state.visible
-            || self.timeline.visible
-            || self.export.visible
-            || self.subagent.visible
-            || self.model_selector.visible;
-
         let theme_bg = self.theme.current().background;
-        let bg = if any_overlay {
-            Style::default().bg(theme_bg)
-        } else {
-            Style::default().bg(theme_bg)
-        };
+        let bg = Style::default().bg(theme_bg);
         f.buffer_mut().set_style(area, bg);
 
         // Main layout: enhanced sidebar? + [conversation | input | status]

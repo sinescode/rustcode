@@ -44,6 +44,7 @@ pub type Transform<State> = Arc<dyn Fn(&mut State) + Send + Sync>;
 ///
 /// # Source
 /// Ported from `packages/core/src/state.ts` lines 15–29.
+#[allow(clippy::type_complexity)]
 pub struct StateOptions<State> {
     /// Creates the base value for initial state and every scoped-transform rebuild.
     pub initial: Arc<dyn Fn() -> State + Send + Sync>,
@@ -492,12 +493,10 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            finalize: Some(Arc::new(
-                move |_doc: &Document, reason: Option<&str>| {
-                    let mut log = finalized_clone.lock().unwrap();
-                    log.push(reason.unwrap_or("none").to_string());
-                },
-            )),
+            finalize: Some(Arc::new(move |_doc: &Document, reason: Option<&str>| {
+                let mut log = finalized_clone.lock().unwrap();
+                log.push(reason.unwrap_or("none").to_string());
+            })),
         };
 
         let state = AppState::new(options);
@@ -523,12 +522,10 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            finalize: Some(Arc::new(
-                move |_doc: &Document, _reason: Option<&str>| {
-                    let mut log = finalized_clone.lock().unwrap();
-                    log.push("finalized".to_string());
-                },
-            )),
+            finalize: Some(Arc::new(move |_doc: &Document, _reason: Option<&str>| {
+                let mut log = finalized_clone.lock().unwrap();
+                log.push("finalized".to_string());
+            })),
         };
 
         let state = AppState::new(options);
@@ -579,21 +576,21 @@ mod tests {
 
         let h1 = tokio::spawn(async move {
             s1.update(Arc::new(|doc: &mut Document| {
-                doc.content.push_str("A");
+                doc.content.push('A');
             }))
             .await;
         });
 
         let h2 = tokio::spawn(async move {
             s2.update(Arc::new(|doc: &mut Document| {
-                doc.content.push_str("B");
+                doc.content.push('B');
             }))
             .await;
         });
 
         let h3 = tokio::spawn(async move {
             s3.update(Arc::new(|doc: &mut Document| {
-                doc.content.push_str("C");
+                doc.content.push('C');
             }))
             .await;
         });
@@ -640,12 +637,10 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            finalize: Some(Arc::new(
-                move |_doc: &Document, reason: Option<&str>| {
-                    let mut log = reasons_clone.lock().unwrap();
-                    log.push(reason.expect("reason").to_string());
-                },
-            )),
+            finalize: Some(Arc::new(move |_doc: &Document, reason: Option<&str>| {
+                let mut log = reasons_clone.lock().unwrap();
+                log.push(reason.expect("reason").to_string());
+            })),
         };
 
         let state = AppState::new(options);
@@ -727,12 +722,10 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            finalize: Some(Arc::new(
-                move |_doc: &Document, _reason: Option<&str>| {
-                    let mut called = called_clone.lock().unwrap();
-                    *called = true;
-                },
-            )),
+            finalize: Some(Arc::new(move |_doc: &Document, _reason: Option<&str>| {
+                let mut called = called_clone.lock().unwrap();
+                *called = true;
+            })),
         };
 
         // State with finalize but zero registered transforms
@@ -792,7 +785,7 @@ mod tests {
 
         let slot_b = state
             .update(Arc::new(|doc: &mut Document| {
-                doc.content.push_str("B");
+                doc.content.push('B');
             }))
             .await;
 
@@ -837,12 +830,9 @@ mod tests {
         for i in 0..10 {
             let s = Arc::clone(&state);
             handles.push(tokio::spawn(async move {
-                s.mutate(
-                    Some("concurrent"),
-                    move |doc: &mut Document| {
-                        doc.content.push_str(&format!("M{}", i));
-                    },
-                )
+                s.mutate(Some("concurrent"), move |doc: &mut Document| {
+                    doc.content.push_str(&format!("M{}", i));
+                })
                 .await;
             }));
         }

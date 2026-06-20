@@ -213,7 +213,7 @@ pub fn windows_path(p: &Path) -> PathBuf {
     if s.starts_with("/cygdrive/") && s.len() >= 12 && is_drive(s.as_bytes()[10] as char) {
         let drive = s[10..11].to_uppercase();
         let rest = if s.len() > 11 {
-            &s[11..].trim_start_matches('/')
+            s[11..].trim_start_matches('/')
         } else {
             ""
         };
@@ -223,7 +223,7 @@ pub fn windows_path(p: &Path) -> PathBuf {
     if s.starts_with("/mnt/") && s.len() >= 7 && is_drive(s.as_bytes()[5] as char) {
         let drive = s[5..6].to_uppercase();
         let rest = if s.len() > 6 {
-            &s[6..].trim_start_matches('/')
+            s[6..].trim_start_matches('/')
         } else {
             ""
         };

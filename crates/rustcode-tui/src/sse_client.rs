@@ -190,9 +190,7 @@ impl SseClient {
                 buffer = buffer[line_end + 1..].to_string();
 
                 // Trim trailing \r
-                line = line
-                    .trim_end_matches(['\r', '\n'])
-                    .to_string();
+                line = line.trim_end_matches(['\r', '\n']).to_string();
 
                 if line.is_empty() {
                     // Empty line = end of event

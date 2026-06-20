@@ -102,7 +102,7 @@ impl TimelineState {
 
         let mut metas: Vec<MsgMeta> = Vec::new();
 
-        for (_i, msg) in messages.iter().enumerate() {
+        for msg in messages.iter() {
             let (id, role, parent_id, preview) = match &msg.info {
                 rustcode_core::session::MessageInfo::User(info) => {
                     let preview = Self::preview_from_parts(&msg.parts, 60);
@@ -390,8 +390,8 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
         return;
     }
 
-    let dialog_width = (area.width as f64 * 0.72).min(100.0).max(50.0) as u16;
-    let dialog_height = (area.height as f64 * 0.75).min(40.0).max(15.0) as u16;
+    let dialog_width = (area.width as f64 * 0.72).clamp(50.0, 100.0) as u16;
+    let dialog_height = (area.height as f64 * 0.75).clamp(15.0, 40.0) as u16;
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 

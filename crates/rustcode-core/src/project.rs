@@ -539,7 +539,7 @@ impl ProjectService {
             start_dir.to_path_buf()
         } else {
             std::env::current_dir()
-                .map_err(|e| ProjectServiceError::Io(e))?
+                .map_err(ProjectServiceError::Io)?
                 .join(start_dir)
         };
 
@@ -614,7 +614,7 @@ impl ProjectService {
             directory.to_path_buf()
         } else {
             std::env::current_dir()
-                .map_err(|e| ProjectServiceError::Io(e))?
+                .map_err(ProjectServiceError::Io)?
                 .join(directory)
         };
 
@@ -648,12 +648,8 @@ impl ProjectService {
         let config_path = opencode_dir.join("project.json");
         std::fs::write(
             &config_path,
-            serde_json::to_string_pretty(&config).map_err(|e| {
-                ProjectServiceError::Io(std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    e.to_string(),
-                ))
-            })?,
+            serde_json::to_string_pretty(&config)
+                .map_err(|e| ProjectServiceError::Io(std::io::Error::other(e.to_string())))?,
         )?;
 
         Ok(ProjectDetection {

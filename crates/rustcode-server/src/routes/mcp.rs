@@ -61,10 +61,7 @@ pub fn mcp_routes(state: Arc<AppState>) -> Router {
                 move |path, state, payload| mcp_auth_callback(store, path, state, payload)
             }),
         )
-        .route(
-            "/mcp/{name}/auth/authenticate",
-            post(move |path, state| mcp_auth_authenticate(path, state)),
-        )
+        .route("/mcp/{name}/auth/authenticate", post(mcp_auth_authenticate))
         .route(
             "/mcp/{name}/connect",
             post({
