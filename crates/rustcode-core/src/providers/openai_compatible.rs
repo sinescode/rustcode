@@ -339,6 +339,119 @@ pub const PROFILES: &[CompatConfig] = &[
         extra_headers: &[],
         classify_error: default_classify_error,
     },
+    // ── Missing providers added for 100% parity ─────────────────────
+    CompatConfig {
+        provider_id: "nvidia",
+        name: "NVIDIA",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://integrate.api.nvidia.com/v1",
+        env_var: "NVIDIA_API_KEY",
+        models: &[
+            ModelSpec { id: "meta/llama-4-maverick-17b-128e-instruct", name: "Llama 4 Maverick", ctx: 128_000, out: 8_192, family: Some("llama"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[
+            ("HTTP-Referer", "https://opencode.ai/"),
+            ("X-Title", "opencode"),
+        ],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "venice",
+        name: "Venice",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://api.venice.ai/api/v1",
+        env_var: "VENICE_API_KEY",
+        models: &[
+            ModelSpec { id: "llama-3.3-70b", name: "Llama 3.3 70B", ctx: 128_000, out: 8_192, family: Some("llama"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "gitlab",
+        name: "GitLab",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://gitlab.com/api/v4/projects/{project_id}/ai",
+        env_var: "GITLAB_TOKEN",
+        models: &[
+            ModelSpec { id: "claude-sonnet-4", name: "Claude Sonnet 4", ctx: 200_000, out: 8_192, family: Some("claude"), reasoning: false, image_input: true },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "google_vertex",
+        name: "Google Vertex AI",
+        npm: "@ai-sdk/google-vertex",
+        base_url: "https://us-central1-aiplatform.googleapis.com/v1/projects/{project}/locations/us-central1/publishers/google/models",
+        env_var: "GOOGLE_APPLICATION_CREDENTIALS",
+        models: &[
+            ModelSpec { id: "gemini-2.5-pro", name: "Gemini 2.5 Pro", ctx: 1_000_000, out: 65_536, family: Some("gemini"), reasoning: true, image_input: true },
+            ModelSpec { id: "gemini-2.5-flash", name: "Gemini 2.5 Flash", ctx: 1_000_000, out: 65_536, family: Some("gemini"), reasoning: true, image_input: true },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "snowflake_cortex",
+        name: "Snowflake Cortex",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://account.snowflakecomputing.com/api/v2/cortex/chat/completions",
+        env_var: "SNOWFLAKE_ACCOUNT",
+        models: &[
+            ModelSpec { id: "claude-sonnet-4", name: "Claude Sonnet 4", ctx: 200_000, out: 8_192, family: Some("claude"), reasoning: false, image_input: true },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "sap_ai_core",
+        name: "SAP AI Core",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://api.ai.sap.com/v1",
+        env_var: "SAP_AI_CORE_CLIENT_ID",
+        models: &[
+            ModelSpec { id: "gpt-4o", name: "GPT-4o", ctx: 128_000, out: 16_384, family: Some("gpt"), reasoning: false, image_input: true },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "kilo",
+        name: "Kilo",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://api.kilo.ai/v1",
+        env_var: "KILO_API_KEY",
+        models: &[
+            ModelSpec { id: "claude-sonnet-4", name: "Claude Sonnet 4", ctx: 200_000, out: 8_192, family: Some("claude"), reasoning: false, image_input: true },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "llm_gateway",
+        name: "LLM Gateway",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://gateway.example.com/v1",
+        env_var: "LLM_GATEWAY_API_KEY",
+        models: &[
+            ModelSpec { id: "auto", name: "Auto", ctx: 128_000, out: 16_384, family: Some("auto"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "cloudflare_ai_gateway",
+        name: "Cloudflare AI Gateway",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://gateway.cloudflare.com/v1",
+        env_var: "CLOUDFLARE_AI_GATEWAY_API_KEY",
+        models: &[
+            ModelSpec { id: "auto", name: "Auto", ctx: 128_000, out: 16_384, family: Some("auto"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
 ];
 
 // ── Provider struct ────────────────────────────────────────────────────
