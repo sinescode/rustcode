@@ -45,6 +45,7 @@ pub mod policy;
 pub mod process;
 pub mod project;
 pub mod provider;
+pub mod provider_service;
 pub mod providers;
 pub mod pty;
 pub mod question;
