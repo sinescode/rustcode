@@ -12,40 +12,23 @@
 //! | Google Gemini | generateContent (`:streamGenerateContent?alt=sse`) | `x-goog-api-key` | SSE |
 //! | OpenAI Compatible | Chat Completions (any base URL) | Bearer token | SSE |
 //! | OpenRouter | Chat Completions (extended) | Bearer token | SSE |
-//! | DeepSeek | Chat Completions (`/v1/chat/completions`) | Bearer token | SSE |
-//! | Together AI | Chat Completions (`/v1/chat/completions`) | Bearer token | SSE |
-//! | Groq | Chat Completions (`/openai/v1/chat/completions`) | Bearer token | SSE |
-//! | xAI Grok | Chat Completions (`/v1/chat/completions`) | Bearer token | SSE |
-//! | Mistral | Chat Completions (`/v1/chat/completions`) | Bearer token | SSE |
-//! | Amazon Bedrock | Chat Completions (Converse API bridge) | AWS headers | SSE |
+//! | Amazon Bedrock | Chat Completions (Converse API bridge) | AWS SigV4 | SSE |
 //! | Azure OpenAI | Chat Completions (deployment-scoped) | `api-key` header | SSE |
 //! | Cloudflare AI | Chat Completions (`/ai/run`) | Bearer token | SSE |
-//! | GitHub Copilot | Chat Completions (`/chat/completions`) | Bearer token | SSE |
-//! | Cerebras | Chat Completions (`/v1/chat/completions`) | Bearer token | SSE |
-//! | Perplexity | Chat Completions (`/chat/completions`) | Bearer token | SSE |
-//! | Cohere | Chat Completions (`/v1/chat/completions`) | Bearer token | SSE |
-//! | Fireworks AI | Chat Completions (`/inference/v1/chat/completions`) | Bearer token | SSE |
-//! | AI21 Labs | Chat Completions (`/studio/v1/chat/completions`) | Bearer token | SSE |
+//!
+//! The following providers are served by the generic [`openai_compatible`]
+//! module via [`openai_compatible::CompatConfig`] profiles:
+//! DeepSeek, Groq, TogetherAI, xAI, Mistral, GitHub Copilot, Cerebras,
+//! Fireworks, AI21, Cohere, Perplexity, DeepInfra, Alibaba, Vercel Gateway.
 
-pub mod ai21;
 pub mod anthropic;
 pub mod azure;
 pub mod bedrock;
-pub mod cerebras;
 pub mod cloudflare;
-pub mod cohere;
-pub mod deepseek;
-pub mod fireworks;
 pub mod gemini;
-pub mod github_copilot;
-pub mod groq;
-pub mod mistral;
 pub mod openai;
 pub mod openai_compatible;
 pub mod openrouter;
-pub mod perplexity;
-pub mod together;
-pub mod xai;
 
 /// Try to create all auto-detectable providers from environment variables.
 ///
@@ -54,6 +37,7 @@ pub mod xai;
 pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
     let mut providers: Vec<Box<dyn crate::provider::Provider>> = Vec::new();
 
+    // Unique-protocol providers
     if let Ok(p) = anthropic::AnthropicProvider::new() {
         tracing::info!("Detected Anthropic provider (ANTHROPIC_API_KEY)");
         providers.push(Box::new(p));
@@ -70,26 +54,6 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
         tracing::info!("Detected OpenRouter provider (OPENROUTER_API_KEY)");
         providers.push(Box::new(p));
     }
-    if let Ok(p) = together::TogetherProvider::new() {
-        tracing::info!("Detected Together AI provider (TOGETHER_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = deepseek::DeepSeekProvider::new() {
-        tracing::info!("Detected DeepSeek provider (DEEPSEEK_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = xai::XaiProvider::new() {
-        tracing::info!("Detected xAI Grok provider (XAI_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = groq::GroqProvider::new() {
-        tracing::info!("Detected Groq provider (GROQ_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = mistral::MistralProvider::new() {
-        tracing::info!("Detected Mistral provider (MISTRAL_API_KEY)");
-        providers.push(Box::new(p));
-    }
     if let Ok(p) = bedrock::BedrockProvider::new() {
         tracing::info!("Detected Amazon Bedrock provider (AWS_ACCESS_KEY_ID)");
         providers.push(Box::new(p));
@@ -102,37 +66,11 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
         tracing::info!("Detected Cloudflare Workers AI provider (CLOUDFLARE_API_TOKEN)");
         providers.push(Box::new(p));
     }
-    if let Ok(p) = github_copilot::CopilotProvider::new() {
-        tracing::info!("Detected GitHub Copilot provider (GITHUB_TOKEN)");
-        providers.push(Box::new(p));
-    }
 
-    // Dedicated per-provider auto-detection (OpenAI-compatible subclasses)
-    if let Ok(p) = ai21::Ai21Provider::new() {
-        tracing::info!("Detected AI21 Labs provider (AI21_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = cerebras::CerebrasProvider::new() {
-        tracing::info!("Detected Cerebras provider (CEREBRAS_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = cohere::CohereProvider::new() {
-        tracing::info!("Detected Cohere provider (COHERE_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = fireworks::FireworksProvider::new() {
-        tracing::info!("Detected Fireworks AI provider (FIREWORKS_API_KEY)");
-        providers.push(Box::new(p));
-    }
-    if let Ok(p) = perplexity::PerplexityProvider::new() {
-        tracing::info!("Detected Perplexity provider (PPLX_API_KEY)");
-        providers.push(Box::new(p));
-    }
-
-    // OpenAI-compatible providers (auto-detect from env vars)
-    for profile in openai_compatible::PROFILES {
-        if let Ok(p) = openai_compatible::OpenAICompatibleProvider::from_profile(profile) {
-            tracing::info!("Detected {} provider ({})", profile.name, profile.env_var);
+    // All OpenAI-compatible providers (generic, profile-based)
+    for config in openai_compatible::PROFILES {
+        if let Ok(p) = openai_compatible::OpenAICompatibleProvider::from_config(config) {
+            tracing::info!("Detected {} provider ({})", config.name, config.env_var);
             providers.push(Box::new(p));
         }
     }
