@@ -20,6 +20,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use crate::bus;
+use crate::config::Config;
 use crate::database::DatabaseService;
 use crate::permission::PermissionService;
 use crate::provider::Provider;
@@ -60,6 +61,9 @@ pub struct RuntimeContext {
 
     /// Auto-detected LLM providers keyed by provider ID.
     pub providers: HashMap<String, Arc<dyn Provider>>,
+
+    /// Provider catalog from the initialization pipeline.
+    pub provider_catalog: crate::provider_service::ProviderCatalog,
 }
 
 // ── Default database path ─────────────────────────────────────────────────────
@@ -83,15 +87,15 @@ pub fn default_db_path() -> PathBuf {
 /// Creates the parent directory if it does not exist.  If provider detection
 /// finds no API keys the map will be empty — callers should print a helpful
 /// message listing the expected env vars.
-pub fn initialize_runtime() -> anyhow::Result<RuntimeContext> {
-    initialize_runtime_with_path(&default_db_path())
+pub fn initialize_runtime(config: &Config) -> anyhow::Result<RuntimeContext> {
+    initialize_runtime_with_path(&default_db_path(), config)
 }
 
 /// Initialise the runtime with a custom database path.
 ///
 /// Pass `Path::new(":memory:")` for an in-memory database (useful for tests
 /// or one-shot runs that don't need persistence).
-pub fn initialize_runtime_with_path(db_path: &Path) -> anyhow::Result<RuntimeContext> {
+pub fn initialize_runtime_with_path(db_path: &Path, config: &Config) -> anyhow::Result<RuntimeContext> {
     let is_memory = db_path == Path::new(":memory:");
 
     // Ensure parent directory exists for file-backed databases.
@@ -123,12 +127,15 @@ pub fn initialize_runtime_with_path(db_path: &Path) -> anyhow::Result<RuntimeCon
     let questions = Arc::new(QuestionService::default());
     let runner = Arc::new(SessionRunner::new(tools.clone()));
 
-    let providers: HashMap<String, Arc<dyn Provider>> = crate::providers::auto_detect_all()
+    // Use the provider initialization pipeline (plugin-aware).
+    let provider_catalog = crate::provider_service::init_providers(config)
+        .map_err(|e| anyhow::anyhow!("Provider initialization failed: {e}"))?;
+
+    // Convert to the Arc-based map for backward compatibility.
+    let providers: HashMap<String, Arc<dyn Provider>> = provider_catalog
+        .providers
         .into_iter()
-        .map(|p| {
-            let id = p.provider_id().to_string();
-            (id, Arc::from(p))
-        })
+        .map(|(id, p)| (id, Arc::from(p)))
         .collect();
 
     // Log detected providers at info level so they show up in `--print-logs`.
@@ -153,6 +160,14 @@ pub fn initialize_runtime_with_path(db_path: &Path) -> anyhow::Result<RuntimeCon
         tracing::info!("database opened (in-memory)");
     }
 
+    // Re-create catalog with empty providers map (they're now in the providers HashMap).
+    let provider_catalog = crate::provider_service::ProviderCatalog {
+        providers: HashMap::new(),
+        model_overrides: provider_catalog.model_overrides,
+        disabled: provider_catalog.disabled,
+        enabled: provider_catalog.enabled,
+    };
+
     Ok(RuntimeContext {
         bus,
         db,
@@ -163,6 +178,7 @@ pub fn initialize_runtime_with_path(db_path: &Path) -> anyhow::Result<RuntimeCon
         questions,
         runner,
         providers,
+        provider_catalog,
     })
 }
 

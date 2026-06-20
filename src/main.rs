@@ -1264,7 +1264,7 @@ async fn async_main(cli: Cli) {
 
     let print_logs = cli.print_logs;
     let exit_code = match &cli.command {
-        Some(cmd) => dispatch(cmd, print_logs).await,
+        Some(cmd) => dispatch(cmd, print_logs, &config).await,
         None => {
             // No subcommand given — show help.
             // Ported from: TS — when no subcommand is matched, yargs shows help.
@@ -1281,13 +1281,13 @@ async fn async_main(cli: Cli) {
 /// Dispatch to the appropriate subcommand handler.
 ///
 /// Each handler returns an exit code (0 = success, non-zero = failure).
-async fn dispatch(cmd: &Commands, print_logs: bool) -> i32 {
+async fn dispatch(cmd: &Commands, print_logs: bool, config: &Config) -> i32 {
     match cmd {
         Commands::Acp(args) => cmd_acp(args).await,
         Commands::Mcp { cmd: mcp_cmd } => cmd_mcp(mcp_cmd).await,
-        Commands::Tui(args) => cmd_tui(args, print_logs).await,
+        Commands::Tui(args) => cmd_tui(args, print_logs, config).await,
         Commands::Attach(args) => cmd_attach(args).await,
-        Commands::Run(args) => cmd_run(args).await,
+        Commands::Run(args) => cmd_run(args, config).await,
         Commands::Generate => cmd_generate().await,
         Commands::Debug { cmd: debug_cmd } => cmd_debug(debug_cmd).await,
         Commands::Console { cmd: console_cmd } => cmd_console(console_cmd).await,
@@ -1295,9 +1295,9 @@ async fn dispatch(cmd: &Commands, print_logs: bool) -> i32 {
         Commands::Agent { cmd: agent_cmd } => cmd_agent(agent_cmd).await,
         Commands::Upgrade(args) => cmd_upgrade(args).await,
         Commands::Uninstall(args) => cmd_uninstall(args).await,
-        Commands::Serve(args) => cmd_serve(args).await,
-        Commands::Web(args) => cmd_web(args).await,
-        Commands::Models(args) => cmd_models(args).await,
+        Commands::Serve(args) => cmd_serve(args, config).await,
+        Commands::Web(args) => cmd_web(args, config).await,
+        Commands::Models(args) => cmd_models(args, config).await,
         Commands::Stats(args) => cmd_stats(args).await,
         Commands::Export(args) => cmd_export(args).await,
         Commands::Import(args) => cmd_import(args).await,
@@ -1411,7 +1411,7 @@ async fn run_gh(args: &[&str]) -> std::io::Result<std::process::Output> {
 /// - **Local**: resolves providers/models locally and runs the agentic loop.
 /// - **SSE attach** (`--attach <url>`): connects to a remote server via SSE,
 ///   sends the prompt via HTTP POST, and streams results back.
-async fn cmd_run(args: &RunArgs) -> i32 {
+async fn cmd_run(args: &RunArgs, config: &Config) -> i32 {
     let msg = args.message.join(" ");
 
     // ── validation ──────────────────────────────────────────────────
@@ -1455,7 +1455,7 @@ async fn cmd_run(args: &RunArgs) -> i32 {
     let (provider_filter, model_filter) = args.model.as_deref().and_then(parse_model_spec).unzip();
 
     // ── auto-detect providers via shared runtime ────────────────────
-    let ctx = match rustcode_core::runtime::initialize_runtime() {
+    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
@@ -2353,7 +2353,7 @@ fn handle_sse_event(
 /// `tui` — Start OpenCode TUI.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/tui.ts`
-async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
+async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &Config) -> i32 {
     if args.fork && !args.r#continue && args.session.is_none() {
         eprintln!("Error: --fork requires --continue or --session");
         return 1;
@@ -2403,7 +2403,7 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
     }
 
     // ── Initialize shared runtime ──────────────────────────────────
-    let ctx = match rustcode_core::runtime::initialize_runtime() {
+    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
@@ -2593,7 +2593,7 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
 /// `serve` — Start a headless OpenCode server.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/serve.ts`
-async fn cmd_serve(args: &NetworkArgs) -> i32 {
+async fn cmd_serve(args: &NetworkArgs, config: &Config) -> i32 {
     let hostname = if args.mdns && args.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
@@ -2611,7 +2611,7 @@ async fn cmd_serve(args: &NetworkArgs) -> i32 {
     println!();
 
     // Build the AppState from the shared runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime() {
+    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
@@ -2736,7 +2736,7 @@ fn build_command_data() -> rustcode_core::command::CommandData {
 /// `web` — Start server and open web interface.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/web.ts`
-async fn cmd_web(args: &NetworkArgs) -> i32 {
+async fn cmd_web(args: &NetworkArgs, config: &Config) -> i32 {
     let hostname = if args.mdns && args.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
@@ -2770,7 +2770,7 @@ async fn cmd_web(args: &NetworkArgs) -> i32 {
     open_url(&server_url);
 
     // Build and start the server from shared runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime() {
+    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
@@ -2836,7 +2836,7 @@ fn get_network_ips() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 /// `models` — List all available models from detected providers.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/models.ts`
-async fn cmd_models(args: &ModelsArgs) -> i32 {
+async fn cmd_models(args: &ModelsArgs, config: &Config) -> i32 {
     if args.refresh {
         eprintln!("Models cache refresh requested — not yet wired to models.dev API.");
     }
@@ -5531,7 +5531,7 @@ async fn cmd_acp(args: &AcpArgs) -> i32 {
     std::env::set_var("OPENCODE_CLIENT", "acp");
 
     // Initialize the runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime() {
+    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
