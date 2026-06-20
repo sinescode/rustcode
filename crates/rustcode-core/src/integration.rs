@@ -103,9 +103,6 @@ pub struct When {
 /// `packages/core/src/integration.ts` lines 32–38 — `Integration.TextPrompt`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TextPrompt {
-    /// Discriminant for the tagged union — always `"text"`.
-    #[serde(rename = "type")]
-    pub prompt_type: String,
     /// Unique key identifying this prompt field.
     pub key: String,
     /// User-facing message label.
@@ -139,9 +136,6 @@ pub struct SelectOption {
 /// `packages/core/src/integration.ts` lines 41–54 — `Integration.SelectPrompt`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SelectPrompt {
-    /// Discriminant for the tagged union — always `"select"`.
-    #[serde(rename = "type")]
-    pub prompt_type: String,
     /// Unique key identifying this prompt field.
     pub key: String,
     /// User-facing message label.
@@ -179,9 +173,6 @@ pub enum Prompt {
 /// `packages/core/src/integration.ts` lines 59–64 — `Integration.OAuthMethod`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OAuthMethod {
-    /// Discriminant for the tagged union — always `"oauth"`.
-    #[serde(rename = "type")]
-    pub method_type: String,
     /// Unique identifier for this OAuth method.
     pub id: MethodId,
     /// User-facing label (e.g. "Sign in with GitHub").
@@ -197,9 +188,6 @@ pub struct OAuthMethod {
 /// `packages/core/src/integration.ts` lines 67–71 — `Integration.KeyMethod`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct KeyMethod {
-    /// Discriminant for the tagged union — always `"key"`.
-    #[serde(rename = "type")]
-    pub method_type: String,
     /// Optional user-facing label for the key input.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
@@ -211,9 +199,6 @@ pub struct KeyMethod {
 /// `packages/core/src/integration.ts` lines 73–77 — `Integration.EnvMethod`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvMethod {
-    /// Discriminant for the tagged union — always `"env"`.
-    #[serde(rename = "type")]
-    pub method_type: String,
     /// Environment variable names to check for existing credentials.
     pub names: Vec<String>,
 }
@@ -247,9 +232,6 @@ pub enum AuthMethod {
 /// `packages/core/src/integration/connection.ts` lines 6–10 — `Connection.CredentialInfo`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionCredentialInfo {
-    /// Discriminant for the tagged union — always `"credential"`.
-    #[serde(rename = "type")]
-    pub connection_type: String,
     /// Credential identifier.
     pub id: String,
     /// User-facing label stored with the credential.
@@ -262,9 +244,6 @@ pub struct ConnectionCredentialInfo {
 /// `packages/core/src/integration/connection.ts` lines 13–17 — `Connection.EnvInfo`
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConnectionEnvInfo {
-    /// Discriminant for the tagged union — always `"env"`.
-    #[serde(rename = "type")]
-    pub connection_type: String,
     /// Name of the environment variable.
     pub name: String,
 }
@@ -577,7 +556,6 @@ impl IntegrationService {
                     for name in &env_method.names {
                         if std::env::var(name).is_ok() {
                             results.push(ConnectionInfo::Env(ConnectionEnvInfo {
-                                connection_type: "env".into(),
                                 name: name.clone(),
                             }));
                         }
@@ -954,7 +932,6 @@ mod tests {
     #[test]
     fn text_prompt_serialize_minimal() {
         let p = TextPrompt {
-            prompt_type: "text".into(),
             key: "subdomain".into(),
             message: "Enter your subdomain".into(),
             placeholder: None,
@@ -962,14 +939,12 @@ mod tests {
         };
         let json = serde_json::to_string(&p).expect("serialize TextPrompt");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["type"], "text");
         assert_eq!(parsed["key"], "subdomain");
     }
 
     #[test]
     fn text_prompt_round_trip_with_when() {
         let p = TextPrompt {
-            prompt_type: "text".into(),
             key: "org".into(),
             message: "Organization".into(),
             placeholder: Some("e.g. acme-corp".into()),
@@ -987,7 +962,6 @@ mod tests {
     #[test]
     fn select_prompt_serialize() {
         let p = SelectPrompt {
-            prompt_type: "select".into(),
             key: "region".into(),
             message: "Choose region".into(),
             options: vec![
@@ -1006,7 +980,6 @@ mod tests {
         };
         let json = serde_json::to_string(&p).expect("serialize");
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse");
-        assert_eq!(parsed["type"], "select");
         assert_eq!(parsed["options"].as_array().expect("array").len(), 2);
     }
 
@@ -1044,7 +1017,6 @@ mod tests {
     #[test]
     fn auth_method_oauth_serialize() {
         let m = OAuthMethod {
-            method_type: "oauth".into(),
             id: "github-oauth".into(),
             label: "Sign in with GitHub".into(),
             prompts: None,
@@ -1087,7 +1059,6 @@ mod tests {
     #[test]
     fn connection_info_credential_round_trip() {
         let c = ConnectionInfo::Credential(ConnectionCredentialInfo {
-            connection_type: "credential".into(),
             id: "cred_abc123".into(),
             label: "my-github-token".into(),
         });
@@ -1099,7 +1070,6 @@ mod tests {
     #[test]
     fn connection_info_env_round_trip() {
         let c = ConnectionInfo::Env(ConnectionEnvInfo {
-            connection_type: "env".into(),
             name: "GITHUB_TOKEN".into(),
         });
         let json = serde_json::to_string(&c).expect("serialize");
@@ -1149,13 +1119,11 @@ mod tests {
             id: "github".into(),
             name: "GitHub".into(),
             methods: vec![AuthMethod::OAuth(OAuthMethod {
-                method_type: "oauth".into(),
                 id: "gh-oauth".into(),
                 label: "Sign in with GitHub".into(),
                 prompts: None,
             })],
             connections: vec![ConnectionInfo::Credential(ConnectionCredentialInfo {
-                connection_type: "credential".into(),
                 id: "cred_1".into(),
                 label: "personal".into(),
             })],
@@ -1236,13 +1204,11 @@ mod tests {
             name: "GitHub".into(),
             methods: vec![
                 AuthMethod::OAuth(OAuthMethod {
-                    method_type: "oauth".into(),
                     id: "github-oauth".into(),
                     label: "Sign in with GitHub".into(),
                     prompts: None,
                 }),
                 AuthMethod::Env(EnvMethod {
-                    method_type: "env".into(),
                     names: vec!["GITHUB_TOKEN".into()],
                 }),
             ],
@@ -1608,7 +1574,11 @@ mod tests {
             .authenticate_with_impl("github", "github-oauth", &impl_, Some(scope))
             .expect("authenticate_with_impl with scope should succeed");
 
-        assert!(attempt.url.contains("repo+read%3Auser") || attempt.url.contains("repo read:user"));
+        assert!(
+            attempt.url.contains("repo+read%3Auser")
+                || attempt.url.contains("repo read:user")
+                || attempt.url.contains("repo+read:user")
+        );
     }
 
     #[test]
@@ -1675,7 +1645,6 @@ mod tests {
         let mut svc = IntegrationService::new();
         let mut info = make_github_integration();
         info.methods.push(AuthMethod::Key(KeyMethod {
-            method_type: "key".into(),
             label: Some("GitHub API Key".into()),
         }));
         svc.register(info);
@@ -1703,10 +1672,8 @@ mod tests {
     fn test_connection_key_no_label() {
         let mut svc = IntegrationService::new();
         let mut info = make_github_integration();
-        info.methods.push(AuthMethod::Key(KeyMethod {
-            method_type: "key".into(),
-            label: None,
-        }));
+        info.methods
+            .push(AuthMethod::Key(KeyMethod { label: None }));
         svc.register(info);
 
         let key = svc.connection_key("github");
@@ -1796,7 +1763,6 @@ mod tests {
             id: "gitlab".into(),
             name: "GitLab".into(),
             methods: vec![AuthMethod::OAuth(OAuthMethod {
-                method_type: "oauth".into(),
                 id: "gitlab-oauth".into(),
                 label: "Sign in with GitLab".into(),
                 prompts: None,

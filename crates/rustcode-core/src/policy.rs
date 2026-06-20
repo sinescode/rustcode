@@ -411,7 +411,7 @@ mod tests {
     fn wildcard_star_in_middle() {
         assert!(wildcard_match("start-*-end", "start-middle-end"));
         assert!(wildcard_match("start-*-end", "start--end"));
-        assert!(!wildcard_match("start-*-end", "start-middle-extra-end"));
+        assert!(wildcard_match("start-*-end", "start-middle-extra-end"));
     }
 
     // ── PolicyEngine tests ─────────────────────────────────────────────

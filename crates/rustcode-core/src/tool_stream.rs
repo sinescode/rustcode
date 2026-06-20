@@ -156,7 +156,7 @@ mod tests {
     fn test_start_and_finish_simple() {
         let mut acc = ToolStreamAccumulator::new();
         acc.start(0, "bash", "toolu_01".to_string());
-        acc.append(0, r#"{"command":"#);
+        acc.append(0, r#"{"command":""#);
         acc.append(0, r#"ls"}"#);
 
         let event = acc.finish(0).unwrap();

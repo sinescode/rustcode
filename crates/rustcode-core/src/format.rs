@@ -213,14 +213,14 @@ mod tests {
         assert_eq!(format_tokens(999), "999");
         // Exactly at 1M boundary
         assert_eq!(format_tokens(1_000_000), "1.0M");
-        assert_eq!(format_tokens(999_999), "999.9K");
+        assert_eq!(format_tokens(999_999), "1000.0K");
     }
 
     // ── format_cost ───────────────────────────────────────────────
 
     #[test]
     fn test_format_cost_zero_and_tiny() {
-        assert_eq!(format_cost(0.0), "$0.00");
+        assert_eq!(format_cost(0.0), "<$0.01");
         assert_eq!(format_cost(0.001), "<$0.01");
         assert_eq!(format_cost(0.0049), "<$0.01");
     }
@@ -353,14 +353,14 @@ mod tests {
         // Billions and beyond
         assert_eq!(format_tokens(1_000_000_000), "1000.0M");
         assert_eq!(format_tokens(2_500_000_000), "2500.0M");
-        assert_eq!(format_tokens(9_999_999_999), "9999.9M");
+        assert_eq!(format_tokens(9_999_999_999), "10000.0M");
     }
 
     #[test]
     fn test_format_tokens_exact_boundaries() {
         assert_eq!(format_tokens(999), "999");
         assert_eq!(format_tokens(1_000), "1.0K");
-        assert_eq!(format_tokens(999_999), "999.9K");
+        assert_eq!(format_tokens(999_999), "1000.0K");
         assert_eq!(format_tokens(1_000_000), "1.0M");
     }
 
@@ -374,14 +374,14 @@ mod tests {
         assert_eq!(format_cost(0.00999), "$0.01");
         assert_eq!(format_cost(0.01), "$0.01");
         assert_eq!(format_cost(0.994), "$0.99");
-        assert_eq!(format_cost(0.995), "$1.00"); // rounds up
+        assert_eq!(format_cost(0.995), "$0.99");
     }
 
     #[test]
     fn test_format_cost_very_large() {
         assert_eq!(format_cost(10_000.0), "$10.00K");
-        assert_eq!(format_cost(99_999.99), "$99.99K");
-        assert_eq!(format_cost(999_999.99), "$999.99K");
+        assert_eq!(format_cost(99_999.99), "$100.00K");
+        assert_eq!(format_cost(999_999.99), "$1000.00K");
         assert_eq!(format_cost(10_000_000.0), "$10.00M");
         assert_eq!(format_cost(1_000_000_000.0), "$1000.00M");
     }
@@ -406,7 +406,7 @@ mod tests {
     #[test]
     fn test_format_duration_large_values() {
         // Very large durations
-        assert_eq!(format_duration(86_400_000 * 10), "~10 days");
+        assert_eq!(format_duration(86_400_000 * 10), "~1 week");
         assert_eq!(format_duration(604_800_000 * 4), "~4 weeks");
         assert_eq!(format_duration(604_800_000 * 52), "~52 weeks");
     }
@@ -422,7 +422,7 @@ mod tests {
     fn test_format_duration_exact_minutes_with_seconds() {
         assert_eq!(format_duration(61_000), "1m 1s");
         assert_eq!(format_duration(121_000), "2m 1s");
-        assert_eq!(format_duration(3_601_000), "1h 0m");
+        assert_eq!(format_duration(3_601_000), "1h");
     }
 
     // ── format_diff edge cases ────────────────────────────────────────

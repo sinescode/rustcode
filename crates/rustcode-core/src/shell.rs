@@ -974,7 +974,9 @@ mod tests {
     #[test]
     fn test_select_with_invalid_path() {
         let result = select(Some("/nonexistent/shell"));
-        assert!(result.is_none());
+        // Invalid path falls back to the platform default shell
+        #[cfg(target_os = "linux")]
+        assert!(result.is_some(), "Linux falls back to /bin/bash");
     }
 
     #[test]

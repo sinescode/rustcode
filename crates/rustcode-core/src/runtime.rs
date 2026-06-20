@@ -256,6 +256,8 @@ mod tests {
 
     #[test]
     fn test_memory_runtime() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
         let config = Config::new(PathBuf::new(), None);
         let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         assert!(!ctx.is_persistent());
@@ -277,6 +279,8 @@ mod tests {
 
     #[test]
     fn test_default_model_known() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
         let config = Config::new(PathBuf::new(), None);
         let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         assert_eq!(
@@ -288,6 +292,8 @@ mod tests {
 
     #[test]
     fn test_has_providers_empty() {
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let _guard = rt.enter();
         let config = Config::new(PathBuf::new(), None);
         let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         let expected =

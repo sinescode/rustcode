@@ -324,9 +324,9 @@ pub fn get_model_override<'a>(
 /// Find a model across all providers.
 ///
 /// Searches the catalog for a model by ID, returning the provider ID and model.
-pub fn find_model(catalog: &ProviderCatalog, model_id: &str) -> Option<(String, Model)> {
+pub async fn find_model(catalog: &ProviderCatalog, model_id: &str) -> Option<(String, Model)> {
     for (provider_id, provider) in &catalog.providers {
-        if let Ok(models) = futures::executor::block_on(provider.list_models()) {
+        if let Ok(models) = provider.list_models().await {
             for model in models {
                 if model.id == model_id {
                     return Some((provider_id.clone(), model));

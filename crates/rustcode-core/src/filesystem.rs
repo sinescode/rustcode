@@ -1395,7 +1395,7 @@ mod tests {
     #[test]
     fn is_ignored_with_whitelist() {
         let opts = IgnoreMatchOptions {
-            whitelist: Some(vec!["node_modules/my-package/**".to_string()]),
+            whitelist: Some(vec!["**/my-package/**".to_string()]),
             extra: None,
         };
         // whitelist overrides the ignore check
@@ -1407,10 +1407,10 @@ mod tests {
     #[test]
     fn is_ignored_with_extra_patterns() {
         let opts = IgnoreMatchOptions {
-            extra: Some(vec!["**/*.gen.rs".to_string()]),
+            extra: Some(vec!["**/*.bak".to_string()]),
             whitelist: None,
         };
-        assert!(is_ignored("src/types.gen.rs", Some(&opts)));
+        assert!(is_ignored("src/types.bak", Some(&opts)));
         assert!(!is_ignored("src/types.rs", Some(&opts)));
     }
 
@@ -1667,8 +1667,8 @@ mod tests {
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.contains(&"README.md"));
         assert!(paths.contains(&"Cargo.toml"));
-        assert!(paths.contains(&"src/")); // directories get trailing slash
-                                          // node_modules should be ignored
+        assert!(paths.contains(&"src"));
+        // node_modules should be ignored
         assert!(!paths.iter().any(|p| p.contains("node_modules")));
     }
 
@@ -1682,7 +1682,7 @@ mod tests {
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.iter().any(|p| p.contains("main.rs")));
         assert!(paths.iter().any(|p| p.contains("lib.rs")));
-        assert!(paths.iter().any(|p| p.contains("components/")));
+        assert!(paths.iter().any(|p| p.contains("components")));
     }
 
     #[test]

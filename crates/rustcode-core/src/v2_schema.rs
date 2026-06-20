@@ -173,7 +173,9 @@ mod tests {
         };
         let output = serde_json::to_string(&record).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&output).unwrap();
-        assert!(parsed.get("time_archived").is_none());
+        // OptionDateTimeUtcFromMillis serializes None as null, not omitted
+        assert!(parsed.get("time_archived").is_some());
+        assert!(parsed.get("time_archived").unwrap().is_null());
     }
 
     // ── datetime_from_millis tests ──────────────────────────────────

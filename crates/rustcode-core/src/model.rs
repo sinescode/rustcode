@@ -204,7 +204,6 @@ pub struct ModelRef {
 /// Ported from `packages/core/src/provider.ts` lines 25–30
 /// (`AISDK` struct — `type: "aisdk"`, `package`, `url`, `settings`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename = "aisdk")]
 pub struct AiSdkApi {
     /// The model ID for this API
     pub id: ModelV2Id,
@@ -224,7 +223,6 @@ pub struct AiSdkApi {
 /// Ported from `packages/core/src/provider.ts` lines 32–36
 /// (`Native` struct — `type: "native"`, `url`, `settings`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "type", rename = "native")]
 pub struct NativeApi {
     /// The model ID for this API
     pub id: ModelV2Id,

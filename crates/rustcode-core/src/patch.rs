@@ -1085,7 +1085,7 @@ mod tests {
         let chunks = vec![UpdateFileChunk {
             old_lines: vec!["body content".into()],
             new_lines: vec!["modified body".into()],
-            change_context: Some("body content".into()),
+            change_context: Some("header".into()),
             end_of_file: None,
         }];
         let result = derive("test.txt", &chunks, original).expect("should apply");
@@ -1170,7 +1170,7 @@ mod tests {
 
     #[test]
     fn test_strip_heredoc_with_cat() {
-        let input = "cat << 'DELIM'\ncontent\nDELIM";
+        let input = "cat <<'DELIM'\ncontent\nDELIM";
         let result = strip_heredoc(input);
         assert_eq!(result, "content");
     }

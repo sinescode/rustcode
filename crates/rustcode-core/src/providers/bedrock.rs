@@ -68,22 +68,22 @@ impl SigV4Signer {
         // Step 1: Create canonical request per AWS SigV4 spec
         let payload_hash = hex::encode(Sha256::digest(body));
         let signed_headers = "host;x-amz-content-sha256;x-amz-date";
-        let canonical_headers = format!(
-            "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{date}\n"
-        );
-        let canonical_request = format!(
-            "{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
-        );
+        let canonical_headers =
+            format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{date}\n");
+        let canonical_request =
+            format!("{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
 
         // Step 2: Create string to sign
         let credential_scope = format!("{date}/{}/{}/aws4_request", self.region, self.service);
         let canonical_request_hash = hex::encode(Sha256::digest(canonical_request.as_bytes()));
-        let string_to_sign = format!(
-            "AWS4-HMAC-SHA256\n{date}\n{credential_scope}\n{canonical_request_hash}"
-        );
+        let string_to_sign =
+            format!("AWS4-HMAC-SHA256\n{date}\n{credential_scope}\n{canonical_request_hash}");
 
         // Step 3: Calculate signing key
-        let k_date = self.hmac_raw(format!("AWS4{}", self.secret_key).as_bytes(), date.as_bytes());
+        let k_date = self.hmac_raw(
+            format!("AWS4{}", self.secret_key).as_bytes(),
+            date.as_bytes(),
+        );
         let k_region = self.hmac_raw(&k_date, self.region.as_bytes());
         let k_service = self.hmac_raw(&k_region, self.service.as_bytes());
         let k_signing = self.hmac_raw(&k_service, b"aws4_request");
@@ -101,8 +101,7 @@ impl SigV4Signer {
     }
 
     fn hmac_raw(&self, key: &[u8], data: &[u8]) -> Vec<u8> {
-        let mut mac =
-            HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
+        let mut mac = HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
         mac.update(data);
         mac.finalize().into_bytes().to_vec()
     }
@@ -834,7 +833,10 @@ impl Provider for BedrockProvider {
             .header("Content-Type", "application/json")
             .header("Authorization", authorization)
             .header("X-Amz-Date", &now)
-            .header("X-Amz-Content-Sha256", hex::encode(Sha256::digest(&body_json)))
+            .header(
+                "X-Amz-Content-Sha256",
+                hex::encode(Sha256::digest(&body_json)),
+            )
             .body(body_json)
             .send()
             .await
@@ -1517,7 +1519,9 @@ mod tests {
     #[test]
     fn test_build_chat_messages_user_text() {
         let messages = vec![ChatMessage::User {
-            content: MessageContent::Text("Hello".into()),
+            content: MessageContent::Parts(vec![ContentPart::Text {
+                text: "Hello".into(),
+            }]),
         }];
         let result = BedrockProvider::build_chat_messages(&messages);
         assert_eq!(result.len(), 1);
@@ -1533,7 +1537,9 @@ mod tests {
     #[test]
     fn test_build_chat_messages_assistant() {
         let messages = vec![ChatMessage::Assistant {
-            content: MessageContent::Text("Hi there!".into()),
+            content: MessageContent::Parts(vec![ContentPart::Text {
+                text: "Hi there!".into(),
+            }]),
         }];
         let result = BedrockProvider::build_chat_messages(&messages);
         assert_eq!(result.len(), 1);

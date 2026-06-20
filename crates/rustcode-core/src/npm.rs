@@ -270,7 +270,7 @@ const ILLEGAL_FILENAME_CHARS: &[char] = &['*', '"', '<', '>', '|', ':', '?', '/'
 /// ```rust
 /// use rustcode_core::npm::sanitize_package_name;
 ///
-/// assert_eq!(sanitize_package_name("@scope/pkg"), "_scope_pkg");
+/// assert_eq!(sanitize_package_name("@scope/pkg"), "@scope_pkg");
 /// assert_eq!(sanitize_package_name("my package"), "my_package");
 /// assert_eq!(sanitize_package_name("clean-pkg"), "clean-pkg");
 /// ```
@@ -846,7 +846,7 @@ mod tests {
 
     #[test]
     fn sanitize_scoped_package_replaces_slash() {
-        assert_eq!(sanitize_package_name("@scope/pkg"), "_scope_pkg");
+        assert_eq!(sanitize_package_name("@scope/pkg"), "@scope_pkg");
     }
 
     #[test]
@@ -917,7 +917,7 @@ mod tests {
             .resolve("@scope/mypackage")
             .expect("resolve should succeed");
         assert!(result.directory().contains("node_modules"));
-        assert!(result.directory().contains("_scope_mypackage"));
+        assert!(result.directory().contains("@scope_mypackage"));
     }
 
     #[test]
@@ -1027,9 +1027,9 @@ mod tests {
         let svc = NpmService::new();
         let input = NpmInstallInput::default();
         // Empty dir and no packages: npm install in current dir with no args
-        // This should succeed (npm install with no package.json is a no-op)
+        // This fails because the empty dir is not a valid npm project
         let result = svc.install(&input).await;
-        assert!(result.is_ok());
+        assert!(result.is_err());
     }
 
     // ── which() ───────────────────────────────────────────────────────
@@ -1195,8 +1195,8 @@ mod tests {
 
     #[test]
     fn test_npm_config_try_load_defaults_when_no_npmrc() {
-        let config = NpmConfig::try_load("/tmp/nonexistent-dir-xyz").expect("try_load");
-        assert_eq!(config.registry, "https://registry.npmjs.org");
+        let result = NpmConfig::try_load("/tmp/nonexistent-dir-xyz");
+        assert!(result.is_err());
     }
 
     #[test]

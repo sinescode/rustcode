@@ -1885,7 +1885,8 @@ pub const RETRY_MAX_DELAY_NO_HEADERS_MS: u64 = 30_000;
 /// # Source
 /// `packages/opencode/src/session/retry.ts` lines 35–66.
 pub fn retry_delay(attempt: u32) -> u64 {
-    let delay = RETRY_INITIAL_DELAY_MS * RETRY_BACKOFF_FACTOR.pow(attempt.saturating_sub(1));
+    let exp = attempt.saturating_sub(1);
+    let delay = RETRY_INITIAL_DELAY_MS.saturating_mul(RETRY_BACKOFF_FACTOR.saturating_pow(exp));
     delay.min(RETRY_MAX_DELAY_NO_HEADERS_MS)
 }
 

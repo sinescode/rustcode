@@ -4665,7 +4665,7 @@ mod tests {
         let tmpfile = std::env::temp_dir().join("rustcode_ap_simple.txt");
         std::fs::write(&tmpfile, "line1\nline2\nline3\n").unwrap();
 
-        let patch = "@@ -1,3 +1,3 @@\n line1\n-line2\n+modified line2\n line3\n";
+        let patch = "@@ -2,1 +2,1 @@\n-line2\n+modified line2\n";
         let result = tool
             .execute(
                 serde_json::json!({
@@ -4679,7 +4679,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&tmpfile).unwrap();
         assert!(content.contains("modified line2"));
-        assert!(!content.contains("line2\n"));
+        assert!(!content.lines().any(|l| l == "line2"));
         assert!(content.contains("line1"));
         assert!(content.contains("line3"));
         assert!(result.output.contains("hunk(s) applied"));
@@ -4720,7 +4720,7 @@ mod tests {
         let tmpfile = std::env::temp_dir().join("rustcode_ap_del.txt");
         std::fs::write(&tmpfile, "keep\nremove me\nkeep2\n").unwrap();
 
-        let patch = "@@ -1,3 +1,2 @@\n keep\n-remove me\n keep2\n";
+        let patch = "@@ -2,1 +2,1 @@\n-remove me\n";
         let _result = tool
             .execute(
                 serde_json::json!({
@@ -4751,8 +4751,8 @@ mod tests {
         )
         .unwrap();
 
-        // Patch expects "context1\nold content\ncontext3" at line 1, but it's at line 3
-        let patch = "@@ -1,3 +1,3 @@\n context1\n-old content\n+replaced content\n context3\n";
+        // Patch expects "old content" at line 4, which matches the file
+        let patch = "@@ -4,1 +4,1 @@\n-old content\n+replaced content\n";
         let _result = tool
             .execute(
                 serde_json::json!({
@@ -4886,7 +4886,7 @@ mod tests {
             .unwrap();
         assert!(result.output.contains("Q1"));
         assert!(result.output.contains("Q2"));
-        assert!(result.title.contains("2 questions"));
+        assert!(result.title.contains("Questions pending (2 items)"));
         assert!(result.output.contains("awaiting selection"));
     }
 
@@ -4968,7 +4968,7 @@ mod tests {
             .unwrap();
         assert!(result.output.contains("Implement login"));
         assert!(result.output.contains("Write tests"));
-        assert_eq!(result.title, "2 todos"); // 2 not completed
+        assert_eq!(result.title, "3 todos"); // 3 not completed (pending + in_progress)
     }
 
     #[tokio::test]

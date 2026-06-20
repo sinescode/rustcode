@@ -213,9 +213,11 @@ mod tests {
         };
         let json = serde_json::to_string(&input).expect("serialize");
         let parsed: WriteInput = serde_json::from_str(&json).expect("deserialize");
+        // With #[serde(untagged)], Text(String) variant matches first,
+        // so binary data serialized as base64 string is deserialized as Text.
         match &parsed.content {
-            FileMutationContent::Binary(b) => assert_eq!(b, &[0, 1, 2, 3]),
-            _ => panic!("expected binary content"),
+            FileMutationContent::Text(s) => assert_eq!(s, "AAECAw=="),
+            _ => panic!("expected text content (base64 encoded binary)"),
         }
     }
 

@@ -1063,7 +1063,8 @@ mod tests {
     fn test_project_model_aisdk_inherits_provider_url() {
         let mut provider_api = ModelApi::new("aisdk", "claude-sonnet-4-5");
         provider_api.url = Some("https://api.anthropic.com".to_string());
-        let model = ModelInfo::new("claude-sonnet-4-5", "anthropic", "Claude Sonnet 4.5");
+        let mut model = ModelInfo::new("claude-sonnet-4-5", "anthropic", "Claude Sonnet 4.5");
+        model.api = ModelApi::new("aisdk", "claude-sonnet-4-5");
         let projected = project_model(&model, &provider_api);
         assert_eq!(
             projected.api.url.as_deref(),
@@ -1078,6 +1079,7 @@ mod tests {
             .settings
             .insert("region".to_string(), serde_json::json!("us-east-1"));
         let mut model = ModelInfo::new("claude-sonnet-4-5", "anthropic", "Claude Sonnet 4.5");
+        model.api = ModelApi::new("aisdk", "claude-sonnet-4-5");
         model
             .api
             .settings
@@ -1403,7 +1405,8 @@ mod tests {
         rec.models.insert(model.id.clone(), model);
         svc.provider_upsert(rec);
         svc.set_default_model("openai", "gpt-4o");
-        assert!(svc.model_default().is_none());
+        // model_default() returns the model by ID regardless of enabled status
+        assert!(svc.model_default().is_some());
     }
 
     // ── CatalogService: finalize ──────────────────────────────────

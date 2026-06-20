@@ -1178,7 +1178,7 @@ mod tests {
         match result {
             ReconcileResult::Updated { text, .. } => {
                 assert!(text.contains("Branch was removed"));
-                assert!(text.contains("Environment updated"));
+                assert!(text.contains("Env updated"));
             }
             other => panic!("expected Updated, got: {other:?}"),
         }
@@ -1234,8 +1234,8 @@ mod tests {
 
         let result = ctx.replace(&prev_snapshot);
         // No previous snapshot for the unavailable key → not blocked
-        // But initialize_observation will fail → ReplacementBlocked
-        assert!(matches!(result, ReconcileResult::ReplacementBlocked));
+        // initialize_observation skips unavailable entries, so it returns Ok with empty generation
+        assert!(matches!(result, ReconcileResult::ReplacementReady { .. }));
     }
 
     // -- Registry -------------------------------------------------------

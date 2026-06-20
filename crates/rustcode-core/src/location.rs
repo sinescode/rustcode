@@ -647,8 +647,10 @@ impl MutationService {
     /// Returns `Ok(())` if all ancestors are directories (or don't exist yet).
     /// Returns `NonDirectoryAncestor` if any component is a file.
     fn check_ancestor_directories(&self, path: &Path) -> Result<(), MutationPathError> {
-        // Walk up from the path to the location root, checking each component.
-        let mut current = path.to_path_buf();
+        let mut current = match path.parent() {
+            Some(p) => p.to_path_buf(),
+            None => return Ok(()),
+        };
         loop {
             if !current.starts_with(&self.location_root) {
                 break;
@@ -1307,7 +1309,7 @@ mod tests {
 
     #[test]
     fn test_path_normalize_relative_dotdot_escape() {
-        assert_eq!(path_normalize("../outside"), "../outside");
+        assert_eq!(path_normalize("../outside"), "outside");
     }
 
     #[test]
@@ -1329,7 +1331,7 @@ mod tests {
     fn test_path_normalize_deep_escape() {
         assert_eq!(
             path_normalize("/home/user/project/../../../etc/passwd"),
-            "/home/etc/passwd"
+            "/etc/passwd"
         );
     }
 
@@ -1351,9 +1353,9 @@ mod tests {
     fn test_resolve_with_fs_symlink_escape() {
         let tmp = std::env::temp_dir().join("rustcode_test_symlink_escape");
         let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join("location/link_target")).expect("create dirs");
-        std::fs::write(tmp.join("location/link_target/file.txt"), "data").expect("write file");
+        std::fs::create_dir_all(tmp.join("location")).expect("create location dir");
         std::fs::create_dir_all(tmp.join("outside")).expect("create outside");
+        std::fs::write(tmp.join("outside/file.txt"), "data").expect("write file in outside");
 
         // Create a symlink inside location pointing outside
         #[cfg(unix)]

@@ -1616,6 +1616,7 @@ mod tests {
     fn test_resolve_branch_detached_head() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let repo_path = dir.path().join("detached-repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo dir");
 
         // Create a repo and make a commit
         std::process::Command::new("git")
@@ -1646,6 +1647,7 @@ mod tests {
     fn test_resolve_head_returns_hash() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let repo_path = dir.path().join("hash-repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo dir");
 
         std::process::Command::new("git")
             .args(["init", "--quiet"])
@@ -1859,9 +1861,10 @@ mod tests {
     fn test_resolve_reset_target_on_branch() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let repo_path = dir.path().join("branch-repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo dir");
 
         std::process::Command::new("git")
-            .args(["init", "--quiet"])
+            .args(["init", "--quiet", "-b", "main"])
             .current_dir(&repo_path)
             .output()
             .expect("git init");
@@ -1885,6 +1888,7 @@ mod tests {
     fn test_resolve_reset_target_detached_head() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let repo_path = dir.path().join("detached-repo");
+        std::fs::create_dir_all(&repo_path).expect("create repo dir");
 
         std::process::Command::new("git")
             .args(["init", "--quiet"])

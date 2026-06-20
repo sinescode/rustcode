@@ -916,14 +916,18 @@ mod tests {
         let global_config = tmp.join("global");
         let project = tmp.join("project");
         let nested = project.join("src");
+        fs::create_dir_all(&global_config).expect("create global dir");
         fs::create_dir_all(&nested).expect("create dirs");
 
         fs::write(global_config.join("AGENTS.md"), "global rules").expect("write global");
         fs::write(project.join("AGENTS.md"), "project rules").expect("write project");
         fs::write(nested.join("AGENTS.md"), "package rules").expect("write nested");
 
-        let source =
-            InstructionContextSource::new(global_config.to_string_lossy(), nested.clone(), Some(project.clone()));
+        let source = InstructionContextSource::new(
+            global_config.to_string_lossy(),
+            nested.clone(),
+            Some(project.clone()),
+        );
         let data = source.load().expect("load");
 
         // Baseline

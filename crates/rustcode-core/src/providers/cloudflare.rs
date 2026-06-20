@@ -1383,7 +1383,9 @@ mod tests {
     #[test]
     fn test_build_chat_messages_user_text() {
         let messages = vec![ChatMessage::User {
-            content: MessageContent::Text("Hello".into()),
+            content: MessageContent::Parts(vec![ContentPart::Text {
+                text: "Hello".into(),
+            }]),
         }];
         let result = CloudflareProvider::build_chat_messages(&messages);
         assert_eq!(result.len(), 1);
@@ -1399,7 +1401,9 @@ mod tests {
     #[test]
     fn test_build_chat_messages_assistant() {
         let messages = vec![ChatMessage::Assistant {
-            content: MessageContent::Text("Hi there!".into()),
+            content: MessageContent::Parts(vec![ContentPart::Text {
+                text: "Hi there!".into(),
+            }]),
         }];
         let result = CloudflareProvider::build_chat_messages(&messages);
         assert_eq!(result.len(), 1);
