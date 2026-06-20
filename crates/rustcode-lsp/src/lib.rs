@@ -26,19 +26,19 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 use rustcode_core::lsp::{
-    language_id_for_extension, LspClientInfo, LspConnectionStatus, LspDiagnostic,
+    LspClientInfo, LspConnectionStatus, LspDiagnostic,
     LspDocumentSymbol, LspServerInfo, LspStatus, LspSymbol,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{Mutex, RwLock, oneshot};
+use tokio::sync::{oneshot, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 // =============================================================================
@@ -143,7 +143,7 @@ const SHUTDOWN_GRACE_MS: u64 = 500;
 /// assert!(framed.contains("\r\n\r\n"));
 /// ```
 pub fn frame_lsp_message(json: &str) -> String {
-    let len = json.as_bytes().len();
+    let len = json.len();
     format!("Content-Length: {len}\r\n\r\n{json}")
 }
 
@@ -639,10 +639,7 @@ impl LspClientState {
             .send_request_timeout("initialize", init_params, INITIALIZE_TIMEOUT)
             .await
             .map_err(|e| {
-                LspError::Initialize(format!(
-                    "failed to initialize '{}': {e}",
-                    server_info.id
-                ))
+                LspError::Initialize(format!("failed to initialize '{}': {e}", server_info.id))
             })?;
 
         // Send `initialized` notification
@@ -772,9 +769,7 @@ impl LspClientState {
         let _ = self
             .send_request_timeout("shutdown", serde_json::json!({}), Duration::from_secs(5))
             .await;
-        let _ = self
-            .send_notification("exit", serde_json::json!({}))
-            .await;
+        let _ = self.send_notification("exit", serde_json::json!({})).await;
 
         // Mark as dead so any concurrent senders fail fast from now on.
         self.alive.store(false, Ordering::SeqCst);
@@ -937,14 +932,8 @@ async fn dispatch_message(state: &LspClientState, message: Value) {
             }
             "window/logMessage" => {
                 if let Some(params) = message.get("params") {
-                    let msg = params
-                        .get("message")
-                        .and_then(|m| m.as_str())
-                        .unwrap_or("");
-                    let level = params
-                        .get("type")
-                        .and_then(|t| t.as_u64())
-                        .unwrap_or(4);
+                    let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                    let level = params.get("type").and_then(|t| t.as_u64()).unwrap_or(4);
                     match level {
                         1 => error!(server_id = %state.server_id, "[LSP] {msg}"),
                         2 => warn!(server_id = %state.server_id, "[LSP] {msg}"),
@@ -990,10 +979,7 @@ pub struct LspClient {
 
 impl LspClient {
     /// Create and connect to a language server. Called by [`LspManager::connect`].
-    pub(crate) async fn new(
-        server_info: &LspServerInfo,
-        root_dir: &Path,
-    ) -> Result<Self> {
+    pub(crate) async fn new(server_info: &LspServerInfo, root_dir: &Path) -> Result<Self> {
         let root = root_dir
             .canonicalize()
             .unwrap_or_else(|_| root_dir.to_path_buf());
@@ -1013,8 +999,8 @@ impl LspClient {
     /// All diagnostics received via `textDocument/publishDiagnostics` are
     /// appended here. Each [`LspDiagnostic`] carries a `uri` field so
     /// callers can filter by file.
-    pub fn diagnostics(&self) -> Arc<RwLock<Vec<LspDiagnostic>>> {
-        Arc::clone(&self.state.diagnostics)
+    pub fn diagnostics(&self) -> &RwLock<Vec<LspDiagnostic>> {
+        &self.state.diagnostics
     }
 
     /// Return metadata describing this client connection.
@@ -1030,10 +1016,7 @@ impl LspClient {
     ///
     /// Sends `textDocument/documentSymbol` and returns the parsed
     /// [`LspDocumentSymbol`] list.
-    pub async fn document_symbols(
-        &self,
-        file: &str,
-    ) -> Result<Vec<LspDocumentSymbol>> {
+    pub async fn document_symbols(&self, file: &str) -> Result<Vec<LspDocumentSymbol>> {
         let uri = path_to_uri(Path::new(file));
         let params = serde_json::json!({ "textDocument": { "uri": uri } });
 
@@ -1063,10 +1046,7 @@ impl LspClient {
     pub async fn workspace_symbols(&self, query: &str) -> Result<Vec<LspSymbol>> {
         let params = serde_json::json!({ "query": query });
 
-        let result = self
-            .state
-            .send_request("workspace/symbol", params)
-            .await?;
+        let result = self.state.send_request("workspace/symbol", params).await?;
 
         Ok(serde_json::from_value(result)?)
     }
@@ -1264,9 +1244,7 @@ impl Default for LspManager {
 
 /// Convert a filesystem path to a `file://` URI.
 fn path_to_uri(path: &Path) -> String {
-    let abs = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     format!("file://{}", abs.display())
 }
 
@@ -1277,7 +1255,9 @@ fn path_to_uri(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
     use std::path::Path;
+    use std::path::PathBuf;
 
     // ------------------------------------------------------------------
     // JSON-RPC framing
@@ -1533,7 +1513,8 @@ mod tests {
 
     #[test]
     fn config_files_map_to_known_servers() {
-        let all_ids: HashSet<&str> = known_servers().iter().map(|s| s.id.as_str()).collect();
+        let servers = known_servers();
+        let all_ids: HashSet<&str> = servers.iter().map(|s| s.id.as_str()).collect();
         for (file, id) in CONFIG_FILE_TO_SERVER {
             assert!(
                 all_ids.contains(id),
@@ -1661,17 +1642,17 @@ mod tests {
 
     #[test]
     fn language_id_for_rust() {
-        assert_eq!(language_id_for_extension(".rs"), "rust");
+        assert_eq!(rustcode_core::lsp::language_id_for_extension(".rs"), "rust");
     }
 
     #[test]
     fn language_id_for_typescript() {
-        assert_eq!(language_id_for_extension(".ts"), "typescript");
+        assert_eq!(rustcode_core::lsp::language_id_for_extension(".ts"), "typescript");
     }
 
     #[test]
     fn language_id_fallback_plaintext() {
-        assert_eq!(language_id_for_extension(".zzz"), "plaintext");
+        assert_eq!(rustcode_core::lsp::language_id_for_extension(".zzz"), "plaintext");
     }
 
     // ------------------------------------------------------------------
@@ -1718,8 +1699,11 @@ mod tests {
     #[test]
     fn detect_with_cargo_toml() {
         let dir = TempDir::new("cargo").expect("tempdir");
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"test\"\n")
-            .expect("write");
+        std::fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname = \"test\"\n",
+        )
+        .expect("write");
         let servers = detect_servers_for_workspace(dir.path());
         assert!(servers.iter().any(|s| s.id == "rust"));
     }
@@ -1743,8 +1727,11 @@ mod tests {
     #[test]
     fn detect_with_pyproject_toml() {
         let dir = TempDir::new("py").expect("tempdir");
-        std::fs::write(dir.path().join("pyproject.toml"), "[project]\nname = \"test\"\n")
-            .expect("write");
+        std::fs::write(
+            dir.path().join("pyproject.toml"),
+            "[project]\nname = \"test\"\n",
+        )
+        .expect("write");
         let servers = detect_servers_for_workspace(dir.path());
         assert!(servers.iter().any(|s| s.id == "pyright"));
     }
@@ -1752,8 +1739,7 @@ mod tests {
     #[test]
     fn detect_multiple_configs() {
         let dir = TempDir::new("multi").expect("tempdir");
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"a\"\n")
-            .expect("write");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"a\"\n").expect("write");
         std::fs::write(dir.path().join("package.json"), "{}").expect("write");
         let servers = detect_servers_for_workspace(dir.path());
         let ids: HashSet<&str> = servers.iter().map(|s| s.id.as_str()).collect();
@@ -1777,8 +1763,7 @@ mod tests {
     #[tokio::test]
     async fn update_detects_servers() {
         let dir = TempDir::new("update_rs").expect("tempdir");
-        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"t\"\n")
-            .expect("write");
+        std::fs::write(dir.path().join("Cargo.toml"), "[package]\nname = \"t\"\n").expect("write");
         let manager = LspManager::new();
         // update() will try to spawn rust-analyzer, which likely isn't
         // installed — the call should not panic, just return statuses.

@@ -48,11 +48,13 @@ pub mod DateTimeUtcFromMillis {
     /// Maps the TS `DateTime.makeUnsafe(value)` behavior — creates a
     /// `DateTime<Utc>` from the raw millisecond value without further
     /// validation.
-    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<DateTime<Utc>, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<DateTime<Utc>, D::Error> {
         let millis = i64::deserialize(deserializer)?;
-        Utc.timestamp_millis_opt(millis)
-            .single()
-            .ok_or_else(|| serde::de::Error::custom(format!("invalid UTC timestamp (ms): {millis}")))
+        Utc.timestamp_millis_opt(millis).single().ok_or_else(|| {
+            serde::de::Error::custom(format!("invalid UTC timestamp (ms): {millis}"))
+        })
     }
 }
 

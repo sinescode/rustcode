@@ -55,14 +55,24 @@ impl CohereProvider {
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
-        Ok(Self { api_key, base_url, http_client, models: build_model_catalog() })
+        Ok(Self {
+            api_key,
+            base_url,
+            http_client,
+            models: build_model_catalog(),
+        })
     }
 
     fn chat_url(&self) -> String {
         format!("{}/chat/completions", self.base_url.trim_end_matches('/'))
     }
 
-    fn build_body(&self, model: &Model, messages: &[ChatMessage], tools: &[ToolDefinition]) -> serde_json::Value {
+    fn build_body(
+        &self,
+        model: &Model,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> serde_json::Value {
         let msgs: Vec<serde_json::Value> = messages.iter().map(|m| match m {
             ChatMessage::System { content } => serde_json::json!({"role":"system","content": extract_text(content)}),
             ChatMessage::User { content } => serde_json::json!({"role":"user","content": extract_text(content)}),
@@ -76,9 +86,8 @@ impl CohereProvider {
             ChatMessage::Tool { content } => {
                 let mut arr = Vec::new();
                 for p in content {
-                    if let crate::provider::ToolResultPart::ToolResult { tool_call_id, output, .. } = p {
-                        arr.push(serde_json::json!({"role":"tool","tool_call_id":tool_call_id,"content":output.to_string()}));
-                    }
+                    let crate::provider::ToolResultPart::ToolResult { tool_call_id, output, .. } = p;
+                    arr.push(serde_json::json!({"role":"tool","tool_call_id":tool_call_id,"content":output.to_string()}));
                 }
                 arr.first().cloned().unwrap_or(serde_json::json!({"role":"tool","tool_call_id":"","content":""}))
             }
@@ -95,7 +104,9 @@ impl CohereProvider {
             "stream_options": {"include_usage": true},
             "max_tokens": crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX),
         });
-        if !tools_arr.is_empty() { body["tools"] = serde_json::Value::Array(tools_arr); }
+        if !tools_arr.is_empty() {
+            body["tools"] = serde_json::Value::Array(tools_arr);
+        }
         body
     }
 }
@@ -103,9 +114,17 @@ impl CohereProvider {
 fn extract_text(content: &MessageContent) -> String {
     match content {
         MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(p) => p.iter()
-            .filter_map(|p| if let crate::provider::ContentPart::Text { text } = p { Some(text.as_str()) } else { None })
-            .collect::<Vec<_>>().join(""),
+        MessageContent::Parts(p) => p
+            .iter()
+            .filter_map(|p| {
+                if let crate::provider::ContentPart::Text { text } = p {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(""),
     }
 }
 
@@ -113,72 +132,160 @@ fn extract_text(content: &MessageContent) -> String {
 
 #[async_trait]
 impl Provider for CohereProvider {
-    fn provider_id(&self) -> &str { PROVIDER_ID }
-    fn npm(&self) -> &str { NPM }
-
-    async fn list_models(&self) -> crate::error::Result<Vec<Model>> { Ok(self.models.clone()) }
-
-    async fn get_model(&self, model_id: &str) -> crate::error::Result<Model> {
-        self.models.iter().find(|m| m.id == model_id).cloned()
-            .ok_or_else(|| Error::ModelNotFound { provider_id: PROVIDER_ID.into(), model_id: model_id.into() })
+    fn provider_id(&self) -> &str {
+        PROVIDER_ID
+    }
+    fn npm(&self) -> &str {
+        NPM
     }
 
-    async fn stream(&self, model: &Model, messages: &[ChatMessage], tools: &[ToolDefinition]) -> crate::error::Result<Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>> {
+    async fn list_models(&self) -> crate::error::Result<Vec<Model>> {
+        Ok(self.models.clone())
+    }
+
+    async fn get_model(&self, model_id: &str) -> crate::error::Result<Model> {
+        self.models
+            .iter()
+            .find(|m| m.id == model_id)
+            .cloned()
+            .ok_or_else(|| Error::ModelNotFound {
+                provider_id: PROVIDER_ID.into(),
+                model_id: model_id.into(),
+            })
+    }
+
+    async fn stream(
+        &self,
+        model: &Model,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> crate::error::Result<
+        Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
+    > {
         let body = self.build_body(model, messages, tools);
-        let response = self.http_client.post(self.chat_url())
+        let response = self
+            .http_client
+            .post(self.chat_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body).send().await
+            .json(&body)
+            .send()
+            .await
             .map_err(|e| Error::Network(format!("Cohere request: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(Error::Llm { module: PROVIDER_ID.into(), method: "stream".into(),
-                reason: Box::new(LlmErrorReason::UnknownProvider { message: format!("HTTP {status}: {text}"), status: Some(status) }) });
+            return Err(Error::Llm {
+                module: PROVIDER_ID.into(),
+                method: "stream".into(),
+                reason: Box::new(LlmErrorReason::UnknownProvider {
+                    message: format!("HTTP {status}: {text}"),
+                    status: Some(status),
+                }),
+            });
         }
 
         let sse_stream = crate::sse::parse_sse_stream(response);
         let llm_stream = futures::stream::unfold(
-            (Box::pin(sse_stream) as Pin<Box<dyn futures::Stream<Item = Result<crate::sse::SseEvent, crate::sse::SseError>> + Send + Unpin>>, false, VecDeque::new()),
-            |(mut sse, mut finished, mut buf)| async move {
-                loop {
-                    if let Some(ev) = buf.pop_front() { return Some((ev, (sse, finished, buf))); }
-                    if finished { return None; }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(ce) = serde_json::from_str::<serde_json::Value>(&se.data) {
-                                if let Some(choices) = ce["choices"].as_array() {
-                                    if let Some(c) = choices.first() {
-                                        if let Some(delta_content) = c["delta"]["content"].as_str() {
-                                            buf.push_back(Ok(LlmEvent::TextDelta { id: "text-0".into(), text: delta_content.into(), provider_metadata: None }));
-                                        }
-                                        if let Some(fr) = c["finish_reason"].as_str() {
-                                            let reason = match fr { "stop" => FinishReason::Stop, "length" => FinishReason::Length, "tool_calls"|"function_call" => FinishReason::ToolCalls, "content_filter" => FinishReason::ContentFilter, _ => FinishReason::Unknown };
-                                            buf.push_back(Ok(LlmEvent::TextEnd { id: "text-0".into(), provider_metadata: None }));
-                                            buf.push_back(Ok(LlmEvent::Finish { reason, usage: None, provider_metadata: None }));
-                                            finished = true;
+            (
+                Box::pin(sse_stream)
+                    as Pin<
+                        Box<
+                            dyn futures::Stream<
+                                    Item = Result<crate::sse::SseEvent, crate::sse::SseError>,
+                                > + Send
+                                + Unpin,
+                        >,
+                    >,
+                false,
+                VecDeque::new(),
+            ),
+            |(mut sse, mut finished, mut buf)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buf.pop_front() {
+                            return Some((ev, (sse, finished, buf)));
+                        }
+                        if finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(ce) = serde_json::from_str::<serde_json::Value>(&se.data)
+                                {
+                                    if let Some(choices) = ce["choices"].as_array() {
+                                        if let Some(c) = choices.first() {
+                                            if let Some(delta_content) =
+                                                c["delta"]["content"].as_str()
+                                            {
+                                                buf.push_back(Ok(LlmEvent::TextDelta {
+                                                    id: "text-0".into(),
+                                                    text: delta_content.into(),
+                                                    provider_metadata: None,
+                                                }));
+                                            }
+                                            if let Some(fr) = c["finish_reason"].as_str() {
+                                                let reason = match fr {
+                                                    "stop" => FinishReason::Stop,
+                                                    "length" => FinishReason::Length,
+                                                    "tool_calls" | "function_call" => {
+                                                        FinishReason::ToolCalls
+                                                    }
+                                                    "content_filter" => FinishReason::ContentFilter,
+                                                    _ => FinishReason::Unknown,
+                                                };
+                                                buf.push_back(Ok(LlmEvent::TextEnd {
+                                                    id: "text-0".into(),
+                                                    provider_metadata: None,
+                                                }));
+                                                buf.push_back(Ok(LlmEvent::Finish {
+                                                    reason,
+                                                    usage: None,
+                                                    provider_metadata: None,
+                                                }));
+                                                finished = true;
+                                            }
                                         }
                                     }
                                 }
+                                if let Some(ev) = buf.pop_front() {
+                                    return Some((ev, (sse, finished, buf)));
+                                }
                             }
-                            if let Some(ev) = buf.pop_front() { return Some((ev, (sse, finished, buf))); }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Cohere SSE: {e}"))),
+                                    (sse, finished, buf),
+                                ))
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => return Some((Err(Error::ResponseStream(format!("Cohere SSE: {e}"))), (sse, finished, buf))),
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
     }
 
-    async fn complete(&self, model: &Model, messages: &[ChatMessage], tools: &[ToolDefinition]) -> crate::error::Result<crate::provider::LlmResponse> {
+    async fn complete(
+        &self,
+        model: &Model,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> crate::error::Result<crate::provider::LlmResponse> {
         let mut stream = self.stream(model, messages, tools).await?;
         let mut events = Vec::new();
-        while let Some(r) = stream.next().await { if let Ok(ev) = r { events.push(ev); } }
-        Ok(crate::provider::LlmResponse { events, usage: None })
+        while let Some(r) = stream.next().await {
+            if let Ok(ev) = r {
+                events.push(ev);
+            }
+        }
+        Ok(crate::provider::LlmResponse {
+            events,
+            usage: None,
+        })
     }
 }
 
@@ -186,9 +293,33 @@ impl Provider for CohereProvider {
 
 fn build_model_catalog() -> Vec<Model> {
     vec![
-        make_simple_model("command-r-plus", "Command R+", PROVIDER_ID, BASE_URL, "command-r", 128_000, 4_096),
-        make_simple_model("command-r", "Command R", PROVIDER_ID, BASE_URL, "command-r", 128_000, 4_096),
-        make_simple_model("command", "Command", PROVIDER_ID, BASE_URL, "command", 4_096, 4_096),
+        make_simple_model(
+            "command-r-plus",
+            "Command R+",
+            PROVIDER_ID,
+            BASE_URL,
+            "command-r",
+            128_000,
+            4_096,
+        ),
+        make_simple_model(
+            "command-r",
+            "Command R",
+            PROVIDER_ID,
+            BASE_URL,
+            "command-r",
+            128_000,
+            4_096,
+        ),
+        make_simple_model(
+            "command",
+            "Command",
+            PROVIDER_ID,
+            BASE_URL,
+            "command",
+            4_096,
+            4_096,
+        ),
     ]
 }
 
@@ -207,7 +338,10 @@ mod tests {
     #[test]
     fn test_model_catalog_has_command_r_plus() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "command-r-plus").expect("command-r-plus not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "command-r-plus")
+            .expect("command-r-plus not found");
         assert_eq!(m.name, "Command R+");
         assert_eq!(m.provider_id, PROVIDER_ID);
         assert_eq!(m.limit.context, 128_000);
@@ -217,7 +351,10 @@ mod tests {
     #[test]
     fn test_model_catalog_has_command_r() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "command-r").expect("command-r not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "command-r")
+            .expect("command-r not found");
         assert_eq!(m.name, "Command R");
         assert_eq!(m.limit.output, 4_096);
     }
@@ -225,43 +362,58 @@ mod tests {
     #[test]
     fn test_model_catalog_has_command() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "command").expect("command not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "command")
+            .expect("command not found");
         assert_eq!(m.name, "Command");
         assert_eq!(m.limit.context, 4_096);
     }
 
     #[test]
     fn test_provider_id_and_npm() {
-        let provider = CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
+        let provider =
+            CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
         assert_eq!(provider.provider_id(), PROVIDER_ID);
         assert_eq!(provider.npm(), NPM);
     }
 
-    #[test]
-    fn test_get_model_found() {
-        let provider = CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
-        let m = provider.get_model("command-r-plus");
+    #[tokio::test]
+    async fn test_get_model_found() {
+        let provider =
+            CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
+        let m = provider.get_model("command-r-plus").await;
         assert!(m.is_ok());
         assert_eq!(m.unwrap().id, "command-r-plus");
     }
 
-    #[test]
-    fn test_get_model_not_found() {
-        let provider = CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
-        let result = provider.get_model("nonexistent");
+    #[tokio::test]
+    async fn test_get_model_not_found() {
+        let provider =
+            CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
+        let result = provider.get_model("nonexistent").await;
         assert!(result.is_err());
     }
 
     #[test]
     fn test_chat_url() {
-        let provider = CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
-        assert_eq!(provider.chat_url(), "https://api.cohere.ai/v1/chat/completions");
+        let provider =
+            CohereProvider::with_base_url("test-key".into(), BASE_URL.into()).expect("construct");
+        assert_eq!(
+            provider.chat_url(),
+            "https://api.cohere.ai/v1/chat/completions"
+        );
     }
 
     #[test]
     fn test_all_models_active() {
         for m in &build_model_catalog() {
-            assert_eq!(m.status, crate::provider::ModelStatus::Active, "model {} not active", m.id);
+            assert_eq!(
+                m.status,
+                crate::provider::ModelStatus::Active,
+                "model {} not active",
+                m.id
+            );
         }
     }
 }

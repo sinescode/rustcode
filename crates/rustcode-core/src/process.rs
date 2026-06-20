@@ -4,6 +4,7 @@
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
 
 // ---------------------------------------------------------------------------
@@ -55,15 +56,58 @@ pub struct RunOptions {
 }
 
 /// Input to pipe to a process's stdin.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug)]
 pub enum StdinInput {
     /// Text input
     Text(String),
     /// Binary input (base64 encoded in serde)
     Binary(Vec<u8>),
     /// Streaming input from an mpsc channel
-    Stream(tokio::sync::mpsc::Receiver<Vec<u8>>),
+    Stream(std::sync::Arc<std::sync::Mutex<tokio::sync::mpsc::Receiver<Vec<u8>>>>),
+}
+
+impl Clone for StdinInput {
+    fn clone(&self) -> Self {
+        match self {
+            Self::Text(s) => Self::Text(s.clone()),
+            Self::Binary(b) => Self::Binary(b.clone()),
+            Self::Stream(arc) => Self::Stream(std::sync::Arc::clone(arc)),
+        }
+    }
+}
+
+impl Serialize for StdinInput {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self {
+            Self::Text(s) => serializer.serialize_str(s),
+            Self::Binary(b) => serializer.serialize_bytes(b),
+            Self::Stream(_) => Err(serde::ser::Error::custom("cannot serialize stream input")),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for StdinInput {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error;
+        let value = serde_json::Value::deserialize(deserializer)?;
+        if let Some(s) = value.as_str() {
+            return Ok(Self::Text(s.to_string()));
+        }
+        if let Some(arr) = value.as_array() {
+            let bytes: Result<Vec<u8>, D::Error> = arr
+                .iter()
+                .map(|v| {
+                    v.as_u64()
+                        .map(|n| n as u8)
+                        .ok_or_else(|| D::Error::custom("expected integer in binary array"))
+                })
+                .collect();
+            if let Ok(bytes) = bytes {
+                return Ok(Self::Binary(bytes));
+            }
+        }
+        Err(D::Error::custom("expected string or binary array"))
+    }
 }
 
 /// Duration specification for timeouts.
@@ -184,10 +228,7 @@ pub fn require_success(result: RunResult) -> Result<RunResult, AppProcessError> 
 /// Require the exit code to be in a specific set.
 ///
 /// Ported from: `process.ts` — `requireExitIn()`
-pub fn require_exit_in(
-    result: RunResult,
-    ok_codes: &[i32],
-) -> Result<RunResult, AppProcessError> {
+pub fn require_exit_in(result: RunResult, ok_codes: &[i32]) -> Result<RunResult, AppProcessError> {
     if ok_codes.contains(&result.exit_code) {
         Ok(result)
     } else {
@@ -378,11 +419,9 @@ pub async fn kill_group(pid: u32) {
 
 /// Detach a child process handle so the OS does not wait for it on drop.
 ///
-/// In tokio, the `Child` handle is dropped (which detaches the child when
-/// `kill_on_drop` is false) — this function documents the intent.
-pub fn unref(child: &mut tokio::process::Child) {
-    child.kill_on_drop(false);
-}
+/// In tokio, configure `Command::kill_on_drop(false)` before spawning;
+/// this function is a no-op since `kill_on_drop` cannot be changed after spawn.
+pub fn unref(_child: &mut tokio::process::Child) {}
 
 // ---------------------------------------------------------------------------
 // ProcessService
@@ -487,10 +526,7 @@ impl ProcessService {
                 }
             }
         } else {
-            child
-                .wait_with_output()
-                .await
-                .map_err(|e| e)
+            child.wait_with_output().await.map_err(|e| e)
         };
 
         match result {
@@ -643,8 +679,7 @@ impl ProcessService {
             if !codes.contains(&exit_code) {
                 let mut stderr = String::new();
                 if let Some(ref mut reader) = child.stderr {
-                    let _ = tokio::io::AsyncReadExt::read_to_string(reader, &mut stderr)
-                        .await;
+                    let _ = tokio::io::AsyncReadExt::read_to_string(reader, &mut stderr).await;
                 }
                 return Err(AppProcessError::Exited {
                     command: cmd.to_string(),
@@ -754,9 +789,7 @@ mod tests {
 
     #[test]
     fn test_process_command_display() {
-        let cmd = ProcessCommand::new("rg")
-            .arg("--json")
-            .arg("pattern");
+        let cmd = ProcessCommand::new("rg").arg("--json").arg("pattern");
         let display = cmd.to_string();
         assert!(display.contains("rg"));
         assert!(display.contains("--json"));
@@ -802,8 +835,7 @@ mod tests {
     fn test_process_status_serde() {
         for status in [ProcessStatus::Running, ProcessStatus::Exited] {
             let json = serde_json::to_string(&status).expect("serialize");
-            let parsed: ProcessStatus =
-                serde_json::from_str(&json).expect("deserialize");
+            let parsed: ProcessStatus = serde_json::from_str(&json).expect("deserialize");
             assert_eq!(parsed, status);
         }
     }
@@ -812,7 +844,9 @@ mod tests {
     async fn test_process_service_run_echo() {
         let cmd = ProcessCommand::new("echo").arg("hello");
         let opts = RunOptions::default();
-        let result = ProcessService::run(&cmd, &opts).await.expect("should run echo");
+        let result = ProcessService::run(&cmd, &opts)
+            .await
+            .expect("should run echo");
         assert_eq!(result.exit_code, 0);
         let stdout = result.stdout_str().expect("valid utf8");
         assert!(stdout.contains("hello"));
@@ -891,11 +925,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_process_service_run_with_env() {
-        let cmd = ProcessCommand::Standard(
-            StandardCommand::new("sh")
-                .arg("-c")
-                .arg("echo $MY_VAR")
-        );
+        let cmd =
+            ProcessCommand::Standard(StandardCommand::new("sh").arg("-c").arg("echo $MY_VAR"));
         let mut env = std::collections::HashMap::new();
         env.insert("MY_VAR".into(), "test_value".into());
         let mut std_cmd = match &cmd {
@@ -1031,9 +1062,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_validate_exit_bad_code() {
-        let cmd = ProcessCommand::Standard(
-            StandardCommand::new("sh").arg("-c").arg("exit 1"),
-        );
+        let cmd = ProcessCommand::Standard(StandardCommand::new("sh").arg("-c").arg("exit 1"));
         let opts = RunStreamOptions {
             ok_exit_codes: Some(vec![0, 2]),
             ..RunStreamOptions::default()

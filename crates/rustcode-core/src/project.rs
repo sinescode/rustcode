@@ -648,8 +648,12 @@ impl ProjectService {
         let config_path = opencode_dir.join("project.json");
         std::fs::write(
             &config_path,
-            serde_json::to_string_pretty(&config)
-                .map_err(|e| ProjectServiceError::Io(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())))?,
+            serde_json::to_string_pretty(&config).map_err(|e| {
+                ProjectServiceError::Io(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    e.to_string(),
+                ))
+            })?,
         )?;
 
         Ok(ProjectDetection {
@@ -718,10 +722,7 @@ impl ProjectService {
         }
 
         if !directory.is_dir() {
-            issues.push(format!(
-                "path is not a directory: {}",
-                directory.display()
-            ));
+            issues.push(format!("path is not a directory: {}", directory.display()));
             return Ok(issues);
         }
 
@@ -738,9 +739,7 @@ impl ProjectService {
                     }
                 }
                 Err(e) => {
-                    issues.push(format!(
-                        "cannot read opencode config: {e}"
-                    ));
+                    issues.push(format!("cannot read opencode config: {e}"));
                 }
             }
         }
@@ -803,11 +802,7 @@ impl ProjectService {
                         .and_then(|v| v.get("name")?.as_str().map(String::from))
                 })
                 .flatten()
-                .or_else(|| {
-                    dir.file_name()
-                        .and_then(|n| n.to_str())
-                        .map(String::from)
-                });
+                .or_else(|| dir.file_name().and_then(|n| n.to_str()).map(String::from));
 
             results.push(ProjectEntry {
                 id: project_id,
@@ -1087,10 +1082,7 @@ mod tests {
         let err = ProjectCopyError::SourceDirectoryNotFound {
             directory: "/missing".into(),
         };
-        assert_eq!(
-            err.to_string(),
-            "source directory not found: /missing"
-        );
+        assert_eq!(err.to_string(), "source directory not found: /missing");
         let err = ProjectCopyError::StrategyUnavailable {
             strategy: StrategyId::new("unknown"),
         };
@@ -1107,7 +1099,11 @@ mod tests {
         let project_dir = root.join("my-project");
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(project_dir.join("README.md"), "# My Project\n").unwrap();
-        std::fs::write(project_dir.join("Cargo.toml"), "[package]\nname = \"my-project\"\n").unwrap();
+        std::fs::write(
+            project_dir.join("Cargo.toml"),
+            "[package]\nname = \"my-project\"\n",
+        )
+        .unwrap();
 
         std::fs::create_dir_all(project_dir.join("src")).unwrap();
         std::fs::write(project_dir.join("src/main.rs"), "fn main() {}\n").unwrap();
@@ -1170,7 +1166,10 @@ mod tests {
 
         let svc = ProjectService::new(root.to_path_buf());
         let result = svc.detect(&empty_dir);
-        assert!(matches!(result, Err(ProjectServiceError::NoProjectFound(_))));
+        assert!(matches!(
+            result,
+            Err(ProjectServiceError::NoProjectFound(_))
+        ));
     }
 
     #[test]
@@ -1235,10 +1234,7 @@ mod tests {
         let projects = svc.list(3).expect("list projects");
         assert_eq!(projects.len(), 2);
 
-        let names: Vec<&str> = projects
-            .iter()
-            .filter_map(|p| p.name.as_deref())
-            .collect();
+        let names: Vec<&str> = projects.iter().filter_map(|p| p.name.as_deref()).collect();
         assert!(names.contains(&"proj-a"));
         assert!(names.contains(&"proj-b"));
     }
@@ -1283,7 +1279,10 @@ mod tests {
     fn test_validate_project_missing_dir() {
         let svc = ProjectService::new(PathBuf::from("/tmp"));
         let result = svc.validate(Path::new("/nonexistent/dir"));
-        assert!(matches!(result, Err(ProjectServiceError::DirectoryNotFound(_))));
+        assert!(matches!(
+            result,
+            Err(ProjectServiceError::DirectoryNotFound(_))
+        ));
     }
 
     #[test]
@@ -1360,7 +1359,10 @@ mod tests {
         // With depth 1, should NOT find it
         let svc = ProjectService::new(root.to_path_buf());
         let shallow = svc.list(1).expect("list shallow");
-        assert!(shallow.is_empty(), "should not find project at depth 2 with max_depth=1");
+        assert!(
+            shallow.is_empty(),
+            "should not find project at depth 2 with max_depth=1"
+        );
 
         // With depth 3, should find it
         let deep_result = svc.list(3).expect("list deep");

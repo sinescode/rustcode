@@ -47,7 +47,10 @@ pub enum JobStatus {
 impl JobStatus {
     /// Returns `true` if this status represents a terminal (non-running) state.
     pub fn is_terminal(&self) -> bool {
-        matches!(self, JobStatus::Completed | JobStatus::Error | JobStatus::Cancelled)
+        matches!(
+            self,
+            JobStatus::Completed | JobStatus::Error | JobStatus::Cancelled
+        )
     }
 }
 
@@ -171,7 +174,7 @@ impl JobInfo {
 ///
 /// # Source
 /// `packages/core/src/background-job.ts` — `type StartInput`
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JobStartInput {
     /// Optional job identifier. If omitted, one is generated.
     pub id: Option<String>,
@@ -189,6 +192,21 @@ pub struct JobStartInput {
 
     /// Callback that runs when the job is promoted from background to foreground.
     pub on_promote: Option<OnPromoteFn>,
+}
+
+impl std::fmt::Debug for JobStartInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JobStartInput")
+            .field("id", &self.id)
+            .field("type_", &self.type_)
+            .field("title", &self.title)
+            .field("metadata", &self.metadata)
+            .field(
+                "on_promote",
+                &self.on_promote.as_ref().map(|_| "OnPromoteFn"),
+            )
+            .finish()
+    }
 }
 
 impl JobStartInput {
@@ -310,11 +328,7 @@ impl BackgroundJobService {
     ///
     /// `run_fn` is called inside a `tokio::spawn` task. It receives no arguments;
     /// the returned future resolves to `Ok(output)` or `Err(message)`.
-    pub async fn start<F, Fut>(
-        &self,
-        input: JobStartInput,
-        run_fn: F,
-    ) -> JobInfo
+    pub async fn start<F, Fut>(&self, input: JobStartInput, run_fn: F) -> JobInfo
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<String, String>> + Send + 'static,
@@ -328,9 +342,9 @@ impl BackgroundJobService {
         info.title = input.title;
         info.metadata = input.metadata;
 
-        let (done_tx, _done_rx) = watch::channel::<Option<JobInfo>>(None);
-        let (cancel_tx, cancel_rx) = watch::channel::<false>(false);
-        let (promote_tx, _promote_rx) = watch::channel::<false>(false);
+        let (done_tx, _done_rx): (watch::Sender<Option<JobInfo>>, _) = watch::channel(None);
+        let (cancel_tx, cancel_rx) = watch::channel(false);
+        let (promote_tx, _promote_rx) = watch::channel(false);
 
         let active = ActiveJob {
             info: info.clone(),
@@ -384,11 +398,7 @@ impl BackgroundJobService {
     /// The new `run_fn` is spawned immediately; when it completes the job is
     /// settled with the new result. If the job is already terminal this is a
     /// no-op and returns the current info.
-    pub async fn extend<F, Fut>(
-        &self,
-        input: JobExtendInput,
-        run_fn: F,
-    ) -> JobInfo
+    pub async fn extend<F, Fut>(&self, input: JobExtendInput, run_fn: F) -> JobInfo
     where
         F: FnOnce() -> Fut + Send + 'static,
         Fut: Future<Output = Result<String, String>> + Send + 'static,
@@ -438,9 +448,9 @@ impl BackgroundJobService {
             }
         });
 
-        self.get(&input.id).await.unwrap_or_else(|| {
-            JobInfo::new(input.id.clone(), "unknown".into())
-        })
+        self.get(&input.id)
+            .await
+            .unwrap_or_else(|| JobInfo::new(input.id.clone(), "unknown".into()))
     }
 
     /// Wait for a job to reach a terminal state.
@@ -762,8 +772,7 @@ mod tests {
         let json = serde_json::to_string(&info).expect("serialize JobInfo");
 
         // Verify key fields use camelCase
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["id"], "job_007");
         // "type" not "type_" in JSON
         assert_eq!(parsed["type"], "format");
@@ -780,8 +789,7 @@ mod tests {
     fn test_job_info_serialization_minimal() {
         let info = JobInfo::new("min_001".into(), "noop".into());
         let json = serde_json::to_string(&info).expect("serialize minimal JobInfo");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
 
         // Required fields present
         assert_eq!(parsed["id"], "min_001");
@@ -831,8 +839,7 @@ mod tests {
             timeout: Some(30_000),
         };
         let json = serde_json::to_string(&input).expect("serialize JobWaitInput");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["id"], "job_050");
         assert_eq!(parsed["timeout"], 30_000);
     }
@@ -844,8 +851,7 @@ mod tests {
             timeout: None,
         };
         let json = serde_json::to_string(&input).expect("serialize JobWaitInput");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["id"], "job_051");
         assert!(parsed.get("timeout").is_none());
     }
@@ -861,8 +867,7 @@ mod tests {
             timed_out: false,
         };
         let json = serde_json::to_string(&result).expect("serialize JobWaitResult");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["timedOut"], false);
         assert!(parsed["info"].is_object());
         assert_eq!(parsed["info"]["status"], "completed");
@@ -876,8 +881,7 @@ mod tests {
             timed_out: true,
         };
         let json = serde_json::to_string(&result).expect("serialize JobWaitResult");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["timedOut"], true);
         // timed_out: true means the job was still running at timeout
         assert_eq!(parsed["info"]["status"], "running");
@@ -890,8 +894,7 @@ mod tests {
             timed_out: false,
         };
         let json = serde_json::to_string(&result).expect("serialize JobWaitResult");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse as JSON value");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse as JSON value");
         assert_eq!(parsed["timedOut"], false);
         assert!(parsed.get("info").is_none());
     }
@@ -908,9 +911,7 @@ mod tests {
     async fn test_service_start_and_complete() {
         let svc = BackgroundJobService::new();
         let input = JobStartInput::new("test_run".into());
-        let info = svc
-            .start(input, || async { Ok("done".into()) })
-            .await;
+        let info = svc.start(input, || async { Ok("done".into()) }).await;
         assert_eq!(info.status, JobStatus::Running);
 
         let waited = svc
@@ -929,9 +930,7 @@ mod tests {
     async fn test_service_start_and_fail() {
         let svc = BackgroundJobService::new();
         let input = JobStartInput::new("fail_run".into());
-        let info = svc
-            .start(input, || async { Err("boom".into()) })
-            .await;
+        let info = svc.start(input, || async { Err("boom".into()) }).await;
 
         let waited = svc
             .wait(JobWaitInput {
@@ -1008,9 +1007,7 @@ mod tests {
     async fn test_service_get() {
         let svc = BackgroundJobService::new();
         let input = JobStartInput::new("get_test".into());
-        let info = svc
-            .start(input, || async { Ok("ok".into()) })
-            .await;
+        let info = svc.start(input, || async { Ok("ok".into()) }).await;
 
         let found = svc.get(&info.id).await;
         assert!(found.is_some());
@@ -1024,9 +1021,7 @@ mod tests {
     async fn test_service_extend() {
         let svc = BackgroundJobService::new();
         let input = JobStartInput::new("extend_test".into());
-        let info = svc
-            .start(input, || async { Ok("first".into()) })
-            .await;
+        let info = svc.start(input, || async { Ok("first".into()) }).await;
 
         // Wait for initial job to complete
         let _ = svc
@@ -1053,9 +1048,7 @@ mod tests {
     async fn test_service_cancel_already_terminal() {
         let svc = BackgroundJobService::new();
         let input = JobStartInput::new("terminal_cancel".into());
-        let info = svc
-            .start(input, || async { Ok("done".into()) })
-            .await;
+        let info = svc.start(input, || async { Ok("done".into()) }).await;
 
         // Wait for completion
         let _ = svc
@@ -1096,9 +1089,7 @@ mod tests {
             metadata: Some(serde_json::json!({"background": true})),
             on_promote: None,
         };
-        let info = svc
-            .start(input, || async { Ok("done".into()) })
-            .await;
+        let info = svc.start(input, || async { Ok("done".into()) }).await;
 
         // Already has metadata.background == true → returns immediately
         let result = svc.wait_for_promotion(&info.id).await;
@@ -1148,9 +1139,7 @@ mod tests {
             metadata: Some(serde_json::json!({"background": true})),
             on_promote: None,
         };
-        let info = svc
-            .start(input, || async { Ok("done".into()) })
-            .await;
+        let info = svc.start(input, || async { Ok("done".into()) }).await;
 
         // Already promoted → should return immediately
         let result = svc.promote(&info.id).await;

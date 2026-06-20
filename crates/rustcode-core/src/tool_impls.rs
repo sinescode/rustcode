@@ -40,7 +40,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{Error, Result, SkillError};
-use crate::tool::{ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry, TruncateConfig, truncate_output};
+use crate::tool::{
+    truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry, TruncateConfig,
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. BashTool — shell command execution
@@ -94,11 +96,7 @@ impl Tool for BashTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ExecuteResult> {
         let command = args["command"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -113,9 +111,7 @@ impl Tool for BashTool {
             .unwrap_or(DEFAULT_TIMEOUT_MS)
             .min(MAX_TIMEOUT_MS);
 
-        let description = args["description"]
-            .as_str()
-            .unwrap_or(command);
+        let description = args["description"].as_str().unwrap_or(command);
 
         // Resolve working directory
         let cwd = std::path::Path::new(workdir);
@@ -153,12 +149,14 @@ impl Tool for BashTool {
             exit_code: None,
         })?;
 
+        let child_pid = child.id();
+
         // Wait for the child with timeout, checking abort signal
         let result = tokio::select! {
             biased;
 
             _ = ctx.abort.cancelled() => {
-                // Best-effort kill
+                // Best-effort kill (child handle dropped, allows OS to clean up)
                 return Ok(ExecuteResult {
                     title: description.to_string(),
                     output: "Command aborted by user.".into(),
@@ -170,13 +168,6 @@ impl Tool for BashTool {
             }
 
             timed_out = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
-                // Kill and report timeout
-                let _ = child.id().map(|pid| {
-                    #[cfg(unix)]
-                    unsafe { libc::kill(pid as i32, libc::SIGKILL); }
-                    #[cfg(not(unix))]
-                    { let _ = pid; }
-                });
                 Ok(ExecuteResult {
                     title: description.to_string(),
                     output: format!(
@@ -274,12 +265,11 @@ const MAX_LINE_LENGTH: usize = 2000;
 
 /// Binary file extensions that should not be read as text.
 const BINARY_EXTENSIONS: &[&str] = &[
-    ".zip", ".tar", ".gz", ".exe", ".dll", ".so", ".class", ".jar", ".war", ".7z",
-    ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp",
-    ".bin", ".dat", ".obj", ".o", ".a", ".lib", ".wasm", ".pyc", ".pyo",
-    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".svg",
-    ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv",
-    ".ttf", ".otf", ".woff", ".woff2",
+    ".zip", ".tar", ".gz", ".exe", ".dll", ".so", ".class", ".jar", ".war", ".7z", ".doc", ".docx",
+    ".xls", ".xlsx", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".bin", ".dat", ".obj", ".o", ".a",
+    ".lib", ".wasm", ".pyc", ".pyo", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico",
+    ".svg", ".mp3", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".mkv", ".ttf", ".otf", ".woff",
+    ".woff2",
 ];
 
 /// Supported image MIME types that can be read and displayed.
@@ -340,7 +330,9 @@ impl ReadTool {
                 ".json" => "application/json".into(),
                 ".xml" => "application/xml".into(),
                 ".md" => "text/markdown".into(),
-                ".rs" | ".py" | ".ts" | ".js" | ".go" | ".java" | ".c" | ".cpp" | ".h" => "text/plain".into(),
+                ".rs" | ".py" | ".ts" | ".go" | ".java" | ".c" | ".cpp" | ".h" => {
+                    "text/plain".into()
+                }
                 _ => "application/octet-stream".into(),
             },
             None => "application/octet-stream".into(),
@@ -381,11 +373,7 @@ impl Tool for ReadTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let file_path = args["filePath"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -402,7 +390,11 @@ impl Tool for ReadTool {
         if !path.exists() {
             // Suggest similar files
             let parent = path.parent().unwrap_or(std::path::Path::new("."));
-            let basename = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            let basename = path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase();
             let mut suggestions: Vec<String> = Vec::new();
 
             if let Ok(entries) = std::fs::read_dir(parent) {
@@ -419,7 +411,10 @@ impl Tool for ReadTool {
 
             let mut msg = format!("File not found: {}", file_path);
             if !suggestions.is_empty() {
-                msg.push_str(&format!("\n\nDid you mean one of these?\n{}", suggestions.join("\n")));
+                msg.push_str(&format!(
+                    "\n\nDid you mean one of these?\n{}",
+                    suggestions.join("\n")
+                ));
             }
             return Err(Error::Tool(msg));
         }
@@ -546,10 +541,7 @@ impl Tool for ReadTool {
         let end = (start + limit).min(total_lines);
         let selected: Vec<&str> = lines[start..end].to_vec();
 
-        let mut output = format!(
-            "<path>{}</path>\n<type>file</type>\n<content>\n",
-            file_path
-        );
+        let mut output = format!("<path>{}</path>\n<type>file</type>\n<content>\n", file_path);
 
         for (i, line) in selected.iter().enumerate() {
             let line_num = start + i + 1;
@@ -637,11 +629,7 @@ impl Tool for WriteTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let file_path = args["filePath"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -686,7 +674,10 @@ impl Tool for WriteTool {
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert("operation".into(), serde_json::Value::String("write".into()));
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String("write".into()),
+                );
                 m.insert("existed".into(), serde_json::Value::Bool(existed));
                 m
             },
@@ -715,7 +706,11 @@ impl EditTool {
 
     /// Detect the line ending style of text.
     fn detect_line_ending(text: &str) -> &str {
-        if text.contains("\r\n") { "\r\n" } else { "\n" }
+        if text.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        }
     }
 
     /// Convert text to use a specific line ending.
@@ -856,11 +851,7 @@ impl Tool for EditTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let file_path = args["filePath"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -959,7 +950,10 @@ impl Tool for EditTool {
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert("operation".into(), serde_json::Value::String("write".into()));
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String("write".into()),
+                );
                 m.insert(
                     "replacements".into(),
                     serde_json::json!(if replace_all { occurrences } else { 1 }),
@@ -1010,11 +1004,7 @@ impl Tool for GlobTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let pattern = args["pattern"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -1154,11 +1144,7 @@ impl Tool for GrepTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let pattern_str = args["pattern"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -1169,7 +1155,8 @@ impl Tool for GrepTool {
         let search_path = args["path"].as_str().unwrap_or(".");
         let include_filter = args["include"].as_str();
 
-        let re = regex::Regex::new(pattern_str).map_err(|e| Error::InvalidSearchPattern(e.to_string()))?;
+        let re = regex::Regex::new(pattern_str)
+            .map_err(|e| Error::InvalidSearchPattern(e.to_string()))?;
 
         let base_dir = std::path::Path::new(search_path);
         let resolved = if base_dir.is_absolute() {
@@ -1256,7 +1243,15 @@ impl Tool for GrepTool {
 
         let total = matches.len();
         let truncated = total >= limit;
-        let mut output = format!("Found {} matches{}\n", total, if truncated { " (more matches available)" } else { "" });
+        let mut output = format!(
+            "Found {} matches{}\n",
+            total,
+            if truncated {
+                " (more matches available)"
+            } else {
+                ""
+            }
+        );
 
         let mut current_file = String::new();
         for (path, line_num, text) in &matches {
@@ -1271,7 +1266,8 @@ impl Tool for GrepTool {
         }
 
         if truncated {
-            output.push_str("\n(Results truncated. Consider using a more specific path or pattern.)");
+            output
+                .push_str("\n(Results truncated. Consider using a more specific path or pattern.)");
         }
 
         Ok(ExecuteResult {
@@ -1387,11 +1383,7 @@ impl Tool for WebFetchTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let url_str = args["url"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -1446,7 +1438,9 @@ impl Tool for WebFetchTool {
                 .timeout(std::time::Duration::from_secs(timeout_secs))
                 .user_agent("opencode")
                 .build()
-                .map_err(|e| Error::Network(format!("failed to create retry HTTP client: {}", e)))?;
+                .map_err(|e| {
+                    Error::Network(format!("failed to create retry HTTP client: {}", e))
+                })?;
 
             let retry_response = retry_client
                 .get(url_str)
@@ -1480,7 +1474,10 @@ impl Tool for WebFetchTool {
                 metadata: {
                     let mut m = HashMap::new();
                     m.insert("url".into(), serde_json::Value::String(url_str.to_string()));
-                    m.insert("contentType".into(), serde_json::Value::String(content_type));
+                    m.insert(
+                        "contentType".into(),
+                        serde_json::Value::String(content_type),
+                    );
                     if let Some(p) = prompt {
                         m.insert("prompt".into(), serde_json::Value::String(p.to_string()));
                     }
@@ -1516,7 +1513,10 @@ impl Tool for WebFetchTool {
             metadata: {
                 let mut m = HashMap::new();
                 m.insert("url".into(), serde_json::Value::String(url_str.to_string()));
-                m.insert("contentType".into(), serde_json::Value::String(content_type));
+                m.insert(
+                    "contentType".into(),
+                    serde_json::Value::String(content_type),
+                );
                 if let Some(p) = prompt {
                     m.insert("prompt".into(), serde_json::Value::String(p.to_string()));
                 }
@@ -1584,7 +1584,8 @@ impl WebFetchTool {
     /// Basic HTML-to-Markdown conversion.
     fn html_to_markdown(html: &str) -> String {
         // Strip script, style, meta, link blocks
-        let stripped = Self::strip_tags_content(html, &["script", "style", "meta", "link", "noscript"]);
+        let stripped =
+            Self::strip_tags_content(html, &["script", "style", "meta", "link", "noscript"]);
 
         // Convert common HTML elements
         let mut md = String::new();
@@ -1594,7 +1595,6 @@ impl WebFetchTool {
         let mut in_tag = false;
         let mut tag_name = String::new();
         let mut tag_attrs = String::new();
-        let mut heading_level = 0;
         let mut in_list = false;
 
         while i < len {
@@ -1618,18 +1618,33 @@ impl WebFetchTool {
                         "p" => md.push('\n'),
                         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => md.push('\n'),
                         "li" => md.push('\n'),
-                        "ul" | "ol" => { md.push('\n'); in_list = false; }
+                        "ul" | "ol" => {
+                            md.push('\n');
+                            in_list = false;
+                        }
                         "br" | "br/" => md.push('\n'),
                         _ => {}
                     }
                 } else {
                     match tag_lower.as_str() {
-                        "h1" => { heading_level = 1; md.push_str("\n# "); }
-                        "h2" => { heading_level = 2; md.push_str("\n## "); }
-                        "h3" => { heading_level = 3; md.push_str("\n### "); }
-                        "h4" => { heading_level = 4; md.push_str("\n#### "); }
-                        "h5" => { heading_level = 5; md.push_str("\n##### "); }
-                        "h6" => { heading_level = 6; md.push_str("\n###### "); }
+                        "h1" => {
+                            md.push_str("\n# ");
+                        }
+                        "h2" => {
+                            md.push_str("\n## ");
+                        }
+                        "h3" => {
+                            md.push_str("\n### ");
+                        }
+                        "h4" => {
+                            md.push_str("\n#### ");
+                        }
+                        "h5" => {
+                            md.push_str("\n##### ");
+                        }
+                        "h6" => {
+                            md.push_str("\n###### ");
+                        }
                         "p" => md.push('\n'),
                         "ul" => in_list = true,
                         "ol" => in_list = true,
@@ -1665,7 +1680,9 @@ impl WebFetchTool {
             if in_tag {
                 tag_name.push(ch);
                 // Collect attributes for a/href and img/src
-                if !tag_name.is_empty() && (tag_name.to_lowercase() == "a" || tag_name.to_lowercase() == "img") {
+                if !tag_name.is_empty()
+                    && (tag_name.to_lowercase() == "a" || tag_name.to_lowercase() == "img")
+                {
                     tag_attrs.push(ch);
                 }
             } else {
@@ -1797,11 +1814,7 @@ impl Tool for WebSearchTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let query = args["query"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -1823,10 +1836,7 @@ impl Tool for WebSearchTool {
         // Provide a structured placeholder result indicating the search would be done
         // via an external provider.
         let domain_info = if !allowed_domains.is_empty() {
-            format!(
-                "\nDomain filter: {}",
-                allowed_domains.join(", ")
-            )
+            format!("\nDomain filter: {}", allowed_domains.join(", "))
         } else {
             String::new()
         };
@@ -1853,10 +1863,7 @@ impl Tool for WebSearchTool {
                 let mut m = HashMap::new();
                 m.insert("query".into(), serde_json::Value::String(query.to_string()));
                 if !allowed_domains.is_empty() {
-                    m.insert(
-                        "allowed_domains".into(),
-                        serde_json::json!(allowed_domains),
-                    );
+                    m.insert("allowed_domains".into(), serde_json::json!(allowed_domains));
                 }
                 m
             },
@@ -1926,14 +1933,26 @@ impl ApplyPatchTool {
                 }
             } else if let Some(ref _existing) = current_hunk {
                 if line.starts_with(' ') {
-                    current_hunk.as_mut().unwrap().lines.push(HunkLine::Context(line[1..].to_string()));
+                    current_hunk
+                        .as_mut()
+                        .unwrap()
+                        .lines
+                        .push(HunkLine::Context(line[1..].to_string()));
                     old_count_actual += 1;
                     new_count_actual += 1;
                 } else if line.starts_with('-') && !line.starts_with("---") {
-                    current_hunk.as_mut().unwrap().lines.push(HunkLine::Removed(line[1..].to_string()));
+                    current_hunk
+                        .as_mut()
+                        .unwrap()
+                        .lines
+                        .push(HunkLine::Removed(line[1..].to_string()));
                     old_count_actual += 1;
                 } else if line.starts_with('+') && !line.starts_with("+++") {
-                    current_hunk.as_mut().unwrap().lines.push(HunkLine::Added(line[1..].to_string()));
+                    current_hunk
+                        .as_mut()
+                        .unwrap()
+                        .lines
+                        .push(HunkLine::Added(line[1..].to_string()));
                     new_count_actual += 1;
                 }
                 // Skip "No newline at end of file" markers
@@ -2074,11 +2093,7 @@ impl ApplyPatchTool {
     }
 
     /// Find context lines in `result` near `expected_line`, within a search window.
-    fn find_context(
-        result: &[String],
-        context: &[String],
-        expected_line: usize,
-    ) -> Option<usize> {
+    fn find_context(result: &[String], context: &[String], expected_line: usize) -> Option<usize> {
         if context.is_empty() {
             return Some(expected_line);
         }
@@ -2147,11 +2162,7 @@ impl Tool for ApplyPatchTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let file_path = args["file_path"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -2178,13 +2189,12 @@ impl Tool for ApplyPatchTool {
             )));
         }
 
-        let file_content =
-            std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+        let file_content = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
 
         let hunks = Self::parse_unified_diff(patch).map_err(|e| Error::Tool(e))?;
 
-        let patched = Self::apply_hunks(&file_content, &hunks, file_path)
-            .map_err(|e| Error::Tool(e))?;
+        let patched =
+            Self::apply_hunks(&file_content, &hunks, file_path).map_err(|e| Error::Tool(e))?;
 
         std::fs::write(path, &patched).map_err(|e| Error::FileSystem {
             path: file_path.to_string(),
@@ -2278,17 +2288,14 @@ impl Tool for TaskTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
-        let description = args["description"]
-            .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "task".into(),
-                detail: "missing 'description' field".into(),
-            })?;
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ExecuteResult> {
+        let description =
+            args["description"]
+                .as_str()
+                .ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "task".into(),
+                    detail: "missing 'description' field".into(),
+                })?;
 
         let prompt = args["prompt"]
             .as_str()
@@ -2297,9 +2304,7 @@ impl Tool for TaskTool {
                 detail: "missing 'prompt' field".into(),
             })?;
 
-        let subagent_type = args["subagent_type"]
-            .as_str()
-            .unwrap_or("general-purpose");
+        let subagent_type = args["subagent_type"].as_str().unwrap_or("general-purpose");
 
         let is_background = args["background"].as_bool().unwrap_or(false);
 
@@ -2430,17 +2435,14 @@ impl Tool for QuestionTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
-        let questions = args["questions"]
-            .as_array()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "question".into(),
-                detail: "missing 'questions' array".into(),
-            })?;
+    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ExecuteResult> {
+        let questions =
+            args["questions"]
+                .as_array()
+                .ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "question".into(),
+                    detail: "missing 'questions' array".into(),
+                })?;
 
         let question_count = questions.len();
 
@@ -2499,10 +2501,7 @@ impl Tool for QuestionTool {
             metadata: {
                 let mut m = HashMap::new();
                 m.insert("state".into(), serde_json::Value::String("pending".into()));
-                m.insert(
-                    "question_count".into(),
-                    serde_json::json!(question_count),
-                );
+                m.insert("question_count".into(), serde_json::json!(question_count));
                 m
             },
         })
@@ -2530,8 +2529,12 @@ impl SkillTool {
         // Try multiple skill directory locations
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         let candidates = vec![
-            cwd.join(".opencode").join("skills").join(format!("{}.md", skill_name)),
-            cwd.join(".claude").join("skills").join(format!("{}.md", skill_name)),
+            cwd.join(".opencode")
+                .join("skills")
+                .join(format!("{}.md", skill_name)),
+            cwd.join(".claude")
+                .join("skills")
+                .join(format!("{}.md", skill_name)),
         ];
 
         for skill_path in &candidates {
@@ -2612,11 +2615,7 @@ impl Tool for SkillTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let skill_name = args["skill"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -2629,10 +2628,7 @@ impl Tool for SkillTool {
         // Attempt to load the skill from the filesystem
         match Self::load_skill(skill_name) {
             Ok((frontmatter, body)) => {
-                let mut output = format!(
-                    "<skill_content name=\"{}\">\n",
-                    skill_name
-                );
+                let mut output = format!("<skill_content name=\"{}\">\n", skill_name);
                 if !frontmatter.is_null() {
                     output.push_str(&format!(
                         "<!-- frontmatter: {} -->\n",
@@ -2651,10 +2647,7 @@ impl Tool for SkillTool {
                     serde_json::Value::String(skill_name.to_string()),
                 );
                 if let Some(a) = skill_args {
-                    metadata.insert(
-                        "args".into(),
-                        serde_json::Value::String(a.to_string()),
-                    );
+                    metadata.insert("args".into(), serde_json::Value::String(a.to_string()));
                 }
                 if !frontmatter.is_null() {
                     metadata.insert("frontmatter".into(), frontmatter);
@@ -2694,10 +2687,7 @@ impl Tool for SkillTool {
                             serde_json::Value::String(skill_name.to_string()),
                         );
                         if let Some(a) = skill_args {
-                            m.insert(
-                                "args".into(),
-                                serde_json::Value::String(a.to_string()),
-                            );
+                            m.insert("args".into(), serde_json::Value::String(a.to_string()));
                         }
                         m
                     },
@@ -2765,11 +2755,7 @@ impl Tool for TodoWriteTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let todos = args["todos"]
             .as_array()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -2792,10 +2778,7 @@ impl Tool for TodoWriteTool {
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert(
-                    "todos".into(),
-                    serde_json::Value::Array(todos.clone()),
-                );
+                m.insert("todos".into(), serde_json::Value::Array(todos.clone()));
                 m
             },
         })
@@ -2843,11 +2826,7 @@ impl Tool for PlanEnterTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let plan_desc = args
             .get("plan")
             .and_then(|v| v.as_str())
@@ -2870,7 +2849,10 @@ impl Tool for PlanEnterTool {
             metadata: {
                 let mut m = HashMap::new();
                 m.insert("mode".into(), serde_json::Value::String("plan".into()));
-                m.insert("plan".into(), serde_json::Value::String(plan_desc.to_string()));
+                m.insert(
+                    "plan".into(),
+                    serde_json::Value::String(plan_desc.to_string()),
+                );
                 m
             },
         })
@@ -2910,11 +2892,7 @@ impl Tool for PlanExitTool {
         })
     }
 
-    async fn execute(
-        &self,
-        _args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, _args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         // Plan exit tool requires session management and agent switching infrastructure.
         // This stub returns a basic response.
         Ok(ExecuteResult {
@@ -2967,11 +2945,7 @@ impl Tool for ExitPlanModeTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let plan_content = args["plan"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -2995,13 +2969,15 @@ impl Tool for ExitPlanModeTool {
             metadata: {
                 let mut m = HashMap::new();
                 m.insert("mode".into(), serde_json::Value::String("build".into()));
-                m.insert("plan".into(), serde_json::Value::String(plan_content.to_string()));
+                m.insert(
+                    "plan".into(),
+                    serde_json::Value::String(plan_content.to_string()),
+                );
                 m
             },
         })
     }
 }
-
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 17. StashTool — file content snapshots
@@ -3044,8 +3020,7 @@ impl StashTool {
 
         let mut entries = Vec::new();
         for pattern in files {
-            let paths = glob::glob(pattern)
-                .map_err(|e| format!("glob error: {}", e))?;
+            let paths = glob::glob(pattern).map_err(|e| format!("glob error: {}", e))?;
             for entry in paths.flatten() {
                 if entry.is_file() {
                     let content = std::fs::read_to_string(&entry)
@@ -3067,8 +3042,7 @@ impl StashTool {
 
         let json = serde_json::to_string_pretty(&stash_data)
             .map_err(|e| format!("serialization error: {}", e))?;
-        std::fs::write(&stash_file, json)
-            .map_err(|e| format!("failed to write stash: {}", e))?;
+        std::fs::write(&stash_file, json).map_err(|e| format!("failed to write stash: {}", e))?;
 
         Ok(format!(
             "Stash '{}' saved with {} file(s) at {}",
@@ -3130,19 +3104,11 @@ impl StashTool {
                 let stash_path = entry.path();
                 if stash_path.extension().map_or(false, |e| e == "json") {
                     if let Ok(content) = std::fs::read_to_string(&stash_path) {
-                        if let Ok(json) =
-                            serde_json::from_str::<serde_json::Value>(&content)
-                        {
-                            let name =
-                                json["name"].as_str().unwrap_or("unknown");
-                            let date =
-                                json["created_at"].as_str().unwrap_or("unknown");
-                            let count =
-                                json["file_count"].as_u64().unwrap_or(0);
-                            stashes.push(format!(
-                                "  {} — {} — {} file(s)",
-                                name, date, count
-                            ));
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                            let name = json["name"].as_str().unwrap_or("unknown");
+                            let date = json["created_at"].as_str().unwrap_or("unknown");
+                            let count = json["file_count"].as_u64().unwrap_or(0);
+                            stashes.push(format!("  {} — {} — {} file(s)", name, date, count));
                         }
                     }
                 }
@@ -3161,8 +3127,7 @@ impl StashTool {
         if !stash_file.exists() {
             return Err(format!("stash '{}' not found", name));
         }
-        std::fs::remove_file(&stash_file)
-            .map_err(|e| format!("failed to delete stash: {}", e))?;
+        std::fs::remove_file(&stash_file).map_err(|e| format!("failed to delete stash: {}", e))?;
         Ok(format!("Stash '{}' dropped.", name))
     }
 }
@@ -3203,11 +3168,7 @@ impl Tool for StashTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let action = args["action"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -3238,8 +3199,7 @@ impl Tool for StashTool {
                         detail: "missing 'files' array for save action".into(),
                     });
                 }
-                let msg =
-                    Self::save_stash(name, &files).map_err(|e| Error::Tool(e))?;
+                let msg = Self::save_stash(name, &files).map_err(|e| Error::Tool(e))?;
                 (msg, format!("Stash saved: {}", name))
             }
             "restore" => {
@@ -3247,13 +3207,11 @@ impl Tool for StashTool {
                     tool: "stash".into(),
                     detail: "missing 'name' field for restore action".into(),
                 })?;
-                let msg = Self::restore_stash(name)
-                    .map_err(|e| Error::Tool(e))?;
+                let msg = Self::restore_stash(name).map_err(|e| Error::Tool(e))?;
                 (msg, format!("Stash restored: {}", name))
             }
             "list" => {
-                let msg =
-                    Self::list_stashes().map_err(|e| Error::Tool(e))?;
+                let msg = Self::list_stashes().map_err(|e| Error::Tool(e))?;
                 (msg, "Stash list".into())
             }
             "drop" => {
@@ -3261,8 +3219,7 @@ impl Tool for StashTool {
                     tool: "stash".into(),
                     detail: "missing 'name' field for drop action".into(),
                 })?;
-                let msg =
-                    Self::drop_stash(name).map_err(|e| Error::Tool(e))?;
+                let msg = Self::drop_stash(name).map_err(|e| Error::Tool(e))?;
                 (msg, format!("Stash dropped: {}", name))
             }
             other => {
@@ -3289,10 +3246,7 @@ impl Tool for StashTool {
                     serde_json::Value::String(action.to_string()),
                 );
                 if let Some(n) = name {
-                    m.insert(
-                        "name".into(),
-                        serde_json::Value::String(n.to_string()),
-                    );
+                    m.insert("name".into(), serde_json::Value::String(n.to_string()));
                 }
                 m
             },
@@ -3356,10 +3310,7 @@ impl NotebookEditTool {
     }
 
     /// Create a new cell JSON object.
-    fn create_cell(
-        source: &str,
-        cell_type: &str,
-    ) -> serde_json::Value {
+    fn create_cell(source: &str, cell_type: &str) -> serde_json::Value {
         serde_json::json!({
             "id": Self::generate_cell_id(),
             "cell_type": cell_type,
@@ -3414,32 +3365,26 @@ impl Tool for NotebookEditTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
-        let notebook_path = args["notebook_path"]
-            .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "notebook_edit".into(),
-                detail: "missing 'notebook_path' field".into(),
-            })?;
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
+        let notebook_path =
+            args["notebook_path"]
+                .as_str()
+                .ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "notebook_edit".into(),
+                    detail: "missing 'notebook_path' field".into(),
+                })?;
 
-        let new_source = args["new_source"]
-            .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "notebook_edit".into(),
-                detail: "missing 'new_source' field".into(),
-            })?;
+        let new_source =
+            args["new_source"]
+                .as_str()
+                .ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "notebook_edit".into(),
+                    detail: "missing 'new_source' field".into(),
+                })?;
 
         let cell_id = args["cell_id"].as_str();
-        let cell_type = args["cell_type"]
-            .as_str()
-            .unwrap_or("code");
-        let edit_mode = args["edit_mode"]
-            .as_str()
-            .unwrap_or("replace");
+        let cell_type = args["cell_type"].as_str().unwrap_or("code");
+        let edit_mode = args["edit_mode"].as_str().unwrap_or("replace");
 
         let path = std::path::Path::new(notebook_path);
         if !path.exists() {
@@ -3449,16 +3394,11 @@ impl Tool for NotebookEditTool {
             )));
         }
 
-        let content =
-            std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
+        let content = std::fs::read_to_string(path).map_err(|e| Error::Io(e))?;
 
-        let (mut notebook, cells) = Self::parse_notebook(&content)
-            .map_err(|e| Error::Tool(e))?;
+        let (mut notebook, cells) = Self::parse_notebook(&content).map_err(|e| Error::Tool(e))?;
 
-        let mut cells_array = cells
-            .as_array()
-            .cloned()
-            .unwrap_or_default();
+        let mut cells_array = cells.as_array().cloned().unwrap_or_default();
 
         match edit_mode {
             "replace" => {
@@ -3486,10 +3426,7 @@ impl Tool for NotebookEditTool {
                             cid,
                         )
                         .ok_or_else(|| {
-                            Error::Tool(format!(
-                                "cell_id '{}' not found in notebook",
-                                cid
-                            ))
+                            Error::Tool(format!("cell_id '{}' not found in notebook", cid))
                         })?;
                         cells_array.insert(idx + 1, new_cell);
                     }
@@ -3524,8 +3461,7 @@ impl Tool for NotebookEditTool {
 
         // Write back
         notebook["cells"] = serde_json::Value::Array(cells_array);
-        let updated =
-            serde_json::to_string_pretty(&notebook).map_err(|e| Error::Json(e))?;
+        let updated = serde_json::to_string_pretty(&notebook).map_err(|e| Error::Json(e))?;
         std::fs::write(path, updated).map_err(|e| Error::FileSystem {
             path: notebook_path.to_string(),
             message: format!("failed to write notebook: {}", e),
@@ -3533,10 +3469,7 @@ impl Tool for NotebookEditTool {
 
         Ok(ExecuteResult {
             title: format!("Notebook edited: {}", notebook_path),
-            output: format!(
-                "Applied {} to notebook: {}",
-                edit_mode, notebook_path
-            ),
+            output: format!("Applied {} to notebook: {}", edit_mode, notebook_path),
             truncated: false,
             output_path: None,
             attachments: None,
@@ -3561,9 +3494,8 @@ impl Tool for NotebookEditTool {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 /// In-memory registry of background task statuses.
-static TASK_REGISTRY: std::sync::OnceLock<
-    std::sync::Mutex<HashMap<String, TaskRecord>>,
-> = std::sync::OnceLock::new();
+static TASK_REGISTRY: std::sync::OnceLock<std::sync::Mutex<HashMap<String, TaskRecord>>> =
+    std::sync::OnceLock::new();
 
 /// Metadata for a tracked background task.
 #[derive(Debug, Clone)]
@@ -3621,11 +3553,7 @@ impl Tool for TaskOutputTool {
         })
     }
 
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<ExecuteResult> {
+    async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let task_id = args["task_id"]
             .as_str()
             .ok_or_else(|| Error::ToolInvalidArguments {
@@ -3634,16 +3562,14 @@ impl Tool for TaskOutputTool {
             })?;
 
         let block = args["block"].as_bool().unwrap_or(false);
-        let timeout_ms = args["timeout"]
-            .as_f64()
-            .unwrap_or(60_000.0) as u64;
+        let timeout_ms = args["timeout"].as_f64().unwrap_or(60_000.0) as u64;
 
         // Check the task registry
         let registry = task_registry();
         let record = {
-            let guard = registry.lock().map_err(|e| {
-                Error::Tool(format!("task registry lock poisoned: {}", e))
-            })?;
+            let guard = registry
+                .lock()
+                .map_err(|e| Error::Tool(format!("task registry lock poisoned: {}", e)))?;
             guard.get(task_id).cloned()
         };
 
@@ -3652,10 +3578,7 @@ impl Tool for TaskOutputTool {
                 // Task already completed
                 Ok(ExecuteResult {
                     title: format!("Task: {}", task_id),
-                    output: format!(
-                        "Task {} ({})\n\n{}",
-                        task_id, rec.status, rec.output
-                    ),
+                    output: format!("Task {} ({})\n\n{}", task_id, rec.status, rec.output),
                     truncated: false,
                     output_path: None,
                     attachments: None,
@@ -3665,10 +3588,7 @@ impl Tool for TaskOutputTool {
                             "task_id".into(),
                             serde_json::Value::String(task_id.to_string()),
                         );
-                        m.insert(
-                            "status".into(),
-                            serde_json::Value::String(rec.status),
-                        );
+                        m.insert("status".into(), serde_json::Value::String(rec.status));
                         m
                     },
                 })
@@ -3694,9 +3614,7 @@ impl Tool for TaskOutputTool {
                                 let mut m = HashMap::new();
                                 m.insert(
                                     "task_id".into(),
-                                    serde_json::Value::String(
-                                        task_id.to_string(),
-                                    ),
+                                    serde_json::Value::String(task_id.to_string()),
                                 );
                                 m.insert(
                                     "status".into(),
@@ -3709,19 +3627,13 @@ impl Tool for TaskOutputTool {
 
                     // Check again
                     {
-                        let guard =
-                            registry.lock().map_err(|e| {
-                                Error::Tool(format!(
-                                    "task registry lock poisoned: {}",
-                                    e
-                                ))
-                            })?;
+                        let guard = registry.lock().map_err(|e| {
+                            Error::Tool(format!("task registry lock poisoned: {}", e))
+                        })?;
                         if let Some(rec) = guard.get(task_id) {
                             if rec.status != "running" {
-                                let output = format!(
-                                    "Task {} ({})\n\n{}",
-                                    task_id, rec.status, rec.output
-                                );
+                                let output =
+                                    format!("Task {} ({})\n\n{}", task_id, rec.status, rec.output);
                                 return Ok(ExecuteResult {
                                     title: format!("Task: {}", task_id),
                                     output,
@@ -3732,15 +3644,11 @@ impl Tool for TaskOutputTool {
                                         let mut m = HashMap::new();
                                         m.insert(
                                             "task_id".into(),
-                                            serde_json::Value::String(
-                                                task_id.to_string(),
-                                            ),
+                                            serde_json::Value::String(task_id.to_string()),
                                         );
                                         m.insert(
                                             "status".into(),
-                                            serde_json::Value::String(
-                                                rec.status.clone(),
-                                            ),
+                                            serde_json::Value::String(rec.status.clone()),
                                         );
                                         m
                                     },
@@ -3769,10 +3677,7 @@ impl Tool for TaskOutputTool {
                             "task_id".into(),
                             serde_json::Value::String(task_id.to_string()),
                         );
-                        m.insert(
-                            "status".into(),
-                            serde_json::Value::String(rec.status),
-                        );
+                        m.insert("status".into(), serde_json::Value::String(rec.status));
                         m
                     },
                 })
@@ -3942,13 +3847,17 @@ impl Tool for LspTool {
                 if file_path.is_empty() {
                     return Err(Error::ToolInvalidArguments {
                         tool: "lsp".into(),
-                        detail: format!("{operation} requires 'filePath', 'line', and 'character' parameters"),
+                        detail: format!(
+                            "{operation} requires 'filePath', 'line', and 'character' parameters"
+                        ),
                     });
                 }
                 if line == 0 || character == 0 {
                     return Err(Error::ToolInvalidArguments {
                         tool: "lsp".into(),
-                        detail: format!("{operation} requires 'line' and 'character' to be >= 1 (1-based)"),
+                        detail: format!(
+                            "{operation} requires 'line' and 'character' to be >= 1 (1-based)"
+                        ),
                     });
                 }
             }
@@ -3983,10 +3892,7 @@ impl Tool for LspTool {
                         "operation".into(),
                         serde_json::Value::String(operation.into()),
                     );
-                    m.insert(
-                        "available".into(),
-                        serde_json::Value::Bool(false),
-                    );
+                    m.insert("available".into(), serde_json::Value::Bool(false));
                     m
                 },
             });
@@ -4018,10 +3924,7 @@ impl Tool for LspTool {
                     "operation".into(),
                     serde_json::Value::String(operation.into()),
                 );
-                m.insert(
-                    "available".into(),
-                    serde_json::Value::Bool(true),
-                );
+                m.insert("available".into(), serde_json::Value::Bool(true));
                 m
             },
         })
@@ -4072,7 +3975,9 @@ impl Tool for InvalidTool {
 
     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
         let tool_name = args["tool"].as_str().unwrap_or("unknown");
-        let error_msg = args["error"].as_str().unwrap_or("no error message provided");
+        let error_msg = args["error"]
+            .as_str()
+            .unwrap_or("no error message provided");
 
         Ok(ExecuteResult {
             title: "Invalid Tool".into(),
@@ -4086,14 +3991,8 @@ impl Tool for InvalidTool {
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert(
-                    "tool".into(),
-                    serde_json::Value::String(tool_name.into()),
-                );
-                m.insert(
-                    "error".into(),
-                    serde_json::Value::String(error_msg.into()),
-                );
+                m.insert("tool".into(), serde_json::Value::String(tool_name.into()));
+                m.insert("error".into(), serde_json::Value::String(error_msg.into()));
                 m
             },
         })
@@ -4210,7 +4109,9 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(result.output.contains(&tmpdir.to_string_lossy().to_string()));
+        assert!(result
+            .output
+            .contains(&tmpdir.to_string_lossy().to_string()));
     }
 
     // ── ReadTool tests ──────────────────────────────────────────────────
@@ -4309,7 +4210,9 @@ mod tests {
             .unwrap();
 
         assert!(result.output.contains("Created"));
-        assert!(result.output.contains(&tmpfile.to_string_lossy().to_string()));
+        assert!(result
+            .output
+            .contains(&tmpfile.to_string_lossy().to_string()));
         assert_eq!(
             std::fs::read_to_string(&tmpfile).unwrap(),
             "hello write test"
@@ -4627,10 +4530,7 @@ mod tests {
         let tool = WebFetchTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"url": "not-a-valid-url"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"url": "not-a-valid-url"}), &ctx)
             .await;
         assert!(result.is_err());
     }
@@ -4640,10 +4540,7 @@ mod tests {
         let tool = WebFetchTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"url": "ftp://example.com"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"url": "ftp://example.com"}), &ctx)
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("http"));
@@ -4718,10 +4615,7 @@ mod tests {
         let tool = ApplyPatchTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"file_path": "/tmp/test.txt"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"file_path": "/tmp/test.txt"}), &ctx)
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("patch"));
@@ -4858,8 +4752,7 @@ mod tests {
         .unwrap();
 
         // Patch expects "context1\nold content\ncontext3" at line 1, but it's at line 3
-        let patch =
-            "@@ -1,3 +1,3 @@\n context1\n-old content\n+replaced content\n context3\n";
+        let patch = "@@ -1,3 +1,3 @@\n context1\n-old content\n+replaced content\n context3\n";
         let _result = tool
             .execute(
                 serde_json::json!({
@@ -4930,10 +4823,7 @@ mod tests {
         let tool = TaskTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"description": "test"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"description": "test"}), &ctx)
             .await;
         assert!(result.is_err());
     }
@@ -5015,10 +4905,7 @@ mod tests {
         let tool = SkillTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"skill": "find-docs"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"skill": "find-docs"}), &ctx)
             .await
             .unwrap();
         assert!(result.output.contains("find-docs"));
@@ -5038,10 +4925,7 @@ mod tests {
         let tool = SkillTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"skill": "code-review"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"skill": "code-review"}), &ctx)
             .await
             .unwrap();
         let skill = result.metadata.get("skill").unwrap().as_str().unwrap();
@@ -5124,10 +5008,7 @@ mod tests {
         let tool = PlanEnterTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"plan": "authentication module"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"plan": "authentication module"}), &ctx)
             .await
             .unwrap();
         assert!(result.output.contains("Entered plan mode"));
@@ -5149,10 +5030,7 @@ mod tests {
         let tool = PlanEnterTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"plan": "refactor database layer"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"plan": "refactor database layer"}), &ctx)
             .await
             .unwrap();
         assert_eq!(
@@ -5226,10 +5104,7 @@ mod tests {
         let tool = ExitPlanModeTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"plan": "refactor auth"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"plan": "refactor auth"}), &ctx)
             .await
             .unwrap();
         assert_eq!(
@@ -5247,25 +5122,25 @@ mod tests {
     #[test]
     fn test_all_tool_ids_unique() {
         let tools: Vec<(String, Arc<dyn Tool>)> = vec![
-            ("bash", Arc::new(BashTool)),
-            ("read", Arc::new(ReadTool)),
-            ("write", Arc::new(WriteTool)),
-            ("edit", Arc::new(EditTool)),
-            ("glob", Arc::new(GlobTool)),
-            ("grep", Arc::new(GrepTool)),
-            ("webfetch", Arc::new(WebFetchTool)),
-            ("websearch", Arc::new(WebSearchTool)),
-            ("apply_patch", Arc::new(ApplyPatchTool)),
-            ("task", Arc::new(TaskTool)),
-            ("question", Arc::new(QuestionTool)),
-            ("skill", Arc::new(SkillTool)),
-            ("todowrite", Arc::new(TodoWriteTool)),
-            ("stash", Arc::new(StashTool)),
-            ("notebook_edit", Arc::new(NotebookEditTool)),
-            ("task_output", Arc::new(TaskOutputTool)),
-            ("plan_enter", Arc::new(PlanEnterTool)),
-            ("plan_exit", Arc::new(PlanExitTool)),
-            ("exit_plan_mode", Arc::new(ExitPlanModeTool)),
+            ("bash".to_string(), Arc::new(BashTool)),
+            ("read".to_string(), Arc::new(ReadTool)),
+            ("write".to_string(), Arc::new(WriteTool)),
+            ("edit".to_string(), Arc::new(EditTool)),
+            ("glob".to_string(), Arc::new(GlobTool)),
+            ("grep".to_string(), Arc::new(GrepTool)),
+            ("webfetch".to_string(), Arc::new(WebFetchTool)),
+            ("websearch".to_string(), Arc::new(WebSearchTool)),
+            ("apply_patch".to_string(), Arc::new(ApplyPatchTool)),
+            ("task".to_string(), Arc::new(TaskTool)),
+            ("question".to_string(), Arc::new(QuestionTool)),
+            ("skill".to_string(), Arc::new(SkillTool)),
+            ("todowrite".to_string(), Arc::new(TodoWriteTool)),
+            ("stash".to_string(), Arc::new(StashTool)),
+            ("notebook_edit".to_string(), Arc::new(NotebookEditTool)),
+            ("task_output".to_string(), Arc::new(TaskOutputTool)),
+            ("plan_enter".to_string(), Arc::new(PlanEnterTool)),
+            ("plan_exit".to_string(), Arc::new(PlanExitTool)),
+            ("exit_plan_mode".to_string(), Arc::new(ExitPlanModeTool)),
         ];
 
         let mut ids = std::collections::HashSet::new();
@@ -5276,7 +5151,11 @@ mod tests {
                 "Tool ID mismatch for {}",
                 expected_id
             );
-            assert!(ids.insert(expected_id.to_string()), "Duplicate ID: {}", expected_id);
+            assert!(
+                ids.insert(expected_id.to_string()),
+                "Duplicate ID: {}",
+                expected_id
+            );
         }
         assert_eq!(ids.len(), 19);
     }
@@ -5309,7 +5188,12 @@ mod tests {
 
         for tool in tools {
             let schema = tool.parameters_schema();
-            assert_eq!(schema["type"], "object", "{} schema missing type", tool.id());
+            assert_eq!(
+                schema["type"],
+                "object",
+                "{} schema missing type",
+                tool.id()
+            );
             assert!(
                 schema.get("properties").is_some(),
                 "{} schema missing properties",
@@ -5409,10 +5293,7 @@ mod tests {
         let tool = LspTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"operation": "invalidOp"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"operation": "invalidOp"}), &ctx)
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("invalid"));
@@ -5458,10 +5339,7 @@ mod tests {
         let tool = LspTool;
         let ctx = test_ctx();
         let result = tool
-            .execute(
-                serde_json::json!({"operation": "workspaceSymbol"}),
-                &ctx,
-            )
+            .execute(serde_json::json!({"operation": "workspaceSymbol"}), &ctx)
             .await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("query"));
@@ -5534,13 +5412,33 @@ mod tests {
         registry.register_builtins();
 
         for id in [
-            "bash", "read", "write", "edit", "glob", "grep",
-            "webfetch", "websearch", "apply_patch", "task",
-            "question", "skill", "todowrite", "stash", "notebook_edit",
-            "task_output", "plan_enter", "plan_exit", "exit_plan_mode",
-            "lsp", "invalid",
+            "bash",
+            "read",
+            "write",
+            "edit",
+            "glob",
+            "grep",
+            "webfetch",
+            "websearch",
+            "apply_patch",
+            "task",
+            "question",
+            "skill",
+            "todowrite",
+            "stash",
+            "notebook_edit",
+            "task_output",
+            "plan_enter",
+            "plan_exit",
+            "exit_plan_mode",
+            "lsp",
+            "invalid",
         ] {
-            assert!(registry.get(id).is_some(), "Tool {} not found in registry", id);
+            assert!(
+                registry.get(id).is_some(),
+                "Tool {} not found in registry",
+                id
+            );
         }
     }
 }

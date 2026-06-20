@@ -1845,33 +1845,35 @@ mod tests {
     #[test]
     fn test_bash_arity_with_sudo() {
         // sudo is not in the arity map, so it defaults to first token
-        assert_eq!(bash_arity_prefix(&["sudo", "apt", "install", "curl"]), ["sudo"]);
+        assert_eq!(
+            bash_arity_prefix(&["sudo", "apt", "install", "curl"]),
+            ["sudo"]
+        );
     }
 
     #[test]
     fn test_bash_arity_with_pipe_operators() {
         // Pipe characters are separate tokens in shell parsing
-        assert_eq!(bash_arity_prefix(&["cat", "file.txt", "|", "grep", "error"]), ["cat"]);
+        assert_eq!(
+            bash_arity_prefix(&["cat", "file.txt", "|", "grep", "error"]),
+            ["cat"]
+        );
     }
 
     // ── Merge rulesets edge cases ─────────────────────────────────────────
 
     #[test]
     fn test_merge_rulesets_overlapping() {
-        let r1: PermissionRuleset = vec![
-            PermissionRule {
-                permission: "bash".into(),
-                pattern: "*".into(),
-                action: PermissionAction::Deny,
-            },
-        ];
-        let r2: PermissionRuleset = vec![
-            PermissionRule {
-                permission: "bash".into(),
-                pattern: "*".into(),
-                action: PermissionAction::Allow,
-            },
-        ];
+        let r1: PermissionRuleset = vec![PermissionRule {
+            permission: "bash".into(),
+            pattern: "*".into(),
+            action: PermissionAction::Deny,
+        }];
+        let r2: PermissionRuleset = vec![PermissionRule {
+            permission: "bash".into(),
+            pattern: "*".into(),
+            action: PermissionAction::Allow,
+        }];
         // r1's deny comes first, r2's allow comes last — last wins
         let merged = merge_rulesets(&[r1, r2]);
         assert_eq!(merged.len(), 2);

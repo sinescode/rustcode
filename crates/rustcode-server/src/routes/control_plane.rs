@@ -4,8 +4,8 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::post;
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
@@ -14,14 +14,20 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct MoveSessionPayload {
-    #[serde(rename = "sessionID")] pub session_id: String,
-    #[serde(rename = "targetDirectory")] pub target_directory: String,
-    #[serde(default, rename = "copyChanges")] pub copy_changes: Option<bool>,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(rename = "targetDirectory")]
+    pub target_directory: String,
+    #[serde(default, rename = "copyChanges")]
+    pub copy_changes: Option<bool>,
 }
 
 pub fn control_plane_routes(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/experimental/control-plane/move-session", post(move_session))
+        .route(
+            "/experimental/control-plane/move-session",
+            post(move_session),
+        )
         .with_state(state)
 }
 
@@ -40,7 +46,10 @@ async fn move_session(
     };
     match state.sessions.update(&payload.session_id, patch).await {
         Ok(session) => {
-            info!("Session {} moved to {}", session.id, payload.target_directory);
+            info!(
+                "Session {} moved to {}",
+                session.id, payload.target_directory
+            );
             let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
                 "type": "session.moved",
                 "session_id": payload.session_id,
@@ -52,6 +61,7 @@ async fn move_session(
                 "targetDirectory": payload.target_directory,
                 "moved": true,
             }))
+            .into_response()
         }
         Err(e) => (
             axum::http::StatusCode::NOT_FOUND,

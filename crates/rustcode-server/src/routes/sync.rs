@@ -4,12 +4,12 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::post;
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::server::AppState;
 
@@ -21,14 +21,17 @@ pub struct ReplayPayload {
 #[derive(Debug, Deserialize)]
 pub struct ReplayEventItem {
     pub id: String,
-    #[serde(rename = "aggregateID")] pub aggregate_id: String,
+    #[serde(rename = "aggregateID")]
+    pub aggregate_id: String,
     pub seq: u64,
-    #[serde(rename = "type")] pub event_type: String,
+    #[serde(rename = "type")]
+    pub event_type: String,
     pub data: serde_json::Value,
 }
 #[derive(Debug, Deserialize)]
 pub struct StealPayload {
-    #[serde(rename = "sessionID")] pub session_id: String,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
 }
 
 pub fn sync_routes(state: Arc<AppState>) -> Router {
@@ -118,6 +121,7 @@ async fn sync_steal(
                 "sessionID": payload.session_id,
                 "title": session.title,
             }))
+            .into_response()
         }
         Err(e) => (
             axum::http::StatusCode::NOT_FOUND,
@@ -135,11 +139,7 @@ async fn sync_history(
     info!("Sync: history request for {} aggregates", payload.len());
 
     // Return sessions as sync events
-    let sessions = state
-        .sessions
-        .list(None)
-        .await
-        .unwrap_or_default();
+    let sessions = state.sessions.list(None).await.unwrap_or_default();
 
     let events: Vec<serde_json::Value> = sessions
         .iter()

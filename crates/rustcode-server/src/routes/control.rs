@@ -4,30 +4,34 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
+use axum::routing::{post, put};
 use axum::{Json, Router};
-use axum::routing::{delete, post, put};
 use serde::Deserialize;
 use std::sync::Arc;
-use tracing::{debug, error, info, warn};
+use tracing::{info, warn};
 
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct AuthInfo {
     pub key: String,
-    #[serde(default)] pub base_url: Option<String>,
+    #[serde(default)]
+    pub base_url: Option<String>,
 }
 #[derive(Debug, Deserialize, Default)]
 pub struct LogQuery {
-    #[serde(default)] pub directory: Option<String>,
-    #[serde(default)] pub workspace: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 pub struct LogInput {
     pub service: String,
     pub level: String,
     pub message: String,
-    #[serde(default)] pub extra: Option<serde_json::Value>,
+    #[serde(default)]
+    pub extra: Option<serde_json::Value>,
 }
 
 pub fn control_routes(state: Arc<AppState>) -> Router {

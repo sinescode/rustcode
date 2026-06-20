@@ -10,10 +10,8 @@
 //! - `packages/opencode/src/session/status.ts` (lines 1–97)
 //! - `packages/opencode/src/session/run-state.ts` (lines 1–156)
 
-use crate::bus::SharedBus;
-use crate::database::{
-    DatabaseService, DatabaseServiceError, MessageRow, PartRow, SessionRow,
-};
+use crate::bus::{GlobalEvent, SharedBus};
+use crate::database::{DatabaseService, DatabaseServiceError, MessageRow, PartRow, SessionRow};
 use crate::id;
 use crate::permission::PermissionService;
 use crate::provider::{LlmEvent, Model, Usage};
@@ -70,6 +68,9 @@ pub enum SessionError {
 
     #[error("database service error: {0}")]
     DatabaseService(#[from] DatabaseServiceError),
+
+    #[error("bus error: {0}")]
+    Bus(#[from] tokio::sync::broadcast::error::SendError<GlobalEvent>),
 
     #[error("{0}")]
     Other(String),
@@ -522,7 +523,7 @@ impl SessionManager {
     /// `packages/opencode/src/session/session.ts` lines 709–731.
     pub async fn create(&self, input: CreateSessionInput) -> Result<SessionInfo, SessionError> {
         let now = Utc::now().timestamp_millis();
-        let slug = id::descending(id::IdPrefix::Session, Some(8))
+        let slug = id::descending(id::IdPrefix::Session, None)
             .map_err(|e| SessionError::Other(e.to_string()))?;
         let session_id = id::descending(id::IdPrefix::Session, None)
             .map_err(|e| SessionError::Other(e.to_string()))?;
@@ -585,7 +586,9 @@ impl SessionManager {
             },
         };
 
-        self.bus.publish("session.created", &info)?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.created", "session": &info}),
+        ))?;
 
         Ok(info)
     }
@@ -620,16 +623,12 @@ impl SessionManager {
         let filters = input.unwrap_or_default();
 
         // Require project_id for DB-backed listing
-        let project_id = filters
-            .project_id
-            .as_deref()
-            .unwrap_or("__no_project__");
+        let project_id = filters.project_id.as_deref().unwrap_or("__no_project__");
 
         let limit = filters.limit.map(|l| l.min(100) as u32);
 
         let rows = self.db.list_sessions(project_id, limit).await?;
-        let mut results: Vec<SessionInfo> =
-            rows.into_iter().map(session_row_to_info).collect();
+        let mut results: Vec<SessionInfo> = rows.into_iter().map(session_row_to_info).collect();
 
         // Apply additional in-memory filters
         if let Some(dir) = &filters.directory {
@@ -659,11 +658,7 @@ impl SessionManager {
     ///
     /// # Source
     /// `packages/opencode/src/session/session.ts` lines 776–789.
-    pub async fn update(
-        &self,
-        id: &str,
-        patch: SessionPatch,
-    ) -> Result<SessionInfo, SessionError> {
+    pub async fn update(&self, id: &str, patch: SessionPatch) -> Result<SessionInfo, SessionError> {
         let now = Utc::now().timestamp_millis();
 
         // Flatten Option<Option<String>> → Option<&str>
@@ -685,7 +680,9 @@ impl SessionManager {
             .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
 
         let updated = session_row_to_info(row);
-        self.bus.publish("session.updated", &updated)?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session": &updated}),
+        ))?;
         Ok(updated)
     }
 
@@ -698,7 +695,9 @@ impl SessionManager {
         let info = self.get(id).await?;
 
         self.db.delete_session_cascade(id).await?;
-        self.bus.publish("session.deleted", &info)?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.deleted", "session": &info}),
+        ))?;
         Ok(())
     }
 
@@ -722,10 +721,7 @@ impl SessionManager {
     ///
     /// Deserializes the JSON `data` column from the `message` and `part` tables.
     pub async fn get_messages(&self, session_id: &str) -> Result<Vec<Message>, SessionError> {
-        let rows = self
-            .db
-            .get_messages_with_parts(session_id, None)
-            .await?;
+        let rows = self.db.get_messages_with_parts(session_id, None).await?;
 
         let mut messages = Vec::with_capacity(rows.len());
         for (msg_row, part_rows) in rows {
@@ -735,9 +731,8 @@ impl SessionManager {
             let parts: Result<Vec<Part>, SessionError> = part_rows
                 .iter()
                 .map(|pr| {
-                    serde_json::from_str(&pr.data).map_err(|e| {
-                        SessionError::Other(format!("deserialize part: {e}"))
-                    })
+                    serde_json::from_str(&pr.data)
+                        .map_err(|e| SessionError::Other(format!("deserialize part: {e}")))
                 })
                 .collect();
 
@@ -781,10 +776,9 @@ impl SessionManager {
                 .await?;
         }
 
-        self.bus.publish(
-            "session.message_appended",
-            &serde_json::json!({"session_id": session_id}),
-        )?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.message_appended", "session_id": session_id}),
+        ))?;
         Ok(())
     }
 
@@ -1191,7 +1185,7 @@ impl SessionProcessor {
     /// `packages/opencode/src/session/processor.ts` lines 960–1034.
     pub async fn process(
         &self,
-        provider: &(dyn crate::provider::Provider),
+        provider: &dyn crate::provider::Provider,
         input: &StreamInput,
         cancel_token: CancellationToken,
     ) -> Result<ProcessResult, SessionError> {
@@ -1204,7 +1198,7 @@ impl SessionProcessor {
                 id: assistant_msg_id.clone(),
                 session_id: input.session_id.clone(),
                 parent_id: input.user.id.clone(),
-                agent: input.agent.name().to_string(),
+                agent: input.agent.name.clone(),
                 model_id: Some(input.model.id.clone()),
                 provider_id: Some(input.model.provider_id.clone()),
                 variant: input.user.model.as_ref().and_then(|m| m.variant.clone()),
@@ -1232,15 +1226,13 @@ impl SessionProcessor {
         };
 
         // Publish step-started event
-        self.bus.publish(
-            "session.step.started",
-            &serde_json::json!({
-                "session_id": ctx.session_id,
-                "message_id": assistant_msg_id,
-                "agent": ctx.assistant_message.agent,
-                "model": {"id": ctx.model.id, "provider_id": ctx.model.provider_id},
-            }),
-        )?;
+        self.bus.publish(GlobalEvent::new(serde_json::json!({
+            "type": "session.step.started",
+            "session_id": ctx.session_id,
+            "message_id": assistant_msg_id,
+            "agent": ctx.assistant_message.agent,
+            "model": {"id": ctx.model.id, "provider_id": ctx.model.provider_id},
+        })))?;
 
         // Append the initial assistant message
         self.manager
@@ -1282,14 +1274,12 @@ impl SessionProcessor {
             .await?;
 
         // Publish step-ended event
-        self.bus.publish(
-            "session.step.ended",
-            &serde_json::json!({
-                "session_id": ctx.session_id,
-                "message_id": assistant_msg_id,
-                "result": format!("{:?}", result),
-            }),
-        )?;
+        self.bus.publish(GlobalEvent::new(serde_json::json!({
+            "type": "session.step.ended",
+            "session_id": ctx.session_id,
+            "message_id": assistant_msg_id,
+            "result": format!("{:?}", result),
+        })))?;
 
         if let Err(e) = retry_result {
             ctx.assistant_message.error =
@@ -1308,7 +1298,7 @@ impl SessionProcessor {
     async fn run_with_retry(
         &self,
         ctx: &mut ProcessorContext,
-        provider: &(dyn crate::provider::Provider),
+        provider: &dyn crate::provider::Provider,
         input: &StreamInput,
         cancel_token: &CancellationToken,
     ) -> Result<(), SessionError> {
@@ -1356,7 +1346,7 @@ impl SessionProcessor {
     async fn run_stream(
         &self,
         ctx: &mut ProcessorContext,
-        provider: &(dyn crate::provider::Provider),
+        provider: &dyn crate::provider::Provider,
         input: &StreamInput,
         cancel_token: &CancellationToken,
     ) -> Result<(), SessionError> {
@@ -1366,11 +1356,7 @@ impl SessionProcessor {
         let tools = self.build_tool_definitions();
 
         let mut stream = provider
-            .stream(
-                &input.model,
-                &messages,
-                &tools,
-            )
+            .stream(&input.model, &messages, &tools)
             .await
             .map_err(|e| SessionError::Provider(e.to_string()))?;
 
@@ -1446,14 +1432,12 @@ impl SessionProcessor {
                 if let Some(mut part) = ctx.reasoning_map.remove(id.as_str()) {
                     part.time.end = Some(Utc::now().timestamp_millis() as u64);
                     // Fire reasoning-ended event
-                    self.bus.publish(
-                        "session.reasoning.ended",
-                        &serde_json::json!({
-                            "session_id": ctx.session_id,
-                            "reasoning_id": id,
-                            "text": part.text,
-                        }),
-                    )?;
+                    self.bus.publish(GlobalEvent::new(serde_json::json!({
+                        "type": "session.reasoning.ended",
+                        "session_id": ctx.session_id,
+                        "reasoning_id": id,
+                        "text": part.text,
+                    })))?;
                 }
             }
 
@@ -1488,24 +1472,19 @@ impl SessionProcessor {
                         part.time.end = Some(Utc::now().timestamp_millis() as u64);
                     }
                     // Fire text-ended event
-                    self.bus.publish(
-                        "session.text.ended",
-                        &serde_json::json!({
-                            "session_id": ctx.session_id,
-                            "text_id": id,
-                            "text": part.text,
-                        }),
-                    )?;
+                    self.bus.publish(GlobalEvent::new(serde_json::json!({
+                        "type": "session.text.ended",
+                        "session_id": ctx.session_id,
+                        "text_id": id,
+                        "text": part.text,
+                    })))?;
                 }
                 ctx.current_text_id = None;
             }
 
             // ── Tool input events ─────────────────────────────────
             LlmEvent::ToolCall {
-                id,
-                name,
-                input,
-                ..
+                id, name, input, ..
             } => {
                 self.ensure_tool_call(ctx, id.as_str(), name.as_str(), false)
                     .await?;
@@ -1519,14 +1498,12 @@ impl SessionProcessor {
                     );
                     // In TS: asks permission for doom_loop
                     // For now, flag and continue
-                    self.bus.publish(
-                        "session.doom_loop",
-                        &serde_json::json!({
-                            "session_id": ctx.session_id,
-                            "tool": name,
-                            "count": DOOM_LOOP_THRESHOLD,
-                        }),
-                    )?;
+                    self.bus.publish(GlobalEvent::new(serde_json::json!({
+                        "type": "session.doom_loop",
+                        "session_id": ctx.session_id,
+                        "tool": name,
+                        "count": DOOM_LOOP_THRESHOLD,
+                    })))?;
                 }
 
                 // Execute the tool
@@ -1539,7 +1516,8 @@ impl SessionProcessor {
                         self.complete_tool_call(ctx, id.as_str(), &output).await?;
                     }
                     Err(e) => {
-                        self.fail_tool_call(ctx, id.as_str(), &e.to_string()).await?;
+                        self.fail_tool_call(ctx, id.as_str(), &e.to_string())
+                            .await?;
                     }
                 }
             }
@@ -1550,9 +1528,7 @@ impl SessionProcessor {
                 ctx.snapshot = Some("snapshot".to_string());
             }
 
-            LlmEvent::StepFinish {
-                reason, usage, ..
-            } => {
+            LlmEvent::StepFinish { reason, usage, .. } => {
                 // Finish remaining reasoning parts
                 let remaining: Vec<String> = ctx.reasoning_map.keys().cloned().collect();
                 for id in remaining {
@@ -1569,11 +1545,7 @@ impl SessionProcessor {
                 ctx.snapshot = None;
 
                 // Check overflow → needs compaction
-                let is_overflow = check_overflow(
-                    &ctx.assistant_message.tokens,
-                    &ctx.model,
-                    None,
-                );
+                let is_overflow = check_overflow(&ctx.assistant_message.tokens, &ctx.model, None);
                 if is_overflow {
                     ctx.needs_compaction = true;
                 }
@@ -1585,11 +1557,7 @@ impl SessionProcessor {
             }
 
             // ── Tool result / error from provider-side execution ──
-            LlmEvent::ToolResult {
-                id,
-                result,
-                ..
-            } => {
+            LlmEvent::ToolResult { id, result, .. } => {
                 // `result` is a serde_json::Value. TS checks result.type === "error".
                 let is_error = result
                     .as_object()
@@ -1601,8 +1569,7 @@ impl SessionProcessor {
                         .get("value")
                         .and_then(|v| v.as_str())
                         .unwrap_or("unknown tool error");
-                    self.fail_tool_call(ctx, id.as_str(), err_msg)
-                        .await?;
+                    self.fail_tool_call(ctx, id.as_str(), err_msg).await?;
                 }
             }
 
@@ -1631,14 +1598,12 @@ impl SessionProcessor {
         let part_id = id::ascending(id::IdPrefix::Part, None).unwrap_or_default();
 
         // Publish tool-input-started
-        self.bus.publish(
-            "session.tool.input_started",
-            &serde_json::json!({
-                "session_id": ctx.session_id,
-                "call_id": id,
-                "name": name,
-            }),
-        )?;
+        self.bus.publish(GlobalEvent::new(serde_json::json!({
+            "type": "session.tool.input_started",
+            "session_id": ctx.session_id,
+            "call_id": id,
+            "name": name,
+        })))?;
 
         let (done_tx, _done_rx) = oneshot::channel::<()>();
         ctx.toolcalls.insert(
@@ -1712,15 +1677,13 @@ impl SessionProcessor {
                 let _ = done.send(());
             }
 
-            self.bus.publish(
-                "session.tool.completed",
-                &serde_json::json!({
-                    "session_id": ctx.session_id,
-                    "call_id": tool_call_id,
-                    "title": output.title,
-                    "output": output.output,
-                }),
-            )?;
+            self.bus.publish(GlobalEvent::new(serde_json::json!({
+                "type": "session.tool.completed",
+                "session_id": ctx.session_id,
+                "call_id": tool_call_id,
+                "title": output.title,
+                "output": output.output,
+            })))?;
         }
         Ok(())
     }
@@ -1740,14 +1703,12 @@ impl SessionProcessor {
                 let _ = done.send(());
             }
 
-            self.bus.publish(
-                "session.tool.failed",
-                &serde_json::json!({
-                    "session_id": ctx.session_id,
-                    "call_id": tool_call_id,
-                    "error": error,
-                }),
-            )?;
+            self.bus.publish(GlobalEvent::new(serde_json::json!({
+                "type": "session.tool.failed",
+                "session_id": ctx.session_id,
+                "call_id": tool_call_id,
+                "error": error,
+            })))?;
         }
         Ok(())
     }
@@ -1814,17 +1775,12 @@ impl SessionProcessor {
 
     fn calc_cost_impl(usage: &Usage, model: &Model) -> f64 {
         let tokens = usage_to_token_usage(usage);
-        let cost = model.cost.as_ref();
-
-        if let Some(c) = cost {
-            let input_cost = tokens.input as f64 * c.input / 1_000_000.0;
-            let output_cost = tokens.output as f64 * c.output / 1_000_000.0;
-            let cache_read = tokens.cache.read as f64 * c.cache.read / 1_000_000.0;
-            let cache_write = tokens.cache.write as f64 * c.cache.write / 1_000_000.0;
-            input_cost + output_cost + cache_read + cache_write
-        } else {
-            0.0
-        }
+        let c = &model.cost;
+        let input_cost = tokens.input as f64 * c.input / 1_000_000.0;
+        let output_cost = tokens.output as f64 * c.output / 1_000_000.0;
+        let cache_read = tokens.cache.read as f64 * c.cache.read / 1_000_000.0;
+        let cache_write = tokens.cache.write as f64 * c.cache.write / 1_000_000.0;
+        input_cost + output_cost + cache_read + cache_write
     }
 
     /// Convert finish reason to string (static helper for tests).
@@ -1881,17 +1837,14 @@ const COMPACTION_BUFFER: u64 = 20_000;
 ///
 /// # Source
 /// `packages/opencode/src/session/overflow.ts` lines 22–34.
-pub fn check_overflow(
-    tokens: &TokenUsage,
-    model: &Model,
-    _output_token_max: Option<u64>,
-) -> bool {
+pub fn check_overflow(tokens: &TokenUsage, model: &Model, _output_token_max: Option<u64>) -> bool {
     let context = model.limit.context;
     if context == 0 {
         return false;
     }
 
-    let count = tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
+    let count =
+        tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
 
     // Calculate usable context (context minus reserved for output)
     let max_output = crate::provider::max_output_tokens(model, _output_token_max.unwrap_or(0));
@@ -1996,8 +1949,8 @@ pub struct RetryAction {
 mod tests {
     use super::*;
     use crate::provider::{
-        ApiInfo, CacheCost as ProviderCacheCost, Capabilities, Cost as ProviderCost,
-        ModelStatus, TokenLimit,
+        ApiInfo, CacheCost as ProviderCacheCost, Capabilities, Cost as ProviderCost, ModelStatus,
+        TokenLimit,
     };
     use std::collections::HashMap;
 
@@ -2017,7 +1970,10 @@ mod tests {
             cost: ProviderCost {
                 input: 3.0,
                 output: 15.0,
-                cache: ProviderCacheCost { read: 0.0, write: 0.0 },
+                cache: ProviderCacheCost {
+                    read: 0.0,
+                    write: 0.0,
+                },
                 tiers: None,
                 experimental_over_200k: None,
             },
@@ -2039,7 +1995,8 @@ mod tests {
     fn test_db() -> Arc<DatabaseService> {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
-            .connect_lazy("sqlite::memory:");
+            .connect_lazy("sqlite::memory:")
+            .expect("create test db");
         Arc::new(DatabaseService::new(pool))
     }
 
@@ -2073,10 +2030,7 @@ mod tests {
         assert_eq!(session.title, "Test Session");
         assert_eq!(session.agent, Some("default".into()));
 
-        let fetched = manager
-            .get(&session.id)
-            .await
-            .expect("get should succeed");
+        let fetched = manager.get(&session.id).await.expect("get should succeed");
         assert_eq!(fetched.id, session.id);
     }
 
@@ -2800,22 +2754,13 @@ mod tests {
 
     #[test]
     fn test_fork_title_increment() {
-        assert_eq!(
-            fork_title("My Session (fork #1)"),
-            "My Session (fork #2)"
-        );
-        assert_eq!(
-            fork_title("My Session (fork #5)"),
-            "My Session (fork #6)"
-        );
+        assert_eq!(fork_title("My Session (fork #1)"), "My Session (fork #2)");
+        assert_eq!(fork_title("My Session (fork #5)"), "My Session (fork #6)");
     }
 
     #[test]
     fn test_fork_title_with_two_digit_fork_number() {
-        assert_eq!(
-            fork_title("My Session (fork #10)"),
-            "My Session (fork #11)"
-        );
+        assert_eq!(fork_title("My Session (fork #10)"), "My Session (fork #11)");
     }
 
     #[test]
@@ -3029,7 +2974,9 @@ mod tests {
 
         let parsed: SessionStatus = serde_json::from_str(&json).expect("deserialize");
         match parsed {
-            SessionStatus::Retry { attempt, message, .. } => {
+            SessionStatus::Retry {
+                attempt, message, ..
+            } => {
                 assert_eq!(attempt, 3);
                 assert_eq!(message, "Rate limited");
             }
@@ -3329,7 +3276,10 @@ mod tests {
         let json = serde_json::to_string(&info).expect("serialize");
         let parsed: SessionInfo = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(parsed.summary.as_ref().unwrap().additions, 10);
-        assert_eq!(parsed.share.as_ref().unwrap().url, "https://share.opencode.dev/abc");
+        assert_eq!(
+            parsed.share.as_ref().unwrap().url,
+            "https://share.opencode.dev/abc"
+        );
         assert_eq!(parsed.cost, 1.5);
         assert_eq!(parsed.tokens.input, 10000);
         assert!(parsed.revert.is_some());

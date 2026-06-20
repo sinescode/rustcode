@@ -16,7 +16,7 @@
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph},
     Frame,
@@ -163,11 +163,7 @@ impl ToastState {
     /// Title is optional. The toast will auto-expire after the default
     /// duration (5 seconds).
     pub fn show(&mut self, title: Option<&str>, message: &str, variant: ToastVariant) {
-        let toast = ToastMessage::new(
-            title.map(|t| t.to_string()),
-            message.to_string(),
-            variant,
-        );
+        let toast = ToastMessage::new(title.map(|t| t.to_string()), message.to_string(), variant);
         self.toasts.push_back(toast);
     }
 
@@ -233,12 +229,8 @@ pub fn render_toast(f: &mut Frame, area: Rect, state: &ToastState) {
     }
 
     // Only render the most recent MAX_VISIBLE_TOASTS (newest at back of deque)
-    let visible_toasts: Vec<&ToastMessage> = state
-        .toasts
-        .iter()
-        .rev()
-        .take(MAX_VISIBLE_TOASTS)
-        .collect();
+    let visible_toasts: Vec<&ToastMessage> =
+        state.toasts.iter().rev().take(MAX_VISIBLE_TOASTS).collect();
 
     // Calculate toast dimensions
     let max_msg_len = visible_toasts
@@ -312,10 +304,7 @@ pub fn render_toast(f: &mut Frame, area: Rect, state: &ToastState) {
 
         // Render message text inside
         let msg_style = Style::default().fg(color);
-        let paragraph = Paragraph::new(Line::from(Span::styled(
-            &toast.message,
-            msg_style,
-        )));
+        let paragraph = Paragraph::new(Line::from(Span::styled(&toast.message, msg_style)));
         f.render_widget(paragraph, inner);
     }
 }

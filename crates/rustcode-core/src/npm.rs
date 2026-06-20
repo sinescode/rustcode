@@ -253,9 +253,7 @@ impl NpmConfig {
 
 /// Characters that are illegal in Windows filenames and are replaced
 /// by [`sanitize_package_name`].
-const ILLEGAL_FILENAME_CHARS: &[char] = &[
-    '*', '"', '<', '>', '|', ':', '?', '/', '\\', ' ',
-];
+const ILLEGAL_FILENAME_CHARS: &[char] = &['*', '"', '<', '>', '|', ':', '?', '/', '\\', ' '];
 
 /// Sanitize an npm package name for use as a filesystem directory name.
 ///
@@ -339,9 +337,7 @@ pub struct NpmPackageSpecifier {
 ///
 /// # Source
 /// `packages/core/src/npm.ts` — `parseSpecifier()`
-pub fn parse_specifier(
-    spec: &str,
-) -> Result<NpmPackageSpecifier, NpmInstallFailedError> {
+pub fn parse_specifier(spec: &str) -> Result<NpmPackageSpecifier, NpmInstallFailedError> {
     if spec.is_empty() {
         return Err(NpmInstallFailedError::InvalidPackage {
             name: spec.to_string(),
@@ -439,10 +435,7 @@ impl NpmService {
     /// where the package would be installed.
     ///
     /// Ported from: `packages/core/src/npm.ts` — `resolve()`
-    pub fn resolve(
-        &self,
-        package_spec: &str,
-    ) -> Result<NpmEntryPoint, NpmInstallFailedError> {
+    pub fn resolve(&self, package_spec: &str) -> Result<NpmEntryPoint, NpmInstallFailedError> {
         if package_spec.is_empty() {
             return Err(NpmInstallFailedError::InstallError {
                 add: None,
@@ -482,10 +475,7 @@ impl NpmService {
     /// Validate packages, then spawn `npm install --save --save-prod`.
     ///
     /// Ported from: `packages/core/src/npm.ts` — `install()`
-    pub async fn install(
-        &self,
-        input: &NpmInstallInput,
-    ) -> Result<(), NpmInstallFailedError> {
+    pub async fn install(&self, input: &NpmInstallInput) -> Result<(), NpmInstallFailedError> {
         if let Some(ref packages) = input.add {
             for pkg in packages {
                 if pkg.name.is_empty() {
@@ -569,11 +559,10 @@ impl NpmService {
         } else {
             std::path::Path::new(&input.dir)
         };
-        let _lock = CacheLock::wait_lock(lock_dir).map_err(|e| {
-            NpmInstallFailedError::SpawnFailed {
+        let _lock =
+            CacheLock::wait_lock(lock_dir).map_err(|e| NpmInstallFailedError::SpawnFailed {
                 message: e.to_string(),
-            }
-        })?;
+            })?;
         self.install(input).await
     }
 
@@ -726,8 +715,7 @@ mod tests {
             cause: Some("timeout".into()),
         };
         let json = serde_json::to_string(&err).expect("serialize");
-        let roundtrip: NpmInstallFailedError =
-            serde_json::from_str(&json).expect("deserialize");
+        let roundtrip: NpmInstallFailedError = serde_json::from_str(&json).expect("deserialize");
         match roundtrip {
             NpmInstallFailedError::InstallError { add, dir, cause } => {
                 assert_eq!(dir, "/tmp/pkg");
@@ -769,8 +757,7 @@ mod tests {
             version: Some("^4.0.0".into()),
         };
         let json = serde_json::to_string(&input).expect("serialize");
-        let roundtrip: NpmPackageAddInput =
-            serde_json::from_str(&json).expect("deserialize");
+        let roundtrip: NpmPackageAddInput = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(roundtrip.name, "lodash");
         assert_eq!(roundtrip.version.unwrap(), "^4.0.0");
     }
@@ -783,8 +770,7 @@ mod tests {
         };
         let json = serde_json::to_string(&input).expect("serialize");
         assert!(!json.contains("version"));
-        let roundtrip: NpmPackageAddInput =
-            serde_json::from_str(&json).expect("deserialize");
+        let roundtrip: NpmPackageAddInput = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(roundtrip.name, "express");
         assert!(roundtrip.version.is_none());
     }
@@ -814,8 +800,7 @@ mod tests {
             ]),
         };
         let json = serde_json::to_string(&input).expect("serialize");
-        let roundtrip: NpmInstallInput =
-            serde_json::from_str(&json).expect("deserialize");
+        let roundtrip: NpmInstallInput = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(roundtrip.dir, "/tmp/project");
         let pkgs = roundtrip.add.expect("add should be Some");
         assert_eq!(pkgs.len(), 2);
@@ -830,8 +815,7 @@ mod tests {
             add: None,
         };
         let json = serde_json::to_string(&input).expect("serialize");
-        let roundtrip: NpmInstallInput =
-            serde_json::from_str(&json).expect("deserialize");
+        let roundtrip: NpmInstallInput = serde_json::from_str(&json).expect("deserialize");
         assert!(roundtrip.add.is_none());
     }
 
@@ -854,8 +838,7 @@ mod tests {
     #[test]
     fn registry_config_deserializes_default() {
         let json = r#"{}"#;
-        let config: NpmRegistryConfig =
-            serde_json::from_str(json).expect("deserialize");
+        let config: NpmRegistryConfig = serde_json::from_str(json).expect("deserialize");
         assert_eq!(config.registry, "https://registry.npmjs.org");
     }
 
@@ -868,10 +851,7 @@ mod tests {
 
     #[test]
     fn sanitize_replaces_spaces() {
-        assert_eq!(
-            sanitize_package_name("my package name"),
-            "my_package_name"
-        );
+        assert_eq!(sanitize_package_name("my package name"), "my_package_name");
     }
 
     #[test]
@@ -933,8 +913,9 @@ mod tests {
     #[test]
     fn test_npm_service_resolve_scoped() {
         let svc = NpmService::new();
-        let result =
-            svc.resolve("@scope/mypackage").expect("resolve should succeed");
+        let result = svc
+            .resolve("@scope/mypackage")
+            .expect("resolve should succeed");
         assert!(result.directory().contains("node_modules"));
         assert!(result.directory().contains("_scope_mypackage"));
     }
@@ -990,8 +971,7 @@ mod tests {
     #[test]
     fn test_npm_service_parse_specifier_scoped_deep_version() {
         let svc = NpmService::new();
-        let (name, version) =
-            svc.parse_specifier("@angular/core@^16.0.0");
+        let (name, version) = svc.parse_specifier("@angular/core@^16.0.0");
         assert_eq!(name, "@angular/core");
         assert_eq!(version, Some("^16.0.0".into()));
     }
@@ -1056,21 +1036,13 @@ mod tests {
 
     #[test]
     fn test_which_nonexistent_pkg_returns_none() {
-        let result = NpmService::which(
-            "/tmp/nonexistent-dir",
-            "some-bin",
-            None,
-        );
+        let result = NpmService::which("/tmp/nonexistent-dir", "some-bin", None);
         assert!(result.is_none());
     }
 
     #[test]
     fn test_which_with_explicit_bin_name() {
-        let result = NpmService::which(
-            "/tmp/nonexistent-dir",
-            "pkg",
-            Some("custom-bin"),
-        );
+        let result = NpmService::which("/tmp/nonexistent-dir", "pkg", Some("custom-bin"));
         // Should look for custom-bin, not pkg
         assert!(result.is_none());
     }
@@ -1126,16 +1098,10 @@ mod tests {
 
         let svc = NpmService::new();
         let result = svc
-            .resolve_entry_point(
-                &tmp.path().to_string_lossy(),
-                "my-pkg",
-            )
+            .resolve_entry_point(&tmp.path().to_string_lossy(), "my-pkg")
             .expect("should succeed");
         assert!(result.directory.contains("my-pkg"));
-        assert_eq!(
-            result.entrypoint.as_deref(),
-            Some("dist/index.js")
-        );
+        assert_eq!(result.entrypoint.as_deref(), Some("dist/index.js"));
     }
 
     #[test]
@@ -1143,18 +1109,12 @@ mod tests {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let pkg_dir = tmp.path().join("node_modules").join("bare-pkg");
         std::fs::create_dir_all(&pkg_dir).expect("create dirs");
-        std::fs::write(
-            pkg_dir.join("package.json"),
-            r#"{"name": "bare-pkg"}"#,
-        )
-        .expect("write package.json");
+        std::fs::write(pkg_dir.join("package.json"), r#"{"name": "bare-pkg"}"#)
+            .expect("write package.json");
 
         let svc = NpmService::new();
         let result = svc
-            .resolve_entry_point(
-                &tmp.path().to_string_lossy(),
-                "bare-pkg",
-            )
+            .resolve_entry_point(&tmp.path().to_string_lossy(), "bare-pkg")
             .expect("should succeed");
         assert!(result.entrypoint.is_none());
     }
@@ -1193,10 +1153,7 @@ mod tests {
     #[test]
     fn test_npm_config_load_defaults_when_no_npmrc() {
         let config = NpmConfig::load("/tmp/nonexistent-dir-xyz");
-        assert_eq!(
-            config.registry,
-            "https://registry.npmjs.org"
-        );
+        assert_eq!(config.registry, "https://registry.npmjs.org");
         assert!(config.cache.is_none());
         assert!(config.prefix.is_none());
     }
@@ -1211,10 +1168,7 @@ mod tests {
         .expect("write .npmrc");
 
         let config = NpmConfig::load(&tmp.path().to_string_lossy());
-        assert_eq!(
-            config.registry,
-            "https://custom.registry.example.com"
-        );
+        assert_eq!(config.registry, "https://custom.registry.example.com");
     }
 
     #[test]
@@ -1236,20 +1190,13 @@ mod tests {
         std::fs::write(tmp.path().join(".npmrc"), "").expect("write .npmrc");
 
         let config = NpmConfig::load(&tmp.path().to_string_lossy());
-        assert_eq!(
-            config.registry,
-            "https://registry.npmjs.org"
-        );
+        assert_eq!(config.registry, "https://registry.npmjs.org");
     }
 
     #[test]
     fn test_npm_config_try_load_defaults_when_no_npmrc() {
-        let config =
-            NpmConfig::try_load("/tmp/nonexistent-dir-xyz").expect("try_load");
-        assert_eq!(
-            config.registry,
-            "https://registry.npmjs.org"
-        );
+        let config = NpmConfig::try_load("/tmp/nonexistent-dir-xyz").expect("try_load");
+        assert_eq!(config.registry, "https://registry.npmjs.org");
     }
 
     #[test]
@@ -1261,12 +1208,8 @@ mod tests {
         )
         .expect("write .npmrc");
 
-        let config = NpmConfig::try_load(&tmp.path().to_string_lossy())
-            .expect("try_load");
-        assert_eq!(
-            config.registry,
-            "https://try-load.registry.com"
-        );
+        let config = NpmConfig::try_load(&tmp.path().to_string_lossy()).expect("try_load");
+        assert_eq!(config.registry, "https://try-load.registry.com");
     }
 
     // ── package_directory ──────────────────────────────────────────────
@@ -1382,10 +1325,7 @@ mod tests {
     #[test]
     fn test_resolve_entry_point_with_exports_default() {
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let pkg_dir = tmp
-            .path()
-            .join("node_modules")
-            .join("exports-pkg");
+        let pkg_dir = tmp.path().join("node_modules").join("exports-pkg");
         std::fs::create_dir_all(&pkg_dir).expect("create dirs");
         std::fs::write(
             pkg_dir.join("package.json"),
@@ -1395,24 +1335,15 @@ mod tests {
 
         let svc = NpmService::new();
         let result = svc
-            .resolve_entry_point(
-                &tmp.path().to_string_lossy(),
-                "exports-pkg",
-            )
+            .resolve_entry_point(&tmp.path().to_string_lossy(), "exports-pkg")
             .expect("should succeed");
-        assert_eq!(
-            result.entrypoint.as_deref(),
-            Some("dist/mod.js")
-        );
+        assert_eq!(result.entrypoint.as_deref(), Some("dist/mod.js"));
     }
 
     #[test]
     fn test_resolve_entry_point_with_exports_string() {
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let pkg_dir = tmp
-            .path()
-            .join("node_modules")
-            .join("exports-str-pkg");
+        let pkg_dir = tmp.path().join("node_modules").join("exports-str-pkg");
         std::fs::create_dir_all(&pkg_dir).expect("create dirs");
         std::fs::write(
             pkg_dir.join("package.json"),
@@ -1422,24 +1353,15 @@ mod tests {
 
         let svc = NpmService::new();
         let result = svc
-            .resolve_entry_point(
-                &tmp.path().to_string_lossy(),
-                "exports-str-pkg",
-            )
+            .resolve_entry_point(&tmp.path().to_string_lossy(), "exports-str-pkg")
             .expect("should succeed");
-        assert_eq!(
-            result.entrypoint.as_deref(),
-            Some("lib/index.js")
-        );
+        assert_eq!(result.entrypoint.as_deref(), Some("lib/index.js"));
     }
 
     #[test]
     fn test_resolve_entry_point_exports_overrides_main() {
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let pkg_dir = tmp
-            .path()
-            .join("node_modules")
-            .join("both-fields-pkg");
+        let pkg_dir = tmp.path().join("node_modules").join("both-fields-pkg");
         std::fs::create_dir_all(&pkg_dir).expect("create dirs");
         std::fs::write(
             pkg_dir.join("package.json"),
@@ -1449,24 +1371,15 @@ mod tests {
 
         let svc = NpmService::new();
         let result = svc
-            .resolve_entry_point(
-                &tmp.path().to_string_lossy(),
-                "both-fields-pkg",
-            )
+            .resolve_entry_point(&tmp.path().to_string_lossy(), "both-fields-pkg")
             .expect("should succeed");
-        assert_eq!(
-            result.entrypoint.as_deref(),
-            Some("new.js")
-        );
+        assert_eq!(result.entrypoint.as_deref(), Some("new.js"));
     }
 
     #[test]
     fn test_resolve_entry_point_falls_back_to_main() {
         let tmp = tempfile::tempdir().expect("tmpdir");
-        let pkg_dir = tmp
-            .path()
-            .join("node_modules")
-            .join("main-only-pkg");
+        let pkg_dir = tmp.path().join("node_modules").join("main-only-pkg");
         std::fs::create_dir_all(&pkg_dir).expect("create dirs");
         std::fs::write(
             pkg_dir.join("package.json"),
@@ -1476,14 +1389,8 @@ mod tests {
 
         let svc = NpmService::new();
         let result = svc
-            .resolve_entry_point(
-                &tmp.path().to_string_lossy(),
-                "main-only-pkg",
-            )
+            .resolve_entry_point(&tmp.path().to_string_lossy(), "main-only-pkg")
             .expect("should succeed");
-        assert_eq!(
-            result.entrypoint.as_deref(),
-            Some("index.js")
-        );
+        assert_eq!(result.entrypoint.as_deref(), Some("index.js"));
     }
 }

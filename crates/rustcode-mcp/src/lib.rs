@@ -42,8 +42,8 @@ use tracing::{debug, warn};
 // ---------------------------------------------------------------------------
 
 pub use rustcode_core::mcp::{
-    sanitize_name, tool_key, AuthStatus, JsonRpcError, JsonRpcRequest, JsonRpcResponse,
-    McpEvent, McpOAuthConfig, McpResource, McpServerConfig, McpServerRegistry, McpServerSummary,
+    sanitize_name, tool_key, AuthStatus, JsonRpcError, JsonRpcRequest, JsonRpcResponse, McpEvent,
+    McpOAuthConfig, McpResource, McpServerConfig, McpServerRegistry, McpServerSummary,
     McpServerType, McpStatus, McpTool, DEFAULT_MCP_TIMEOUT_MS, MAX_LIST_PAGES, OAUTH_CALLBACK_PORT,
 };
 
@@ -193,9 +193,10 @@ impl StdioTransport {
         );
 
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| {
-                Error::Internal("MCP child stdin not available".into())
-            })?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| Error::Internal("MCP child stdin not available".into()))?;
             let framed = frame_message(&init_req);
             stdin.write_all(framed.as_bytes()).await?;
             stdin.flush().await?;
@@ -203,9 +204,10 @@ impl StdioTransport {
 
         // Read initialize response
         {
-            let stdout = child.stdout.as_mut().ok_or_else(|| {
-                Error::Internal("MCP child stdout not available".into())
-            })?;
+            let stdout = child
+                .stdout
+                .as_mut()
+                .ok_or_else(|| Error::Internal("MCP child stdout not available".into()))?;
             let mut reader = BufReader::new(stdout);
 
             // Read Content-Length header line
@@ -231,25 +233,21 @@ impl StdioTransport {
             // Read the JSON body
             let mut body = vec![0u8; content_length];
             reader.read_exact(&mut body).await.map_err(|e| {
-                Error::Internal(format!(
-                    "failed to read MCP initialize response body: {e}"
-                ))
+                Error::Internal(format!("failed to read MCP initialize response body: {e}"))
             })?;
 
             let response_str = String::from_utf8_lossy(&body).to_string();
-            parse_jsonrpc_response(&response_str).map_err(|e| {
-                Error::Internal(format!("MCP initialize handshake failed: {e}"))
-            })?;
+            parse_jsonrpc_response(&response_str)
+                .map_err(|e| Error::Internal(format!("MCP initialize handshake failed: {e}")))?;
         }
 
         // Send "initialized" notification
         {
             let stdin = child.stdin.as_mut().ok_or_else(|| {
-                Error::Internal(
-                    "MCP child stdin not available for initialized notification".into(),
-                )
+                Error::Internal("MCP child stdin not available for initialized notification".into())
             })?;
-            let notif = build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
+            let notif =
+                build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
             let framed = frame_message(&notif);
             stdin.write_all(framed.as_bytes()).await?;
             stdin.flush().await?;
@@ -288,45 +286,48 @@ impl StdioTransport {
         // Write framed request to stdin
         let framed = frame_message(message);
         {
-            let stdin = child.stdin.as_mut().ok_or_else(|| {
-                Error::Internal("MCP child stdin not available".into())
-            })?;
+            let stdin = child
+                .stdin
+                .as_mut()
+                .ok_or_else(|| Error::Internal("MCP child stdin not available".into()))?;
             stdin.write_all(framed.as_bytes()).await?;
             stdin.flush().await?;
         }
 
         // Read framed response from stdout
-        let stdout = child.stdout.as_mut().ok_or_else(|| {
-            Error::Internal("MCP child stdout not available".into())
-        })?;
+        let stdout = child
+            .stdout
+            .as_mut()
+            .ok_or_else(|| Error::Internal("MCP child stdout not available".into()))?;
         let mut reader = BufReader::new(stdout);
 
         // Read Content-Length header
         let mut header = String::new();
-        reader.read_line(&mut header).await.map_err(|e| {
-            Error::Internal(format!("failed to read MCP response header: {e}"))
-        })?;
+        reader
+            .read_line(&mut header)
+            .await
+            .map_err(|e| Error::Internal(format!("failed to read MCP response header: {e}")))?;
 
-        let content_length = parse_content_length(&header).map_err(|e| {
-            Error::Internal(format!("invalid MCP response header: {e}"))
-        })?;
+        let content_length = parse_content_length(&header)
+            .map_err(|e| Error::Internal(format!("invalid MCP response header: {e}")))?;
 
         // Read blank line separator
         let mut blank = String::new();
-        reader.read_line(&mut blank).await.map_err(|e| {
-            Error::Internal(format!("failed to read MCP response separator: {e}"))
-        })?;
+        reader
+            .read_line(&mut blank)
+            .await
+            .map_err(|e| Error::Internal(format!("failed to read MCP response separator: {e}")))?;
 
         // Read body
         let mut body = vec![0u8; content_length];
-        reader.read_exact(&mut body).await.map_err(|e| {
-            Error::Internal(format!("failed to read MCP response body: {e}"))
-        })?;
+        reader
+            .read_exact(&mut body)
+            .await
+            .map_err(|e| Error::Internal(format!("failed to read MCP response body: {e}")))?;
 
         let response_str = String::from_utf8_lossy(&body).to_string();
-        parse_jsonrpc_response(&response_str).map_err(|e| {
-            Error::Internal(format!("MCP response error: {e}"))
-        })
+        parse_jsonrpc_response(&response_str)
+            .map_err(|e| Error::Internal(format!("MCP response error: {e}")))
     }
 }
 
@@ -484,7 +485,10 @@ impl HttpTransport {
                     self.url, self.timeout_ms
                 ))
             } else if e.is_connect() {
-                Error::Network(format!("MCP HTTP: failed to connect to `{}`: {e}", self.url))
+                Error::Network(format!(
+                    "MCP HTTP: failed to connect to `{}`: {e}",
+                    self.url
+                ))
             } else {
                 Error::Http(e)
             }
@@ -591,12 +595,15 @@ impl McpToolExecutor {
     /// client's cached tool list.
     pub async fn to_plugin_def(&self) -> Result<PluginToolDef> {
         let tools = self.client.cached_tools().await;
-        let tool = tools.iter().find(|t| t.name == self.tool_name).ok_or_else(|| {
-            Error::Tool(format!(
-                "MCP tool '{}' not found on server '{}'",
-                self.tool_name, self.client.server_name
-            ))
-        })?;
+        let tool = tools
+            .iter()
+            .find(|t| t.name == self.tool_name)
+            .ok_or_else(|| {
+                Error::Tool(format!(
+                    "MCP tool '{}' not found on server '{}'",
+                    self.tool_name, self.client.server_name
+                ))
+            })?;
 
         let tool_id = tool_key(&self.client.server_name, &tool.name);
         let input_schema = tool
@@ -662,7 +669,7 @@ fn extract_mcp_content(result: &serde_json::Value) -> String {
 
         if texts.is_empty() {
             // No text blocks — serialize the entire content
-            serde_json::to_string_pretty(&content).unwrap_or_else(|_| format!("{content}"))
+            serde_json::to_string_pretty(&content).unwrap_or_else(|_| format!("{content:?}"))
         } else {
             texts.join("\n")
         }
@@ -738,11 +745,10 @@ impl McpDiscovery {
     /// # Errors
     /// Returns an error if the file cannot be read or parsed.
     pub fn from_claude_desktop_config(path: &Path) -> Result<Vec<McpServerConfig>> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| Error::FileSystem {
-                path: path.display().to_string(),
-                message: format!("failed to read Claude Desktop config: {e}"),
-            })?;
+        let content = std::fs::read_to_string(path).map_err(|e| Error::FileSystem {
+            path: path.display().to_string(),
+            message: format!("failed to read Claude Desktop config: {e}"),
+        })?;
 
         let parsed: ClaudeDesktopConfig = serde_json::from_str(&content).map_err(|e| {
             Error::Config(format!(
@@ -773,11 +779,10 @@ impl McpDiscovery {
     /// # Errors
     /// Returns an error if the file cannot be read or parsed.
     pub fn from_opencode_config(path: &Path) -> Result<Vec<McpServerConfig>> {
-        let content =
-            std::fs::read_to_string(path).map_err(|e| Error::FileSystem {
-                path: path.display().to_string(),
-                message: format!("failed to read OpenCode config: {e}"),
-            })?;
+        let content = std::fs::read_to_string(path).map_err(|e| Error::FileSystem {
+            path: path.display().to_string(),
+            message: format!("failed to read OpenCode config: {e}"),
+        })?;
 
         let parsed: OpenCodeMcpSection = serde_json::from_str(&content).map_err(|e| {
             Error::Config(format!(
@@ -822,9 +827,7 @@ impl McpDiscovery {
             }
 
             // Try parsing as a JSON array first
-            if let Ok(configs) =
-                serde_json::from_str::<Vec<McpServerConfig>>(trimmed)
-            {
+            if let Ok(configs) = serde_json::from_str::<Vec<McpServerConfig>>(trimmed) {
                 debug!(
                     "Discovered {} MCP servers from MCP_SERVERS env var",
                     configs.len()
@@ -833,9 +836,7 @@ impl McpDiscovery {
             }
 
             // Try parsing as a JSON object (map)
-            if let Ok(map) =
-                serde_json::from_str::<HashMap<String, McpServerConfig>>(trimmed)
-            {
+            if let Ok(map) = serde_json::from_str::<HashMap<String, McpServerConfig>>(trimmed) {
                 let configs: Vec<McpServerConfig> = map.into_values().collect();
                 debug!(
                     "Discovered {} MCP servers from MCP_SERVERS env var (map)",
@@ -879,21 +880,15 @@ fn parse_claude_server_entry(name: &str, value: &serde_json::Value) -> Result<Mc
     })?;
 
     // Check for remote type
-    let server_type = obj
-        .get("type")
-        .and_then(|t| t.as_str())
-        .unwrap_or("local");
+    let server_type = obj.get("type").and_then(|t| t.as_str()).unwrap_or("local");
 
     if server_type == "url" || server_type == "remote" {
         // Remote (HTTP) server
-        let url = obj
-            .get("url")
-            .and_then(|u| u.as_str())
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "Claude Desktop config: remote MCP server '{name}' missing 'url'"
-                ))
-            })?;
+        let url = obj.get("url").and_then(|u| u.as_str()).ok_or_else(|| {
+            Error::Config(format!(
+                "Claude Desktop config: remote MCP server '{name}' missing 'url'"
+            ))
+        })?;
 
         let mut config = McpServerConfig::remote(url.to_string());
 
@@ -912,14 +907,11 @@ fn parse_claude_server_entry(name: &str, value: &serde_json::Value) -> Result<Mc
         Ok(config)
     } else {
         // Local (stdio) server
-        let command = obj
-            .get("command")
-            .and_then(|c| c.as_str())
-            .ok_or_else(|| {
-                Error::Config(format!(
-                    "Claude Desktop config: local MCP server '{name}' missing 'command'"
-                ))
-            })?;
+        let command = obj.get("command").and_then(|c| c.as_str()).ok_or_else(|| {
+            Error::Config(format!(
+                "Claude Desktop config: local MCP server '{name}' missing 'command'"
+            ))
+        })?;
 
         let mut cmd_parts = vec![command.to_string()];
 
@@ -980,9 +972,7 @@ fn parse_mcp_server_env_prefix() -> Vec<McpServerConfig> {
             let mut config = McpServerConfig::remote(url.clone());
 
             if let Some(headers_str) = props.get("HEADERS") {
-                if let Ok(headers) =
-                    serde_json::from_str::<HashMap<String, String>>(headers_str)
-                {
+                if let Ok(headers) = serde_json::from_str::<HashMap<String, String>>(headers_str) {
                     config = config.with_headers(headers);
                 } else {
                     warn!(
@@ -1004,19 +994,13 @@ fn parse_mcp_server_env_prefix() -> Vec<McpServerConfig> {
 
             if let Some(args_str) = props.get("ARGS") {
                 // Space-separated arguments
-                cmd_parts.extend(
-                    args_str
-                        .split_whitespace()
-                        .map(|s| s.to_string()),
-                );
+                cmd_parts.extend(args_str.split_whitespace().map(|s| s.to_string()));
             }
 
             let mut config = McpServerConfig::local(cmd_parts);
 
             if let Some(env_str) = props.get("ENV") {
-                if let Ok(env_map) =
-                    serde_json::from_str::<HashMap<String, String>>(env_str)
-                {
+                if let Ok(env_map) = serde_json::from_str::<HashMap<String, String>>(env_str) {
                     config = config.with_env(env_map);
                 } else {
                     warn!(
@@ -1058,11 +1042,7 @@ fn parse_mcp_server_env_prefix() -> Vec<McpServerConfig> {
 /// Build a JSON-RPC 2.0 request object.
 ///
 /// Returns a JSON value with `jsonrpc`, `method`, `params`, and `id` fields.
-fn build_jsonrpc_request(
-    method: &str,
-    params: serde_json::Value,
-    id: u64,
-) -> serde_json::Value {
+fn build_jsonrpc_request(method: &str, params: serde_json::Value, id: u64) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -1252,7 +1232,10 @@ mod tests {
         let notif = build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
         let json_str = serde_json::to_string(&notif).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-        assert!(parsed.get("id").is_none(), "notification should not have an id");
+        assert!(
+            parsed.get("id").is_none(),
+            "notification should not have an id"
+        );
         assert_eq!(parsed["jsonrpc"], "2.0");
         assert_eq!(parsed["method"], "notifications/initialized");
     }
@@ -1267,7 +1250,8 @@ mod tests {
 
     #[test]
     fn test_parse_jsonrpc_response_error() {
-        let resp = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let resp =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let err = parse_jsonrpc_response(resp).unwrap_err();
         assert!(err.contains("Method not found"));
     }
@@ -1330,7 +1314,10 @@ mod tests {
     #[test]
     fn test_parse_jsonrpc_stream_no_header() {
         let messages = parse_jsonrpc_stream(r#"{"jsonrpc":"2.0","id":1}"#);
-        assert!(messages.is_empty(), "raw JSON without framing should produce no messages");
+        assert!(
+            messages.is_empty(),
+            "raw JSON without framing should produce no messages"
+        );
     }
 
     // ── Tool key generation ───────────────────────────────────────────
@@ -1460,7 +1447,10 @@ mod tests {
         assert_eq!(config.env.get("PYTHONPATH"), Some(&"Debug".to_string()));
         // Wait, let me check - the env map is HashMap<String, String>, so:
         // Actually looking at the code, env is inserted via with_env which sets self.env
-        assert_eq!(config.env.get("PYTHONPATH").map(|s| s.as_str()), Some("/opt/mcp"));
+        assert_eq!(
+            config.env.get("PYTHONPATH").map(|s| s.as_str()),
+            Some("/opt/mcp")
+        );
     }
 
     #[test]
@@ -1529,12 +1519,16 @@ mod tests {
     #[test]
     fn test_parse_mcp_server_env_prefix_local() {
         temp_env::with_var("MCP_SERVER_MYTOOL_COMMAND", Some("node"), || {
-            temp_env::with_var("MCP_SERVER_MYTOOL_ARGS", Some("server.js --port 3000"), || {
-                let configs = parse_mcp_server_env_prefix();
-                assert_eq!(configs.len(), 1);
-                assert!(configs[0].is_local());
-                assert_eq!(configs[0].command_executable(), Some("node"));
-            });
+            temp_env::with_var(
+                "MCP_SERVER_MYTOOL_ARGS",
+                Some("server.js --port 3000"),
+                || {
+                    let configs = parse_mcp_server_env_prefix();
+                    assert_eq!(configs.len(), 1);
+                    assert!(configs[0].is_local());
+                    assert_eq!(configs[0].command_executable(), Some("node"));
+                },
+            );
         });
     }
 

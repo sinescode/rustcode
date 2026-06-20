@@ -5,8 +5,8 @@
 //! - `packages/core/src/session/message-id.ts` (lines 1–13)
 //! - `packages/opencode/src/session/message-v2.ts` (lines 1–744)
 
-use serde::{Deserialize, Serialize};
 use crate::session_info::{MessageId, SessionId};
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Session Message ID
@@ -390,9 +390,7 @@ pub struct ToolCallTime {
 pub enum ToolState {
     /// Tool is pending execution
     #[serde(rename = "pending")]
-    Pending {
-        input: String,
-    },
+    Pending { input: String },
 
     /// Tool is running
     #[serde(rename = "running")]

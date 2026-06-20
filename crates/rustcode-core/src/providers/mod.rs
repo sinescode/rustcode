@@ -132,11 +132,7 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
     // OpenAI-compatible providers (auto-detect from env vars)
     for profile in openai_compatible::PROFILES {
         if let Ok(p) = openai_compatible::OpenAICompatibleProvider::from_profile(profile) {
-            tracing::info!(
-                "Detected {} provider ({})",
-                profile.name,
-                profile.env_var
-            );
+            tracing::info!("Detected {} provider ({})", profile.name, profile.env_var);
             providers.push(Box::new(p));
         }
     }

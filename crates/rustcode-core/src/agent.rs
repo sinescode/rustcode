@@ -301,7 +301,10 @@ pub fn derive_subagent_session_permission(
     parent_session_permission: &PermissionRuleset,
     subagent: &AgentInfo,
 ) -> PermissionRuleset {
-    let can_task = subagent.permission.iter().any(|rule| rule.permission == "task");
+    let can_task = subagent
+        .permission
+        .iter()
+        .any(|rule| rule.permission == "task");
     let can_todo = subagent
         .permission
         .iter()
@@ -311,7 +314,9 @@ pub fn derive_subagent_session_permission(
 
     // Carry forward parent deny rules and external_directory rules
     for rule in parent_session_permission {
-        if rule.permission == "external_directory" || rule.action == permission::PermissionAction::Deny {
+        if rule.permission == "external_directory"
+            || rule.action == permission::PermissionAction::Deny
+        {
             rules.push(rule.clone());
         }
     }
@@ -387,9 +392,9 @@ impl AgentService {
                 agents.remove(key);
                 continue;
             }
-            let item = agents.entry(key.clone()).or_insert_with(|| {
-                AgentInfo::new(key, AgentMode::All)
-            });
+            let item = agents
+                .entry(key.clone())
+                .or_insert_with(|| AgentInfo::new(key, AgentMode::All));
             apply_agent_config_override(item, value);
             // Re-merge permissions after config override
             item.permission = permission::merge_rulesets(&[
@@ -400,9 +405,9 @@ impl AgentService {
 
         // Handle deprecated `mode` field (TS merges mode → agent internally)
         for (key, value) in &cfg.mode {
-            let item = agents.entry(key.clone()).or_insert_with(|| {
-                AgentInfo::new(key, AgentMode::All)
-            });
+            let item = agents
+                .entry(key.clone())
+                .or_insert_with(|| AgentInfo::new(key, AgentMode::All));
             apply_agent_config_override(item, value);
             item.permission = permission::merge_rulesets(&[
                 item.permission.clone(),
@@ -425,10 +430,8 @@ impl AgentService {
                     pattern: truncate_glob.clone(),
                     action: permission::PermissionAction::Allow,
                 }];
-                agent.permission = permission::merge_rulesets(&[
-                    agent.permission.clone(),
-                    truncate_allow,
-                ]);
+                agent.permission =
+                    permission::merge_rulesets(&[agent.permission.clone(), truncate_allow]);
             }
         }
 
@@ -507,7 +510,9 @@ impl AgentService {
                 return Some(agent);
             }
         }
-        self.agents.values().find(|a| !a.hidden && !matches!(a.mode, AgentMode::Subagent))
+        self.agents
+            .values()
+            .find(|a| !a.hidden && !matches!(a.mode, AgentMode::Subagent))
     }
 
     /// Return the default agent's name.
@@ -516,7 +521,8 @@ impl AgentService {
     /// Ported from `packages/opencode/src/agent/agent.ts` lines 340–342 (`defaultAgent`).
     #[must_use]
     pub fn default_agent_name(&self, configured_default: Option<&str>) -> Option<String> {
-        self.default_info(configured_default).map(|a| a.name.clone())
+        self.default_info(configured_default)
+            .map(|a| a.name.clone())
     }
 
     /// Generate a new agent definition via LLM.
@@ -722,13 +728,23 @@ fn build_builtin_agents(
         defaults.clone(),
         permission::rules_from_config(&config::PermissionConfig {
             wildcard: Some(config::PermissionAction::Deny),
-            grep: Some(config::PermissionRule::Action(config::PermissionAction::Allow)),
-            glob: Some(config::PermissionRule::Action(config::PermissionAction::Allow)),
-            list: Some(config::PermissionRule::Action(config::PermissionAction::Allow)),
-            bash: Some(config::PermissionRule::Action(config::PermissionAction::Allow)),
+            grep: Some(config::PermissionRule::Action(
+                config::PermissionAction::Allow,
+            )),
+            glob: Some(config::PermissionRule::Action(
+                config::PermissionAction::Allow,
+            )),
+            list: Some(config::PermissionRule::Action(
+                config::PermissionAction::Allow,
+            )),
+            bash: Some(config::PermissionRule::Action(
+                config::PermissionAction::Allow,
+            )),
             webfetch: Some(config::PermissionAction::Allow),
             websearch: Some(config::PermissionAction::Allow),
-            read: Some(config::PermissionRule::Action(config::PermissionAction::Allow)),
+            read: Some(config::PermissionRule::Action(
+                config::PermissionAction::Allow,
+            )),
             // Copy the readonly external directory whitelist from defaults
             ..Default::default()
         }),
@@ -750,7 +766,9 @@ fn build_builtin_agents(
         "build".into(),
         AgentInfo {
             name: "build".into(),
-            description: Some("The default agent. Executes tools based on configured permissions.".into()),
+            description: Some(
+                "The default agent. Executes tools based on configured permissions.".into(),
+            ),
             mode: AgentMode::Primary,
             native: true,
             hidden: false,
@@ -889,24 +907,31 @@ fn apply_agent_config_override(info: &mut AgentInfo, cfg: &config::AgentConfig) 
     }
     // Merge options via serde_json::Value recursive merge
     for (key, value) in &cfg.options {
-        merge_json_value(info.options.entry(key.clone()).or_insert_with(|| value.clone()), value);
+        merge_json_value(
+            info.options
+                .entry(key.clone())
+                .or_insert_with(|| value.clone()),
+            value,
+        );
     }
 }
 
 /// Simple deep merge of JSON values (mutates `target`).
 fn merge_json_value(target: &mut serde_json::Value, source: &serde_json::Value) {
-    if let (serde_json::Value::Object(t), serde_json::Value::Object(s)) = (target, source) {
-        for (key, value) in s {
-            match t.get_mut(key) {
-                Some(existing) => merge_json_value(existing, value),
-                None => {
-                    t.insert(key.clone(), value.clone());
+    if let serde_json::Value::Object(t) = target {
+        if let serde_json::Value::Object(s) = source {
+            for (key, value) in s {
+                match t.get_mut(key) {
+                    Some(existing) => merge_json_value(existing, value),
+                    None => {
+                        t.insert(key.clone(), value.clone());
+                    }
                 }
             }
+            return;
         }
-    } else {
-        *target = source.clone();
     }
+    *target = source.clone();
 }
 
 impl Default for AgentInfo {
@@ -1000,7 +1025,11 @@ mod tests {
         let svc = make_service();
         let explore = svc.get("explore").unwrap();
         assert!(explore.prompt.is_some());
-        assert!(explore.prompt.as_ref().unwrap().contains("file search specialist"));
+        assert!(explore
+            .prompt
+            .as_ref()
+            .unwrap()
+            .contains("file search specialist"));
     }
 
     #[test]
@@ -1144,9 +1173,7 @@ mod tests {
 
         let derived = derive_subagent_session_permission(&parent, &subagent);
         let has_todo_deny = derived.iter().any(|r| {
-            r.permission == "todowrite"
-                && r.pattern == "*"
-                && r.action == PermissionAction::Deny
+            r.permission == "todowrite" && r.pattern == "*" && r.action == PermissionAction::Deny
         });
         let has_task_deny = derived.iter().any(|r| {
             r.permission == "task" && r.pattern == "*" && r.action == PermissionAction::Deny
@@ -1194,9 +1221,7 @@ mod tests {
 
         let derived = derive_subagent_session_permission(&parent, &subagent);
         let carries_deny = derived.iter().any(|r| {
-            r.permission == "bash"
-                && r.pattern == "/etc/**"
-                && r.action == PermissionAction::Deny
+            r.permission == "bash" && r.pattern == "/etc/**" && r.action == PermissionAction::Deny
         });
         assert!(carries_deny, "should carry parent deny rules");
     }
@@ -1262,11 +1287,23 @@ mod tests {
 
     #[test]
     fn test_all_prompts_are_non_empty() {
-        assert!(PROMPT_EXPLORE.len() > 0, "PROMPT_EXPLORE should not be empty");
-        assert!(PROMPT_COMPACTION.len() > 0, "PROMPT_COMPACTION should not be empty");
-        assert!(PROMPT_SUMMARY.len() > 0, "PROMPT_SUMMARY should not be empty");
+        assert!(
+            PROMPT_EXPLORE.len() > 0,
+            "PROMPT_EXPLORE should not be empty"
+        );
+        assert!(
+            PROMPT_COMPACTION.len() > 0,
+            "PROMPT_COMPACTION should not be empty"
+        );
+        assert!(
+            PROMPT_SUMMARY.len() > 0,
+            "PROMPT_SUMMARY should not be empty"
+        );
         assert!(PROMPT_TITLE.len() > 0, "PROMPT_TITLE should not be empty");
-        assert!(PROMPT_GENERATE.len() > 0, "PROMPT_GENERATE should not be empty");
+        assert!(
+            PROMPT_GENERATE.len() > 0,
+            "PROMPT_GENERATE should not be empty"
+        );
     }
 
     // ── derive_subagent_session_permission edge cases ────────────────────
@@ -1356,7 +1393,10 @@ mod tests {
         assert_eq!(info.mode, AgentMode::Subagent);
         assert!(!info.native, "new agents should not be native");
         assert!(!info.hidden, "new agents should not be hidden");
-        assert!(info.description.is_none(), "new agents should have no description");
+        assert!(
+            info.description.is_none(),
+            "new agents should have no description"
+        );
         assert!(info.prompt.is_none(), "new agents should have no prompt");
     }
 
@@ -1364,7 +1404,11 @@ mod tests {
     fn test_agent_info_default_has_empty_name_and_primary() {
         let info = AgentInfo::default();
         assert_eq!(info.name, "", "default name should be empty string");
-        assert_eq!(info.mode, AgentMode::Primary, "default mode should be Primary");
+        assert_eq!(
+            info.mode,
+            AgentMode::Primary,
+            "default mode should be Primary"
+        );
     }
 
     // ── GeneratedAgent struct test ───────────────────────────────────────
@@ -1392,7 +1436,10 @@ mod tests {
     fn test_agent_service_default_agent_name_none_configured() {
         let svc = make_service();
         let name = svc.default_agent_name(None);
-        assert!(name.is_some(), "default name should be Some even when None is configured");
+        assert!(
+            name.is_some(),
+            "default name should be Some even when None is configured"
+        );
         assert_eq!(name.expect("should fall back to build"), "build");
     }
 
@@ -1424,7 +1471,8 @@ mod tests {
         let svc = AgentService::new(&cfg, worktree, data_dir, tmp_dir, Vec::new());
         let build = svc.get("build").expect("build should exist");
         assert_eq!(
-            build.steps, Some(42),
+            build.steps,
+            Some(42),
             "max_steps should set steps via fallback when steps is None"
         );
     }
@@ -1445,7 +1493,8 @@ mod tests {
             "description should be set from deprecated mode field"
         );
         assert_eq!(
-            build.temperature, Some(0.3),
+            build.temperature,
+            Some(0.3),
             "temperature should be set from deprecated mode field"
         );
     }

@@ -22,8 +22,8 @@
 use axum::extract::{Query, State};
 use axum::response::sse::Event as SseEvent;
 use axum::response::Sse;
-use axum::Router;
 use axum::routing::get;
+use axum::Router;
 use futures::stream::Stream;
 use serde::Deserialize;
 use std::convert::Infallible;
@@ -70,9 +70,8 @@ async fn event_stream(
     let bus_stream = BroadcastStream::new(bus_rx_to_receiver(bus_rx));
 
     // Create heartbeat stream (every 10 seconds, matching TS)
-    let heartbeat = tokio_stream::wrappers::IntervalStream::new(
-        tokio::time::interval(Duration::from_secs(10)),
-    );
+    let heartbeat =
+        tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(Duration::from_secs(10)));
 
     // Initial connected event
     let connected = tokio_stream::once(Ok(SseEvent::default()
@@ -81,53 +80,44 @@ async fn event_stream(
 
     // Filter bus events by directory/workspace, then map to SSE
     let events = bus_stream.filter_map(move |result| {
-        let dir = directory.clone();
-        let ws = workspace.clone();
-        async move {
-            match result {
-                Ok(event) => {
-                    // Filter by directory
-                    if let Some(ref d) = dir {
-                        if event.directory.as_deref() != Some(d.as_str()) {
-                            return None;
-                        }
+        match result {
+            Ok(event) => {
+                // Filter by directory
+                if let Some(ref d) = directory {
+                    if event.directory.as_deref() != Some(d.as_str()) {
+                        return None;
                     }
-                    // Filter by workspace
-                    if let Some(ref w) = ws {
-                        if event.workspace.as_deref() != Some(w.as_str()) {
-                            return None;
-                        }
+                }
+                // Filter by workspace
+                if let Some(ref w) = workspace {
+                    if event.workspace.as_deref() != Some(w.as_str()) {
+                        return None;
                     }
-
-                    let event_type = event
-                        .payload
-                        .get("type")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("message");
-
-                    let data = serde_json::to_string(&event.payload).unwrap_or_default();
-
-                    Some(Ok(SseEvent::default().event(event_type).data(data)))
                 }
-                Err(e) => {
-                    tracing::warn!("SSE bus stream lagged: {e}");
-                    None
-                }
+
+                let event_type = event
+                    .payload
+                    .get("type")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("message");
+
+                let data = serde_json::to_string(&event.payload).unwrap_or_default();
+
+                Some(Ok(SseEvent::default().event(event_type).data(data)))
+            }
+            Err(e) => {
+                tracing::warn!("SSE bus stream lagged: {e}");
+                None
             }
         }
     });
 
     // Heartbeat events
-    let heartbeats = heartbeat.map(|_| {
-        Ok(SseEvent::default()
-            .event("server.heartbeat")
-            .data(r#"{}"#))
-    });
+    let heartbeats =
+        heartbeat.map(|_| Ok(SseEvent::default().event("server.heartbeat").data(r#"{}"#)));
 
     // Merge: connected → events → heartbeats
-    let stream = connected
-        .chain(events)
-        .merge(heartbeats);
+    let stream = connected.chain(events).merge(heartbeats);
 
     Sse::new(stream).keep_alive(
         axum::response::sse::KeepAlive::new()

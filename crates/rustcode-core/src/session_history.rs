@@ -5,9 +5,9 @@
 //! - `packages/core/src/session/logging.ts` (lines 1–8)
 //! - `packages/core/src/session/input.ts` (lines 1–354)
 
-use serde::{Deserialize, Serialize};
 use crate::session_info::SessionId;
-use crate::session_message::{SessionMessageId, Prompt};
+use crate::session_message::{Prompt, SessionMessageId};
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // History Entry

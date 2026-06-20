@@ -21,8 +21,10 @@ use std::io::{IsTerminal, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use sqlx::Column;
 #[allow(unused_imports)]
 use sqlx::Row as _;
+use sqlx::TypeInfo;
 
 // ── Top-level CLI ───────────────────────────────────────────────────────────
 /// AI-powered development tool — Rust port of OpenCode.
@@ -1319,9 +1321,9 @@ async fn dispatch(cmd: &Commands, print_logs: bool) -> i32 {
 
 /// Parse "provider/model" string into (provider_id, model_id).
 fn parse_model_spec(spec: &str) -> Option<(&str, &str)> {
-    let mut parts = spec.splitn(2, '/');
-    let provider = parts.next()?;
-    let model = parts.next()?;
+    let (provider, model) = spec.split_once('/')?;
+    
+    
     if provider.is_empty() || model.is_empty() {
         return None;
     }
@@ -1344,7 +1346,7 @@ fn print_header(title: &str) {
     let width = 56;
     let bar = "\u{2500}".repeat(width);
     println!("\u{250c}{}\u{2510}", bar);
-    let pad = (width.saturating_sub(title.len())) / 2;
+    let _pad = (width.saturating_sub(title.len())) / 2;
     println!("\u{2502}{:^width$}\u{2502}", title, width = width);
     println!("\u{2514}{}\u{2518}", bar);
 }
@@ -1394,10 +1396,7 @@ fn elapsed_ms() -> f64 {
 
 /// Try to run `gh` CLI and return stdout + stderr + exit status.
 async fn run_gh(args: &[&str]) -> std::io::Result<std::process::Output> {
-    tokio::process::Command::new("gh")
-        .args(args)
-        .output()
-        .await
+    tokio::process::Command::new("gh").args(args).output().await
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1413,7 +1412,6 @@ async fn run_gh(args: &[&str]) -> std::io::Result<std::process::Output> {
 /// - **SSE attach** (`--attach <url>`): connects to a remote server via SSE,
 ///   sends the prompt via HTTP POST, and streams results back.
 async fn cmd_run(args: &RunArgs) -> i32 {
-
     let msg = args.message.join(" ");
 
     // ── validation ──────────────────────────────────────────────────
@@ -1454,11 +1452,7 @@ async fn cmd_run(args: &RunArgs) -> i32 {
     }
 
     // ── resolve model spec ──────────────────────────────────────────
-    let (provider_filter, model_filter) = args
-        .model
-        .as_deref()
-        .and_then(parse_model_spec)
-        .unzip();
+    let (provider_filter, model_filter) = args.model.as_deref().and_then(parse_model_spec).unzip();
 
     // ── auto-detect providers via shared runtime ────────────────────
     let ctx = match rustcode_core::runtime::initialize_runtime() {
@@ -1521,9 +1515,7 @@ async fn cmd_run(args: &RunArgs) -> i32 {
         match models.iter().find(|m| m.id == mf) {
             Some(m) => m,
             None => {
-                eprintln!(
-                    "Model '{mf}' not found for provider '{provider_id}'. Available:"
-                );
+                eprintln!("Model '{mf}' not found for provider '{provider_id}'. Available:");
                 for m in &models {
                     eprintln!("  - {}", m.id);
                 }
@@ -1538,7 +1530,10 @@ async fn cmd_run(args: &RunArgs) -> i32 {
 
     // ── build prompt input ─────────────────────────────────────────
     let user_content = if msg.is_empty() && args.command.is_some() {
-        format!("Run command: /{}", args.command.as_deref().unwrap_or("help"))
+        format!(
+            "Run command: /{}",
+            args.command.as_deref().unwrap_or("help")
+        )
     } else {
         msg.clone()
     };
@@ -1563,10 +1558,8 @@ async fn cmd_run(args: &RunArgs) -> i32 {
         ),
     ];
 
-    use rustcode_core::session_prompt::{
-        PromptPart, PromptTextPart, SessionPromptInput,
-    };
     use rustcode_core::provider::{ChatMessage, MessageContent};
+    use rustcode_core::session_prompt::{PromptPart, PromptTextPart, SessionPromptInput};
 
     let session_id = format!("local-{}", std::process::id());
     let runner = &ctx.runner;
@@ -1599,7 +1592,10 @@ async fn cmd_run(args: &RunArgs) -> i32 {
             messages.push(ChatMessage::User {
                 content: MessageContent::Text(user_content),
             });
-            match runner.run_with_messages(provider.as_ref(), model, &mut messages).await {
+            match runner
+                .run_with_messages(provider.as_ref(), model, &mut messages)
+                .await
+            {
                 Ok(result) => {
                     if !result.text.is_empty() {
                         print!("{}", result.text);
@@ -1650,7 +1646,10 @@ async fn cmd_run(args: &RunArgs) -> i32 {
                 content: MessageContent::Text(line),
             });
 
-            match runner.run_with_messages(provider.as_ref(), model, &mut messages).await {
+            match runner
+                .run_with_messages(provider.as_ref(), model, &mut messages)
+                .await
+            {
                 Ok(result) => {
                     if !result.text.is_empty() {
                         print!("{}", result.text);
@@ -1719,7 +1718,10 @@ async fn cmd_run(args: &RunArgs) -> i32 {
     }
 
     // ── run the agentic loop ──────────────────────────────────────
-    match runner.run(provider.as_ref(), model, &input, &instructions).await {
+    match runner
+        .run(provider.as_ref(), model, &input, &instructions)
+        .await
+    {
         Ok(result) => {
             if !result.text.is_empty() {
                 print!("{}", result.text);
@@ -1811,17 +1813,15 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
     if let Some(pw) = &password {
         let auth = format!("{username}:{pw}");
         let encoded = base64_encode(&auth);
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded))
-                .unwrap_or_default(),
-        );
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded)) {
+            headers.insert(reqwest::header::AUTHORIZATION, hv);
+        }
     }
 
     let client = reqwest::Client::builder()
         .default_headers(headers.clone())
         .build()
-        .unwrap_or_default();
+        .expect("Failed to build HTTP client");
 
     // ── Health check ───────────────────────────────────────────────
     let health_url = format!("{url}/api/health");
@@ -1830,7 +1830,10 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
             tracing::info!("Connected to server at {url}");
         }
         Ok(resp) => {
-            eprintln!("Server responded with HTTP {} at {health_url}", resp.status());
+            eprintln!(
+                "Server responded with HTTP {} at {health_url}",
+                resp.status()
+            );
             return 1;
         }
         Err(e) => {
@@ -1844,7 +1847,11 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
     let cwd = args
         .dir
         .clone()
-        .or_else(|| std::env::current_dir().ok().map(|p| p.display().to_string()))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|p| p.display().to_string())
+        })
         .unwrap_or_else(|| ".".into());
 
     // If --session is provided, reuse the existing remote session ID.
@@ -1880,19 +1887,14 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
         });
 
         let create_url = format!("{url}/session");
-        match client.post(&create_url)
-            .json(&create_body)
-            .send()
-            .await
-        {
+        match client.post(&create_url).json(&create_body).send().await {
             Ok(resp) if resp.status().is_success() => {
                 match resp.json::<serde_json::Value>().await {
-                    Ok(json) => {
-                        json.get("id")
-                            .and_then(|v| v.as_str())
-                            .map(String::from)
-                            .unwrap_or_else(|| format!("remote-{}", std::process::id()))
-                    }
+                    Ok(json) => json
+                        .get("id")
+                        .and_then(|v| v.as_str())
+                        .map(String::from)
+                        .unwrap_or_else(|| format!("remote-{}", std::process::id())),
                     Err(e) => {
                         eprintln!("Failed to parse session create response: {e}");
                         return 1;
@@ -1951,7 +1953,10 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
 
     // ── Send prompt via POST (spawned to run concurrently with SSE) ─
     let user_content = if msg.is_empty() && args.command.is_some() {
-        format!("Run command: /{}", args.command.as_deref().unwrap_or("help"))
+        format!(
+            "Run command: /{}",
+            args.command.as_deref().unwrap_or("help")
+        )
     } else {
         msg.to_string()
     };
@@ -2011,7 +2016,7 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
                         while let Some(line_end) = buffer.find('\n') {
                             let mut line = buffer[..=line_end].to_string();
                             buffer = buffer[line_end + 1..].to_string();
-                            line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
+                            line = line.trim_end_matches(['\r', '\n']).to_string();
 
                             if line.is_empty() {
                                 // Blank line = end of one SSE event
@@ -2068,9 +2073,10 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
             post_result = &mut post_rx => {
                 match post_result {
                     Ok(Ok(resp)) => {
-                        if !resp.status().is_success() {
+                        let status = resp.status();
+                        if !status.is_success() {
                             let body = resp.text().await.unwrap_or_default();
-                            eprintln!("\nServer returned HTTP {} for prompt", resp.status());
+                            eprintln!("\nServer returned HTTP {} for prompt", status);
                             if !body.is_empty() {
                                 eprintln!("Body: {body}");
                             }
@@ -2110,11 +2116,7 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
         let reason = finish_reason.unwrap_or_else(|| "interrupted".to_string());
         println!(
             r#"{{"type":"done","finish_reason":"{}","iterations":{},"tool_calls":{},"success_tools":{},"failed_tools":{}}}"#,
-            reason,
-            step_count,
-            tool_count,
-            success_count,
-            fail_count,
+            reason, step_count, tool_count, success_count, fail_count,
         );
     } else if tool_count > 0 {
         // Non-JSON: print text + tool summary
@@ -2359,7 +2361,12 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
 
     tracing::info!(
         "tui: project={:?}, model={:?}, continue={}, session={:?}, json={}, print_logs={}",
-        args.project, args.model, args.r#continue, args.session, args.json, print_logs,
+        args.project,
+        args.model,
+        args.r#continue,
+        args.session,
+        args.json,
+        print_logs,
     );
 
     // When --print-logs is active, LLM call logs appear on stderr
@@ -2383,7 +2390,10 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
 
     // Change to working directory (TS: process.chdir before worker start)
     if let Err(e) = std::env::set_current_dir(&cwd) {
-        eprintln!("Error: failed to change directory to {}: {e}", cwd.display());
+        eprintln!(
+            "Error: failed to change directory to {}: {e}",
+            cwd.display()
+        );
         return 1;
     }
 
@@ -2503,18 +2513,15 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
         Ok(mut app) => {
             let rt = tokio::runtime::Runtime::new().unwrap();
 
-            let exit_code = rt.block_on(async {
-                // Drive the TUI event loop; Ctrl+C or :quit sets should_quit.
-                let tui_result = app.run_async();
+            let exit_code = rt.block_on(app.run_async());
 
-                // When TUI exits, publish a shutdown event for cleanup.
+            // When TUI exits, publish a shutdown event for cleanup.
+            let _ = rt.block_on(async {
                 let shutdown_event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
                     "type": "tui.shutdown",
                     "timestamp": chrono::Utc::now().timestamp_millis(),
                 }));
-                let _ = bus.publish(shutdown_event);
-
-                tui_result
+                bus.publish(shutdown_event)
             });
 
             // Abort the heartbeat task
@@ -2574,7 +2581,7 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool) -> i32 {
             } else {
                 eprintln!("Failed to initialize TUI: {e}");
             }
-            return 1;
+            1
         }
     }
 }
@@ -2597,7 +2604,10 @@ async fn cmd_serve(args: &NetworkArgs) -> i32 {
         eprintln!("Warning: OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.");
     }
 
-    eprintln!("rustcode serve: starting server on {hostname}:{}...", args.port);
+    eprintln!(
+        "rustcode serve: starting server on {hostname}:{}...",
+        args.port
+    );
     println!();
 
     // Build the AppState from the shared runtime
@@ -2635,7 +2645,9 @@ async fn cmd_serve(args: &NetworkArgs) -> i32 {
 ///
 /// This replaces the hand-rolled `build_server_state()` that previously
 /// duplicated the service construction logic across cmd_serve and cmd_web.
-fn build_server_state(ctx: &rustcode_core::runtime::RuntimeContext) -> Arc<rustcode_server::AppState> {
+fn build_server_state(
+    ctx: &rustcode_core::runtime::RuntimeContext,
+) -> Arc<rustcode_server::AppState> {
     // Build agent service from config if available
     let agent_service = build_agent_service();
 
@@ -2691,11 +2703,7 @@ fn build_agent_service() -> Option<Arc<rustcode_core::agent::AgentService>> {
     let tmp_dir = std::env::temp_dir();
     let skill_dirs: Vec<std::path::PathBuf> = Vec::new();
     Some(Arc::new(rustcode_core::agent::AgentService::new(
-        &cfg,
-        worktree,
-        data_dir,
-        tmp_dir,
-        skill_dirs,
+        &cfg, worktree, data_dir, tmp_dir, skill_dirs,
     )))
 }
 
@@ -2704,9 +2712,10 @@ fn build_command_data() -> rustcode_core::command::CommandData {
     let mut data = rustcode_core::command::CommandData::default();
     if let Ok(cfg) = rustcode_core::config::Config::load_global() {
         for (name, cmd_cfg) in &cfg.command {
-            let model_ref = cmd_cfg.model.as_ref().map(|m| {
-                rustcode_core::command::CommandModelRef::parse(m)
-            }).flatten();
+            let model_ref = cmd_cfg
+                .model
+                .as_ref()
+                .and_then(|m| rustcode_core::command::CommandModelRef::parse(m));
             data.upsert(rustcode_core::command::CommandUpdateInput {
                 name: name.clone(),
                 template: cmd_cfg.template.clone(),
@@ -2865,8 +2874,7 @@ async fn cmd_models(args: &ModelsArgs) -> i32 {
 
         match provider.list_models().await {
             Ok(models) => {
-                let mut model_names: Vec<&str> =
-                    models.iter().map(|m| m.id.as_str()).collect();
+                let mut model_names: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
                 model_names.sort();
 
                 for model_id in &model_names {
@@ -2948,7 +2956,7 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
 
     // ── Build dynamic query ──────────────────────────────────────────────
     let mut where_clauses: Vec<String> = Vec::new();
-    let mut params: Vec<String> = Vec::new();
+    let _params: Vec<String> = Vec::new();
 
     // --days filter
     if let Some(days) = args.days {
@@ -2996,13 +3004,27 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
 
             print_header("COST & TOKENS");
             println!("Total Cost              ${total_cost:.2}");
-            let avg_cost = if sessions > 0 { total_cost / sessions as f64 } else { 0.0 };
+            let avg_cost = if sessions > 0 {
+                total_cost / sessions as f64
+            } else {
+                0.0
+            };
             println!("Avg Cost/Session        ${avg_cost:.4}");
             let total_tokens = total_input + total_output;
-            let avg_tokens = if sessions > 0 { total_tokens / sessions } else { 0 };
+            let avg_tokens = if sessions > 0 {
+                total_tokens / sessions
+            } else {
+                0
+            };
             println!("Avg Tokens/Session      {avg_tokens}");
-            println!("Total Input             {}", format_count(total_input as u64));
-            println!("Total Output            {}", format_count(total_output as u64));
+            println!(
+                "Total Input             {}",
+                format_count(total_input as u64)
+            );
+            println!(
+                "Total Output            {}",
+                format_count(total_output as u64)
+            );
             println!();
         }
         Err(e) => {
@@ -3027,7 +3049,10 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
                 if rows.is_empty() {
                     println!("  No session data available.");
                 } else {
-                    println!("  {:<30} {:>8} {:>10} {:>12}", "Model", "Sessions", "Cost", "Tokens");
+                    println!(
+                        "  {:<30} {:>8} {:>10} {:>12}",
+                        "Model", "Sessions", "Cost", "Tokens"
+                    );
                     println!("  {}", "\u{2500}".repeat(62));
                     for row in &rows {
                         let model: String = row.get(0);
@@ -3036,7 +3061,13 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
                         let input_tok: i64 = row.get(3);
                         let output_tok: i64 = row.get(4);
                         let tot = input_tok + output_tok;
-                        println!("  {:<30} {:>8} ${:>9.2} {:>11}", model, cnt, cost, format_count(tot as u64));
+                        println!(
+                            "  {:<30} {:>8} ${:>9.2} {:>11}",
+                            model,
+                            cnt,
+                            cost,
+                            format_count(tot as u64)
+                        );
                     }
                 }
             }
@@ -3181,7 +3212,7 @@ async fn cmd_export(args: &ExportArgs) -> i32 {
             "TEXT" | "BLOB" => {
                 let s: Option<String> = session_row.try_get(name.as_str()).ok();
                 match s {
-                    Some(v) if args.sanitize && is_sensitive_field(&name) => {
+                    Some(_v) if args.sanitize && is_sensitive_field(&name) => {
                         serde_json::Value::String("[REDACTED]".into())
                     }
                     Some(v) => serde_json::Value::String(v),
@@ -3208,18 +3239,19 @@ async fn cmd_export(args: &ExportArgs) -> i32 {
     }
 
     // ── Query messages ──────────────────────────────────────────────────
-    let messages = match sqlx::query("SELECT * FROM message WHERE session_id = ? ORDER BY time_created")
-        .bind(&session_id)
-        .fetch_all(&pool)
-        .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            eprintln!("Failed to query messages: {e}");
-            let _ = pool.close().await;
-            return 1;
-        }
-    };
+    let messages =
+        match sqlx::query("SELECT * FROM message WHERE session_id = ? ORDER BY time_created")
+            .bind(&session_id)
+            .fetch_all(&pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("Failed to query messages: {e}");
+                let _ = pool.close().await;
+                return 1;
+            }
+        };
 
     let mut messages_json = Vec::new();
     for msg_row in &messages {
@@ -3230,7 +3262,7 @@ async fn cmd_export(args: &ExportArgs) -> i32 {
                 "TEXT" | "BLOB" => {
                     let s: Option<String> = msg_row.try_get(name.as_str()).ok();
                     match s {
-                        Some(v) if args.sanitize && is_sensitive_field(&name) => {
+                        Some(_v) if args.sanitize && is_sensitive_field(&name) => {
                             serde_json::Value::String("[REDACTED]".into())
                         }
                         Some(v) => serde_json::Value::String(v),
@@ -3279,7 +3311,7 @@ async fn cmd_export(args: &ExportArgs) -> i32 {
                     "TEXT" | "BLOB" => {
                         let s: Option<String> = part_row.try_get(name.as_str()).ok();
                         match s {
-                            Some(v) if args.sanitize && is_sensitive_field(&name) => {
+                            Some(_v) if args.sanitize && is_sensitive_field(&name) => {
                                 serde_json::Value::String("[REDACTED]".into())
                             }
                             Some(v) => serde_json::Value::String(v),
@@ -3388,7 +3420,10 @@ async fn cmd_import(args: &ImportArgs) -> i32 {
         }
     };
 
-    eprintln!("Read session data ({} bytes).", serde_json::to_string(&data).unwrap_or_default().len());
+    eprintln!(
+        "Read session data ({} bytes).",
+        serde_json::to_string(&data).unwrap_or_default().len()
+    );
 
     // ── Open database ───────────────────────────────────────────────────
     let db_path = get_db_path();
@@ -3496,7 +3531,11 @@ async fn cmd_import(args: &ImportArgs) -> i32 {
                     let insert_msg = format!(
                         "INSERT OR REPLACE INTO message ({}) VALUES ({})",
                         msg_columns.join(", "),
-                        msg_columns.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                        msg_columns
+                            .iter()
+                            .map(|_| "?")
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     );
 
                     let mut query = sqlx::query(&insert_msg);
@@ -3531,7 +3570,11 @@ async fn cmd_import(args: &ImportArgs) -> i32 {
                                 let insert_part = format!(
                                     "INSERT OR REPLACE INTO part ({}) VALUES ({})",
                                     part_columns.join(", "),
-                                    part_columns.iter().map(|_| "?").collect::<Vec<_>>().join(", ")
+                                    part_columns
+                                        .iter()
+                                        .map(|_| "?")
+                                        .collect::<Vec<_>>()
+                                        .join(", ")
                                 );
 
                                 let mut query = sqlx::query(&insert_part);
@@ -3550,7 +3593,10 @@ async fn cmd_import(args: &ImportArgs) -> i32 {
     }
 
     println!("Imported session: {session_id}");
-    eprintln!("Successfully imported session '{session_id}' into {}", db_path.display());
+    eprintln!(
+        "Successfully imported session '{session_id}' into {}",
+        db_path.display()
+    );
 
     let _ = pool.close().await;
     0
@@ -3599,11 +3645,7 @@ async fn cmd_session(cmd: &SessionCommand) -> i32 {
                              ORDER BY s.time_updated DESC \
                              LIMIT ?";
 
-            let rows = match sqlx::query(query_sql)
-                .bind(limit)
-                .fetch_all(&pool)
-                .await
-            {
+            let rows = match sqlx::query(query_sql).bind(limit).fetch_all(&pool).await {
                 Ok(r) => r,
                 Err(e) => {
                     eprintln!("Failed to query sessions: {e}");
@@ -3639,9 +3681,15 @@ async fn cmd_session(cmd: &SessionCommand) -> i32 {
                     }
                 }
             } else {
-                eprintln!("Listing up to {limit} most recent sessions from {}", db_path.display());
+                eprintln!(
+                    "Listing up to {limit} most recent sessions from {}",
+                    db_path.display()
+                );
                 eprintln!();
-                println!("{:<36} {:<30} {:<8} {:<20} {:<6} {}", "ID", "Title", "Agent", "Model", "Msgs", "Created");
+                println!(
+                    "{:<36} {:<30} {:<8} {:<20} {:<6} Created",
+                    "ID", "Title", "Agent", "Model", "Msgs"
+                );
                 println!("{}", "\u{2500}".repeat(116));
                 for row in &rows {
                     let id: String = row.get(0);
@@ -3657,10 +3705,21 @@ async fn cmd_session(cmd: &SessionCommand) -> i32 {
                         .unwrap_or_else(|| created.to_string());
 
                     // Truncate title and model for display
-                    let title_trunc = if title.len() > 29 { format!("{}...", &title[..26]) } else { title };
-                    let model_trunc = if model.len() > 19 { format!("{}...", &model[..16]) } else { model };
+                    let title_trunc = if title.len() > 29 {
+                        format!("{}...", &title[..26])
+                    } else {
+                        title
+                    };
+                    let model_trunc = if model.len() > 19 {
+                        format!("{}...", &model[..16])
+                    } else {
+                        model
+                    };
 
-                    println!("{:<36} {:<30} {:<8} {:<20} {:<6} {ts}", id, title_trunc, agent, model_trunc, msg_count);
+                    println!(
+                        "{:<36} {:<30} {:<8} {:<20} {:<6} {ts}",
+                        id, title_trunc, agent, model_trunc, msg_count
+                    );
                 }
             }
 
@@ -3735,7 +3794,10 @@ async fn cmd_session(cmd: &SessionCommand) -> i32 {
             if count == 1 {
                 eprintln!("Session '{session_id}' deleted.");
             } else {
-                eprintln!("Session '{session_id}' and {} child session(s) deleted.", count - 1);
+                eprintln!(
+                    "Session '{session_id}' and {} child session(s) deleted.",
+                    count - 1
+                );
             }
 
             let _ = pool.close().await;
@@ -3751,14 +3813,13 @@ async fn collect_child_session_ids(
     root_id: &str,
 ) -> Result<Vec<String>, sqlx::Error> {
     let mut all_ids = Vec::new();
-    let mut stack = vec![root_id.to_string()];
+    let _stack = [root_id.to_string()];
 
     // First verify root exists
-    let exists: Option<String> =
-        sqlx::query_scalar("SELECT id FROM session WHERE id = ?")
-            .bind(root_id)
-            .fetch_optional(pool)
-            .await?;
+    let exists: Option<String> = sqlx::query_scalar("SELECT id FROM session WHERE id = ?")
+        .bind(root_id)
+        .fetch_optional(pool)
+        .await?;
 
     if exists.is_none() {
         return Ok(Vec::new());
@@ -3802,14 +3863,10 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
                 .clone()
                 .unwrap_or_else(|| ".opencode/agents".to_string());
 
-            let desc = description
-                .as_deref()
-                .unwrap_or("No description provided");
+            let desc = description.as_deref().unwrap_or("No description provided");
 
             let agent_mode = mode.as_deref().unwrap_or("all");
-            let perm_list = permissions
-                .as_deref()
-                .unwrap_or("all");
+            let perm_list = permissions.as_deref().unwrap_or("all");
 
             eprintln!("Creating agent:");
             eprintln!("  Path:        {target_path}");
@@ -3847,7 +3904,7 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
                     if let Ok(entries) = std::fs::read_dir(dir) {
                         for entry in entries.flatten() {
                             let path = entry.path();
-                            if path.extension().map_or(false, |e| e == "md") {
+                            if path.extension().is_some_and(|e| e == "md") {
                                 let name = path
                                     .file_stem()
                                     .map(|s| s.to_string_lossy().to_string())
@@ -4015,14 +4072,15 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
                             .join("opencode")
                             .join("auth.json");
 
-                        let mut providers_map: HashMap<String, serde_json::Value> = if auth_path.exists() {
-                            std::fs::read_to_string(&auth_path)
-                                .ok()
-                                .and_then(|c| serde_json::from_str(&c).ok())
-                                .unwrap_or_default()
-                        } else {
-                            HashMap::new()
-                        };
+                        let mut providers_map: HashMap<String, serde_json::Value> =
+                            if auth_path.exists() {
+                                std::fs::read_to_string(&auth_path)
+                                    .ok()
+                                    .and_then(|c| serde_json::from_str(&c).ok())
+                                    .unwrap_or_default()
+                            } else {
+                                HashMap::new()
+                            };
 
                         providers_map.insert(provider_id.clone(), credential);
 
@@ -4039,8 +4097,10 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
                                     eprintln!("Failed to write auth.json: {e}");
                                     return 1;
                                 }
-                                eprintln!("Credential for '{provider_id}' saved to {}",
-                                    shorten_path(&auth_path));
+                                eprintln!(
+                                    "Credential for '{provider_id}' saved to {}",
+                                    shorten_path(&auth_path)
+                                );
                                 eprintln!("You can now use this provider in rustcode sessions.");
                             }
                             Err(e) => {
@@ -4165,7 +4225,11 @@ fn try_open_browser(url: &str) -> bool {
 ///
 /// Returns a list of `(name, url, oauth_config)` tuples for remote MCP servers
 /// with OAuth not explicitly disabled.
-fn discover_oauth_mcp_servers() -> Vec<(Option<String>, String, serde_json::Map<String, serde_json::Value>)> {
+fn discover_oauth_mcp_servers() -> Vec<(
+    Option<String>,
+    String,
+    serde_json::Map<String, serde_json::Value>,
+)> {
     let mut servers = Vec::new();
 
     let candidates = [
@@ -4189,7 +4253,7 @@ fn discover_oauth_mcp_servers() -> Vec<(Option<String>, String, serde_json::Map<
 
     for config_path in &all_paths {
         if let Ok(contents) = std::fs::read_to_string(config_path) {
-            let cleaned = if config_path.extension().map_or(false, |e| e == "jsonc") {
+            let cleaned = if config_path.extension().is_some_and(|e| e == "jsonc") {
                 rustcode_core::config::parse_jsonc(&contents, config_path).ok()
             } else {
                 serde_json::from_str(&contents).ok()
@@ -4198,14 +4262,9 @@ fn discover_oauth_mcp_servers() -> Vec<(Option<String>, String, serde_json::Map<
             if let Some(config) = cleaned {
                 if let Some(mcp) = config.get("mcp").and_then(|m| m.as_object()) {
                     for (server_name, server) in mcp {
-                        let connection_type = server
-                            .get("type")
-                            .and_then(|t| t.as_str())
-                            .unwrap_or("");
-                        let server_url = server
-                            .get("url")
-                            .and_then(|u| u.as_str())
-                            .unwrap_or("");
+                        let connection_type =
+                            server.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        let server_url = server.get("url").and_then(|u| u.as_str()).unwrap_or("");
 
                         // Must be remote with a URL
                         if connection_type != "remote" || server_url.is_empty() {
@@ -4246,9 +4305,7 @@ fn discover_oauth_mcp_servers() -> Vec<(Option<String>, String, serde_json::Map<
 ///
 /// Searches local project config and global config, returning the first match
 /// along with the path of the config file where it was found.
-fn find_mcp_server_config(
-    name: &str,
-) -> (Option<serde_json::Value>, Option<PathBuf>) {
+fn find_mcp_server_config(name: &str) -> (Option<serde_json::Value>, Option<PathBuf>) {
     let candidates = [
         PathBuf::from("opencode.json"),
         PathBuf::from("opencode.jsonc"),
@@ -4269,7 +4326,7 @@ fn find_mcp_server_config(
 
     for config_path in &all_paths {
         if let Ok(contents) = std::fs::read_to_string(config_path) {
-            let cleaned = if config_path.extension().map_or(false, |e| e == "jsonc") {
+            let cleaned = if config_path.extension().is_some_and(|e| e == "jsonc") {
                 rustcode_core::config::parse_jsonc(&contents, config_path).ok()
             } else {
                 serde_json::from_str(&contents).ok()
@@ -4316,7 +4373,7 @@ fn list_all_mcp_servers() -> Vec<(String, String, String)> {
 
     for config_path in &all_paths {
         if let Ok(contents) = std::fs::read_to_string(config_path) {
-            let cleaned = if config_path.extension().map_or(false, |e| e == "jsonc") {
+            let cleaned = if config_path.extension().is_some_and(|e| e == "jsonc") {
                 rustcode_core::config::parse_jsonc(&contents, config_path).ok()
             } else {
                 serde_json::from_str(&contents).ok()
@@ -4410,16 +4467,21 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 let mut config: serde_json::Map<String, serde_json::Value> = serde_json::Map::new();
                 config.insert("type".into(), serde_json::Value::String("local".into()));
                 if !env_vars.is_empty() {
-                    config.insert("env".into(), serde_json::to_value(&env_vars).unwrap_or_default());
+                    config.insert(
+                        "env".into(),
+                        serde_json::to_value(&env_vars).unwrap_or_default(),
+                    );
                 }
                 // If env args look like command args, use them as command
                 let command: Vec<String> = env
                     .iter()
-                    .filter(|e| !e.contains('='))
-                    .map(|e| e.clone())
+                    .filter(|e| !e.contains('=')).cloned()
                     .collect();
                 if !command.is_empty() {
-                    config.insert("command".into(), serde_json::to_value(&command).unwrap_or_default());
+                    config.insert(
+                        "command".into(),
+                        serde_json::to_value(&command).unwrap_or_default(),
+                    );
                 }
                 serde_json::Value::Object(config)
             } else {
@@ -4436,17 +4498,18 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 
             // Read existing opencode.json from current directory
             let config_path = PathBuf::from("opencode.json");
-            let mut config_root: serde_json::Map<String, serde_json::Value> = if config_path.exists() {
-                match std::fs::read_to_string(&config_path) {
-                    Ok(contents) => match serde_json::from_str(&contents) {
-                        Ok(val) => val,
+            let mut config_root: serde_json::Map<String, serde_json::Value> =
+                if config_path.exists() {
+                    match std::fs::read_to_string(&config_path) {
+                        Ok(contents) => match serde_json::from_str(&contents) {
+                            Ok(val) => val,
+                            Err(_) => serde_json::Map::new(),
+                        },
                         Err(_) => serde_json::Map::new(),
-                    },
-                    Err(_) => serde_json::Map::new(),
-                }
-            } else {
-                serde_json::Map::new()
-            };
+                    }
+                } else {
+                    serde_json::Map::new()
+                };
 
             // Add/update the mcp.<name> key
             let mcp_map = config_root
@@ -4481,7 +4544,10 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
         McpCommand::List => {
             println!("MCP servers:");
             println!();
-            println!("{:<20} {:<10} {:<50} {:<10}", "Name", "Type", "URL/Command", "Status");
+            println!(
+                "{:<20} {:<10} {:<50} {:<10}",
+                "Name", "Type", "URL/Command", "Status"
+            );
             println!("{}", "\u{2500}".repeat(92));
 
             // Check opencode.json for MCP config
@@ -4497,7 +4563,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 if candidate.exists() {
                     if let Ok(contents) = std::fs::read_to_string(candidate) {
                         // Handle jsonc by stripping comments
-                        let cleaned = if candidate.extension().map_or(false, |e| e == "jsonc") {
+                        let cleaned = if candidate.extension().is_some_and(|e| e == "jsonc") {
                             rustcode_core::config::parse_jsonc(&contents, candidate).ok()
                         } else {
                             serde_json::from_str(&contents).ok()
@@ -4519,10 +4585,12 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                         "local" => server
                                             .get("command")
                                             .and_then(|c| c.as_array())
-                                            .map(|a| a.iter()
-                                                .filter_map(|v| v.as_str())
-                                                .collect::<Vec<_>>()
-                                                .join(" "))
+                                            .map(|a| {
+                                                a.iter()
+                                                    .filter_map(|v| v.as_str())
+                                                    .collect::<Vec<_>>()
+                                                    .join(" ")
+                                            })
                                             .unwrap_or_else(|| "no command".to_string()),
                                         _ => "unknown config".to_string(),
                                     };
@@ -4531,16 +4599,31 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                     // (In CLI mode, we check if the string looks valid)
                                     let status = match connection_type {
                                         "remote" => {
-                                            if detail.contains("://") { "configured" } else { "invalid" }
+                                            if detail.contains("://") {
+                                                "configured"
+                                            } else {
+                                                "invalid"
+                                            }
                                         }
                                         "local" => "configured",
                                         _ => "unknown",
                                     };
 
                                     // Truncate for display
-                                    let name_trunc = if name.len() > 19 { format!("{}...", &name[..16]) } else { name.clone() };
-                                    let detail_trunc = if detail.len() > 49 { format!("{}...", &detail[..46]) } else { detail.clone() };
-                                    println!("{:<20} {:<10} {:<50} {:<10}", name_trunc, connection_type, detail_trunc, status);
+                                    let name_trunc = if name.len() > 19 {
+                                        format!("{}...", &name[..16])
+                                    } else {
+                                        name.clone()
+                                    };
+                                    let detail_trunc = if detail.len() > 49 {
+                                        format!("{}...", &detail[..46])
+                                    } else {
+                                        detail.clone()
+                                    };
+                                    println!(
+                                        "{:<20} {:<10} {:<50} {:<10}",
+                                        name_trunc, connection_type, detail_trunc, status
+                                    );
                                     found_config = true;
                                 }
                             }
@@ -4556,7 +4639,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 .join("opencode.jsonc");
             if global_config.exists() {
                 if let Ok(contents) = std::fs::read_to_string(&global_config) {
-                    let cleaned = rustcode_core::config::parse_jsonc(&contents, &global_config).ok();
+                    let cleaned =
+                        rustcode_core::config::parse_jsonc(&contents, &global_config).ok();
                     if let Some(config) = cleaned {
                         if let Some(mcp) = config.get("mcp").and_then(|m| m.as_object()) {
                             for (name, server) in mcp {
@@ -4573,10 +4657,25 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                     "local" => "see global config".to_string(),
                                     _ => "unknown".to_string(),
                                 };
-                                let status = if connection_type == "remote" { "configured" } else { "configured" };
-                                let name_trunc = if name.len() > 19 { format!("{}...", &name[..16]) } else { name.clone() };
-                                let detail_trunc = if detail.len() > 49 { format!("{}...", &detail[..46]) } else { detail.clone() };
-                                println!("{:<20} {:<10} {:<50} {:<10}", name_trunc, connection_type, detail_trunc, status);
+                                let status = if connection_type == "remote" {
+                                    "configured"
+                                } else {
+                                    "configured"
+                                };
+                                let name_trunc = if name.len() > 19 {
+                                    format!("{}...", &name[..16])
+                                } else {
+                                    name.clone()
+                                };
+                                let detail_trunc = if detail.len() > 49 {
+                                    format!("{}...", &detail[..46])
+                                } else {
+                                    detail.clone()
+                                };
+                                println!(
+                                    "{:<20} {:<10} {:<50} {:<10}",
+                                    name_trunc, connection_type, detail_trunc, status
+                                );
                                 found_config = true;
                             }
                         }
@@ -4591,7 +4690,9 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 eprintln!("Or: rustcode mcp add <name> --env KEY=VALUE");
                 eprintln!();
                 eprintln!("Remote example:");
-                eprintln!(r#"  rustcode mcp add my-server --url https://example.com/mcp --header "Authorization:Bearer token""#);
+                eprintln!(
+                    r#"  rustcode mcp add my-server --url https://example.com/mcp --header "Authorization:Bearer token""#
+                );
                 eprintln!();
                 eprintln!("Local example (via config file):");
                 eprintln!(r#"  rustcode mcp add my-tool --env "NODE_ENV=production""#);
@@ -4633,7 +4734,9 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                         s
                     }
                     None => {
-                        eprintln!("Error: MCP server '{server_name}' not found or not OAuth-capable.");
+                        eprintln!(
+                            "Error: MCP server '{server_name}' not found or not OAuth-capable."
+                        );
                         eprintln!();
                         eprintln!("Available OAuth-capable MCP servers:");
                         for (n, url, oauth) in &oauth_servers {
@@ -4677,9 +4780,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 .get("client_id")
                 .and_then(|v| v.as_str())
                 .unwrap_or("");
-            let client_secret = oauth_config
-                .get("client_secret")
-                .and_then(|v| v.as_str());
+            let client_secret = oauth_config.get("client_secret").and_then(|v| v.as_str());
             let scopes = oauth_config
                 .get("scope")
                 .and_then(|v| v.as_str())
@@ -4688,12 +4789,19 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             eprintln!();
             eprintln!("OAuth Configuration:");
             eprintln!("  Server URL:  {server_url}");
-            eprintln!("  Client ID:   {}", if client_id.is_empty() { "(not set — will attempt dynamic registration)" } else { client_id });
+            eprintln!(
+                "  Client ID:   {}",
+                if client_id.is_empty() {
+                    "(not set — will attempt dynamic registration)"
+                } else {
+                    client_id
+                }
+            );
             if let Some(secret) = client_secret {
                 let masked: String = secret
                     .chars()
                     .take(4)
-                    .chain(std::iter::repeat('*').take(secret.len().saturating_sub(4)))
+                    .chain(std::iter::repeat_n('*', secret.len().saturating_sub(4)))
                     .collect();
                 eprintln!("  Client Secret: {masked}");
             }
@@ -4722,7 +4830,10 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 .unwrap_or(false);
 
             if is_authenticated {
-                eprintln!("Already authenticated. Tokens found in {}.", auth_path.display());
+                eprintln!(
+                    "Already authenticated. Tokens found in {}.",
+                    auth_path.display()
+                );
                 eprintln!("To re-authenticate, first run:");
                 eprintln!("  rustcode mcp logout {server_name}");
                 eprintln!("Then run `rustcode mcp auth {server_name}` again.");
@@ -4812,7 +4923,10 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             eprintln!("In the full implementation, this would:");
             eprintln!("  1. Start a local HTTP server to receive the OAuth callback");
             eprintln!("  2. Exchange the authorization code for tokens");
-            eprintln!("  3. Store access/refresh tokens in {}", auth_path.display());
+            eprintln!(
+                "  3. Store access/refresh tokens in {}",
+                auth_path.display()
+            );
             eprintln!("  4. Print a success message");
             eprintln!();
             eprintln!("For now, you can manually configure tokens by setting env vars");
@@ -4846,10 +4960,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     eprintln!();
                     eprintln!("Available stored credentials:");
                     if let Some(auth) = existing_auth {
-                        let mcp_creds: Vec<_> = auth
-                            .keys()
-                            .filter(|k| k.starts_with("mcp:"))
-                            .collect();
+                        let mcp_creds: Vec<_> =
+                            auth.keys().filter(|k| k.starts_with("mcp:")).collect();
                         if mcp_creds.is_empty() {
                             eprintln!("  (none)");
                         } else {
@@ -5013,7 +5125,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             if let Some(headers) = server_config.get("headers").and_then(|v| v.as_object()) {
                 eprintln!("  Headers: {} configured", headers.len());
                 for (key, val) in headers {
-                    let masked = if key.to_lowercase().contains("auth") || key.to_lowercase().contains("token")
+                    let masked = if key.to_lowercase().contains("auth")
+                        || key.to_lowercase().contains("token")
                     {
                         let s = val.as_str().unwrap_or("");
                         if s.len() > 8 {
@@ -5032,13 +5145,24 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 .get("oauth")
                 .map(|o| !o.is_null() && o.as_object().map(|obj| !obj.is_empty()).unwrap_or(false))
                 .unwrap_or(false);
-            eprintln!("  OAuth:   {}", if oauth_enabled { "enabled" } else { "disabled / not configured" });
+            eprintln!(
+                "  OAuth:   {}",
+                if oauth_enabled {
+                    "enabled"
+                } else {
+                    "disabled / not configured"
+                }
+            );
 
             if let Some(oauth) = server_config.get("oauth").and_then(|v| v.as_object()) {
                 if let Some(cid) = oauth.get("client_id").and_then(|v| v.as_str()) {
                     eprintln!("    client_id: {cid}");
                 }
-                if let Some(sc) = oauth.get("scopes").or_else(|| oauth.get("scope")).and_then(|v| v.as_str()) {
+                if let Some(sc) = oauth
+                    .get("scopes")
+                    .or_else(|| oauth.get("scope"))
+                    .and_then(|v| v.as_str())
+                {
                     eprintln!("    scopes: {sc}");
                 }
                 if let Some(ru) = oauth.get("redirect_uri").and_then(|v| v.as_str()) {
@@ -5146,10 +5270,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     Ok(resp) => {
                         eprintln!("  HTTP Status: {}", resp.status());
                         if let Some(server_hdr) = resp.headers().get("server") {
-                            eprintln!(
-                                "  Server: {}",
-                                server_hdr.to_str().unwrap_or("(binary)")
-                            );
+                            eprintln!("  Server: {}", server_hdr.to_str().unwrap_or("(binary)"));
                         }
                     }
                     Err(e) => {
@@ -5206,6 +5327,11 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 match req.send().await {
                     Ok(resp) => {
                         let status = resp.status();
+                        let www_auth = resp
+                            .headers()
+                            .get("www-authenticate")
+                            .and_then(|v| v.to_str().ok())
+                            .map(|v| v.to_string());
                         eprintln!("  Response status: {status}");
 
                         match resp.text().await {
@@ -5215,8 +5341,14 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                     serde_json::from_str::<serde_json::Value>(&body)
                                 {
                                     if let Some(error) = json_body.get("error") {
-                                        let code = error.get("code").and_then(|v| v.as_i64()).unwrap_or(-1);
-                                        let msg = error.get("message").and_then(|v| v.as_str()).unwrap_or("unknown");
+                                        let code = error
+                                            .get("code")
+                                            .and_then(|v| v.as_i64())
+                                            .unwrap_or(-1);
+                                        let msg = error
+                                            .get("message")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("unknown");
                                         eprintln!("  JSON-RPC Error: [{code}] {msg}");
 
                                         // 401 / 403 → OAuth likely needed
@@ -5229,13 +5361,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                             eprintln!();
 
                                             // Check WWW-Authenticate header
-                                            if let Some(www_auth) =
-                                                resp.headers().get("www-authenticate")
-                                            {
-                                                eprintln!(
-                                                    "  WWW-Authenticate: {}",
-                                                    www_auth.to_str().unwrap_or("(binary)")
-                                                );
+                                            if let Some(ref auth_val) = www_auth {
+                                                eprintln!("  WWW-Authenticate: {auth_val}",);
                                             }
 
                                             if oauth_enabled {
@@ -5246,10 +5373,16 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                                 eprintln!("    2. Client not registered — check client_id in opencode.json");
                                                 eprintln!("    3. Scopes insufficient — verify scopes in oauth config");
                                             } else {
-                                                eprintln!("  OAuth is NOT configured for this server.");
+                                                eprintln!(
+                                                    "  OAuth is NOT configured for this server."
+                                                );
                                                 eprintln!();
-                                                eprintln!("  To enable OAuth, add to opencode.json:");
-                                                eprintln!(r#"    "oauth": {{"client_id": "...", "scopes": "..."}}"#);
+                                                eprintln!(
+                                                    "  To enable OAuth, add to opencode.json:"
+                                                );
+                                                eprintln!(
+                                                    r#"    "oauth": {{"client_id": "...", "scopes": "..."}}"#
+                                                );
                                             }
 
                                             if let Some(data) = error.get("data") {
@@ -5262,8 +5395,14 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                     } else if let Some(result) = json_body.get("result") {
                                         eprintln!("  ✓ Initialize succeeded!");
                                         if let Some(si) = result.get("serverInfo") {
-                                            let sname = si.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                                            let sver = si.get("version").and_then(|v| v.as_str()).unwrap_or("?");
+                                            let sname = si
+                                                .get("name")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("?");
+                                            let sver = si
+                                                .get("version")
+                                                .and_then(|v| v.as_str())
+                                                .unwrap_or("?");
                                             eprintln!("    Server: {sname} v{sver}");
                                         }
                                         if let Some(caps) = result.get("capabilities") {
@@ -5282,7 +5421,9 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                         }
 
                                         eprintln!();
-                                        eprintln!("  Server is operational and responding correctly.");
+                                        eprintln!(
+                                            "  Server is operational and responding correctly."
+                                        );
                                     }
                                 } else {
                                     eprintln!("  Response (raw, first 500 chars):");
@@ -5306,7 +5447,9 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                         eprintln!("    2. Check the server is running");
                         eprintln!("    3. Verify network/firewall allows the connection");
                         if e.is_timeout() {
-                            eprintln!("    4. Connection timed out — increase timeout or check network");
+                            eprintln!(
+                                "    4. Connection timed out — increase timeout or check network"
+                            );
                         }
                         if e.is_connect() {
                             eprintln!("    4. Connection refused — server may not be listening on this URL");
@@ -5319,7 +5462,14 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 
             eprintln!();
             eprintln!("━━━ Debug Summary ━━━");
-            eprintln!("  Config:  {}", if server_url.is_empty() || server_url == "(not set)" { "MISSING URL" } else { "loaded" });
+            eprintln!(
+                "  Config:  {}",
+                if server_url.is_empty() || server_url == "(not set)" {
+                    "MISSING URL"
+                } else {
+                    "loaded"
+                }
+            );
             let auth_state = rustcode_core::config::Config::load_auth()
                 .ok()
                 .and_then(|a| a.get(&auth_key).cloned());
@@ -5364,14 +5514,11 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/acp.ts`
 async fn cmd_acp(args: &AcpArgs) -> i32 {
-    let cwd = args
-        .cwd
-        .clone()
-        .unwrap_or_else(|| {
-            std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| ".".into())
-        });
+    let cwd = args.cwd.clone().unwrap_or_else(|| {
+        std::env::current_dir()
+            .map(|p| p.display().to_string())
+            .unwrap_or_else(|_| ".".into())
+    });
 
     let hostname = args.network.hostname.clone();
     let port = args.network.port;
@@ -5384,7 +5531,7 @@ async fn cmd_acp(args: &AcpArgs) -> i32 {
     std::env::set_var("OPENCODE_CLIENT", "acp");
 
     // Initialize the runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime(&cwd).await {
+    let ctx = match rustcode_core::runtime::initialize_runtime() {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
@@ -5508,9 +5655,7 @@ async fn cmd_acp(args: &AcpArgs) -> i32 {
 
         // Handle the message
         let response = match msg_type {
-            "request" => {
-                handle_acp_request(method, &msg, &server_url, &sdk_client, &ctx).await
-            }
+            "request" => handle_acp_request(method, &msg, &server_url, &sdk_client, &ctx).await,
             "notification" => {
                 // Notifications don't get responses
                 handle_acp_notification(method, &msg, &server_url, &sdk_client).await;
@@ -5556,7 +5701,7 @@ async fn handle_acp_request(
     msg: &serde_json::Value,
     server_url: &str,
     client: &reqwest::Client,
-    ctx: &rustcode_core::runtime::RuntimeContext,
+    _ctx: &rustcode_core::runtime::RuntimeContext,
 ) -> serde_json::Value {
     let params = msg["params"].as_object().cloned().unwrap_or_default();
 
@@ -5585,10 +5730,12 @@ async fn handle_acp_request(
         "newSession" => {
             let directory = params["directory"]
                 .as_str()
-                .unwrap_or(std::env::current_dir()
-                    .map(|p| p.display().to_string())
-                    .unwrap_or_else(|_| ".".into())
-                .to_string());
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| {
+                    std::env::current_dir()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|_| ".".into())
+                });
 
             // Create a new session via the server
             let session_url = format!("{server_url}/session");
@@ -5825,9 +5972,7 @@ async fn cmd_console(cmd: &ConsoleCommand) -> i32 {
             let server_url = url.as_deref().unwrap_or("https://console.opencode.ai");
             cmd_console_login(server_url).await
         }
-        ConsoleCommand::Logout { email } => {
-            cmd_console_logout(email.as_deref()).await
-        }
+        ConsoleCommand::Logout { email } => cmd_console_logout(email.as_deref()).await,
         ConsoleCommand::Switch => cmd_console_switch().await,
         ConsoleCommand::Orgs => cmd_console_orgs().await,
         ConsoleCommand::Open => {
@@ -5896,9 +6041,10 @@ async fn cmd_console_login(server_url: &str) -> i32 {
 
     let device_code = device_resp["device_code"].as_str().unwrap_or("");
     let user_code = device_resp["user_code"].as_str().unwrap_or("UNKNOWN");
+    let default_verification_url = format!("{server_url}/login");
     let verification_url = device_resp["verification_uri"]
         .as_str()
-        .unwrap_or(&format!("{server_url}/login"));
+        .unwrap_or(&default_verification_url);
     let interval = device_resp["interval"].as_u64().unwrap_or(5);
     let expires_in = device_resp["expires_in"].as_u64().unwrap_or(900);
 
@@ -6017,12 +6163,7 @@ async fn cmd_console_login(server_url: &str) -> i32 {
 
         // Step 4: Fetch user profile
         let user_url = format!("{server_url}/api/user");
-        let user_resp = match client
-            .get(&user_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-        {
+        let user_resp = match client.get(&user_url).bearer_auth(access_token).send().await {
             Ok(r) => r,
             Err(e) => {
                 eprintln!("Failed to fetch user profile: {e}");
@@ -6051,35 +6192,35 @@ async fn cmd_console_login(server_url: &str) -> i32 {
 
         // Step 5: Fetch organizations
         let orgs_url = format!("{server_url}/api/orgs");
-        let orgs_resp = match client
-            .get(&orgs_url)
-            .bearer_auth(access_token)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                eprintln!("Warning: Failed to fetch organizations: {e}");
-                vec![]
-            }
-        };
+        let orgs_body: Vec<serde_json::Value> =
+            match client.get(&orgs_url).bearer_auth(access_token).send().await {
+                Ok(r) => match r.json().await {
+                    Ok(v) => v,
+                    Err(_) => vec![],
+                },
+                Err(e) => {
+                    eprintln!("Warning: Failed to fetch organizations: {e}");
+                    vec![]
+                }
+            };
 
-        let orgs_body: Vec<serde_json::Value> = match orgs_resp.json().await {
-            Ok(v) => v,
-            Err(_) => vec![],
-        };
-
-        let active_org_id = orgs_body.first().and_then(|o| o["id"].as_str()).map(String::from);
+        let active_org_id = orgs_body
+            .first()
+            .and_then(|o| o["id"].as_str())
+            .map(String::from);
 
         // Step 6: Store account in SQLite
         let db_path = get_db_path();
-        let pool = match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=rwc", db_path)).await {
-            Ok(p) => p,
-            Err(e) => {
-                eprintln!("Failed to open database: {e}");
-                return 1;
-            }
-        };
+        let pool =
+            match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=rwc", db_path.display()))
+                .await
+            {
+                Ok(p) => p,
+                Err(e) => {
+                    eprintln!("Failed to open database: {e}");
+                    return 1;
+                }
+            };
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let account_id = if user_id.is_empty() {
@@ -6140,27 +6281,27 @@ async fn cmd_console_login(server_url: &str) -> i32 {
 /// Console logout — remove a saved account.
 async fn cmd_console_logout(email: Option<&str>) -> i32 {
     let db_path = get_db_path();
-    let pool = match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=ro", db_path)).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to open database: {e}");
-            return 1;
-        }
-    };
+    let pool =
+        match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=ro", db_path.display())).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to open database: {e}");
+                return 1;
+            }
+        };
 
     // List accounts
-    let accounts: Vec<(String, String)> = match sqlx::query_as(
-        "SELECT id, email FROM account ORDER BY time_created DESC",
-    )
-    .fetch_all(&pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            eprintln!("Failed to list accounts: {e}");
-            return 1;
-        }
-    };
+    let accounts: Vec<(String, String)> =
+        match sqlx::query_as("SELECT id, email FROM account ORDER BY time_created DESC")
+            .fetch_all(&pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("Failed to list accounts: {e}");
+                return 1;
+            }
+        };
 
     if accounts.is_empty() {
         eprintln!("No saved accounts found.");
@@ -6197,13 +6338,14 @@ async fn cmd_console_logout(email: Option<&str>) -> i32 {
     drop(pool);
 
     // Delete account
-    let pool_rw = match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=rwc", db_path)).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to open database: {e}");
-            return 1;
-        }
-    };
+    let pool_rw =
+        match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=rwc", db_path.display())).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to open database: {e}");
+                return 1;
+            }
+        };
 
     if let Err(e) = sqlx::query("DELETE FROM account WHERE id = ?1")
         .bind(&account_id)
@@ -6227,22 +6369,22 @@ async fn cmd_console_logout(email: Option<&str>) -> i32 {
 /// Console switch — switch active organization.
 async fn cmd_console_switch() -> i32 {
     let db_path = get_db_path();
-    let pool = match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=ro", db_path)).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to open database: {e}");
-            return 1;
-        }
-    };
+    let pool =
+        match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=ro", db_path.display())).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to open database: {e}");
+                return 1;
+            }
+        };
 
     // Get active account
-    let active: Option<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT active_account_id, active_org_id FROM account_state WHERE id = 1",
-    )
-    .fetch_optional(&pool)
-    .await
-    .ok()
-    .flatten();
+    let active: Option<(Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT active_account_id, active_org_id FROM account_state WHERE id = 1")
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten();
 
     let (active_account_id, active_org_id) = match active {
         Some((a, o)) => (a, o),
@@ -6258,18 +6400,17 @@ async fn cmd_console_switch() -> i32 {
     }
 
     // Get all accounts
-    let accounts: Vec<(String, String, String)> = match sqlx::query_as(
-        "SELECT id, email, url FROM account ORDER BY time_created DESC",
-    )
-    .fetch_all(&pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            eprintln!("Failed to list accounts: {e}");
-            return 1;
-        }
-    };
+    let accounts: Vec<(String, String, String)> =
+        match sqlx::query_as("SELECT id, email, url FROM account ORDER BY time_created DESC")
+            .fetch_all(&pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("Failed to list accounts: {e}");
+                return 1;
+            }
+        };
 
     if accounts.is_empty() {
         eprintln!("No saved accounts. Run `console login` first.");
@@ -6295,12 +6436,13 @@ async fn cmd_console_switch() -> i32 {
 
     for (account_id, email, url) in &accounts {
         // Get access token for this account
-        let token: Option<String> = sqlx::query_scalar("SELECT access_token FROM account WHERE id = ?1")
-            .bind(account_id)
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten();
+        let token: Option<String> =
+            sqlx::query_scalar("SELECT access_token FROM account WHERE id = ?1")
+                .bind(account_id)
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten();
 
         let access_token = match token {
             Some(t) => t,
@@ -6308,7 +6450,12 @@ async fn cmd_console_switch() -> i32 {
         };
 
         let orgs_url = format!("{url}/api/orgs");
-        let orgs_resp = match client.get(&orgs_url).bearer_auth(&access_token).send().await {
+        let orgs_resp = match client
+            .get(&orgs_url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -6337,44 +6484,43 @@ async fn cmd_console_switch() -> i32 {
     eprintln!("(* = currently active)");
     eprintln!();
     eprintln!("To switch, update the active organization in the database:");
-    eprintln!("  rustcode db \"UPDATE account_state SET active_account_id='{account_id}', active_org_id='{org_id}' WHERE id=1\"");
+    eprintln!("  rustcode db \"UPDATE account_state SET active_account_id='<account_id>', active_org_id='<org_id>' WHERE id=1\"");
     0
 }
 
 /// Console orgs — list all organizations.
 async fn cmd_console_orgs() -> i32 {
     let db_path = get_db_path();
-    let pool = match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=ro", db_path)).await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Failed to open database: {e}");
-            return 1;
-        }
-    };
+    let pool =
+        match sqlx::sqlite::SqlitePool::connect(&format!("{}?mode=ro", db_path.display())).await {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Failed to open database: {e}");
+                return 1;
+            }
+        };
 
     // Get active org
-    let active_org: Option<Option<String>> = sqlx::query_scalar(
-        "SELECT active_org_id FROM account_state WHERE id = 1",
-    )
-    .fetch_optional(&pool)
-    .await
-    .ok()
-    .flatten()
-    .flatten();
+    let active_org: Option<Option<String>> =
+        sqlx::query_scalar("SELECT active_org_id FROM account_state WHERE id = 1")
+            .fetch_optional(&pool)
+            .await
+            .ok()
+            .flatten()
+            .flatten();
 
     // Get all accounts
-    let accounts: Vec<(String, String, String)> = match sqlx::query_as(
-        "SELECT id, email, url FROM account ORDER BY time_created DESC",
-    )
-    .fetch_all(&pool)
-    .await
-    {
-        Ok(rows) => rows,
-        Err(e) => {
-            eprintln!("Failed to list accounts: {e}");
-            return 1;
-        }
-    };
+    let accounts: Vec<(String, String, String)> =
+        match sqlx::query_as("SELECT id, email, url FROM account ORDER BY time_created DESC")
+            .fetch_all(&pool)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                eprintln!("Failed to list accounts: {e}");
+                return 1;
+            }
+        };
 
     if accounts.is_empty() {
         eprintln!("No saved accounts. Run `console login` first.");
@@ -6396,12 +6542,13 @@ async fn cmd_console_orgs() -> i32 {
     eprintln!();
 
     for (account_id, email, url) in &accounts {
-        let token: Option<String> = sqlx::query_scalar("SELECT access_token FROM account WHERE id = ?1")
-            .bind(account_id)
-            .fetch_optional(&pool)
-            .await
-            .ok()
-            .flatten();
+        let token: Option<String> =
+            sqlx::query_scalar("SELECT access_token FROM account WHERE id = ?1")
+                .bind(account_id)
+                .fetch_optional(&pool)
+                .await
+                .ok()
+                .flatten();
 
         let access_token = match token {
             Some(t) => t,
@@ -6409,7 +6556,12 @@ async fn cmd_console_orgs() -> i32 {
         };
 
         let orgs_url = format!("{url}/api/orgs");
-        let orgs_resp = match client.get(&orgs_url).bearer_auth(&access_token).send().await {
+        let orgs_resp = match client
+            .get(&orgs_url)
+            .bearer_auth(&access_token)
+            .send()
+            .await
+        {
             Ok(r) => r,
             Err(_) => continue,
         };
@@ -6427,7 +6579,7 @@ async fn cmd_console_orgs() -> i32 {
         for org in &orgs {
             let org_id = org["id"].as_str().unwrap_or("");
             let org_name = org["name"].as_str().unwrap_or("unknown");
-            let is_active = active_org.as_deref() == Some(org_id);
+            let is_active = active_org.as_ref().and_then(|o| o.as_deref()) == Some(org_id);
             let marker = if is_active { " ●" } else { "" };
             eprintln!("  {org_name} ({org_id}) — {email}{marker}");
         }
@@ -6478,11 +6630,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
         }
         DebugCommand::Rg { cmd: rg_cmd } => {
             match rg_cmd {
-                DebugRgCommand::Files {
-                    query,
-                    glob,
-                    limit,
-                } => {
+                DebugRgCommand::Files { query, glob, limit } => {
                     // TS: Uses ripgrep to list files
                     eprintln!("Ripgrep file search:");
                     if let Some(q) = query {
@@ -6508,7 +6656,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
                                 let stdout = String::from_utf8_lossy(&output.stdout);
                                 let mut lines: Vec<&str> = stdout.lines().collect();
                                 if let Some(l) = limit {
-                                    lines.truncate(l);
+                                    lines.truncate(*l);
                                 }
                                 // Filter by query if provided
                                 for line in &lines {
@@ -6529,7 +6677,9 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
                             }
                         }
                         Err(_) => {
-                            eprintln!("ripgrep not available. Falling back to find-based file listing.");
+                            eprintln!(
+                                "ripgrep not available. Falling back to find-based file listing."
+                            );
                             list_files_fallback(limit.unwrap_or(100));
                         }
                     }
@@ -6565,7 +6715,9 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
                         }
                         Err(e) => {
                             eprintln!("Failed to run ripgrep: {e}");
-                            eprintln!("Install ripgrep: apt install ripgrep / brew install ripgrep");
+                            eprintln!(
+                                "Install ripgrep: apt install ripgrep / brew install ripgrep"
+                            );
                         }
                     }
                 }
@@ -6682,6 +6834,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             }
 
             println!("[]"); // JSON empty array for piping
+            0
         }
         DebugCommand::Skill => {
             // TS: Lists all available skills from Skill.Service
@@ -6705,7 +6858,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
                 if let Ok(entries) = std::fs::read_dir(dir) {
                     for entry in entries.flatten() {
                         let path = entry.path();
-                        if path.extension().map_or(false, |e| e == "md") {
+                        if path.extension().is_some_and(|e| e == "md") {
                             let name = path
                                 .file_stem()
                                 .map(|s| s.to_string_lossy().to_string())
@@ -6727,6 +6880,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             }
 
             println!("[]"); // JSON empty array
+            0
         }
         DebugCommand::Snapshot { cmd: snap_cmd } => {
             match snap_cmd {
@@ -6751,11 +6905,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             println!("{elapsed:.2}"); // milliseconds since startup
             0
         }
-        DebugCommand::Agent {
-            name,
-            tool,
-            params,
-        } => {
+        DebugCommand::Agent { name, tool, params } => {
             eprintln!("Debug agent: {name}");
             if let Some(t) = tool {
                 eprintln!("  Tool: {t}");
@@ -6766,6 +6916,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             eprintln!();
             eprintln!("Agent debugging not yet implemented.");
             eprintln!("When available, this tests agent tool execution in isolation.");
+            0
         }
         DebugCommand::V2 => {
             // TS: Lists v2 catalog providers and default models
@@ -6773,8 +6924,10 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             eprintln!();
 
             let providers = rustcode_core::providers::auto_detect_all();
-            let provider_ids: Vec<String> =
-                providers.iter().map(|p| p.provider_id().to_string()).collect();
+            let provider_ids: Vec<String> = providers
+                .iter()
+                .map(|p| p.provider_id().to_string())
+                .collect();
             let default = provider_ids.first().cloned().unwrap_or_default();
 
             let result = serde_json::json!({
@@ -6809,7 +6962,11 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             if config.plugin.is_empty() {
                 println!("  none");
             } else {
-                for (name, _) in &config.plugin {
+                for plugin_spec in &config.plugin {
+                    let name = match plugin_spec {
+                        rustcode_core::config::PluginSpec::Simple(s) => s.as_str(),
+                        rustcode_core::config::PluginSpec::WithOptions(s, _) => s.as_str(),
+                    };
                     println!("  - {name}");
                 }
             }
@@ -6977,7 +7134,7 @@ async fn cmd_uninstall(args: &UninstallArgs) -> i32 {
         let size_label = if exists {
             dir_size(&path_buf)
                 .map(format_size)
-                .unwrap_or_else(|| "?".to_string())
+                .unwrap_or_else(|_| "?".to_string())
         } else {
             "(does not exist)".to_string()
         };
@@ -6991,7 +7148,10 @@ async fn cmd_uninstall(args: &UninstallArgs) -> i32 {
         };
 
         let prefix = if *keep { "\u{25cb}" } else { "\u{2713}" };
-        println!("  {prefix} {label}: {} ({size_label}){status}", shorten_path(&path_buf));
+        println!(
+            "  {prefix} {label}: {} ({size_label}){status}",
+            shorten_path(&path_buf)
+        );
     }
 
     // Show binary location
@@ -7070,9 +7230,7 @@ fn extract_repo_from_payload(payload: &serde_json::Value, _event_type: &str) -> 
 /// Extract the issue or PR number from a GitHub event payload.
 fn extract_issue_number(payload: &serde_json::Value, event_type: &str) -> Option<u64> {
     match event_type {
-        "issues" | "issue_comment" => {
-            payload.get("issue")?.get("number")?.as_u64()
-        }
+        "issues" | "issue_comment" => payload.get("issue")?.get("number")?.as_u64(),
         "pull_request" | "pull_request_review_comment" => {
             payload.get("pull_request")?.get("number")?.as_u64()
         }
@@ -7087,15 +7245,21 @@ fn extract_issue_number(payload: &serde_json::Value, event_type: &str) -> Option
 /// Extract the comment body from a GitHub event payload.
 fn extract_comment_body(payload: &serde_json::Value, event_type: &str) -> Option<String> {
     match event_type {
-        "issue_comment" | "pull_request_review_comment" => {
-            payload.get("comment")?.get("body")?.as_str().map(|s| s.to_string())
-        }
-        "issues" => {
-            payload.get("issue")?.get("body")?.as_str().map(|s| s.to_string())
-        }
-        "pull_request" => {
-            payload.get("pull_request")?.get("body")?.as_str().map(|s| s.to_string())
-        }
+        "issue_comment" | "pull_request_review_comment" => payload
+            .get("comment")?
+            .get("body")?
+            .as_str()
+            .map(|s| s.to_string()),
+        "issues" => payload
+            .get("issue")?
+            .get("body")?
+            .as_str()
+            .map(|s| s.to_string()),
+        "pull_request" => payload
+            .get("pull_request")?
+            .get("body")?
+            .as_str()
+            .map(|s| s.to_string()),
         _ => payload
             .get("comment")
             .and_then(|c| c.get("body"))
@@ -7240,7 +7404,11 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
                 return 1;
             }
         }
-        GithubCommand::Run { event, event_payload, token } => {
+        GithubCommand::Run {
+            event,
+            event_payload,
+            token,
+        } => {
             let event_type = event.as_deref().unwrap_or("issue_comment");
             eprintln!("GitHub agent — event: {event_type}");
 
@@ -7276,7 +7444,9 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
                         Ok(v) => v,
                         Err(e) => {
                             eprintln!("Error: failed to parse event payload from stdin: {e}");
-                            eprintln!("Tip: use --event-payload <path> to read from a file instead.");
+                            eprintln!(
+                                "Tip: use --event-payload <path> to read from a file instead."
+                            );
                             return 1;
                         }
                     },
@@ -7287,20 +7457,32 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
                 }
             };
 
-            eprintln!("Payload received ({:.0} bytes).", serde_json::to_string(&payload_json).map(|s| s.len() as f64).unwrap_or(0.0));
+            eprintln!(
+                "Payload received ({:.0} bytes).",
+                serde_json::to_string(&payload_json)
+                    .map(|s| s.len() as f64)
+                    .unwrap_or(0.0)
+            );
 
             // ── extract event context ─────────────────────────────────
             let repo_info = extract_repo_from_payload(&payload_json, event_type);
             let issue_number = extract_issue_number(&payload_json, event_type);
             let comment_body = extract_comment_body(&payload_json, event_type);
-            let action = payload_json.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let action = payload_json
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
 
-            eprintln!("  Repository: {}", repo_info.as_deref().unwrap_or("(unknown)"));
+            eprintln!(
+                "  Repository: {}",
+                repo_info.as_deref().unwrap_or("(unknown)")
+            );
             if let Some(num) = issue_number {
                 eprintln!("  Issue/PR #: {num}");
             }
 
-            let task_description = build_github_task(event_type, action, &comment_body, &repo_info, issue_number);
+            let task_description =
+                build_github_task(event_type, action, &comment_body, &repo_info, issue_number);
             eprintln!();
             eprintln!("Task: {task_description}");
 
@@ -7345,7 +7527,10 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             };
 
             if models.is_empty() {
-                eprintln!("Error: no models available for provider '{}'", provider.provider_id());
+                eprintln!(
+                    "Error: no models available for provider '{}'",
+                    provider.provider_id()
+                );
                 return 1;
             }
 
@@ -7420,13 +7605,16 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             // (In the full implementation, a dedicated `gh_api` tool would
             // be registered here that wraps `octokit` calls.)
 
-            let runner = SessionRunner::new(tool_registry);
+            let runner = rustcode_core::session_runner::SessionRunner::new(tool_registry);
 
             // ── run the agent ────────────────────────────────────────
             eprintln!("Starting agent session {} ...", session_id);
             eprintln!();
 
-            match runner.run(provider.as_ref(), model, &input, &instructions).await {
+            match runner
+                .run(provider.as_ref(), model, &input, &instructions)
+                .await
+            {
                 Ok(result) => {
                     if !result.text.is_empty() {
                         println!("{}", result.text);
@@ -7554,14 +7742,10 @@ async fn cmd_pr(args: &PrArgs) -> i32 {
                                 ) {
                                     let remote_url =
                                         format!("https://github.com/{owner}/{repo}.git");
-                                    eprintln!("Cross-repo PR detected. Adding fork remote: {owner}");
-                                    let _ = run_gh(&[
-                                        "remote",
-                                        "add",
-                                        owner,
-                                        &remote_url,
-                                    ])
-                                    .await;
+                                    eprintln!(
+                                        "Cross-repo PR detected. Adding fork remote: {owner}"
+                                    );
+                                    let _ = run_gh(&["remote", "add", owner, &remote_url]).await;
                                 }
                             }
 
@@ -7721,10 +7905,7 @@ async fn cmd_db(args: &DbArgs) -> i32 {
                 if output.status.success() {
                     print!("{}", String::from_utf8_lossy(&output.stdout));
                 } else {
-                    eprintln!(
-                        "SQL error: {}",
-                        String::from_utf8_lossy(&output.stderr)
-                    );
+                    eprintln!("SQL error: {}", String::from_utf8_lossy(&output.stderr));
                     return 1;
                 }
             }
@@ -7742,7 +7923,10 @@ async fn cmd_db(args: &DbArgs) -> i32 {
             return 1;
         }
 
-        eprintln!("Opening interactive sqlite3 shell for: {}", db_path.display());
+        eprintln!(
+            "Opening interactive sqlite3 shell for: {}",
+            db_path.display()
+        );
         eprintln!("Type .exit to quit, .help for sqlite3 commands.");
         eprintln!();
 
@@ -7804,11 +7988,9 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
     if let Some(pw) = &password {
         let auth = format!("{username}:{pw}");
         let encoded = base64_encode(&auth);
-        headers.insert(
-            reqwest::header::AUTHORIZATION,
-            reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded))
-                .unwrap_or_default(),
-        );
+        if let Ok(hv) = reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded)) {
+            headers.insert(reqwest::header::AUTHORIZATION, hv);
+        }
     }
 
     // Test connection
@@ -7818,7 +8000,7 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
     let client = reqwest::Client::builder()
         .default_headers(headers.clone())
         .build()
-        .unwrap_or_default();
+        .expect("Failed to build HTTP client");
 
     match client.get(&health_url).send().await {
         Ok(response) => {
@@ -7873,7 +8055,7 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
     let http_client = reqwest::Client::builder()
         .default_headers(headers)
         .build()
-        .unwrap_or_default();
+        .expect("Failed to build HTTP client");
 
     // ── Launch TUI (Remote mode) ───────────────────────────────────────
     // Remote mode: TUI subscribes to SseClient for events and uses the
@@ -7995,9 +8177,15 @@ fn cmd_version() {
     println!();
 
     // Show build info
-    println!("Build profile: {}", env!("PROFILE"));
-    println!("Target: {}", env!("TARGET"));
-    println!("Rustc: {}", env!("RUSTC_VERSION"));
+    println!(
+        "Build profile: {}",
+        option_env!("PROFILE").unwrap_or("unknown")
+    );
+    println!("Target: {}", option_env!("TARGET").unwrap_or("unknown"));
+    println!(
+        "Rustc: {}",
+        option_env!("RUSTC_VERSION").unwrap_or("unknown")
+    );
 
     // Show detected providers
     let providers = rustcode_core::providers::auto_detect_all();

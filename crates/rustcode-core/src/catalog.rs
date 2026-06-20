@@ -255,13 +255,16 @@ impl ModelInfo {
         provider_id: impl Into<String>,
         name: impl Into<String>,
     ) -> Self {
+        let id_val: String = id.into();
+        let provider_id_val: String = provider_id.into();
+        let name_val: String = name.into();
         Self {
-            id: id.into(),
-            provider_id: provider_id.into(),
-            name: name.into(),
+            id: id_val.clone(),
+            provider_id: provider_id_val,
+            name: name_val,
             enabled: true,
             status: "active".to_string(),
-            api: ModelApi::new("native", id),
+            api: ModelApi::new("native", id_val),
             request: ModelRequest::default(),
             cost: Vec::new(),
             released: None,
@@ -311,11 +314,10 @@ pub struct CatalogData {
 /// Regex matching "small model" keywords in model ID/name/family.
 ///
 /// Ported from: `packages/core/src/catalog.ts` — `SMALL_MODEL_RE`
-pub static SMALL_MODEL_RE: std::sync::LazyLock<regex::Regex> =
-    std::sync::LazyLock::new(|| {
-        regex::Regex::new(r"\b(nano|flash|lite|mini|haiku|small|fast)\b")
-            .expect("SMALL_MODEL_RE is a valid constant regex")
-    });
+pub static SMALL_MODEL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"\b(nano|flash|lite|mini|haiku|small|fast)\b")
+        .expect("SMALL_MODEL_RE is a valid constant regex")
+});
 
 // ── Project model ────────────────────────────────────────────────────
 
@@ -324,7 +326,10 @@ pub static SMALL_MODEL_RE: std::sync::LazyLock<regex::Regex> =
 /// Ported from: `packages/core/src/catalog.ts` — `projectModel`
 #[must_use]
 pub fn project_model(model: &ModelInfo, provider_api: &ModelApi) -> ModelInfo {
-    let api = if model.api.api_type == "native" && model.api.url.is_none() && model.api.settings.is_empty() {
+    let api = if model.api.api_type == "native"
+        && model.api.url.is_none()
+        && model.api.settings.is_empty()
+    {
         ModelApi {
             api_type: provider_api.api_type.clone(),
             id: model.api.id.clone(),
@@ -397,11 +402,7 @@ impl<'a> CatalogEditor<'a> {
     /// Get a model by provider and model ID.
     #[must_use]
     pub fn get_model(&self, provider_id: &str, model_id: &str) -> Option<&ModelInfo> {
-        self.data
-            .providers
-            .get(provider_id)?
-            .models
-            .get(model_id)
+        self.data.providers.get(provider_id)?.models.get(model_id)
     }
 
     /// Get the default model.
@@ -484,11 +485,7 @@ impl CatalogService {
     // ── Model operations ──────────────────────────────────────────
 
     /// Get a specific model for a provider.
-    pub fn model_get(
-        &self,
-        provider_id: &str,
-        model_id: &str,
-    ) -> Result<ModelInfo, CatalogError> {
+    pub fn model_get(&self, provider_id: &str, model_id: &str) -> Result<ModelInfo, CatalogError> {
         let data = self.data.lock().expect("catalog mutex poisoned");
         let record = data.providers.get(provider_id).ok_or_else(|| {
             CatalogError::ProviderNotFound(CatalogProviderNotFoundError::new(provider_id))
@@ -507,18 +504,13 @@ impl CatalogService {
             .flat_map(|r| r.models.values())
             .cloned()
             .collect();
-        models.sort_by(|a, b| {
-            b.released.unwrap_or(0).cmp(&a.released.unwrap_or(0))
-        });
+        models.sort_by(|a, b| b.released.unwrap_or(0).cmp(&a.released.unwrap_or(0)));
         models
     }
 
     /// List all enabled models from non-disabled providers.
     pub fn model_available(&self) -> Vec<ModelInfo> {
-        self.model_all()
-            .into_iter()
-            .filter(|m| m.enabled)
-            .collect()
+        self.model_all().into_iter().filter(|m| m.enabled).collect()
     }
 
     /// Get the current default model.
@@ -543,19 +535,17 @@ impl CatalogService {
             .expect("system time is after UNIX epoch")
             .as_millis() as i64;
 
-        let mut candidates: Vec<(ModelInfo, f64, f64, bool)> = record
+        let candidates: Vec<(ModelInfo, f64, f64, bool)> = record
             .models
             .values()
-            .filter(|m| {
-                m.enabled && m.status == "active"
-            })
+            .filter(|m| m.enabled && m.status == "active")
             .map(|m| {
                 let cost_val = m.cost.first().map_or(999.0, |c| c.input + c.output);
                 let released_ms = m.released.unwrap_or(0);
                 let age_months =
                     ((now_ms - released_ms) as f64 / (1000.0 * 60.0 * 60.0 * 24.0 * 30.0)).max(0.0);
-                let is_small = SMALL_MODEL_RE
-                    .is_match(&format!("{} {}", m.id, m.name).to_lowercase());
+                let is_small =
+                    SMALL_MODEL_RE.is_match(&format!("{} {}", m.id, m.name).to_lowercase());
                 (m.clone(), cost_val, age_months, is_small)
             })
             .filter(|(_, cost, age, _)| *cost > 0.0 && *age <= 18.0)
@@ -586,7 +576,11 @@ impl CatalogService {
             scored.first().map(|(_, m)| project_model(m, &provider_api))
         };
 
-        let small_only: Vec<_> = candidates.iter().filter(|(_, _, _, s)| *s).cloned().collect();
+        let small_only: Vec<_> = candidates
+            .iter()
+            .filter(|(_, _, _, s)| *s)
+            .cloned()
+            .collect();
         if !small_only.is_empty() {
             return pick(&small_only);
         }
@@ -625,11 +619,7 @@ impl CatalogService {
     ///
     /// For `CatalogPolicyAction::ProviderUse`, keeps only providers
     /// whose ID is in `allowed_providers`.
-    pub fn apply_policy(
-        &self,
-        action: &CatalogPolicyAction,
-        allowed_providers: &[&str],
-    ) {
+    pub fn apply_policy(&self, action: &CatalogPolicyAction, allowed_providers: &[&str]) {
         match action {
             CatalogPolicyAction::ProviderUse => {
                 let mut data = self.data.lock().expect("catalog mutex poisoned");
@@ -727,16 +717,14 @@ impl std::error::Error for CatalogError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::error::Error;
 
     // ── CatalogProviderNotFoundError ──────────────────────────────
 
     #[test]
     fn test_provider_not_found_display() {
         let err = CatalogProviderNotFoundError::new("openai");
-        assert_eq!(
-            err.to_string(),
-            "provider not found in catalog: `openai`"
-        );
+        assert_eq!(err.to_string(), "provider not found in catalog: `openai`");
     }
 
     #[test]
@@ -750,17 +738,13 @@ mod tests {
     fn test_provider_not_found_serialize() {
         let err = CatalogProviderNotFoundError::new("gemini");
         let json = serde_json::to_value(&err).expect("serialize");
-        assert_eq!(
-            json,
-            serde_json::json!({"provider_id": "gemini"})
-        );
+        assert_eq!(json, serde_json::json!({"provider_id": "gemini"}));
     }
 
     #[test]
     fn test_provider_not_found_deserialize() {
         let json = serde_json::json!({"provider_id": "cohere"});
-        let err: CatalogProviderNotFoundError =
-            serde_json::from_value(json).expect("deserialize");
+        let err: CatalogProviderNotFoundError = serde_json::from_value(json).expect("deserialize");
         assert_eq!(err.provider_id, "cohere");
     }
 
@@ -794,8 +778,7 @@ mod tests {
     #[test]
     fn test_model_not_found_deserialize() {
         let json = serde_json::json!({"provider_id": "openai", "model_id": "gpt-5.1"});
-        let err: CatalogModelNotFoundError =
-            serde_json::from_value(json).expect("deserialize");
+        let err: CatalogModelNotFoundError = serde_json::from_value(json).expect("deserialize");
         assert_eq!(err.provider_id, "openai");
         assert_eq!(err.model_id, "gpt-5.1");
     }
@@ -900,8 +883,7 @@ mod tests {
         let json = serde_json::to_value(&event).expect("serialize");
         // A unit struct serializes to null in serde_json by default
         assert_eq!(json, serde_json::json!(null));
-        let _restored: CatalogEventUpdated =
-            serde_json::from_value(json).expect("deserialize");
+        let _restored: CatalogEventUpdated = serde_json::from_value(json).expect("deserialize");
     }
 
     // ── Error chain / source ──────────────────────────────────────
@@ -934,10 +916,8 @@ mod tests {
     fn test_model_api_serialize() {
         let mut api = ModelApi::new("aisdk", "claude-sonnet-4-5");
         api.url = Some("https://api.anthropic.com".to_string());
-        api.settings.insert(
-            "region".to_string(),
-            serde_json::json!("us-east-1"),
-        );
+        api.settings
+            .insert("region".to_string(), serde_json::json!("us-east-1"));
         let json = serde_json::to_value(&api).expect("serialize");
         assert_eq!(json["api_type"], "aisdk");
         assert_eq!(json["id"], "claude-sonnet-4-5");
@@ -963,7 +943,10 @@ mod tests {
 
     #[test]
     fn test_model_cost_serialize() {
-        let cost = ModelCost { input: 0.005, output: 0.015 };
+        let cost = ModelCost {
+            input: 0.005,
+            output: 0.015,
+        };
         let json = serde_json::to_value(&cost).expect("serialize");
         assert_eq!(json["input"], 0.005);
         assert_eq!(json["output"], 0.015);
@@ -1082,7 +1065,10 @@ mod tests {
         provider_api.url = Some("https://api.anthropic.com".to_string());
         let model = ModelInfo::new("claude-sonnet-4-5", "anthropic", "Claude Sonnet 4.5");
         let projected = project_model(&model, &provider_api);
-        assert_eq!(projected.api.url.as_deref(), Some("https://api.anthropic.com"));
+        assert_eq!(
+            projected.api.url.as_deref(),
+            Some("https://api.anthropic.com")
+        );
     }
 
     #[test]
@@ -1106,15 +1092,15 @@ mod tests {
     #[test]
     fn test_catalog_error_display_provider() {
         let err = CatalogError::ProviderNotFound(CatalogProviderNotFoundError::new("openai"));
-        assert_eq!(
-            err.to_string(),
-            "provider not found in catalog: `openai`"
-        );
+        assert_eq!(err.to_string(), "provider not found in catalog: `openai`");
     }
 
     #[test]
     fn test_catalog_error_display_model() {
-        let err = CatalogError::ModelNotFound(CatalogModelNotFoundError::new("anthropic", "claude-opus-5"));
+        let err = CatalogError::ModelNotFound(CatalogModelNotFoundError::new(
+            "anthropic",
+            "claude-opus-5",
+        ));
         assert_eq!(
             err.to_string(),
             "model `claude-opus-5` not found for provider `anthropic` in catalog"
@@ -1185,7 +1171,9 @@ mod tests {
         let model = ModelInfo::new("claude-sonnet-4-5", "anthropic", "Claude Sonnet 4.5");
         rec.models.insert(model.id.clone(), model);
         svc.provider_upsert(rec);
-        let got = svc.model_get("anthropic", "claude-sonnet-4-5").expect("model exists");
+        let got = svc
+            .model_get("anthropic", "claude-sonnet-4-5")
+            .expect("model exists");
         assert_eq!(got.name, "Claude Sonnet 4.5");
     }
 
@@ -1286,11 +1274,17 @@ mod tests {
             .as_millis() as i64;
 
         let mut haiku = ModelInfo::new("claude-haiku-3", "anthropic", "Claude Haiku");
-        haiku.cost = vec![ModelCost { input: 0.001, output: 0.005 }];
+        haiku.cost = vec![ModelCost {
+            input: 0.001,
+            output: 0.005,
+        }];
         haiku.released = Some(now_ms - 30 * 24 * 60 * 60 * 1000);
 
         let mut sonnet = ModelInfo::new("claude-sonnet-4-5", "anthropic", "Claude Sonnet");
-        sonnet.cost = vec![ModelCost { input: 0.01, output: 0.03 }];
+        sonnet.cost = vec![ModelCost {
+            input: 0.01,
+            output: 0.03,
+        }];
         sonnet.released = Some(now_ms - 30 * 24 * 60 * 60 * 1000);
 
         rec.models.insert(haiku.id.clone(), haiku);
@@ -1311,11 +1305,17 @@ mod tests {
             .as_millis() as i64;
 
         let mut gpt4o = ModelInfo::new("gpt-4o", "openai", "GPT-4o");
-        gpt4o.cost = vec![ModelCost { input: 0.005, output: 0.015 }];
+        gpt4o.cost = vec![ModelCost {
+            input: 0.005,
+            output: 0.015,
+        }];
         gpt4o.released = Some(now_ms - 5 * 24 * 60 * 60 * 1000);
 
         let mut gpt4 = ModelInfo::new("gpt-4", "openai", "GPT-4");
-        gpt4.cost = vec![ModelCost { input: 0.03, output: 0.06 }];
+        gpt4.cost = vec![ModelCost {
+            input: 0.03,
+            output: 0.06,
+        }];
         gpt4.released = Some(now_ms - 300 * 24 * 60 * 60 * 1000);
 
         rec.models.insert(gpt4o.id.clone(), gpt4o);
@@ -1342,7 +1342,10 @@ mod tests {
             .as_millis() as i64;
 
         let mut old = ModelInfo::new("gpt-3.5-turbo", "openai", "GPT-3.5 Turbo");
-        old.cost = vec![ModelCost { input: 0.001, output: 0.002 }];
+        old.cost = vec![ModelCost {
+            input: 0.001,
+            output: 0.002,
+        }];
         old.released = Some(now_ms - 20 * 30 * 24 * 60 * 60 * 1000);
 
         rec.models.insert(old.id.clone(), old);
@@ -1373,10 +1376,7 @@ mod tests {
         svc.provider_upsert(ProviderRecord::new("openai"));
         svc.provider_upsert(ProviderRecord::new("anthropic"));
 
-        svc.apply_policy(
-            &CatalogPolicyAction::ProviderUse,
-            &["openai", "anthropic"],
-        );
+        svc.apply_policy(&CatalogPolicyAction::ProviderUse, &["openai", "anthropic"]);
 
         assert_eq!(svc.provider_list().len(), 2);
     }
@@ -1486,10 +1486,8 @@ mod tests {
     #[test]
     fn test_catalog_editor_get_provider() {
         let mut data = CatalogData::default();
-        data.providers.insert(
-            "openai".to_string(),
-            ProviderRecord::new("openai"),
-        );
+        data.providers
+            .insert("openai".to_string(), ProviderRecord::new("openai"));
         let editor = CatalogEditor::new(&mut data);
         assert!(editor.get_provider("openai").is_some());
         assert!(editor.get_provider("anthropic").is_none());
@@ -1534,14 +1532,14 @@ mod tests {
     fn test_catalog_service_transform_returns_value() {
         let mut svc = CatalogService::new();
         let count = svc.transform(|editor| {
-            editor.data.providers.insert(
-                "openai".to_string(),
-                ProviderRecord::new("openai"),
-            );
-            editor.data.providers.insert(
-                "anthropic".to_string(),
-                ProviderRecord::new("anthropic"),
-            );
+            editor
+                .data
+                .providers
+                .insert("openai".to_string(), ProviderRecord::new("openai"));
+            editor
+                .data
+                .providers
+                .insert("anthropic".to_string(), ProviderRecord::new("anthropic"));
             editor.list_providers().len()
         });
         assert_eq!(count, 2);
@@ -1551,10 +1549,10 @@ mod tests {
     fn test_catalog_service_transform_modifies_data() {
         let mut svc = CatalogService::new();
         svc.transform(|editor| {
-            editor.data.providers.insert(
-                "gemini".to_string(),
-                ProviderRecord::new("gemini"),
-            );
+            editor
+                .data
+                .providers
+                .insert("gemini".to_string(), ProviderRecord::new("gemini"));
         });
         assert!(svc.provider_get("gemini").is_ok());
     }
@@ -1588,7 +1586,7 @@ mod tests {
 
     #[test]
     fn test_service_reset_default_clears() {
-        let svc = CatalogService::new();
+        let mut svc = CatalogService::new();
         let mut rec = ProviderRecord::new("openai");
         rec.models.insert(
             "gpt-4o".to_string(),
@@ -1604,7 +1602,7 @@ mod tests {
 
     #[test]
     fn test_service_reset_default_noop_when_none() {
-        let svc = CatalogService::new();
+        let mut svc = CatalogService::new();
         assert!(svc.model_default().is_none());
         svc.reset_default();
         assert!(svc.model_default().is_none());

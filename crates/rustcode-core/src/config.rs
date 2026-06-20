@@ -1056,7 +1056,10 @@ impl Config {
     /// # Errors
     /// Returns an error if the data directory cannot be determined,
     /// the existing file cannot be read or parsed, or the file cannot be written.
-    pub fn save_auth(provider_id: &str, credentials: &serde_json::Value) -> crate::error::Result<()> {
+    pub fn save_auth(
+        provider_id: &str,
+        credentials: &serde_json::Value,
+    ) -> crate::error::Result<()> {
         let data_dir = Self::data_dir()?;
         let auth_path = data_dir.join("auth.json");
 
@@ -2112,12 +2115,9 @@ mod tests {
     fn test_substitute_with_custom_env_map() {
         let mut env = HashMap::new();
         env.insert("CUSTOM_KEY".into(), "custom_value".into());
-        let result = substitute_variables(
-            "{env:CUSTOM_KEY}",
-            std::path::Path::new("."),
-            Some(&env),
-        )
-        .unwrap();
+        let result =
+            substitute_variables("{env:CUSTOM_KEY}", std::path::Path::new("."), Some(&env))
+                .unwrap();
         assert_eq!(result, "custom_value");
     }
 
@@ -2338,21 +2338,14 @@ mod tests {
     #[test]
     fn test_discover_config_files_current_dir() {
         // Discover from the current directory should not error
-        let files = discover_config_files(
-            "opencode",
-            std::path::Path::new("."),
-            None,
-        );
+        let files = discover_config_files("opencode", std::path::Path::new("."), None);
         // May or may not find files, but should not error
         assert!(files.is_ok());
     }
 
     #[test]
     fn test_discover_opencode_dirs_current_dir() {
-        let dirs = discover_opencode_dirs(
-            std::path::Path::new("."),
-            None,
-        );
+        let dirs = discover_opencode_dirs(std::path::Path::new("."), None);
         assert!(dirs.is_ok());
     }
 
@@ -2390,10 +2383,13 @@ mod tests {
         let mut target = Info {
             agent: {
                 let mut m = HashMap::new();
-                m.insert("existing".into(), AgentConfig {
-                    name: Some("existing".into()),
-                    ..Default::default()
-                });
+                m.insert(
+                    "existing".into(),
+                    AgentConfig {
+                        name: Some("existing".into()),
+                        ..Default::default()
+                    },
+                );
                 m
             },
             provider: {
@@ -2406,10 +2402,13 @@ mod tests {
         let source = Info {
             agent: {
                 let mut m = HashMap::new();
-                m.insert("new-agent".into(), AgentConfig {
-                    name: Some("new-agent".into()),
-                    ..Default::default()
-                });
+                m.insert(
+                    "new-agent".into(),
+                    AgentConfig {
+                        name: Some("new-agent".into()),
+                        ..Default::default()
+                    },
+                );
                 m
             },
             provider: {

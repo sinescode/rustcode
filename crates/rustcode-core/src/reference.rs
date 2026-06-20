@@ -281,11 +281,7 @@ impl ReferenceData {
             .collect()
     }
 
-    fn materialize_one(
-        &mut self,
-        name: &str,
-        cache_root: &Path,
-    ) -> Result<String, ReferenceError> {
+    fn materialize_one(&mut self, name: &str, cache_root: &Path) -> Result<String, ReferenceError> {
         let source = self
             .sources
             .get(name)
@@ -310,8 +306,7 @@ impl ReferenceData {
         })?;
 
         let repo_svc = RepositoryService::new(cache_root);
-        let local_path =
-            repo_svc.cache_path(&RepositoryReference::Remote(remote_ref.clone()));
+        let local_path = repo_svc.cache_path(&RepositoryReference::Remote(remote_ref.clone()));
 
         let input = RepositoryCacheEnsureInput {
             reference: remote_ref,
@@ -327,10 +322,11 @@ impl ReferenceData {
                 message: format!("failed to create runtime: {e}"),
             })?;
 
-        rt.block_on(repo_svc.ensure(&input)).map_err(|e| ReferenceError::GitCloneFailed {
-            repository: git_source.repository.clone(),
-            message: e.to_string(),
-        })?;
+        rt.block_on(repo_svc.ensure(&input))
+            .map_err(|e| ReferenceError::GitCloneFailed {
+                repository: git_source.repository.clone(),
+                message: e.to_string(),
+            })?;
 
         self.sources.insert(
             name.to_string(),
@@ -559,7 +555,8 @@ pub fn render_reference_guidance(references: &[ReferenceSummary]) -> String {
     }
 
     let mut lines = vec![
-        "Project references provide additional directories that can be accessed when relevant.".to_string(),
+        "Project references provide additional directories that can be accessed when relevant."
+            .to_string(),
         "<available_references>".to_string(),
     ];
 
@@ -583,7 +580,7 @@ pub fn render_reference_guidance(references: &[ReferenceSummary]) -> String {
 /// `packages/core/src/reference/guidance.ts` lines 57–61.
 #[must_use]
 pub fn reference_update_message(current: &[ReferenceSummary]) -> String {
-    let mut lines = vec![
+    let lines = vec![
         "The available project references have changed. This list supersedes the previous reference list."
             .to_string(),
         render_reference_guidance(current),
@@ -604,9 +601,7 @@ pub fn reference_lookup_text(references: &[ReferenceSummary]) -> String {
         return String::new();
     }
 
-    let mut lines = vec![
-        "The following project references are available:".to_string(),
-    ];
+    let mut lines = vec!["The following project references are available:".to_string()];
 
     for r in references {
         match &r.description {
@@ -837,7 +832,10 @@ mod tests {
     #[test]
     fn test_reference_data_add_and_get() {
         let mut data = ReferenceData::default();
-        data.add("docs", ReferenceSource::Local(LocalReferenceSource::new("/docs")));
+        data.add(
+            "docs",
+            ReferenceSource::Local(LocalReferenceSource::new("/docs")),
+        );
         assert!(data.get("docs").is_some());
         assert!(data.get("missing").is_none());
     }
@@ -984,7 +982,9 @@ mod tests {
 
         let results = svc.lookup();
         assert_eq!(results.len(), 2);
-        assert!(results.iter().any(|r| r.name == "docs" && r.path == "/docs"));
+        assert!(results
+            .iter()
+            .any(|r| r.name == "docs" && r.path == "/docs"));
         assert!(results.iter().any(|r| r.name == "lib" && r.path == "/lib"));
     }
 
@@ -1077,7 +1077,10 @@ mod tests {
         assert_eq!(parsed.source_type, "git");
         assert_eq!(parsed.repository, "https://github.com/owner/repo.git");
         assert_eq!(parsed.branch.as_deref(), Some("develop"));
-        assert_eq!(parsed.description.as_deref(), Some("Full-featured git reference"));
+        assert_eq!(
+            parsed.description.as_deref(),
+            Some("Full-featured git reference")
+        );
         assert!(!parsed.hidden);
     }
 
@@ -1112,10 +1115,8 @@ mod tests {
     #[test]
     fn test_reference_source_tagged_enum_deserialization() {
         // Local JSON with type="local"
-        let local_json =
-            r#"{"type":"local","path":"/tmp/test","description":null,"hidden":false}"#;
-        let parsed: ReferenceSource =
-            serde_json::from_str(local_json).expect("deserialize local");
+        let local_json = r#"{"type":"local","path":"/tmp/test","description":null,"hidden":false}"#;
+        let parsed: ReferenceSource = serde_json::from_str(local_json).expect("deserialize local");
         assert!(parsed.is_local());
         assert!(!parsed.is_git());
         if let ReferenceSource::Local(l) = &parsed {
@@ -1126,8 +1127,7 @@ mod tests {
 
         // Git JSON with type="git"
         let git_json = r#"{"type":"git","repository":"org/repo","branch":"main","description":"a repo","hidden":false}"#;
-        let parsed: ReferenceSource =
-            serde_json::from_str(git_json).expect("deserialize git");
+        let parsed: ReferenceSource = serde_json::from_str(git_json).expect("deserialize git");
         assert!(parsed.is_git());
         assert!(!parsed.is_local());
         if let ReferenceSource::Git(g) = &parsed {
@@ -1458,10 +1458,10 @@ mod tests {
     fn test_materialize_git_source_not_found() {
         let mut svc = ReferenceService::new();
         let result = svc.materialize_git_source("nonexistent", Path::new("/tmp"));
-        assert!(matches!(
-            result,
-            Err(ReferenceError::NotFound { ref name } if name == "nonexistent")
-        ));
+        match result {
+            Err(ReferenceError::NotFound { ref name }) => assert_eq!(name, "nonexistent"),
+            _ => panic!("expected NotFound"),
+        }
     }
 
     #[test]
@@ -1472,10 +1472,10 @@ mod tests {
             ReferenceSource::Local(LocalReferenceSource::new("/docs")),
         );
         let result = svc.materialize_git_source("docs", Path::new("/tmp"));
-        assert!(matches!(
-            result,
-            Err(ReferenceError::SourceNotGit { ref name } if name == "docs")
-        ));
+        match result {
+            Err(ReferenceError::SourceNotGit { ref name }) => assert_eq!(name, "docs"),
+            _ => panic!("expected SourceNotGit"),
+        }
     }
 
     #[test]

@@ -205,14 +205,21 @@ pub struct McpServerConfig {
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub headers: HashMap<String, String>,
     /// Connection timeout in milliseconds (default: 30_000).
-    #[serde(default = "default_timeout", skip_serializing_if = "is_default_timeout")]
+    #[serde(
+        default = "default_timeout",
+        skip_serializing_if = "is_default_timeout"
+    )]
     pub timeout: u64,
     /// Whether this server is enabled.
     #[serde(default = "default_enabled")]
     pub enabled: bool,
     /// OAuth configuration for remote servers. Set to `null`/`None` to
     /// disable OAuth (auto-detection is used when unspecified).
-    #[serde(default, skip_serializing_if = "Option::is_none", deserialize_with = "deserialize_oauth")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "deserialize_oauth"
+    )]
     pub oauth: Option<McpOAuthConfig>,
 }
 
@@ -686,13 +693,13 @@ mod tests {
 
     #[test]
     fn test_local_config() {
-        let config = McpServerConfig::local(vec![
-            "node".into(),
-            "server.js".into(),
-        ]);
+        let config = McpServerConfig::local(vec!["node".into(), "server.js".into()]);
         assert!(config.is_local());
         assert!(!config.is_remote());
-        assert_eq!(config.command, Some(vec!["node".into(), "server.js".into()]));
+        assert_eq!(
+            config.command,
+            Some(vec!["node".into(), "server.js".into()])
+        );
         assert_eq!(config.full_args(), vec!["server.js"]);
         assert!(config.enabled);
         assert_eq!(config.timeout, 30_000);
@@ -738,10 +745,7 @@ mod tests {
             "-A".into(),
             "server.ts".into(),
         ]);
-        assert_eq!(
-            config.full_args(),
-            vec!["run", "-A", "server.ts"]
-        );
+        assert_eq!(config.full_args(), vec!["run", "-A", "server.ts"]);
 
         // Command + explicit args
         let config = McpServerConfig {
@@ -992,9 +996,7 @@ impl McpClient {
         let state = match config.r#type {
             McpServerType::Local => {
                 let cmd = config.command_executable().ok_or_else(|| {
-                    crate::error::Error::Config(
-                        "MCP local server has no command executable".into(),
-                    )
+                    crate::error::Error::Config("MCP local server has no command executable".into())
                 })?;
                 let args = config.full_args();
 
@@ -1007,9 +1009,7 @@ impl McpClient {
                     .kill_on_drop(true)
                     .spawn()
                     .map_err(|e| crate::error::Error::Process {
-                        message: format!(
-                            "failed to spawn MCP server `{server_name}`: {e}"
-                        ),
+                        message: format!("failed to spawn MCP server `{server_name}`: {e}"),
                         exit_code: None,
                     })?;
 
@@ -1030,9 +1030,7 @@ impl McpClient {
 
                 {
                     let stdin = child.stdin.as_mut().ok_or_else(|| {
-                        crate::error::Error::Internal(
-                            "MCP child stdin not available".into(),
-                        )
+                        crate::error::Error::Internal("MCP child stdin not available".into())
                     })?;
                     stdin.write_all(framed.as_bytes()).await?;
                     stdin.flush().await?;
@@ -1041,20 +1039,17 @@ impl McpClient {
                 // Read the initialize response from stdout
                 {
                     let stdout = child.stdout.as_mut().ok_or_else(|| {
-                        crate::error::Error::Internal(
-                            "MCP child stdout not available".into(),
-                        )
+                        crate::error::Error::Internal("MCP child stdout not available".into())
                     })?;
                     let mut reader = BufReader::new(stdout);
 
                     let mut header = String::new();
                     reader.read_line(&mut header).await?;
-                    let content_length = parse_content_length(&header)
-                        .map_err(|e| {
-                            crate::error::Error::Internal(format!(
-                                "invalid MCP initialize response header: {e}"
-                            ))
-                        })?;
+                    let content_length = parse_content_length(&header).map_err(|e| {
+                        crate::error::Error::Internal(format!(
+                            "invalid MCP initialize response header: {e}"
+                        ))
+                    })?;
 
                     // Read the \r\n blank line separator
                     let mut blank = String::new();
@@ -1064,8 +1059,7 @@ impl McpClient {
                     let mut body = vec![0u8; content_length];
                     reader.read_exact(&mut body).await?;
 
-                    let response_str =
-                        String::from_utf8_lossy(&body).to_string();
+                    let response_str = String::from_utf8_lossy(&body).to_string();
                     parse_jsonrpc_response(&response_str).map_err(|e| {
                         crate::error::Error::Internal(format!(
                             "invalid MCP initialize response: {e}"
@@ -1095,9 +1089,7 @@ impl McpClient {
             }
             McpServerType::Remote => {
                 let url = config.url.as_ref().ok_or_else(|| {
-                    crate::error::Error::Config(
-                        "MCP remote server has no URL".into(),
-                    )
+                    crate::error::Error::Config("MCP remote server has no URL".into())
                 })?;
                 let http_client = reqwest::Client::new();
 
@@ -1135,10 +1127,8 @@ impl McpClient {
                 let _body: serde_json::Value = response.json().await?;
 
                 // Send the "initialized" notification
-                let notif = build_jsonrpc_notification(
-                    "notifications/initialized",
-                    serde_json::json!({}),
-                );
+                let notif =
+                    build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
                 let _notif_response = http_client
                     .post(url)
                     .json(&notif)
@@ -1191,11 +1181,7 @@ impl McpClient {
     /// Ported from `packages/opencode/src/mcp/index.ts` `listTools()`.
     pub async fn list_tools(&self) -> crate::error::Result<Vec<McpTool>> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
-        let request = build_jsonrpc_request(
-            "tools/list",
-            serde_json::json!({}),
-            id,
-        );
+        let request = build_jsonrpc_request("tools/list", serde_json::json!({}), id);
 
         let response = self.send_jsonrpc(&request).await?;
 
@@ -1238,9 +1224,7 @@ impl McpClient {
         let response = self.send_jsonrpc(&request).await?;
 
         let result = response.get("result").cloned().ok_or_else(|| {
-            crate::error::Error::Internal(
-                "MCP tools/call response missing 'result'".into(),
-            )
+            crate::error::Error::Internal("MCP tools/call response missing 'result'".into())
         })?;
 
         Ok(result)
@@ -1264,9 +1248,7 @@ impl McpClient {
                 // Write the framed request to the child's stdin
                 {
                     let stdin = child.stdin.as_mut().ok_or_else(|| {
-                        crate::error::Error::Internal(
-                            "MCP child stdin not available".into(),
-                        )
+                        crate::error::Error::Internal("MCP child stdin not available".into())
                     })?;
                     stdin.write_all(framed.as_bytes()).await?;
                     stdin.flush().await?;
@@ -1274,20 +1256,15 @@ impl McpClient {
 
                 // Read the framed response from the child's stdout
                 let stdout = child.stdout.as_mut().ok_or_else(|| {
-                    crate::error::Error::Internal(
-                        "MCP child stdout not available".into(),
-                    )
+                    crate::error::Error::Internal("MCP child stdout not available".into())
                 })?;
                 let mut reader = BufReader::new(stdout);
 
                 let mut header = String::new();
                 reader.read_line(&mut header).await?;
-                let content_length =
-                    parse_content_length(&header).map_err(|e| {
-                        crate::error::Error::Internal(format!(
-                            "invalid MCP response: {e}"
-                        ))
-                    })?;
+                let content_length = parse_content_length(&header).map_err(|e| {
+                    crate::error::Error::Internal(format!("invalid MCP response: {e}"))
+                })?;
 
                 let mut blank = String::new();
                 reader.read_line(&mut blank).await?;
@@ -1295,14 +1272,10 @@ impl McpClient {
                 let mut body = vec![0u8; content_length];
                 reader.read_exact(&mut body).await?;
 
-                let response_str =
-                    String::from_utf8_lossy(&body).to_string();
-                let response =
-                    parse_jsonrpc_response(&response_str).map_err(|e| {
-                        crate::error::Error::Internal(format!(
-                            "invalid MCP response: {e}"
-                        ))
-                    })?;
+                let response_str = String::from_utf8_lossy(&body).to_string();
+                let response = parse_jsonrpc_response(&response_str).map_err(|e| {
+                    crate::error::Error::Internal(format!("invalid MCP response: {e}"))
+                })?;
 
                 Ok(response)
             }
@@ -1312,15 +1285,12 @@ impl McpClient {
                 headers,
             } => {
                 let mut request_builder = http_client
-                    .post(url)
+                    .post(url.clone())
                     .json(request)
-                    .timeout(std::time::Duration::from_millis(
-                        self.config.timeout,
-                    ));
+                    .timeout(std::time::Duration::from_millis(self.config.timeout));
 
                 for (key, value) in headers.iter() {
-                    request_builder =
-                        request_builder.header(key.as_str(), value.as_str());
+                    request_builder = request_builder.header(key.as_str(), value.as_str());
                 }
 
                 let response = request_builder.send().await?;
@@ -1346,13 +1316,10 @@ impl McpClient {
                 let mut request_builder = http_client
                     .post(message_url.as_str())
                     .json(request)
-                    .timeout(std::time::Duration::from_millis(
-                        self.config.timeout,
-                    ));
+                    .timeout(std::time::Duration::from_millis(self.config.timeout));
 
                 for (key, value) in headers.iter() {
-                    request_builder =
-                        request_builder.header(key.as_str(), value.as_str());
+                    request_builder = request_builder.header(key.as_str(), value.as_str());
                 }
 
                 // Fire the POST — some SSE servers return the response
@@ -1384,8 +1351,7 @@ impl McpClient {
                         }
                         None => {
                             return Err(crate::error::Error::Internal(
-                                "MCP SSE stream closed while waiting for response"
-                                    .into(),
+                                "MCP SSE stream closed while waiting for response".into(),
                             ));
                         }
                     }
@@ -1424,11 +1390,10 @@ impl McpClient {
         config: McpServerConfig,
         server_name: String,
     ) -> crate::error::Result<Self> {
-        let url = config.url.as_ref().ok_or_else(|| {
-            crate::error::Error::Config(
-                "MCP remote server has no URL".into(),
-            )
-        })?;
+        let url = config
+            .url
+            .as_ref()
+            .ok_or_else(|| crate::error::Error::Config("MCP remote server has no URL".into()))?;
 
         let http_client = reqwest::Client::new();
 
@@ -1463,8 +1428,7 @@ impl McpClient {
 
         // Step 2: Parse the SSE stream to get the message endpoint
         let sse_stream = crate::sse::parse_sse_stream(sse_response);
-        let (sse_tx, sse_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(u64, serde_json::Value)>();
+        let (sse_tx, sse_rx) = tokio::sync::mpsc::unbounded_channel::<(u64, serde_json::Value)>();
 
         // Spawn a background task to process SSE events
         let _sse_handle = tokio::spawn(async move {
@@ -1474,13 +1438,8 @@ impl McpClient {
             while let Some(event_result) = sse_stream.next().await {
                 match event_result {
                     Ok(event) => {
-                        if let Ok(value) =
-                            serde_json::from_str::<serde_json::Value>(&event.data)
-                        {
-                            if let Some(id) = value
-                                .get("id")
-                                .and_then(|v| v.as_u64())
-                            {
+                        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&event.data) {
+                            if let Some(id) = value.get("id").and_then(|v| v.as_u64()) {
                                 let _ = sse_tx.send((id, value));
                             }
                         }
@@ -1537,10 +1496,7 @@ impl McpClient {
         let _body: serde_json::Value = response.json().await?;
 
         // Step 5: Send initialized notification
-        let notif = build_jsonrpc_notification(
-            "notifications/initialized",
-            serde_json::json!({}),
-        );
+        let notif = build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
         let _ = http_client
             .post(&message_url)
             .json(&notif)
@@ -1641,9 +1597,7 @@ impl McpClient {
     /// and a stub execute function — actual execution is handled by the
     /// session runner which dispatches MCP tool calls through the active
     /// MCP client.
-    pub async fn to_plugin_defs(
-        &self,
-    ) -> Vec<crate::tool::PluginToolDef> {
+    pub async fn to_plugin_defs(&self) -> Vec<crate::tool::PluginToolDef> {
         let tools = self.tools.read().await;
         let mut defs = Vec::with_capacity(tools.len());
 
@@ -1652,9 +1606,7 @@ impl McpClient {
             let input_schema = tool
                 .input_schema
                 .clone()
-                .unwrap_or_else(|| {
-                    serde_json::json!({"type": "object", "properties": {}})
-                });
+                .unwrap_or_else(|| serde_json::json!({"type": "object", "properties": {}}));
             let description = tool
                 .description
                 .clone()
@@ -1667,8 +1619,7 @@ impl McpClient {
                 |_args, _ctx| async move {
                     Ok(crate::tool::ExecuteResult {
                         title: "mcp".into(),
-                        output: "MCP tool execution routed through session runner"
-                            .into(),
+                        output: "MCP tool execution routed through session runner".into(),
                         truncated: false,
                         output_path: None,
                         attachments: None,
@@ -1735,10 +1686,7 @@ impl McpServerRegistry {
     ///
     /// # Errors
     /// Returns an error if the server is not found, disabled, or connection fails.
-    pub async fn connect(
-        &self,
-        name: &str,
-    ) -> crate::error::Result<Arc<McpClient>> {
+    pub async fn connect(&self, name: &str) -> crate::error::Result<Arc<McpClient>> {
         // Already connected?
         if let Some(existing) = self.clients.get(name) {
             if existing.is_connected() {
@@ -1764,8 +1712,7 @@ impl McpServerRegistry {
             )));
         }
 
-        let client =
-            Arc::new(McpClient::connect(config, name.to_string()).await?);
+        let client = Arc::new(McpClient::connect(config, name.to_string()).await?);
 
         self.clients.insert(name.to_string(), client.clone());
         Ok(client)
@@ -1789,8 +1736,7 @@ impl McpServerRegistry {
 
     /// List all registered server names (configs, regardless of connection status).
     pub async fn server_names(&self) -> Vec<String> {
-        let mut names: Vec<String> =
-            self.configs.read().await.keys().cloned().collect();
+        let mut names: Vec<String> = self.configs.read().await.keys().cloned().collect();
         names.sort();
         names
     }
@@ -1885,11 +1831,7 @@ pub struct McpServerSummary {
 /// Build a JSON-RPC 2.0 request object.
 ///
 /// Returns a JSON value with `jsonrpc`, `method`, `params`, and `id` fields.
-fn build_jsonrpc_request(
-    method: &str,
-    params: serde_json::Value,
-    id: u64,
-) -> serde_json::Value {
+fn build_jsonrpc_request(method: &str, params: serde_json::Value, id: u64) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -1902,10 +1844,7 @@ fn build_jsonrpc_request(
 ///
 /// Notifications are fire-and-forget — the server does not send a response.
 /// Used for the `notifications/initialized` message in the MCP handshake.
-fn build_jsonrpc_notification(
-    method: &str,
-    params: serde_json::Value,
-) -> serde_json::Value {
+fn build_jsonrpc_notification(method: &str, params: serde_json::Value) -> serde_json::Value {
     serde_json::json!({
         "jsonrpc": "2.0",
         "method": method,
@@ -1917,11 +1856,9 @@ fn build_jsonrpc_notification(
 ///
 /// Returns an error if the JSON is invalid or if the response contains a
 /// JSON-RPC error object.
-fn parse_jsonrpc_response(
-    response: &str,
-) -> std::result::Result<serde_json::Value, String> {
-    let value: serde_json::Value = serde_json::from_str(response)
-        .map_err(|e| format!("invalid JSON: {e}"))?;
+fn parse_jsonrpc_response(response: &str) -> std::result::Result<serde_json::Value, String> {
+    let value: serde_json::Value =
+        serde_json::from_str(response).map_err(|e| format!("invalid JSON: {e}"))?;
 
     // Check for JSON-RPC error
     if let Some(err) = value.get("error") {
@@ -1941,8 +1878,7 @@ fn parse_jsonrpc_response(
 ///
 /// This is the framing used by the MCP stdio transport.
 fn frame_jsonrpc_message(json: &serde_json::Value) -> String {
-    let body = serde_json::to_string(json)
-        .expect("JSON serialization should not fail");
+    let body = serde_json::to_string(json).expect("JSON serialization should not fail");
     format!("Content-Length: {}\r\n\r\n{}", body.len(), body)
 }
 
@@ -1965,15 +1901,11 @@ fn parse_jsonrpc_stream(data: &str) -> Vec<serde_json::Value> {
             {
                 let body_start = header_end + 4; // skip \r\n\r\n
                 if remaining.len() >= body_start + content_length {
-                    let body =
-                        &remaining[body_start..body_start + content_length];
-                    if let Ok(value) =
-                        serde_json::from_str::<serde_json::Value>(body)
-                    {
+                    let body = &remaining[body_start..body_start + content_length];
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
                         messages.push(value);
                     }
-                    remaining =
-                        &remaining[body_start + content_length..];
+                    remaining = &remaining[body_start + content_length..];
                     continue;
                 }
             }
@@ -1989,15 +1921,11 @@ fn parse_jsonrpc_stream(data: &str) -> Vec<serde_json::Value> {
 ///
 /// Expects input like `"Content-Length: 123\r\n"` and returns the
 /// parsed byte count.
-fn parse_content_length(
-    header: &str,
-) -> std::result::Result<usize, String> {
+fn parse_content_length(header: &str) -> std::result::Result<usize, String> {
     header
         .trim()
         .strip_prefix("Content-Length:")
-        .ok_or_else(|| {
-            format!("missing Content-Length header in: {header}")
-        })?
+        .ok_or_else(|| format!("missing Content-Length header in: {header}"))?
         .trim()
         .parse::<usize>()
         .map_err(|e| format!("invalid Content-Length: {e}"))
@@ -2030,7 +1958,8 @@ mod client_tests {
 
     #[test]
     fn test_parse_jsonrpc_response_error() {
-        let resp = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let resp =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let err = parse_jsonrpc_response(resp).unwrap_err();
         assert!(err.contains("Method not found"));
     }
@@ -2081,8 +2010,7 @@ mod client_tests {
 
     #[test]
     fn test_parse_content_length() {
-        let result = parse_content_length("Content-Length: 42\r\n")
-            .expect("valid header");
+        let result = parse_content_length("Content-Length: 42\r\n").expect("valid header");
         assert_eq!(result, 42);
     }
 
@@ -2105,10 +2033,8 @@ mod client_tests {
 
     #[test]
     fn test_jsonrpc_request_notification() {
-        let notif = JsonRpcRequest::notification(
-            "notifications/initialized",
-            serde_json::json!({}),
-        );
+        let notif =
+            JsonRpcRequest::notification("notifications/initialized", serde_json::json!({}));
         assert_eq!(notif.jsonrpc, "2.0");
         assert_eq!(notif.method, "notifications/initialized");
         assert_eq!(notif.id, 0);
@@ -2136,7 +2062,8 @@ mod client_tests {
 
     #[test]
     fn test_jsonrpc_response_error() {
-        let json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
+        let json =
+            r#"{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"Method not found"}}"#;
         let resp: JsonRpcResponse = serde_json::from_str(json).unwrap();
         assert!(!resp.is_success());
         assert!(resp.is_error());
@@ -2158,12 +2085,10 @@ mod client_tests {
 
     #[test]
     fn test_build_notification_has_no_id() {
-        let notif =
-            build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
+        let notif = build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
         let json_str = serde_json::to_string(&notif).unwrap();
         // Notification must NOT have an "id" field
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json_str).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json_str).unwrap();
         assert!(parsed.get("id").is_none());
         assert_eq!(parsed["jsonrpc"], "2.0");
         assert_eq!(parsed["method"], "notifications/initialized");
@@ -2238,10 +2163,7 @@ mod client_tests {
     async fn test_registry_list_servers() {
         let registry = McpServerRegistry::new();
         registry
-            .add_config(
-                "srv1".into(),
-                McpServerConfig::local(vec!["echo".into()]),
-            )
+            .add_config("srv1".into(), McpServerConfig::local(vec!["echo".into()]))
             .await;
         registry
             .add_config(

@@ -1162,10 +1162,7 @@ mod tests {
 
     #[test]
     fn normalize_stop_sequences() {
-        let input = HashMap::from([(
-            "stop".into(),
-            serde_json::json!(["END", "DONE"]),
-        )]);
+        let input = HashMap::from([("stop".into(), serde_json::json!(["END", "DONE"]))]);
         let result = normalize_ai_sdk_options(None, &input);
         assert_eq!(
             result.generation.get("stop").unwrap(),
@@ -1190,7 +1187,10 @@ mod tests {
     fn namespace_known() {
         assert_eq!(ai_sdk_namespace("@ai-sdk/anthropic"), Some("anthropic"));
         assert_eq!(ai_sdk_namespace("@ai-sdk/openai"), Some("openai"));
-        assert_eq!(ai_sdk_namespace("@ai-sdk/openai-compatible"), Some("openai"));
+        assert_eq!(
+            ai_sdk_namespace("@ai-sdk/openai-compatible"),
+            Some("openai")
+        );
     }
 
     #[test]
@@ -1262,7 +1262,11 @@ mod tests {
             tool_call: true,
             interleaved: None,
             cost: None,
-            limit: CatalogModelLimits { context: 8192.0, input: None, output: 4096.0 },
+            limit: CatalogModelLimits {
+                context: 8192.0,
+                input: None,
+                output: 4096.0,
+            },
             modalities: None,
             experimental: None,
             status: None,
@@ -1278,7 +1282,11 @@ mod tests {
 
     #[test]
     fn model_limits_serde() {
-        let limits = ModelLimits { context: 200000, input: Some(100000), output: 4096 };
+        let limits = ModelLimits {
+            context: 200000,
+            input: Some(100000),
+            output: 4096,
+        };
         let json = serde_json::to_string(&limits).unwrap();
         assert!(json.contains("200000"));
         let back: ModelLimits = serde_json::from_str(&json).unwrap();

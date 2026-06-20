@@ -20,7 +20,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -337,7 +337,11 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
 
     // Calculate dialog area — height depends on content
     let context_lines = extract_context(request);
-    let patterns_section = if request.patterns.is_empty() { 0 } else { 2 + request.patterns.len() };
+    let patterns_section = if request.patterns.is_empty() {
+        0
+    } else {
+        2 + request.patterns.len()
+    };
     let context_height = context_lines.len();
     let base_height = 10;
     let extra = patterns_section + context_height;
@@ -386,7 +390,9 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
         Span::styled("△ ", Style::default().fg(Color::Yellow)),
         Span::styled(
             &request.permission,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
     ]));
 
@@ -427,13 +433,9 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
             let mut option_spans: Vec<Span> = Vec::new();
             for (i, opt) in options.iter().enumerate() {
                 let style = if i == state.selected_option {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Yellow)
+                    Style::default().fg(Color::Black).bg(Color::Yellow)
                 } else {
-                    Style::default()
-                        .fg(Color::Gray)
-                        .bg(Color::DarkGray)
+                    Style::default().fg(Color::Gray).bg(Color::DarkGray)
                 };
                 option_spans.push(Span::styled(format!(" {opt} "), style));
                 option_spans.push(Span::raw(" "));
@@ -464,13 +466,9 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
             let mut option_spans: Vec<Span> = Vec::new();
             for (i, opt) in options.iter().enumerate() {
                 let style = if i == state.selected_option {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
+                    Style::default().fg(Color::Black).bg(Color::Cyan)
                 } else {
-                    Style::default()
-                        .fg(Color::Gray)
-                        .bg(Color::DarkGray)
+                    Style::default().fg(Color::Gray).bg(Color::DarkGray)
                 };
                 option_spans.push(Span::styled(format!(" {opt} "), style));
                 option_spans.push(Span::raw(" "));
@@ -502,13 +500,9 @@ pub fn render_permission(f: &mut Frame, area: Rect, state: &PermissionState) {
             let mut option_spans: Vec<Span> = Vec::new();
             for (i, opt) in options.iter().enumerate() {
                 let style = if i == state.selected_option {
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Red)
+                    Style::default().fg(Color::Black).bg(Color::Red)
                 } else {
-                    Style::default()
-                        .fg(Color::Gray)
-                        .bg(Color::DarkGray)
+                    Style::default().fg(Color::Gray).bg(Color::DarkGray)
                 };
                 option_spans.push(Span::styled(format!(" {opt} "), style));
                 option_spans.push(Span::raw(" "));

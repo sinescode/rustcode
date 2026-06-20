@@ -4,8 +4,8 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use axum::routing::{delete, get, post};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
@@ -14,26 +14,38 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
 pub struct ConsoleSwitchPayload {
-    #[serde(rename = "accountID")] pub account_id: String,
-    #[serde(rename = "orgID")] pub org_id: String,
+    #[serde(rename = "accountID")]
+    pub account_id: String,
+    #[serde(rename = "orgID")]
+    pub org_id: String,
 }
 #[derive(Debug, Deserialize)]
 pub struct ToolListQuery {
     pub provider: String,
     pub model: String,
-    #[serde(default)] pub directory: Option<String>,
-    #[serde(default)] pub workspace: Option<String>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
 }
 #[derive(Debug, Deserialize, Default)]
 pub struct SessionListQuery {
-    #[serde(default)] pub directory: Option<String>,
-    #[serde(default)] pub workspace: Option<String>,
-    #[serde(default)] pub roots: Option<bool>,
-    #[serde(default)] pub start: Option<u64>,
-    #[serde(default)] pub cursor: Option<u64>,
-    #[serde(default)] pub search: Option<String>,
-    #[serde(default)] pub limit: Option<usize>,
-    #[serde(default)] pub archived: Option<bool>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub roots: Option<bool>,
+    #[serde(default)]
+    pub start: Option<u64>,
+    #[serde(default)]
+    pub cursor: Option<u64>,
+    #[serde(default)]
+    pub search: Option<String>,
+    #[serde(default)]
+    pub limit: Option<usize>,
+    #[serde(default)]
+    pub archived: Option<bool>,
 }
 
 pub fn experimental_routes(state: Arc<AppState>) -> Router {
@@ -43,10 +55,18 @@ pub fn experimental_routes(state: Arc<AppState>) -> Router {
         .route("/experimental/console/switch", post(console_switch))
         .route("/experimental/tool", get(list_tools))
         .route("/experimental/tool/ids", get(list_tool_ids))
-        .route("/experimental/worktree", get(list_worktrees).post(create_worktree).delete(remove_worktree))
+        .route(
+            "/experimental/worktree",
+            get(list_worktrees)
+                .post(create_worktree)
+                .delete(remove_worktree),
+        )
         .route("/experimental/worktree/reset", post(reset_worktree))
         .route("/experimental/session", get(global_session_list))
-        .route("/experimental/session/{sessionID}/background", post(background_subagents))
+        .route(
+            "/experimental/session/{sessionID}/background",
+            post(background_subagents),
+        )
         .route("/experimental/resource", get(list_resources))
         .with_state(state)
 }
@@ -135,7 +155,9 @@ async fn create_worktree(
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let git = rustcode_core::git::Git::new(&cwd);
     if git.is_repo() {
-        let wt_dir = cwd.join("..").join(format!(".worktree-{}", uuid::Uuid::new_v4()));
+        let wt_dir = cwd
+            .join("..")
+            .join(format!(".worktree-{}", uuid::Uuid::new_v4()));
         match git.worktree_create(&wt_dir) {
             Ok(()) => {
                 info!("Worktree created at {}", wt_dir.display());
@@ -143,6 +165,7 @@ async fn create_worktree(
                     "created": true,
                     "directory": wt_dir.to_string_lossy(),
                 }))
+                .into_response()
             }
             Err(e) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -171,11 +194,14 @@ async fn remove_worktree(
         Some(dir) => {
             let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
             let git = rustcode_core::git::Git::new(&cwd);
-            let force = payload.get("force").and_then(|v| v.as_bool()).unwrap_or(false);
+            let force = payload
+                .get("force")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
             match git.worktree_remove(&dir, force) {
                 Ok(()) => {
                     info!("Worktree removed: {}", dir.display());
-                    Json(serde_json::json!({ "removed": true }))
+                    Json(serde_json::json!({ "removed": true })).into_response()
                 }
                 Err(e) => (
                     axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -202,7 +228,7 @@ async fn reset_worktree(
         match git.reset_changes() {
             Ok(()) => {
                 info!("Worktree changes reset");
-                Json(serde_json::json!({ "reset": true }))
+                Json(serde_json::json!({ "reset": true })).into_response()
             }
             Err(e) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
@@ -230,6 +256,7 @@ async fn global_session_list(
         roots: query.roots,
         search: query.search,
         limit: query.limit,
+        project_id: None,
     };
     match state.sessions.list(Some(input)).await {
         Ok(sessions) => {

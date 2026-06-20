@@ -4,26 +4,32 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 use crate::server::AppState;
 
 #[derive(Debug, Deserialize)]
-pub struct AppendPromptPayload { pub text: String }
+pub struct AppendPromptPayload {
+    pub text: String,
+}
 
 #[derive(Debug, Deserialize)]
-pub struct ExecuteCommandPayload { pub command: String }
+pub struct ExecuteCommandPayload {
+    pub command: String,
+}
 
 #[derive(Debug, Deserialize)]
 pub struct ToastPayload {
-    #[serde(default)] pub title: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
     pub message: String,
     pub variant: String,
-    #[serde(default)] pub duration: Option<u64>,
+    #[serde(default)]
+    pub duration: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -67,7 +73,10 @@ async fn append_prompt(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<AppendPromptPayload>,
 ) -> impl IntoResponse {
-    info!("TUI: append prompt: {}", &payload.text[..payload.text.len().min(80)]);
+    info!(
+        "TUI: append prompt: {}",
+        &payload.text[..payload.text.len().min(80)]
+    );
     let event = rustcode_core::bus::GlobalEvent::from_tui(
         &rustcode_core::bus::TuiBusEvent::TuiPromptAppend {
             text: payload.text.clone(),
@@ -80,10 +89,9 @@ async fn append_prompt(
 
 async fn open_help(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("TUI: open help requested");
-    let event = rustcode_core::bus::GlobalEvent::from_tui(
-        &rustcode_core::bus::TuiBusEvent::TuiHelpOpen,
-    )
-    .expect("TuiBusEvent serialization must succeed");
+    let event =
+        rustcode_core::bus::GlobalEvent::from_tui(&rustcode_core::bus::TuiBusEvent::TuiHelpOpen)
+            .expect("TuiBusEvent serialization must succeed");
     let _ = state.bus.publish(event);
     Json(serde_json::json!(true))
 }
@@ -100,20 +108,18 @@ async fn open_sessions(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 
 async fn open_themes(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("TUI: open themes requested");
-    let event = rustcode_core::bus::GlobalEvent::from_tui(
-        &rustcode_core::bus::TuiBusEvent::TuiThemesOpen,
-    )
-    .expect("TuiBusEvent serialization must succeed");
+    let event =
+        rustcode_core::bus::GlobalEvent::from_tui(&rustcode_core::bus::TuiBusEvent::TuiThemesOpen)
+            .expect("TuiBusEvent serialization must succeed");
     let _ = state.bus.publish(event);
     Json(serde_json::json!(true))
 }
 
 async fn open_models(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("TUI: open models requested");
-    let event = rustcode_core::bus::GlobalEvent::from_tui(
-        &rustcode_core::bus::TuiBusEvent::TuiModelsOpen,
-    )
-    .expect("TuiBusEvent serialization must succeed");
+    let event =
+        rustcode_core::bus::GlobalEvent::from_tui(&rustcode_core::bus::TuiBusEvent::TuiModelsOpen)
+            .expect("TuiBusEvent serialization must succeed");
     let _ = state.bus.publish(event);
     Json(serde_json::json!(true))
 }
@@ -130,10 +136,9 @@ async fn submit_prompt(State(state): State<Arc<AppState>>) -> impl IntoResponse 
 
 async fn clear_prompt(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("TUI: clear prompt requested");
-    let event = rustcode_core::bus::GlobalEvent::from_tui(
-        &rustcode_core::bus::TuiBusEvent::TuiPromptClear,
-    )
-    .expect("TuiBusEvent serialization must succeed");
+    let event =
+        rustcode_core::bus::GlobalEvent::from_tui(&rustcode_core::bus::TuiBusEvent::TuiPromptClear)
+            .expect("TuiBusEvent serialization must succeed");
     let _ = state.bus.publish(event);
     Json(serde_json::json!(true))
 }
@@ -159,18 +164,16 @@ async fn show_toast(
 ) -> impl IntoResponse {
     info!(
         "TUI: show toast '{}' (variant: {})",
-        payload.message,
-        payload.variant
+        payload.message, payload.variant
     );
-    let event = rustcode_core::bus::GlobalEvent::from_tui(
-        &rustcode_core::bus::TuiBusEvent::TuiToastShow {
+    let event =
+        rustcode_core::bus::GlobalEvent::from_tui(&rustcode_core::bus::TuiBusEvent::TuiToastShow {
             title: payload.title.clone(),
             message: payload.message.clone(),
             variant: payload.variant.clone(),
             duration: payload.duration,
-        },
-    )
-    .expect("TuiBusEvent serialization must succeed");
+        })
+        .expect("TuiBusEvent serialization must succeed");
     let _ = state.bus.publish(event);
     Json(serde_json::json!({ "shown": true, "message": payload.message }))
 }
@@ -207,7 +210,7 @@ async fn publish_event(
 
     let event = rustcode_core::bus::GlobalEvent::from_tui(&tui_event)
         .expect("TuiBusEvent serialization must succeed");
-    let event_type = event.event_type().unwrap_or("unknown");
+    let event_type = event.event_type().unwrap_or("unknown").to_string();
     info!("TUI: publish event type={event_type}");
     let _ = state.bus.publish(event);
     Json(serde_json::json!({ "published": true, "type": event_type }))
@@ -229,10 +232,13 @@ async fn select_session(
             .expect("TuiBusEvent serialization must succeed");
             let _ = state.bus.publish(event);
             Json(serde_json::json!({ "selected": true, "session_id": payload.session_id }))
+                .into_response()
         }
         Err(_) => (
             axum::http::StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "session not found", "session_id": payload.session_id})),
+            Json(
+                serde_json::json!({"error": "session not found", "session_id": payload.session_id}),
+            ),
         )
             .into_response(),
     }
@@ -286,7 +292,10 @@ async fn control_response(
                     let input = rustcode_core::permission::ReplyInput {
                         request_id: request_id.to_string(),
                         reply: perm_reply,
-                        message: payload.get("message").and_then(|v| v.as_str()).map(String::from),
+                        message: payload
+                            .get("message")
+                            .and_then(|v| v.as_str())
+                            .map(String::from),
                     };
                     let _ = state.permissions.reply(input).await;
                 }
@@ -296,19 +305,23 @@ async fn control_response(
                     let request_id_obj =
                         rustcode_core::question::QuestionId::new_unchecked(request_id);
                     if let Some(answers) = payload.get("answers").and_then(|v| v.as_array()) {
-                        let question_answers: Vec<rustcode_core::question::QuestionAnswer> = answers
-                            .iter()
-                            .filter_map(|a| {
-                                a.as_array()
-                                    .map(|arr| {
-                                        arr.iter()
-                                            .filter_map(|v| v.as_str().map(String::from))
-                                            .collect::<Vec<_>>()
-                                    })
-                                    .map(rustcode_core::question::QuestionAnswer::new)
-                            })
-                            .collect();
-                        let _ = state.questions.reply(&request_id_obj, question_answers).await;
+                        let question_answers: Vec<rustcode_core::question::QuestionAnswer> =
+                            answers
+                                .iter()
+                                .filter_map(|a| {
+                                    a.as_array()
+                                        .map(|arr| {
+                                            arr.iter()
+                                                .filter_map(|v| v.as_str().map(String::from))
+                                                .collect::<Vec<_>>()
+                                        })
+                                        .map(rustcode_core::question::QuestionAnswer::new)
+                                })
+                                .collect();
+                        let _ = state
+                            .questions
+                            .reply(&request_id_obj, question_answers)
+                            .await;
                     } else {
                         let _ = state.questions.reject(&request_id_obj).await;
                     }

@@ -102,7 +102,10 @@ impl Default for LoggingConfig {
             log_dir: default_log_dir(),
             min_level: LogLevel::default(),
             print_to_stderr: false,
-            run_id: crate::id::create().chars().take(8).collect(),
+            run_id: crate::id::create("run", crate::id::Direction::Descending, None)
+                .chars()
+                .take(8)
+                .collect(),
         }
     }
 }
@@ -171,8 +174,8 @@ impl OtelResourceAttributes {
                         if idx == 0 {
                             return None;
                         }
-                        let key =
-                            urlencoding_decode(entry[..idx].trim()).unwrap_or_else(|| entry[..idx].to_string());
+                        let key = urlencoding_decode(entry[..idx].trim())
+                            .unwrap_or_else(|| entry[..idx].to_string());
                         let val = urlencoding_decode(entry[idx + 1..].trim())
                             .unwrap_or_else(|| entry[idx + 1..].to_string());
                         Some((key, val))
@@ -250,7 +253,11 @@ impl OtlpConfig {
                         let mut parts = entry.splitn(2, '=');
                         let key = parts.next()?.trim().to_string();
                         let val = parts.next()?.trim().to_string();
-                        if key.is_empty() { None } else { Some((key, val)) }
+                        if key.is_empty() {
+                            None
+                        } else {
+                            Some((key, val))
+                        }
                     })
                     .collect()
             })
@@ -265,9 +272,7 @@ impl OtlpConfig {
 
     /// Build the logs endpoint URL.
     pub fn logs_url(&self) -> Option<String> {
-        self.endpoint
-            .as_ref()
-            .map(|base| format!("{base}/v1/logs"))
+        self.endpoint.as_ref().map(|base| format!("{base}/v1/logs"))
     }
 
     /// Build the traces endpoint URL.
@@ -325,10 +330,7 @@ impl OtelResource {
     ) -> Self {
         let run_id = run_id.into();
         let mut attributes = OtelResourceAttributes::from_env().custom;
-        attributes.insert(
-            "deployment.environment.name".to_string(),
-            channel.into(),
-        );
+        attributes.insert("deployment.environment.name".to_string(), channel.into());
         attributes.insert("opencode.client".to_string(), client.into());
         attributes.insert("opencode.run".to_string(), run_id.clone());
         attributes.insert("service.instance.id".to_string(), run_id);
@@ -531,9 +533,7 @@ impl ObservabilityService {
     /// Validate configuration consistency.
     fn validate_config(&self) -> Result<(), ObservabilityError> {
         // Validate log level
-        if self.config.logging.print_to_stderr
-            && self.config.logging.min_level == LogLevel::Debug
-        {
+        if self.config.logging.print_to_stderr && self.config.logging.min_level == LogLevel::Debug {
             // Stderr debug logging is noisy — allowed but warn
             tracing::warn!(
                 target: "observability",
@@ -751,10 +751,7 @@ mod tests {
 
     #[test]
     fn urlencoding_decode_simple() {
-        assert_eq!(
-            urlencoding_decode("hello%20world").unwrap(),
-            "hello world"
-        );
+        assert_eq!(urlencoding_decode("hello%20world").unwrap(), "hello world");
         assert_eq!(urlencoding_decode("noencoding").unwrap(), "noencoding");
     }
 

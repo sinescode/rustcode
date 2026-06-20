@@ -253,8 +253,7 @@ impl SidebarState {
         let panels = SidebarPanel::all();
         let idx = self.active_panel.index();
         let next_idx = (idx + 1) % panels.len();
-        self.active_panel = SidebarPanel::from_index(next_idx)
-            .unwrap_or(SidebarPanel::Context);
+        self.active_panel = SidebarPanel::from_index(next_idx).unwrap_or(SidebarPanel::Context);
     }
 
     /// Cycle to the previous panel tab.
@@ -262,8 +261,7 @@ impl SidebarState {
         let panels = SidebarPanel::all();
         let idx = self.active_panel.index();
         let prev_idx = if idx == 0 { panels.len() - 1 } else { idx - 1 };
-        self.active_panel = SidebarPanel::from_index(prev_idx)
-            .unwrap_or(SidebarPanel::Context);
+        self.active_panel = SidebarPanel::from_index(prev_idx).unwrap_or(SidebarPanel::Context);
     }
 }
 
@@ -353,12 +351,11 @@ fn render_context_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
         Color::Green
     };
 
-    let bar = format!(
-        "[{}{}]",
-        "█".repeat(filled),
-        "░".repeat(empty),
-    );
-    lines.push(Line::from(Span::styled(bar, Style::default().fg(bar_color))));
+    let bar = format!("[{}{}]", "█".repeat(filled), "░".repeat(empty),);
+    lines.push(Line::from(Span::styled(
+        bar,
+        Style::default().fg(bar_color),
+    )));
 
     lines.push(Line::from(vec![
         Span::styled(
@@ -372,7 +369,11 @@ fn render_context_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
         ),
         Span::styled(
             format!(" ({pct:.1}%)"),
-            Style::default().fg(if pct > 90.0 { Color::Red } else { Color::DarkGray }),
+            Style::default().fg(if pct > 90.0 {
+                Color::Red
+            } else {
+                Color::DarkGray
+            }),
         ),
     ]));
 
@@ -385,7 +386,11 @@ fn render_context_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
     if state.cost > 0.0 {
         lines.push(Line::from(Span::styled(
             format!("Session cost: ${:.4}", state.cost),
-            Style::default().fg(if state.cost > 1.0 { Color::Yellow } else { Color::Green }),
+            Style::default().fg(if state.cost > 1.0 {
+                Color::Yellow
+            } else {
+                Color::Green
+            }),
         )));
     } else {
         lines.push(Line::from(Span::styled(
@@ -404,10 +409,7 @@ fn render_context_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
     }
 
     let text = Text::from(lines);
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
 /// Render the Todo panel — collapsible todo list.
@@ -443,10 +445,7 @@ fn render_todo_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
     }
 
     let text = Text::from(lines);
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
 /// Recursively render todo items with indentation.
@@ -455,7 +454,11 @@ fn render_todo_items(lines: &mut Vec<Line>, items: &[TodoItem], _max_width: u16)
         let indent = "  ".repeat(item.level);
         let checkbox = if item.done { "[x]" } else { "[ ]" };
         let collapse_icon = if !item.children.is_empty() {
-            if item.collapsed { "▸" } else { "▾" }
+            if item.collapsed {
+                "▸"
+            } else {
+                "▾"
+            }
         } else {
             " "
         };
@@ -467,12 +470,12 @@ fn render_todo_items(lines: &mut Vec<Line>, items: &[TodoItem], _max_width: u16)
         };
 
         lines.push(Line::from(vec![
-            Span::raw(&indent),
+            Span::raw(indent),
             Span::styled(collapse_icon, Style::default().fg(Color::DarkGray)),
             Span::raw(" "),
             Span::styled(checkbox, style),
             Span::raw(" "),
-            Span::styled(&item.text, style),
+            Span::styled(item.text.clone(), style),
         ]));
 
         // Render children if not collapsed
@@ -522,15 +525,9 @@ fn render_files_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
         let total_adds: usize = state.changed_files.iter().map(|f| f.additions).sum();
         let total_dels: usize = state.changed_files.iter().map(|f| f.deletions).sum();
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("+{total_adds}"),
-                Style::default().fg(Color::Green),
-            ),
+            Span::styled(format!("+{total_adds}"), Style::default().fg(Color::Green)),
             Span::raw(" "),
-            Span::styled(
-                format!("-{total_dels}"),
-                Style::default().fg(Color::Red),
-            ),
+            Span::styled(format!("-{total_dels}"), Style::default().fg(Color::Red)),
             Span::styled(
                 format!(" in {} files", state.changed_files.len()),
                 Style::default().fg(Color::Gray),
@@ -542,7 +539,10 @@ fn render_files_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
             // Truncate path to fit
             let max_path = (area.width as usize).saturating_sub(18);
             let display_path = if file.path.len() > max_path {
-                format!("...{}", &file.path[file.path.len().saturating_sub(max_path - 3)..])
+                format!(
+                    "...{}",
+                    &file.path[file.path.len().saturating_sub(max_path - 3)..]
+                )
             } else {
                 file.path.clone()
             };
@@ -556,7 +556,7 @@ fn render_files_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
 
             lines.push(Line::from(vec![
                 Span::styled(staged_marker, staged_style),
-                Span::styled(&display_path, Style::default().fg(Color::White)),
+                Span::styled(display_path, Style::default().fg(Color::White)),
                 Span::raw("  "),
                 Span::styled(
                     format!("+{}", file.additions),
@@ -572,10 +572,7 @@ fn render_files_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
     }
 
     let text = Text::from(lines);
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
 /// Render the LSP panel — connection status dots.
@@ -623,10 +620,7 @@ fn render_lsp_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
     }
 
     let text = Text::from(lines);
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
 /// Render the MCP panel — server names with connection dots.
@@ -647,30 +641,20 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let connected = state
-            .mcp_connections
-            .iter()
-            .filter(|c| c.connected)
-            .count();
+        let connected = state.mcp_connections.iter().filter(|c| c.connected).count();
         let total = state.mcp_connections.len();
-        let error_count = state
-            .mcp_connections
-            .iter()
-            .filter(|c| c.has_error)
-            .count();
+        let error_count = state.mcp_connections.iter().filter(|c| c.has_error).count();
 
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("{connected}/{total} connected"),
-                Style::default().fg(if connected == total {
-                    Color::Green
-                } else if error_count > 0 {
-                    Color::Red
-                } else {
-                    Color::Yellow
-                }),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("{connected}/{total} connected"),
+            Style::default().fg(if connected == total {
+                Color::Green
+            } else if error_count > 0 {
+                Color::Red
+            } else {
+                Color::Yellow
+            }),
+        )]));
 
         if error_count > 0 {
             lines.push(Line::from(Span::styled(
@@ -702,10 +686,7 @@ fn render_mcp_panel(f: &mut Frame, area: Rect, state: &SidebarState) {
     }
 
     let text = Text::from(lines);
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: true }),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), area);
 }
 
 /// Format a token count in human-readable form (e.g., "12.5K", "1.2M").
@@ -783,15 +764,13 @@ mod tests {
                 done: false,
                 collapsed: false,
                 level: 0,
-                children: vec![
-                    TodoItem {
-                        text: "child".into(),
-                        done: true,
-                        collapsed: false,
-                        level: 1,
-                        children: vec![],
-                    },
-                ],
+                children: vec![TodoItem {
+                    text: "child".into(),
+                    done: true,
+                    collapsed: false,
+                    level: 1,
+                    children: vec![],
+                }],
             },
             TodoItem {
                 text: "done".into(),

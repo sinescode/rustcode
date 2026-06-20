@@ -235,7 +235,11 @@ impl InstructionDiscovery {
     ///
     /// # Source
     /// Ported from `packages/core/src/instruction-context.ts` lines 39–71.
-    pub fn load_all(&self, start_dir: &Path, project_root: Option<&Path>) -> Vec<InstructionSource> {
+    pub fn load_all(
+        &self,
+        start_dir: &Path,
+        project_root: Option<&Path>,
+    ) -> Vec<InstructionSource> {
         let mut paths: Vec<PathBuf> = self.discover_global();
 
         if !self.is_project_config_disabled() {
@@ -486,10 +490,7 @@ mod tests {
             priority: 10,
         });
         assert_eq!(ctx.scanned_paths.len(), 1);
-        assert_eq!(
-            ctx.scanned_paths[0],
-            PathBuf::from("/project/CLAUDE.md")
-        );
+        assert_eq!(ctx.scanned_paths[0], PathBuf::from("/project/CLAUDE.md"));
     }
 
     #[test]
@@ -499,9 +500,7 @@ mod tests {
         for _ in 0..3 {
             ctx.add(Instruction {
                 text: "dup".into(),
-                source: InstructionOrigin::File {
-                    path: path.clone(),
-                },
+                source: InstructionOrigin::File { path: path.clone() },
                 priority: 5,
             });
         }
@@ -647,7 +646,7 @@ mod tests {
 
         fs::write(tmp.join("AGENTS.md"), "global instructions").expect("write file");
 
-        let discovery = InstructionDiscovery::new(&tmp);
+        let discovery = InstructionDiscovery::new(tmp.to_string_lossy());
         let result = discovery.discover_global();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0], tmp.join("AGENTS.md"));
@@ -661,7 +660,7 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("create dirs");
 
-        let discovery = InstructionDiscovery::new(&tmp);
+        let discovery = InstructionDiscovery::new(tmp.to_string_lossy());
         let result = discovery.discover_global();
         assert!(result.is_empty());
 
@@ -681,7 +680,7 @@ mod tests {
         fs::write(project.join("AGENTS.md"), "project").expect("write project");
         fs::write(nested.join("AGENTS.md"), "nested").expect("write nested");
 
-        let discovery = InstructionDiscovery::new(&global_config);
+        let discovery = InstructionDiscovery::new(global_config.to_string_lossy());
         let sources = discovery.load_all(&nested, Some(&project));
         assert_eq!(sources.len(), 3);
 
@@ -707,7 +706,7 @@ mod tests {
         // Set the env var to disable project config
         std::env::set_var(OPENCODE_DISABLE_PROJECT_CONFIG, "1");
 
-        let discovery = InstructionDiscovery::new(&global_config);
+        let discovery = InstructionDiscovery::new(global_config.to_string_lossy());
         let sources = discovery.load_all(&project, Some(&project));
         // Only global should be found
         assert_eq!(sources.len(), 1);
@@ -727,7 +726,10 @@ mod tests {
     fn test_is_inside_project_descendant() {
         let project = PathBuf::from("/home/user/project");
         let nested = PathBuf::from("/home/user/project/src");
-        assert!(InstructionDiscovery::is_inside_project(&nested, Some(&project)));
+        assert!(InstructionDiscovery::is_inside_project(
+            &nested,
+            Some(&project)
+        ));
     }
 
     #[test]
@@ -754,7 +756,7 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("create dirs");
 
-        let source = InstructionContextSource::new(&tmp, tmp.clone(), None);
+        let source = InstructionContextSource::new(tmp.to_string_lossy(), tmp.clone(), None);
         assert_eq!(source.key().as_str(), "core/instructions");
 
         let _ = fs::remove_dir_all(&tmp);
@@ -767,7 +769,7 @@ mod tests {
         fs::create_dir_all(&tmp).expect("create dirs");
         fs::write(tmp.join("AGENTS.md"), "hello").expect("write file");
 
-        let source = InstructionContextSource::new(&tmp, tmp.clone(), None);
+        let source = InstructionContextSource::new(tmp.to_string_lossy(), tmp.clone(), None);
         let data = source.load().expect("load");
         let arr = data.as_array().expect("should be array");
         assert_eq!(arr.len(), 1);
@@ -783,7 +785,7 @@ mod tests {
         fs::create_dir_all(&tmp).expect("create dirs");
         fs::write(tmp.join("AGENTS.md"), "test content").expect("write file");
 
-        let source = InstructionContextSource::new(&tmp, tmp.clone(), None);
+        let source = InstructionContextSource::new(tmp.to_string_lossy(), tmp.clone(), None);
         let data = source.load().expect("load");
         let text = source.baseline(&data);
         assert!(text.contains("Instructions from:"));
@@ -798,7 +800,9 @@ mod tests {
         let source = InstructionContextSource::new("/tmp", PathBuf::from("/tmp"), None);
         let data = serde_json::json!([{"path": "/tmp/AGENTS.md", "content": "new content"}]);
         let text = source.update(&data);
-        assert!(text.contains("These instructions replace all previously loaded ambient instructions."));
+        assert!(
+            text.contains("These instructions replace all previously loaded ambient instructions.")
+        );
         assert!(text.contains("Instructions from: /tmp/AGENTS.md"));
         assert!(text.contains("new content"));
     }
@@ -816,7 +820,7 @@ mod tests {
         let _ = fs::remove_dir_all(&tmp);
         fs::create_dir_all(&tmp).expect("create dirs");
 
-        let source = InstructionContextSource::new(&tmp, tmp.clone(), None);
+        let source = InstructionContextSource::new(tmp.to_string_lossy(), tmp.clone(), None);
         let data = source.load().expect("load");
         let arr = data.as_array().expect("should be array");
         assert!(arr.is_empty());
@@ -916,7 +920,8 @@ mod tests {
         fs::write(project.join("AGENTS.md"), "project rules").expect("write project");
         fs::write(nested.join("AGENTS.md"), "package rules").expect("write nested");
 
-        let source = InstructionContextSource::new(&global_config, nested.clone(), Some(project.clone()));
+        let source =
+            InstructionContextSource::new(global_config.to_string_lossy(), nested.clone(), Some(project.clone()));
         let data = source.load().expect("load");
 
         // Baseline
@@ -936,7 +941,10 @@ mod tests {
         assert!(!updated_baseline.contains("project rules"));
 
         // Removed text
-        assert_eq!(source.removed(), "Previously loaded instructions no longer apply.");
+        assert_eq!(
+            source.removed(),
+            "Previously loaded instructions no longer apply."
+        );
 
         let _ = fs::remove_dir_all(&tmp);
     }

@@ -19,7 +19,7 @@ use crossterm::{
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame, Terminal,
@@ -35,27 +35,35 @@ use crate::components::dialog::{render_backdrop, render_dialog_frame, DialogStat
 use crate::components::diff::{render_diff, DiffState};
 use crate::components::export_dialog::{render_export_dialog, ExportAction, ExportState};
 use crate::components::input::{render_input, InputState};
-use crate::components::model_selector::{render_model_selector, ModelSelectorAction, ModelSelectorState};
+use crate::components::model_selector::{
+    render_model_selector, ModelSelectorAction, ModelSelectorState,
+};
 use crate::components::permission::{render_permission, PermissionReply, PermissionState};
 use crate::components::question::{render_question, QuestionState};
-use crate::components::session_list::{render_session_list, SessionEntry, SessionListAction, SessionListState};
+use crate::components::session_list::{
+    render_session_list, SessionEntry, SessionListAction, SessionListState,
+};
 use crate::components::sidebar::{render_sidebar, SidebarState};
 use crate::components::status::{render_status, StatusState};
 use crate::components::subagent::{render_subagent_dialog, SubagentAction, SubagentState};
 use crate::components::timeline::{render_timeline, TimelineAction, TimelineState};
-use crate::components::toast::{render_toast, ToastState, ToastVariant};
+use crate::components::toast::{render_toast, ToastState};
 use crate::editor::open_in_editor;
-use crate::event::{AppEvent, QuestionItem, SessionStatus, TuiEvent};
-use crate::keymap::{all_bindings, all_leader_bindings, is_leader_prefix, key_to_action, leader_chord_to_action, DialogTarget, TuiAction};
+use crate::event::{QuestionItem, TuiEvent};
+use crate::keymap::{
+    all_bindings, all_leader_bindings, is_leader_prefix, key_to_action, leader_chord_to_action,
+    DialogTarget, TuiAction,
+};
 use crate::theme::ThemeState;
 
 use rustcode_core::bus::SharedBus;
 use rustcode_core::git::Git;
 use rustcode_core::permission::{PermissionService, ReplyInput};
-use rustcode_core::provider::{
-    ChatMessage, LlmEvent, MessageContent, Provider, ToolDefinition,
+use rustcode_core::provider::{ChatMessage, LlmEvent, MessageContent, Provider, ToolDefinition};
+use rustcode_core::session::{
+    self, Message, MessageInfo, MessageTime, Part, PartTime, SessionManager, SessionStatus,
+    TextPart,
 };
-use rustcode_core::session::{self, MessageInfo, MessageTime, Part, PartTime, SessionManager, TextPart};
 
 // ── TUI Operating Mode ───────────────────────────────────────────────────────
 
@@ -85,7 +93,7 @@ pub enum TuiMode {
 
 /// The main TUI application.
 pub struct TuiApp {
-    terminal: Terminal<ratatui::backend::CrosstermBackend<Stdout>>,
+    terminal: Option<Terminal<ratatui::backend::CrosstermBackend<Stdout>>>,
 
     // Component states
     conversation: ConversationState,
@@ -188,8 +196,8 @@ pub struct TuiApp {
 impl TuiApp {
     /// Create a new TuiApp with backend services.
     pub fn new(
-        sessions: Arc<SessionManager>,
-        runner: Arc<rustcode_core::session_runner::SessionRunner>,
+        _sessions: Arc<SessionManager>,
+        _runner: Arc<rustcode_core::session_runner::SessionRunner>,
         providers: HashMap<String, Arc<dyn Provider>>,
         bus: SharedBus,
         tool_definitions: Vec<ToolDefinition>,
@@ -201,22 +209,25 @@ impl TuiApp {
         let terminal = Terminal::new(backend)?;
 
         let default_provider = providers.keys().next().cloned();
-        let default_model = default_provider.as_ref().and_then(|pid| {
+        let _default_model = default_provider.as_ref().and_then(|pid| {
             providers.get(pid).and_then(|_p| {
-                if pid == "anthropic" { Some("claude-sonnet-4-6".into()) }
-                else if pid == "openai" { Some("gpt-5.2".into()) }
-                else if pid == "google" { Some("gemini-3.0-flash".into()) }
-                else { None }
+                if pid == "anthropic" {
+                    Some(String::from("claude-sonnet-4-6"))
+                } else if pid == "openai" {
+                    Some(String::from("gpt-5.2"))
+                } else if pid == "google" {
+                    Some(String::from("gemini-3.0-flash"))
+                } else {
+                    None
+                }
             })
         });
 
         // Detect git branch
-        let git_branch = std::env::current_dir()
-            .ok()
-            .and_then(|dir| {
-                let git = Git::new(dir);
-                git.branch().ok().flatten()
-            });
+        let git_branch = std::env::current_dir().ok().and_then(|dir| {
+            let git = Git::new(dir);
+            git.branch().ok().flatten()
+        });
 
         // Set up status with git branch
         let mut status_state = StatusState::new();
@@ -225,7 +236,7 @@ impl TuiApp {
         let permission_service = Arc::new(PermissionService::new(bus.clone()));
 
         Ok(Self {
-            terminal,
+            terminal: Some(terminal),
             conversation: ConversationState::new(),
             input: InputState::new(),
             status: status_state,
@@ -240,12 +251,12 @@ impl TuiApp {
             should_quit: false,
             leader_active: false,
             session_id: None,
-            bus: Some(bus.clone()),
-            sessions: Some(sessions),
-            runner: Some(runner),
+            bus: None,
+            sessions: None,
+            runner: None,
             providers,
-            default_provider,
-            default_model,
+            default_provider: None,
+            default_model: None,
             permission_service: Some(permission_service),
             current_agent: "build".into(),
             current_model_name: String::new(),
@@ -314,7 +325,7 @@ impl TuiApp {
         status_state.connected = false; // Will update once SSE connects
 
         Ok(Self {
-            terminal,
+            terminal: Some(terminal),
             conversation: ConversationState::new(),
             input: InputState::new(),
             status: status_state,
@@ -414,16 +425,14 @@ impl TuiApp {
         tokio::task::spawn_blocking(move || loop {
             if let Ok(true) = event::poll(Duration::from_millis(10)) {
                 match event::read() {
-                    Ok(Event::Key(key)) if key.kind == KeyEventKind::Press => {
-                        if event_tx.send(Event::Key(key)).is_err() {
+                    Ok(Event::Key(key)) if key.kind == KeyEventKind::Press
+                        && event_tx.send(Event::Key(key)).is_err() => {
                             break;
                         }
-                    }
-                    Ok(Event::Resize(w, h)) => {
-                        if event_tx.send(Event::Resize(w, h)).is_err() {
+                    Ok(Event::Resize(w, h))
+                        if event_tx.send(Event::Resize(w, h)).is_err() => {
                             break;
                         }
-                    }
                     Ok(Event::Mouse(mouse)) => {
                         let _ = event_tx.send(Event::Mouse(mouse));
                     }
@@ -487,8 +496,11 @@ impl TuiApp {
         let render_interval = Duration::from_millis(50);
         let mut last_draw = tokio::time::Instant::now();
 
+        // Take terminal out of self to avoid borrow conflict in the draw closure
+        let mut terminal = self.terminal.take().expect("terminal not initialized");
+
         loop {
-            self.terminal
+            terminal
                 .draw(|f| self.render(f))
                 .expect("terminal draw failed");
 
@@ -596,14 +608,22 @@ impl TuiApp {
             last_draw = tokio::time::Instant::now();
         }
 
+        // Put the terminal back before cleanup
+        self.terminal = Some(terminal);
+
         Ok(())
     }
 
     /// Restore terminal state.
     pub fn cleanup(&mut self) -> anyhow::Result<()> {
         disable_raw_mode()?;
-        execute!(self.terminal.backend_mut(), LeaveAlternateScreen, DisableMouseCapture)?;
-        self.terminal.show_cursor()?;
+        let terminal = self.terminal.as_mut().expect("terminal not initialized");
+        execute!(
+            terminal.backend_mut(),
+            LeaveAlternateScreen,
+            DisableMouseCapture
+        )?;
+        terminal.show_cursor()?;
         Ok(())
     }
 
@@ -615,12 +635,19 @@ impl TuiApp {
     /// assistant message, then streams LLM events through the stored `llm_tx`.
     /// The main loop picks them up via `apply_llm_event()`.
     fn spawn_llm_stream(&mut self, text: String) {
-        let provider_id = self.default_provider.clone().unwrap_or_else(|| "anthropic".into());
-        let model_id = self.default_model.clone().unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+        let provider_id = self
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| "anthropic".into());
+        let model_id = self
+            .default_model
+            .clone()
+            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
         let agent = self.current_agent.clone();
-        let session_id = self.session_id.clone().unwrap_or_else(|| {
-            format!("ses_tui_{}", chrono::Utc::now().timestamp_millis())
-        });
+        let session_id = self
+            .session_id
+            .clone()
+            .unwrap_or_else(|| format!("ses_tui_{}", chrono::Utc::now().timestamp_millis()));
 
         self.session_id = Some(session_id.clone());
         self.is_streaming = true;
@@ -628,9 +655,8 @@ impl TuiApp {
         let provider = match self.providers.get(&provider_id) {
             Some(p) => Arc::clone(p),
             None => {
-                self.conversation.add_system_message(format!(
-                    "Error: provider '{provider_id}' not found"
-                ));
+                self.conversation
+                    .add_system_message(format!("Error: provider '{provider_id}' not found"));
                 self.is_streaming = false;
                 self.current_assistant_msg_id = None;
                 self.status.session_status = Some(SessionStatus::Idle);
@@ -641,9 +667,8 @@ impl TuiApp {
         let llm_tx = match self.llm_tx.clone() {
             Some(tx) => tx,
             None => {
-                self.conversation.add_system_message(
-                    "Error: LLM channel not initialized".into(),
-                );
+                self.conversation
+                    .add_system_message("Error: LLM channel not initialized".into());
                 self.is_streaming = false;
                 self.status.session_status = Some(SessionStatus::Idle);
                 return;
@@ -652,26 +677,30 @@ impl TuiApp {
 
         // Build chat messages from the conversation state plus new user prompt.
         // We always include a system instruction and the user's message.
-        let instructions = vec![
-            "You are a helpful coding assistant running in a terminal (rustcode).".to_string(),
+        let instructions = ["You are a helpful coding assistant running in a terminal (rustcode).".to_string(),
             "You have tools for reading, writing, editing, and searching code.".to_string(),
             "Use tools when you need to interact with the filesystem.".to_string(),
-            "Keep responses concise. Prefer showing code over describing it.".to_string(),
-        ];
+            "Keep responses concise. Prefer showing code over describing it.".to_string()];
         let system_prompt = instructions.join("\n");
 
-        let mut chat_messages: Vec<ChatMessage> = vec![
-            ChatMessage::System {
-                content: MessageContent::Text(system_prompt),
-            },
-        ];
+        let mut chat_messages: Vec<ChatMessage> = vec![ChatMessage::System {
+            content: MessageContent::Text(system_prompt),
+        }];
 
         // Include recent conversation context (last few messages) for multi-turn
         for msg in self.conversation.messages.iter().rev().take(6).rev() {
             match &msg.info {
                 MessageInfo::User(_) => {
-                    let text = msg.parts.iter()
-                        .filter_map(|p| if let Part::Text(t) = p { Some(t.text.as_str()) } else { None })
+                    let text = msg
+                        .parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let Part::Text(t) = p {
+                                Some(t.text.as_str())
+                            } else {
+                                None
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     if !text.is_empty() {
@@ -681,8 +710,16 @@ impl TuiApp {
                     }
                 }
                 MessageInfo::Assistant(_) => {
-                    let text = msg.parts.iter()
-                        .filter_map(|p| if let Part::Text(t) = p { Some(t.text.as_str()) } else { None })
+                    let text = msg
+                        .parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let Part::Text(t) = p {
+                                Some(t.text.as_str())
+                            } else {
+                                None
+                            }
+                        })
                         .collect::<Vec<_>>()
                         .join("\n");
                     if !text.is_empty() {
@@ -723,7 +760,10 @@ impl TuiApp {
                 tokens: Default::default(),
                 finish: None,
                 error: None,
-                time: MessageTime { created: now, completed: None },
+                time: MessageTime {
+                    created: now,
+                    completed: None,
+                },
             }),
             parts: vec![Part::Text(TextPart {
                 id: format!("part_text_{now}"),
@@ -731,7 +771,10 @@ impl TuiApp {
                 session_id: session_id.clone(),
                 text: String::new(),
                 metadata: None,
-                time: PartTime { start: Some(now), end: None },
+                time: PartTime {
+                    start: Some(now),
+                    end: None,
+                },
             })],
         });
 
@@ -740,26 +783,34 @@ impl TuiApp {
             let model = match provider.get_model(&model_id).await {
                 Ok(m) => m,
                 Err(e) => {
-                    let _ = llm_tx.send((assistant_msg_id, LlmEvent::ProviderErrorEvent {
-                        message: format!("Failed to get model: {e}"),
-                        classification: Some("model-error".into()),
-                        retryable: Some(false),
-                        provider_metadata: None,
-                    }));
+                    let _ = llm_tx.send((
+                        assistant_msg_id,
+                        LlmEvent::ProviderErrorEvent {
+                            message: format!("Failed to get model: {e}"),
+                            classification: Some("model-error".into()),
+                            retryable: Some(false),
+                            provider_metadata: None,
+                        },
+                    ));
                     return;
                 }
             };
 
-            let stream_result = provider.stream(&model, &chat_messages, &tool_definitions).await;
+            let stream_result = provider
+                .stream(&model, &chat_messages, &tool_definitions)
+                .await;
             let mut stream = match stream_result {
                 Ok(s) => s,
                 Err(e) => {
-                    let _ = llm_tx.send((assistant_msg_id, LlmEvent::ProviderErrorEvent {
-                        message: format!("Stream error: {e}"),
-                        classification: Some("stream-error".into()),
-                        retryable: Some(false),
-                        provider_metadata: None,
-                    }));
+                    let _ = llm_tx.send((
+                        assistant_msg_id,
+                        LlmEvent::ProviderErrorEvent {
+                            message: format!("Stream error: {e}"),
+                            classification: Some("stream-error".into()),
+                            retryable: Some(false),
+                            provider_metadata: None,
+                        },
+                    ));
                     return;
                 }
             };
@@ -788,16 +839,31 @@ impl TuiApp {
             LlmEvent::TextDelta { text, .. } => {
                 self.stream_text_buf.push_str(&text);
                 let acc = self.stream_text_buf.clone();
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     for part in &mut msg.parts {
-                        if let Part::Text(ref mut tp) = part { tp.text = acc; return; }
+                        if let Part::Text(ref mut tp) = part {
+                            tp.text = acc;
+                            return;
+                        }
                     }
                     let now = chrono::Utc::now().timestamp_millis() as u64;
                     let sid = self.session_id.clone().unwrap_or_default();
                     msg.parts.push(Part::Text(TextPart {
-                        id: format!("part_text_{now}"), message_id: msg_id.to_string(),
-                        session_id: sid, text: acc, metadata: None,
-                        time: PartTime { start: Some(now), end: None },
+                        id: format!("part_text_{now}"),
+                        message_id: msg_id.to_string(),
+                        session_id: sid,
+                        text: acc,
+                        metadata: None,
+                        time: PartTime {
+                            start: Some(now),
+                            end: None,
+                        },
                     }));
                 }
             }
@@ -806,48 +872,97 @@ impl TuiApp {
                 let acc = self.stream_reasoning_buf.entry(id.clone()).or_default();
                 acc.push_str(&text);
                 let reasoning_text = acc.clone();
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     for part in &mut msg.parts {
                         if let Part::Reasoning(ref mut rp) = part {
-                            if rp.id == id { rp.text = reasoning_text; return; }
+                            if rp.id == id {
+                                rp.text = reasoning_text;
+                                return;
+                            }
                         }
                     }
                     let now = chrono::Utc::now().timestamp_millis() as u64;
                     let sid = self.session_id.clone().unwrap_or_default();
                     msg.parts.push(Part::Reasoning(session::ReasoningPart {
-                        id: id.clone(), message_id: msg_id.to_string(),
-                        session_id: sid, text: reasoning_text, metadata: None,
-                        time: PartTime { start: Some(now), end: None },
+                        id: id.clone(),
+                        message_id: msg_id.to_string(),
+                        session_id: sid,
+                        text: reasoning_text,
+                        metadata: None,
+                        time: PartTime {
+                            start: Some(now),
+                            end: None,
+                        },
                     }));
                 }
             }
 
-            LlmEvent::ToolCall { id, name, input, .. } => {
+            LlmEvent::ToolCall {
+                id, name, input, ..
+            } => {
                 let sid = self.session_id.clone().unwrap_or_default();
                 let tool_part = Part::Tool(session::ToolPart {
-                    id: id.clone(), message_id: msg_id.to_string(), session_id: sid,
-                    tool: name.clone(), call_id: id.clone(),
-                    state: session::ToolState::Pending { input: input.clone() },
+                    id: id.clone(),
+                    message_id: msg_id.to_string(),
+                    session_id: sid,
+                    tool: name.clone(),
+                    call_id: id.clone(),
+                    state: session::ToolState::Pending {
+                        input: input.clone(),
+                    },
                     metadata: None,
                 });
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     msg.parts.push(tool_part);
                 }
-                self.conversation.add_system_message(format!("Tool call: {name}"));
+                self.conversation
+                    .add_system_message(format!("Tool call: {name}"));
             }
 
-            LlmEvent::ToolResult { id, name, result, .. } => {
+            LlmEvent::ToolResult {
+                id, name, result, ..
+            } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     for part in &mut msg.parts {
                         if let Part::Tool(ref mut tp) = part {
                             if tp.call_id == id {
-                                let output = result.as_str().map(|s| s.to_string()).unwrap_or_else(|| result.to_string());
-                                let title = result.get("title").and_then(|t| t.as_str()).unwrap_or(&name).to_string();
+                                let output = result
+                                    .as_str()
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| result.to_string());
+                                let title = result
+                                    .get("title")
+                                    .and_then(|t| t.as_str())
+                                    .unwrap_or(&name)
+                                    .to_string();
                                 tp.state = session::ToolState::Completed {
-                                    input: serde_json::Value::Null, output, title,
+                                    input: serde_json::Value::Null,
+                                    output,
+                                    title,
                                     metadata: serde_json::Value::Null,
-                                    time: session::ToolTime { start: now, end: Some(now) },
+                                    time: session::ToolTime {
+                                        start: now,
+                                        end: Some(now),
+                                    },
                                     attachments: None,
                                 };
                                 break;
@@ -857,15 +972,27 @@ impl TuiApp {
                 }
             }
 
-            LlmEvent::ToolError { id, name, message, .. } => {
+            LlmEvent::ToolError {
+                id, name: _, message, ..
+            } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     for part in &mut msg.parts {
                         if let Part::Tool(ref mut tp) = part {
                             if tp.call_id == id {
                                 tp.state = session::ToolState::Error {
-                                    input: serde_json::Value::Null, error: message.clone(),
-                                    time: session::ToolTime { start: now, end: Some(now) },
+                                    input: serde_json::Value::Null,
+                                    error: message.clone(),
+                                    time: session::ToolTime {
+                                        start: now,
+                                        end: Some(now),
+                                    },
                                     metadata: None,
                                 };
                                 break;
@@ -877,16 +1004,29 @@ impl TuiApp {
 
             LlmEvent::StepStart { index } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     let sid = self.session_id.clone().unwrap_or_default();
                     msg.parts.push(Part::StepStart(session::StepStartPart {
                         id: format!("step_start_{index}_{now}"),
-                        message_id: msg_id.to_string(), session_id: sid, snapshot: None,
+                        message_id: msg_id.to_string(),
+                        session_id: sid,
+                        snapshot: None,
                     }));
                 }
             }
 
-            LlmEvent::StepFinish { index, reason, usage, .. } => {
+            LlmEvent::StepFinish {
+                index,
+                reason,
+                usage,
+                ..
+            } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 let tokens = usage.map(|u| session::TokenUsage {
                     input: u.input_tokens.unwrap_or(0),
@@ -897,20 +1037,35 @@ impl TuiApp {
                         write: u.cache_write_input_tokens.unwrap_or(0),
                     },
                 });
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     let sid = self.session_id.clone().unwrap_or_default();
                     msg.parts.push(Part::StepFinish(session::StepFinishPart {
                         id: format!("step_finish_{index}_{now}"),
-                        message_id: msg_id.to_string(), session_id: sid,
+                        message_id: msg_id.to_string(),
+                        session_id: sid,
                         reason: format!("{reason:?}"),
-                        tokens: tokens.unwrap_or_default(), cost: 0.0, snapshot: None,
+                        tokens: tokens.unwrap_or_default(),
+                        cost: 0.0,
+                        snapshot: None,
                     }));
                 }
             }
 
             LlmEvent::Finish { reason, usage, .. } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     if let MessageInfo::Assistant(ref mut info) = msg.info {
                         info.finish = Some(format!("{reason:?}"));
                         info.time.completed = Some(now);
@@ -929,20 +1084,35 @@ impl TuiApp {
                 }
             }
 
-            LlmEvent::ProviderErrorEvent { message, classification, .. } => {
+            LlmEvent::ProviderErrorEvent {
+                message,
+                classification,
+                ..
+            } => {
                 let class = classification.unwrap_or_else(|| "error".into());
-                self.conversation.add_system_message(format!("Provider error [{class}]: {message}"));
-                if let Some(msg) = self.conversation.messages.iter_mut().rev().find(|m| m.info.id() == msg_id) {
+                self.conversation
+                    .add_system_message(format!("Provider error [{class}]: {message}"));
+                if let Some(msg) = self
+                    .conversation
+                    .messages
+                    .iter_mut()
+                    .rev()
+                    .find(|m| m.info.id() == msg_id)
+                {
                     if let MessageInfo::Assistant(ref mut info) = msg.info {
-                        info.error = Some(serde_json::json!({"message": message, "classification": class}));
+                        info.error =
+                            Some(serde_json::json!({"message": message, "classification": class}));
                     }
                 }
             }
 
             // Tool input streaming events: intermediate — ToolCall has assembled input
-            LlmEvent::TextStart { .. } | LlmEvent::TextEnd { .. }
-            | LlmEvent::ReasoningStart { .. } | LlmEvent::ReasoningEnd { .. }
-            | LlmEvent::ToolInputStart { .. } | LlmEvent::ToolInputDelta { .. }
+            LlmEvent::TextStart { .. }
+            | LlmEvent::TextEnd { .. }
+            | LlmEvent::ReasoningStart { .. }
+            | LlmEvent::ReasoningEnd { .. }
+            | LlmEvent::ToolInputStart { .. }
+            | LlmEvent::ToolInputDelta { .. }
             | LlmEvent::ToolInputEnd { .. } => {}
         }
     }
@@ -954,7 +1124,8 @@ impl TuiApp {
         self.stream_text_buf.clear();
         self.stream_reasoning_buf.clear();
         self.status.session_status = Some(SessionStatus::Idle);
-        self.conversation.add_system_message("Response complete.".into());
+        self.conversation
+            .add_system_message("Response complete.".into());
 
         // Emit terminal bell for audio notification on stream completion.
         if self.audio_enabled {
@@ -1003,10 +1174,7 @@ impl TuiApp {
         }
 
         // ── Type-tagged events ──────────────────────────────────────
-        let event_type = payload
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
+        let event_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
         match event_type {
             // ── Session events ──────────────────────────────────
@@ -1029,8 +1197,7 @@ impl TuiApp {
 
             "session.status.changed" => {
                 if let Some(status_val) = payload.get("status") {
-                    if let Ok(status) =
-                        serde_json::from_value::<SessionStatus>(status_val.clone())
+                    if let Ok(status) = serde_json::from_value::<SessionStatus>(status_val.clone())
                     {
                         tracing::info!(?status, "session status changed via bus");
                         self.status.session_status = Some(status);
@@ -1177,7 +1344,10 @@ impl TuiApp {
                         .get("messageID")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    if let Some(msg) = self.conversation.messages.iter_mut()
+                    if let Some(msg) = self
+                        .conversation
+                        .messages
+                        .iter_mut()
                         .rev()
                         .find(|m| m.info.id() == msg_id)
                     {
@@ -1212,7 +1382,7 @@ impl TuiApp {
     // ── Rendering ────────────────────────────────────────────────────
 
     fn render(&mut self, f: &mut Frame) {
-        let area = f.area();
+        let area = f.size();
         // Cache terminal size for scroll handlers that need it outside draw
         self.last_term_size = area;
 
@@ -1264,7 +1434,11 @@ impl TuiApp {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Min(0), Constraint::Length(3), Constraint::Length(1)])
+            .constraints([
+                Constraint::Min(0),
+                Constraint::Length(3),
+                Constraint::Length(1),
+            ])
             .split(main_area);
 
         render_conversation(f, chunks[0], &self.conversation, self.theme.current());
@@ -1272,11 +1446,21 @@ impl TuiApp {
         render_status(f, chunks[2], &self.status, self.theme.current());
 
         // Overlays (render order matters — later = on top)
-        if self.permission.visible { render_permission(f, area, &self.permission); }
-        if self.question.visible { render_question(f, area, &self.question); }
-        if self.command_palette_visible { self.render_command_palette(f, area); }
-        if self.help_visible { self.render_help(f, area); }
-        if self.status_dialog_visible { self.render_status_dialog(f, area); }
+        if self.permission.visible {
+            render_permission(f, area, &self.permission);
+        }
+        if self.question.visible {
+            render_question(f, area, &self.question);
+        }
+        if self.command_palette_visible {
+            self.render_command_palette(f, area);
+        }
+        if self.help_visible {
+            self.render_help(f, area);
+        }
+        if self.status_dialog_visible {
+            self.render_status_dialog(f, area);
+        }
 
         // Dialog stack overlay
         if self.dialog.is_active() {
@@ -1311,7 +1495,10 @@ impl TuiApp {
                     DialogType::ModelSelector => {
                         if !self.model_selector.visible {
                             // Populate model selector from providers
-                            let provider_map: std::collections::HashMap<String, rustcode_core::provider::ProviderInfo> = std::collections::HashMap::new();
+                            let provider_map: std::collections::HashMap<
+                                String,
+                                rustcode_core::provider::ProviderInfo,
+                            > = std::collections::HashMap::new();
                             self.model_selector.show(
                                 provider_map,
                                 self.default_provider.clone(),
@@ -1406,7 +1593,12 @@ impl TuiApp {
         f.render_widget(block, area);
 
         let mut lines: Vec<Line> = Vec::new();
-        lines.push(Line::from(Span::styled(" Sessions ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            " Sessions ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             self.session_id.as_deref().unwrap_or("(new)"),
@@ -1427,10 +1619,14 @@ impl TuiApp {
         let theme = self.theme.current();
         let commands = self.build_command_list();
         let query_lower = self.command_palette_query.to_lowercase();
-        let filtered: Vec<(usize, &str, &str)> = commands.iter().enumerate()
+        let filtered: Vec<(usize, &str, &str)> = commands
+            .iter()
+            .enumerate()
             .map(|(i, cmd)| (i, cmd.0, cmd.1))
             .filter(|(_, name, desc)| {
-                query_lower.is_empty() || name.to_lowercase().contains(&query_lower) || desc.to_lowercase().contains(&query_lower)
+                query_lower.is_empty()
+                    || name.to_lowercase().contains(&query_lower)
+                    || desc.to_lowercase().contains(&query_lower)
             })
             .collect();
 
@@ -1439,33 +1635,49 @@ impl TuiApp {
         let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
         let dialog_y = (area.height.saturating_sub(dialog_height)) / 3;
 
-        let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+        let dialog_area = Rect::new(
+            area.x + dialog_x,
+            area.y + dialog_y,
+            dialog_width,
+            dialog_height,
+        );
         f.render_widget(Clear, dialog_area);
 
         let block = Block::default()
             .borders(Borders::ALL)
-            .title(format!(" Command Palette {} ", if self.command_palette_query.is_empty() { String::new() } else { format!("— \"{}\"", self.command_palette_query) }))
+            .title(format!(
+                " Command Palette {} ",
+                if self.command_palette_query.is_empty() {
+                    String::new()
+                } else {
+                    format!("— \"{}\"", self.command_palette_query)
+                }
+            ))
             .border_style(Style::default().fg(theme.accent))
             .style(Style::default().bg(theme.background));
 
         let inner = block.inner(dialog_area);
         f.render_widget(block, dialog_area);
 
-        let items: Vec<ListItem> = filtered.iter().enumerate().map(|(i, (_orig_idx, name, desc))| {
-            let style = if i == self.command_palette_selection {
-                Style::default().fg(theme.background).bg(theme.accent)
-            } else {
-                Style::default().fg(theme.foreground)
-            };
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {name} "), style),
-                Span::styled(format!("  {desc}"), Style::default().fg(theme.dim)),
-            ]))
-        }).collect();
+        let items: Vec<ListItem> = filtered
+            .iter()
+            .enumerate()
+            .map(|(i, (_orig_idx, name, desc))| {
+                let style = if i == self.command_palette_selection {
+                    Style::default().fg(theme.background).bg(theme.accent)
+                } else {
+                    Style::default().fg(theme.foreground)
+                };
+                ListItem::new(Line::from(vec![
+                    Span::styled(format!(" {name} "), style),
+                    Span::styled(format!("  {desc}"), Style::default().fg(theme.dim)),
+                ]))
+            })
+            .collect();
 
         if items.is_empty() {
-            let no_results = Paragraph::new("No matching commands")
-                .style(Style::default().fg(theme.dim));
+            let no_results =
+                Paragraph::new("No matching commands").style(Style::default().fg(theme.dim));
             f.render_widget(no_results, inner);
         } else {
             let list = List::new(items);
@@ -1523,7 +1735,12 @@ impl TuiApp {
         let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
         let dialog_y = (area.height.saturating_sub(dialog_height)) / 3;
 
-        let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+        let dialog_area = Rect::new(
+            area.x + dialog_x,
+            area.y + dialog_y,
+            dialog_width,
+            dialog_height,
+        );
         f.render_widget(Clear, dialog_area);
 
         let block = Block::default()
@@ -1538,29 +1755,50 @@ impl TuiApp {
         let mut lines: Vec<Line> = Vec::new();
 
         // Section: Global
-        lines.push(Line::from(Span::styled(" Global ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            " Global ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
         for binding in all_bindings() {
             let key_str = key_event_to_string(&binding.key);
             lines.push(Line::from(vec![
-                Span::styled(format!("  {key_str:<20}"), Style::default().fg(theme.warning)),
+                Span::styled(
+                    format!("  {key_str:<20}"),
+                    Style::default().fg(theme.warning),
+                ),
                 Span::styled(binding.description, Style::default().fg(theme.dim)),
             ]));
         }
 
         // Section: Leader (Ctrl+X)
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" Leader (Ctrl+X then...) ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            " Leader (Ctrl+X then...) ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
         for binding in all_leader_bindings() {
             let key_str = key_event_to_string(&binding.key);
             lines.push(Line::from(vec![
-                Span::styled(format!("  C-x {key_str:<17}"), Style::default().fg(theme.warning)),
+                Span::styled(
+                    format!("  C-x {key_str:<17}"),
+                    Style::default().fg(theme.warning),
+                ),
                 Span::styled(binding.description, Style::default().fg(theme.dim)),
             ]));
         }
 
         // Toggles section
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" Toggles ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            " Toggles ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
         let toggles = [
             ("timestamps", self.show_timestamps),
             ("thinking", self.show_thinking),
@@ -1595,7 +1833,12 @@ impl TuiApp {
         let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
         let dialog_y = (area.height.saturating_sub(dialog_height)) / 3;
 
-        let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+        let dialog_area = Rect::new(
+            area.x + dialog_x,
+            area.y + dialog_y,
+            dialog_width,
+            dialog_height,
+        );
         f.render_widget(Clear, dialog_area);
 
         let block = Block::default()
@@ -1609,9 +1852,17 @@ impl TuiApp {
 
         let mut lines: Vec<Line> = Vec::new();
 
-        lines.push(Line::from(Span::styled(" Session ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
         lines.push(Line::from(Span::styled(
-            format!("  ID:    {}", self.session_id.as_deref().unwrap_or("(none)")),
+            " Session ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  ID:    {}",
+                self.session_id.as_deref().unwrap_or("(none)")
+            ),
             Style::default().fg(theme.foreground),
         )));
         lines.push(Line::from(Span::styled(
@@ -1620,13 +1871,24 @@ impl TuiApp {
         )));
 
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" Provider ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
         lines.push(Line::from(Span::styled(
-            format!("  Name:  {}", self.status.provider_name.as_deref().unwrap_or("none")),
+            " Provider ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::from(Span::styled(
+            format!(
+                "  Name:  {}",
+                self.status.provider_name.as_deref().unwrap_or("none")
+            ),
             Style::default().fg(theme.foreground),
         )));
         lines.push(Line::from(Span::styled(
-            format!("  Model: {}", self.status.model_name.as_deref().unwrap_or("none")),
+            format!(
+                "  Model: {}",
+                self.status.model_name.as_deref().unwrap_or("none")
+            ),
             Style::default().fg(theme.foreground),
         )));
         if self.status.cost > 0.0 {
@@ -1644,25 +1906,40 @@ impl TuiApp {
 
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            format!("  Theme: {} ({} mode)",
+            format!(
+                "  Theme: {} ({} mode)",
                 self.theme.name(),
-                self.theme.mode().as_str()),
+                self.theme.mode().as_str()
+            ),
             Style::default().fg(theme.foreground),
         )));
         lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(" Services ", Style::default().fg(theme.accent).add_modifier(Modifier::BOLD))));
+        lines.push(Line::from(Span::styled(
+            " Services ",
+            Style::default()
+                .fg(theme.accent)
+                .add_modifier(Modifier::BOLD),
+        )));
         lines.push(Line::from(Span::styled(
             format!("  LSP: {} active", self.status.lsp_count),
             Style::default().fg(theme.success),
         )));
-        let mcp_color = if self.status.mcp_error { theme.error } else { theme.success };
+        let mcp_color = if self.status.mcp_error {
+            theme.error
+        } else {
+            theme.success
+        };
         lines.push(Line::from(Span::styled(
             format!("  MCP: {} connected", self.status.mcp_count),
             Style::default().fg(mcp_color),
         )));
         lines.push(Line::from(Span::styled(
             format!("  Permissions: {} pending", self.status.permission_count),
-            Style::default().fg(if self.status.permission_count > 0 { theme.warning } else { theme.success }),
+            Style::default().fg(if self.status.permission_count > 0 {
+                theme.warning
+            } else {
+                theme.success
+            }),
         )));
 
         let text = Text::from(lines);
@@ -1687,8 +1964,10 @@ impl TuiApp {
                 self.status_dialog_visible = false;
             }
             // Still handle quit keys
-            if matches!(key.code, crossterm::event::KeyCode::Char('c') | crossterm::event::KeyCode::Char('d'))
-                && key.modifiers == crossterm::event::KeyModifiers::CONTROL
+            if matches!(
+                key.code,
+                crossterm::event::KeyCode::Char('c') | crossterm::event::KeyCode::Char('d')
+            ) && key.modifiers == crossterm::event::KeyModifiers::CONTROL
             {
                 self.should_quit = true;
             }
@@ -1697,20 +1976,27 @@ impl TuiApp {
 
         if self.leader_active {
             self.leader_active = false;
-            if let Some(action) = leader_chord_to_action(key) { self.dispatch_action(action); }
+            if let Some(action) = leader_chord_to_action(key) {
+                self.dispatch_action(action);
+            }
             return;
         }
-        if is_leader_prefix(key) { self.leader_active = true; return; }
+        if is_leader_prefix(key) {
+            self.leader_active = true;
+            return;
+        }
 
         // Diff viewer overlay (handles its own keys)
-        if self.diff.visible {
-            if self.diff.handle_key(key) { return; }
-        }
+        if self.diff.visible
+            && self.diff.handle_key(key) {
+                return;
+            }
 
         // Dialog stack overlay (blocks most keys)
-        if self.dialog.is_active() {
-            if self.dialog.handle_key(key) { return; }
-        }
+        if self.dialog.is_active()
+            && self.dialog.handle_key(key) {
+                return;
+            }
 
         // Session list dialog (handles its own keys)
         if self.session_list_state.visible {
@@ -1753,7 +2039,11 @@ impl TuiApp {
                                 tokio::spawn(async move {
                                     match sessions.fork(&sid, Some(&mid)).await {
                                         Ok(new_session) => {
-                                            tracing::info!("session forked from timeline: {} -> {}", sid, new_session.id);
+                                            tracing::info!(
+                                                "session forked from timeline: {} -> {}",
+                                                sid,
+                                                new_session.id
+                                            );
                                         }
                                         Err(e) => tracing::error!("timeline fork failed: {e}"),
                                     }
@@ -1773,7 +2063,11 @@ impl TuiApp {
                 match action {
                     ExportAction::Close => {}
                     ExportAction::Navigate => {}
-                    ExportAction::Export { filename, format, sanitize } => {
+                    ExportAction::Export {
+                        filename,
+                        format,
+                        sanitize,
+                    } => {
                         let ext = format.extension();
                         self.add_system_message(&format!(
                             "Exporting session as {} (sanitize: {}) -> {}",
@@ -1815,12 +2109,10 @@ impl TuiApp {
                     SubagentAction::Navigate => {}
                     SubagentAction::NavigateTo(sid) => {
                         if let Some(ref bus) = self.bus {
-                            let event = rustcode_core::bus::GlobalEvent::new(
-                                serde_json::json!({
-                                    "type": "session.select",
-                                    "sessionID": sid,
-                                }),
-                            );
+                            let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                                "type": "session.select",
+                                "sessionID": sid,
+                            }));
                             let _ = bus.publish(event);
                         }
                         self.session_id = Some(sid.clone());
@@ -1842,7 +2134,11 @@ impl TuiApp {
                                 let model_clone = model.clone();
                                 tokio::spawn(async move {
                                     // Create the child session
-                                    let title = format!("{}: {}", agent_clone, &task_clone[..task_clone.len().min(50)]);
+                                    let title = format!(
+                                        "{}: {}",
+                                        agent_clone,
+                                        &task_clone[..task_clone.len().min(50)]
+                                    );
                                     let input = rustcode_core::session::CreateSessionInput {
                                         project_id: String::new(),
                                         workspace_id: None,
@@ -1851,17 +2147,23 @@ impl TuiApp {
                                         parent_id: Some(parent_id),
                                         title: Some(title),
                                         agent: Some(agent_clone),
-                                        model: model_clone.map(|m| rustcode_core::session::ModelSelection {
-                                            id: m,
-                                            provider_id: String::new(),
-                                            variant: None,
+                                        model: model_clone.map(|m| {
+                                            rustcode_core::session::ModelSelection {
+                                                id: m,
+                                                provider_id: String::new(),
+                                                variant: None,
+                                            }
                                         }),
                                         metadata: None,
                                         permission: None,
                                     };
                                     match sessions.create(input).await {
                                         Ok(info) => {
-                                            tracing::info!("subagent created: {} (parent: {})", info.id, info.parent_id.as_deref().unwrap_or("none"));
+                                            tracing::info!(
+                                                "subagent created: {} (parent: {})",
+                                                info.id,
+                                                info.parent_id.as_deref().unwrap_or("none")
+                                            );
                                         }
                                         Err(e) => tracing::error!("subagent creation failed: {e}"),
                                     }
@@ -1880,7 +2182,10 @@ impl TuiApp {
                 match action {
                     ModelSelectorAction::Close => {}
                     ModelSelectorAction::Navigate => {}
-                    ModelSelectorAction::Select { provider_id, model_id } => {
+                    ModelSelectorAction::Select {
+                        provider_id,
+                        model_id,
+                    } => {
                         self.default_provider = Some(provider_id.clone());
                         self.default_model = Some(model_id.clone());
                         self.status.provider_name = Some(provider_id.clone());
@@ -1898,25 +2203,37 @@ impl TuiApp {
         }
 
         if self.permission.visible {
-            if let Some(reply) = self.permission.handle_key(key) { self.handle_permission_reply(reply); }
+            if let Some(reply) = self.permission.handle_key(key) {
+                self.handle_permission_reply(reply);
+            }
             return;
         }
         if self.question.visible {
-            if let Some((rid, answers)) = self.question.handle_key(key) { self.handle_question_reply(rid, answers); }
+            if let Some((rid, answers)) = self.question.handle_key(key) {
+                self.handle_question_reply(rid, answers);
+            }
             return;
         }
 
         // Input handling
         if self.input.focused {
-            if self.input.handle_key(key) { return; }
-            if key.code == crossterm::event::KeyCode::Enter && key.modifiers == crossterm::event::KeyModifiers::NONE {
+            if self.input.handle_key(key) {
+                return;
+            }
+            if key.code == crossterm::event::KeyCode::Enter
+                && key.modifiers == crossterm::event::KeyModifiers::NONE
+            {
                 let text = self.input.take();
-                if !text.is_empty() { self.handle_prompt_submit(text); }
+                if !text.is_empty() {
+                    self.handle_prompt_submit(text);
+                }
                 return;
             }
         }
 
-        if let Some(action) = key_to_action(key) { self.dispatch_action(action); }
+        if let Some(action) = key_to_action(key) {
+            self.dispatch_action(action);
+        }
     }
 
     /// Handle keys while the command palette is visible.
@@ -1943,9 +2260,12 @@ impl TuiApp {
                 // Execute the selected command
                 let commands = self.build_command_list();
                 let query_lower = self.command_palette_query.to_lowercase();
-                let filtered: Vec<&str> = commands.iter()
+                let filtered: Vec<&str> = commands
+                    .iter()
                     .filter(|(name, desc)| {
-                        query_lower.is_empty() || name.to_lowercase().contains(&query_lower) || desc.to_lowercase().contains(&query_lower)
+                        query_lower.is_empty()
+                            || name.to_lowercase().contains(&query_lower)
+                            || desc.to_lowercase().contains(&query_lower)
                     })
                     .map(|(name, _)| *name)
                     .collect();
@@ -1999,8 +2319,13 @@ impl TuiApp {
             crossterm::event::KeyCode::Up => {
                 let commands = self.build_command_list();
                 let query_lower = self.command_palette_query.to_lowercase();
-                let count = commands.iter()
-                    .filter(|(name, desc)| query_lower.is_empty() || name.to_lowercase().contains(&query_lower) || desc.to_lowercase().contains(&query_lower))
+                let count = commands
+                    .iter()
+                    .filter(|(name, desc)| {
+                        query_lower.is_empty()
+                            || name.to_lowercase().contains(&query_lower)
+                            || desc.to_lowercase().contains(&query_lower)
+                    })
                     .count();
                 if count > 0 {
                     self.command_palette_selection = if self.command_palette_selection == 0 {
@@ -2013,8 +2338,13 @@ impl TuiApp {
             crossterm::event::KeyCode::Down => {
                 let commands = self.build_command_list();
                 let query_lower = self.command_palette_query.to_lowercase();
-                let count = commands.iter()
-                    .filter(|(name, desc)| query_lower.is_empty() || name.to_lowercase().contains(&query_lower) || desc.to_lowercase().contains(&query_lower))
+                let count = commands
+                    .iter()
+                    .filter(|(name, desc)| {
+                        query_lower.is_empty()
+                            || name.to_lowercase().contains(&query_lower)
+                            || desc.to_lowercase().contains(&query_lower)
+                    })
                     .count();
                 if count > 0 {
                     self.command_palette_selection = (self.command_palette_selection + 1) % count;
@@ -2045,27 +2375,15 @@ impl TuiApp {
                 self.command_palette_visible = !self.command_palette_visible;
                 self.command_palette_query.clear();
                 self.command_palette_selection = 0;
-                if self.command_palette_visible {
-                    self.input.focused = false;
-                } else {
-                    self.input.focused = true;
-                }
+                self.input.focused = !self.command_palette_visible;
             }
             TuiAction::Help => {
                 self.help_visible = !self.help_visible;
-                if self.help_visible {
-                    self.input.focused = false;
-                } else {
-                    self.input.focused = true;
-                }
+                self.input.focused = !self.help_visible;
             }
             TuiAction::Status => {
                 self.status_dialog_visible = !self.status_dialog_visible;
-                if self.status_dialog_visible {
-                    self.input.focused = false;
-                } else {
-                    self.input.focused = true;
-                }
+                self.input.focused = !self.status_dialog_visible;
             }
             TuiAction::Suspend => {
                 // Restore terminal state before suspending
@@ -2090,12 +2408,10 @@ impl TuiApp {
                 self.is_streaming = false;
                 self.current_assistant_msg_id = None;
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.interrupted",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.interrupted",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
                 self.add_system_message("Interrupted.");
@@ -2120,7 +2436,12 @@ impl TuiApp {
                             Ok(list) => {
                                 tracing::info!("sessions listed: {} found", list.len());
                                 for s in &list {
-                                    tracing::info!("  {} — {} [{}]", s.id, s.title, s.agent.as_deref().unwrap_or("none"));
+                                    tracing::info!(
+                                        "  {} — {} [{}]",
+                                        s.id,
+                                        s.title,
+                                        s.agent.as_deref().unwrap_or("none")
+                                    );
                                 }
                             }
                             Err(e) => tracing::error!("failed to list sessions: {e}"),
@@ -2156,12 +2477,10 @@ impl TuiApp {
             }
             TuiAction::SessionCompact => {
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.compact",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.compact",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
                 self.add_system_message("Session compaction requested.");
@@ -2173,51 +2492,44 @@ impl TuiApp {
                 self.input.focused = false;
                 // Also publish bus event for any backend listeners
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.export",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.export",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
             }
             TuiAction::SessionTimeline => {
                 // Build timeline from conversation messages and open dialog
-                self.timeline.build_from_messages(&self.conversation.messages);
+                self.timeline
+                    .build_from_messages(&self.conversation.messages);
                 self.timeline.show();
                 self.input.focused = false;
                 // Also publish bus event for any backend listeners
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.timeline",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.timeline",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
             }
             TuiAction::SessionUndo => {
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.undo",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.undo",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
                 self.add_system_message("Undo requested.");
             }
             TuiAction::SessionRedo => {
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.redo",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.redo",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
                 self.add_system_message("Redo requested.");
@@ -2245,12 +2557,10 @@ impl TuiApp {
             }
             TuiAction::SessionShare => {
                 if let Some(ref bus) = self.bus {
-                    let event = rustcode_core::bus::GlobalEvent::new(
-                        serde_json::json!({
-                            "type": "session.share",
-                            "sessionID": self.session_id.as_deref().unwrap_or(""),
-                        })
-                    );
+                    let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                        "type": "session.share",
+                        "sessionID": self.session_id.as_deref().unwrap_or(""),
+                    }));
                     let _ = bus.publish(event);
                 }
                 if let Some(ref sid) = self.session_id {
@@ -2449,7 +2759,10 @@ impl TuiApp {
                 let provider_keys: Vec<&String> = self.providers.keys().collect();
                 if !provider_keys.is_empty() {
                     let current_provider = self.default_provider.as_deref().unwrap_or("");
-                    let idx = provider_keys.iter().position(|k| k.as_str() == current_provider).unwrap_or(0);
+                    let idx = provider_keys
+                        .iter()
+                        .position(|k| k.as_str() == current_provider)
+                        .unwrap_or(0);
                     let next_idx = (idx + 1) % provider_keys.len();
                     let next_provider = provider_keys[next_idx].clone();
                     self.default_provider = Some(next_provider.clone());
@@ -2477,11 +2790,17 @@ impl TuiApp {
                     self.recent_models.insert(0, model_key);
                     self.recent_models.truncate(20);
 
-                    self.add_system_message(&format!("Provider: {next_provider} | Model: {}", self.default_model.as_deref().unwrap_or("auto")));
+                    self.add_system_message(&format!(
+                        "Provider: {next_provider} | Model: {}",
+                        self.default_model.as_deref().unwrap_or("auto")
+                    ));
                 } else {
                     // Fallback: cycle agents
                     let agents = ["build", "plan", "general"];
-                    let idx = agents.iter().position(|a| *a == self.current_agent).unwrap_or(0);
+                    let idx = agents
+                        .iter()
+                        .position(|a| *a == self.current_agent)
+                        .unwrap_or(0);
                     self.current_agent = agents[(idx + 1) % agents.len()].into();
                     self.add_system_message(&format!("Agent: {}", self.current_agent));
                 }
@@ -2490,8 +2809,15 @@ impl TuiApp {
                 let provider_keys: Vec<&String> = self.providers.keys().collect();
                 if !provider_keys.is_empty() {
                     let current_provider = self.default_provider.as_deref().unwrap_or("");
-                    let idx = provider_keys.iter().position(|k| k.as_str() == current_provider).unwrap_or(0);
-                    let prev_idx = if idx == 0 { provider_keys.len() - 1 } else { idx - 1 };
+                    let idx = provider_keys
+                        .iter()
+                        .position(|k| k.as_str() == current_provider)
+                        .unwrap_or(0);
+                    let prev_idx = if idx == 0 {
+                        provider_keys.len() - 1
+                    } else {
+                        idx - 1
+                    };
                     let prev_provider = provider_keys[prev_idx].clone();
                     self.default_provider = Some(prev_provider.clone());
                     self.status.provider_name = Some(prev_provider.clone());
@@ -2517,10 +2843,16 @@ impl TuiApp {
                     self.recent_models.insert(0, model_key);
                     self.recent_models.truncate(20);
 
-                    self.add_system_message(&format!("Provider: {prev_provider} | Model: {}", self.default_model.as_deref().unwrap_or("auto")));
+                    self.add_system_message(&format!(
+                        "Provider: {prev_provider} | Model: {}",
+                        self.default_model.as_deref().unwrap_or("auto")
+                    ));
                 } else {
                     let agents = ["build", "plan", "general"];
-                    let idx = agents.iter().position(|a| *a == self.current_agent).unwrap_or(0);
+                    let idx = agents
+                        .iter()
+                        .position(|a| *a == self.current_agent)
+                        .unwrap_or(0);
                     self.current_agent = agents[(idx + agents.len() - 1) % agents.len()].into();
                     self.add_system_message(&format!("Agent: {}", self.current_agent));
                 }
@@ -2532,7 +2864,10 @@ impl TuiApp {
             }
             TuiAction::ModelList => {
                 // Open model selector dialog with provider data
-                let provider_map: std::collections::HashMap<String, rustcode_core::provider::ProviderInfo> = std::collections::HashMap::new();
+                let provider_map: std::collections::HashMap<
+                    String,
+                    rustcode_core::provider::ProviderInfo,
+                > = std::collections::HashMap::new();
                 self.model_selector.show(
                     provider_map,
                     self.default_provider.clone(),
@@ -2582,7 +2917,11 @@ impl TuiApp {
                 let idx = variants.iter().position(|v| *v == current).unwrap_or(0);
                 let next = variants[(idx + 1) % variants.len()];
                 self.current_model_name = next.to_string();
-                self.status.model_name = Some(format!("{}:{}", self.default_model.as_deref().unwrap_or("auto"), next));
+                self.status.model_name = Some(format!(
+                    "{}:{}",
+                    self.default_model.as_deref().unwrap_or("auto"),
+                    next
+                ));
                 self.add_system_message(&format!("Variant: {next}"));
             }
             TuiAction::VariantList => {
@@ -2619,51 +2958,135 @@ impl TuiApp {
             TuiAction::ToggleSidebar => {
                 self.sidebar_state.toggle();
                 self.show_sidebar = self.sidebar_state.visible;
-                self.add_system_message(&format!("Sidebar: {}", if self.sidebar_state.visible { "shown" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "Sidebar: {}",
+                    if self.sidebar_state.visible {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleTimestamps => {
                 self.show_timestamps = !self.show_timestamps;
-                self.add_system_message(&format!("Timestamps: {}", if self.show_timestamps { "shown" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "Timestamps: {}",
+                    if self.show_timestamps {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleThinking => {
                 self.show_thinking = !self.show_thinking;
-                self.add_system_message(&format!("Thinking: {}", if self.show_thinking { "visible" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "Thinking: {}",
+                    if self.show_thinking {
+                        "visible"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleToolDetails => {
                 self.show_tool_details = !self.show_tool_details;
-                self.add_system_message(&format!("Tool details: {}", if self.show_tool_details { "shown" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "Tool details: {}",
+                    if self.show_tool_details {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleConceal => {
                 self.conceal_enabled = !self.conceal_enabled;
-                self.add_system_message(&format!("Conceal: {}", if self.conceal_enabled { "enabled" } else { "disabled" }));
+                self.add_system_message(&format!(
+                    "Conceal: {}",
+                    if self.conceal_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
             }
             TuiAction::ToggleScrollbar => {
                 self.show_scrollbar = !self.show_scrollbar;
-                self.add_system_message(&format!("Scrollbar: {}", if self.show_scrollbar { "shown" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "Scrollbar: {}",
+                    if self.show_scrollbar {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleGenericToolOutput => {
                 self.generic_tool_output = !self.generic_tool_output;
-                self.add_system_message(&format!("Generic tool output: {}", if self.generic_tool_output { "shown" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "Generic tool output: {}",
+                    if self.generic_tool_output {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleTerminalTitle => {
                 self.terminal_title = !self.terminal_title;
-                self.add_system_message(&format!("Terminal title: {}", if self.terminal_title { "enabled" } else { "disabled" }));
+                self.add_system_message(&format!(
+                    "Terminal title: {}",
+                    if self.terminal_title {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
             }
             TuiAction::ToggleAnimations => {
                 self.animations_enabled = !self.animations_enabled;
-                self.add_system_message(&format!("Animations: {}", if self.animations_enabled { "enabled" } else { "disabled" }));
+                self.add_system_message(&format!(
+                    "Animations: {}",
+                    if self.animations_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
             }
             TuiAction::ToggleFileContext => {
                 self.file_context_enabled = !self.file_context_enabled;
-                self.add_system_message(&format!("File context: {}", if self.file_context_enabled { "shown" } else { "hidden" }));
+                self.add_system_message(&format!(
+                    "File context: {}",
+                    if self.file_context_enabled {
+                        "shown"
+                    } else {
+                        "hidden"
+                    }
+                ));
             }
             TuiAction::ToggleDiffWrap => {
                 self.diff_wrap = !self.diff_wrap;
-                self.add_system_message(&format!("Diff wrap: {}", if self.diff_wrap { "enabled" } else { "disabled" }));
+                self.add_system_message(&format!(
+                    "Diff wrap: {}",
+                    if self.diff_wrap {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
             }
             TuiAction::TogglePasteSummary => {
                 self.paste_summary = !self.paste_summary;
-                self.add_system_message(&format!("Paste summary: {}", if self.paste_summary { "enabled" } else { "disabled" }));
+                self.add_system_message(&format!(
+                    "Paste summary: {}",
+                    if self.paste_summary {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
+                ));
             }
 
             // ── Input ────────────────────────────────────────────
@@ -2697,8 +3120,12 @@ impl TuiApp {
                     self.handle_permission_reply(reply);
                 }
             }
-            TuiAction::PermissionPrevOption => { self.permission.prev_option(); }
-            TuiAction::PermissionNextOption => { self.permission.next_option(); }
+            TuiAction::PermissionPrevOption => {
+                self.permission.prev_option();
+            }
+            TuiAction::PermissionNextOption => {
+                self.permission.next_option();
+            }
 
             // ── Question ─────────────────────────────────────────
             TuiAction::QuestionSelect(n) => {
@@ -2768,12 +3195,10 @@ impl TuiApp {
                     if let Some(ref sid) = self.pinned_sessions[idx] {
                         // Publish session select event to navigate to pinned session
                         if let Some(ref bus) = self.bus {
-                            let event = rustcode_core::bus::GlobalEvent::new(
-                                serde_json::json!({
-                                    "type": "session.select",
-                                    "sessionID": sid,
-                                }),
-                            );
+                            let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                                "type": "session.select",
+                                "sessionID": sid,
+                            }));
                             let _ = bus.publish(event);
                         }
                         self.session_id = Some(sid.clone());
@@ -2784,7 +3209,9 @@ impl TuiApp {
                             self.pinned_sessions[idx] = Some(sid.clone());
                             self.add_system_message(&format!("Pinned current session to slot {n}"));
                         } else {
-                            self.add_system_message(&format!("Slot {n} is empty. Use a session first to pin it."));
+                            self.add_system_message(&format!(
+                                "Slot {n} is empty. Use a session first to pin it."
+                            ));
                         }
                     }
                 }
@@ -2794,7 +3221,10 @@ impl TuiApp {
             TuiAction::DialogPush(target) => {
                 match target {
                     DialogTarget::ModelSelector => {
-                        let provider_map: std::collections::HashMap<String, rustcode_core::provider::ProviderInfo> = std::collections::HashMap::new();
+                        let provider_map: std::collections::HashMap<
+                            String,
+                            rustcode_core::provider::ProviderInfo,
+                        > = std::collections::HashMap::new();
                         self.model_selector.show(
                             provider_map,
                             self.default_provider.clone(),
@@ -2816,7 +3246,8 @@ impl TuiApp {
                         self.export.show(self.session_id.as_deref(), msg_count);
                     }
                     DialogTarget::Timeline => {
-                        self.timeline.build_from_messages(&self.conversation.messages);
+                        self.timeline
+                            .build_from_messages(&self.conversation.messages);
                         self.timeline.show();
                     }
                     DialogTarget::Subagent => {
@@ -2824,7 +3255,12 @@ impl TuiApp {
                         self.subagent.show(
                             Vec::new(),
                             self.session_id.clone(),
-                            Some(self.session_id.as_deref().unwrap_or("(current)").to_string()),
+                            Some(
+                                self.session_id
+                                    .as_deref()
+                                    .unwrap_or("(current)")
+                                    .to_string(),
+                            ),
                         );
                     }
                     DialogTarget::Stash => {
@@ -2882,11 +3318,15 @@ impl TuiApp {
                 match cmd.as_str() {
                     "copy" => {
                         // Extract text from the last assistant message
-                        let last_text = self.conversation.messages.iter()
+                        let last_text = self
+                            .conversation
+                            .messages
+                            .iter()
                             .rev()
                             .find(|m| matches!(m.info, MessageInfo::Assistant(_)))
                             .map(|m| {
-                                m.parts.iter()
+                                m.parts
+                                    .iter()
                                     .filter_map(|p| {
                                         if let Part::Text(tp) = p {
                                             Some(tp.text.as_str())
@@ -2904,7 +3344,9 @@ impl TuiApp {
                         } else if copy_to_clipboard(&last_text) {
                             let preview: String = last_text.chars().take(60).collect();
                             let suffix = if last_text.len() > 60 { "..." } else { "" };
-                            self.add_system_message(&format!("Copied to clipboard: {preview}{suffix}"));
+                            self.add_system_message(&format!(
+                                "Copied to clipboard: {preview}{suffix}"
+                            ));
                         } else {
                             self.add_system_message("Clipboard tool not available. Install xclip, wl-clipboard, or xsel.");
                         }
@@ -2920,7 +3362,11 @@ impl TuiApp {
                 self.audio_enabled = !self.audio_enabled;
                 self.add_system_message(&format!(
                     "Audio notifications: {}",
-                    if self.audio_enabled { "enabled" } else { "disabled" }
+                    if self.audio_enabled {
+                        "enabled"
+                    } else {
+                        "disabled"
+                    }
                 ));
             }
 
@@ -2962,7 +3408,10 @@ impl TuiApp {
 
         // Add user message to conversation
         let now = chrono::Utc::now().timestamp_millis() as u64;
-        let sid = self.session_id.clone().unwrap_or_else(|| format!("ses_tui_{now}"));
+        let sid = self
+            .session_id
+            .clone()
+            .unwrap_or_else(|| format!("ses_tui_{now}"));
         self.session_id = Some(sid.clone());
 
         let user_msg_id = format!("msg_user_{now}");
@@ -2971,12 +3420,18 @@ impl TuiApp {
                 id: user_msg_id.clone(),
                 session_id: sid.clone(),
                 agent: Some(self.current_agent.clone()),
-                model: self.default_model.as_ref().map(|m| session::ModelSelection {
-                    id: m.clone(),
-                    provider_id: self.default_provider.clone().unwrap_or_default(),
-                    variant: None,
-                }),
-                time: MessageTime { created: now, completed: Some(now) },
+                model: self
+                    .default_model
+                    .as_ref()
+                    .map(|m| session::ModelSelection {
+                        id: m.clone(),
+                        provider_id: self.default_provider.clone().unwrap_or_default(),
+                        variant: None,
+                    }),
+                time: MessageTime {
+                    created: now,
+                    completed: Some(now),
+                },
             }),
             parts: vec![Part::Text(TextPart {
                 id: format!("part_text_{now}"),
@@ -2984,19 +3439,28 @@ impl TuiApp {
                 session_id: sid.clone(),
                 text: text.clone(),
                 metadata: None,
-                time: PartTime { start: Some(now), end: Some(now) },
+                time: PartTime {
+                    start: Some(now),
+                    end: Some(now),
+                },
             })],
         });
 
         // Branch on mode
-        if let TuiMode::Remote { ref base_url, ref http_client, .. } = self.mode {
+        if let TuiMode::Remote {
+            ref base_url,
+            ref http_client,
+            ..
+        } = self.mode
+        {
             // Remote mode: POST prompt to server
             let submit_url = format!("{base_url}/tui/submit-prompt");
             let client = http_client.clone();
             let text_clone = text.clone();
 
             tokio::spawn(async move {
-                match client.post(&submit_url)
+                match client
+                    .post(&submit_url)
                     .json(&serde_json::json!({ "text": text_clone }))
                     .send()
                     .await
@@ -3012,15 +3476,17 @@ impl TuiApp {
                 }
             });
 
-            self.conversation.add_system_message(
-                "Prompt sent to remote server. Awaiting response...".into(),
-            );
+            self.conversation
+                .add_system_message("Prompt sent to remote server. Awaiting response...".into());
             // Remote mode: the SSE client will deliver events back
             return;
         }
 
         // Local mode: check provider and start streaming
-        let provider_id = self.default_provider.clone().unwrap_or_else(|| "anthropic".into());
+        let provider_id = self
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| "anthropic".into());
         if !self.providers.contains_key(&provider_id) {
             self.conversation.add_system_message(format!(
                 "No provider '{provider_id}' configured. Set API key env var."
@@ -3043,7 +3509,12 @@ impl TuiApp {
         }
 
         // Remote mode: send reply via HTTP POST
-        if let TuiMode::Remote { ref base_url, ref http_client, .. } = self.mode {
+        if let TuiMode::Remote {
+            ref base_url,
+            ref http_client,
+            ..
+        } = self.mode
+        {
             if let Some(ref rid) = request_id {
                 let reply_str = match &reply {
                     PermissionReply::Once => "once",
@@ -3084,7 +3555,9 @@ impl TuiApp {
                 let core_reply = match &reply {
                     PermissionReply::Once => rustcode_core::permission::PermissionReply::Once,
                     PermissionReply::Always => rustcode_core::permission::PermissionReply::Always,
-                    PermissionReply::Reject { .. } => rustcode_core::permission::PermissionReply::Reject,
+                    PermissionReply::Reject { .. } => {
+                        rustcode_core::permission::PermissionReply::Reject
+                    }
                 };
                 let message = match &reply {
                     PermissionReply::Reject { message } => message.clone(),
@@ -3111,11 +3584,19 @@ impl TuiApp {
         if answers.is_empty() {
             tracing::info!("question rejected: {request_id}");
         } else {
-            tracing::info!("question answered: {request_id} with {} answer groups", answers.len());
+            tracing::info!(
+                "question answered: {request_id} with {} answer groups",
+                answers.len()
+            );
         }
 
         // Remote mode: send reply via HTTP POST
-        if let TuiMode::Remote { ref base_url, ref http_client, .. } = self.mode {
+        if let TuiMode::Remote {
+            ref base_url,
+            ref http_client,
+            ..
+        } = self.mode
+        {
             let url = format!("{base_url}/tui/control/response");
             let client = http_client.clone();
             let rid = request_id.clone();
@@ -3137,13 +3618,11 @@ impl TuiApp {
 
         // Local mode: publish question reply on the bus
         if let Some(ref bus) = self.bus {
-            let event = rustcode_core::bus::GlobalEvent::new(
-                serde_json::json!({
-                    "type": "question.replied",
-                    "requestID": request_id,
-                    "answers": answers,
-                })
-            );
+            let event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                "type": "question.replied",
+                "requestID": request_id,
+                "answers": answers,
+            }));
             let _ = bus.publish(event);
         }
 
@@ -3159,36 +3638,62 @@ impl TuiApp {
 
     // ── Public API ───────────────────────────────────────────────────
 
-    pub fn set_messages(&mut self, session_id: &str, messages: Vec<rustcode_core::session::Message>, parts: HashMap<String, Vec<rustcode_core::session::Part>>) {
+    pub fn set_messages(
+        &mut self,
+        session_id: &str,
+        messages: Vec<rustcode_core::session::Message>,
+        parts: HashMap<String, Vec<rustcode_core::session::Part>>,
+    ) {
         self.session_id = Some(session_id.into());
         self.conversation.set_messages(messages, parts);
     }
 
     pub fn handle_tui_event(&mut self, event: TuiEvent) {
         match event {
-            TuiEvent::PromptAppend { properties } => { self.input.append(&properties.text); }
+            TuiEvent::PromptAppend { properties } => {
+                self.input.append(&properties.text);
+            }
             TuiEvent::CommandExecute { .. } => {}
             TuiEvent::ToastShow { properties } => {
                 tracing::info!("toast [{}]: {}", properties.variant, properties.message);
             }
-            TuiEvent::SessionSelect { properties } => { self.session_id = Some(properties.session_id); }
+            TuiEvent::SessionSelect { properties } => {
+                self.session_id = Some(properties.session_id);
+            }
         }
     }
 
-    pub fn set_session_status(&mut self, status: SessionStatus) { self.status.session_status = Some(status); }
-    pub fn set_connected(&mut self, connected: bool) { self.status.connected = connected; if connected { self.status.show_welcome = false; } }
-    pub fn set_service_counts(&mut self, lsp: usize, mcp: usize, mcp_err: bool) {
-        self.status.lsp_count = lsp; self.status.mcp_count = mcp; self.status.mcp_error = mcp_err;
+    pub fn set_session_status(&mut self, status: SessionStatus) {
+        self.status.session_status = Some(status);
     }
-    pub fn set_permission_count(&mut self, count: usize) { self.status.permission_count = count; }
-    pub fn show_permission(&mut self, req: rustcode_core::permission::PermissionRequest) { self.permission.show(req); }
-    pub fn show_question(&mut self, rid: String, qs: Vec<crate::event::QuestionItem>) { self.question.show(rid, qs); }
+    pub fn set_connected(&mut self, connected: bool) {
+        self.status.connected = connected;
+        if connected {
+            self.status.show_welcome = false;
+        }
+    }
+    pub fn set_service_counts(&mut self, lsp: usize, mcp: usize, mcp_err: bool) {
+        self.status.lsp_count = lsp;
+        self.status.mcp_count = mcp;
+        self.status.mcp_error = mcp_err;
+    }
+    pub fn set_permission_count(&mut self, count: usize) {
+        self.status.permission_count = count;
+    }
+    pub fn show_permission(&mut self, req: rustcode_core::permission::PermissionRequest) {
+        self.permission.show(req);
+    }
+    pub fn show_question(&mut self, rid: String, qs: Vec<crate::event::QuestionItem>) {
+        self.question.show(rid, qs);
+    }
     /// Update the tool definitions sent to the LLM on each request.
     pub fn set_tool_definitions(&mut self, defs: Vec<ToolDefinition>) {
         self.tool_definitions = defs;
     }
 
-    pub fn get_session_id(&self) -> Option<&str> { self.session_id.as_deref() }
+    pub fn get_session_id(&self) -> Option<&str> {
+        self.session_id.as_deref()
+    }
 }
 
 /// Convert a KeyEvent to a human-readable string.
@@ -3196,19 +3701,21 @@ fn key_event_to_string(key: &crossterm::event::KeyEvent) -> String {
     use crossterm::event::KeyCode;
     use crossterm::event::KeyModifiers;
 
-    let mut parts = Vec::new();
+    let mut parts: Vec<String> = Vec::new();
 
     if key.modifiers.contains(KeyModifiers::CONTROL) {
-        parts.push("C-");
+        parts.push("C-".into());
     }
     if key.modifiers.contains(KeyModifiers::ALT) {
-        parts.push("M-");
+        parts.push("M-".into());
     }
     if key.modifiers.contains(KeyModifiers::SHIFT) {
         // Only add shift for non-char keys
         match key.code {
             KeyCode::Char(_) => {}
-            _ => { parts.push("S-"); }
+            _ => {
+                parts.push("S-".into());
+            }
         }
     }
 

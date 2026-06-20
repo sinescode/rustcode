@@ -115,7 +115,7 @@ pub fn initialize_runtime_with_path(db_path: &Path) -> anyhow::Result<RuntimeCon
         .max_connections(5)
         .connect_lazy(&db_url);
 
-    let db = Arc::new(DatabaseService::new(db_pool));
+    let db = Arc::new(DatabaseService::new(db_pool?));
     let sessions = Arc::new(SessionManager::new(bus.clone(), db.clone()));
     let tools = Arc::new(ToolRegistry::new());
     tools.register_builtins();
@@ -123,14 +123,13 @@ pub fn initialize_runtime_with_path(db_path: &Path) -> anyhow::Result<RuntimeCon
     let questions = Arc::new(QuestionService::default());
     let runner = Arc::new(SessionRunner::new(tools.clone()));
 
-    let providers: HashMap<String, Arc<dyn Provider>> =
-        crate::providers::auto_detect_all()
-            .into_iter()
-            .map(|p| {
-                let id = p.provider_id().to_string();
-                (id, Arc::from(p))
-            })
-            .collect();
+    let providers: HashMap<String, Arc<dyn Provider>> = crate::providers::auto_detect_all()
+        .into_iter()
+        .map(|p| {
+            let id = p.provider_id().to_string();
+            (id, Arc::from(p))
+        })
+        .collect();
 
     // Log detected providers at info level so they show up in `--print-logs`.
     if providers.is_empty() {
@@ -177,19 +176,13 @@ impl RuntimeContext {
 
     /// Get the default provider ID (first alphabetically, well-known first).
     pub fn default_provider_id(&self) -> Option<&str> {
-        let mut ids: Vec<&str> = self
-            .providers
-            .keys()
-            .map(|s| s.as_str())
-            .collect();
-        ids.sort_by_key(|id| {
-            match *id {
-                "anthropic" => 0u8,
-                "openai" => 1,
-                "google" => 2,
-                "openrouter" => 3,
-                _ => 99,
-            }
+        let mut ids: Vec<&str> = self.providers.keys().map(|s| s.as_str()).collect();
+        ids.sort_by_key(|id| match *id {
+            "anthropic" => 0u8,
+            "openai" => 1,
+            "google" => 2,
+            "openrouter" => 3,
+            _ => 99,
         });
         ids.first().copied()
     }
@@ -274,8 +267,8 @@ mod tests {
     #[test]
     fn test_has_providers_empty() {
         let ctx = initialize_runtime_with_path(Path::new(":memory:")).unwrap();
-        let expected = std::env::var("ANTHROPIC_API_KEY").is_ok()
-            || std::env::var("OPENAI_API_KEY").is_ok();
+        let expected =
+            std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("OPENAI_API_KEY").is_ok();
         assert_eq!(ctx.has_providers(), expected);
     }
 }

@@ -434,7 +434,10 @@ mod tests {
         let mut seen = std::collections::HashSet::new();
         for _ in 0..1000 {
             let id = ascending(IdPrefix::Session, None).unwrap();
-            assert!(seen.insert(id), "duplicate ID generated in 1000-iteration collision test");
+            assert!(
+                seen.insert(id),
+                "duplicate ID generated in 1000-iteration collision test"
+            );
         }
         assert_eq!(seen.len(), 1000);
     }
@@ -447,7 +450,12 @@ mod tests {
             .map(|_| ascending(IdPrefix::Job, None).unwrap())
             .collect();
         for w in ids.windows(2) {
-            assert!(w[0] <= w[1], "ascending IDs must be non-decreasing: {} > {}", w[0], w[1]);
+            assert!(
+                w[0] <= w[1],
+                "ascending IDs must be non-decreasing: {} > {}",
+                w[0],
+                w[1]
+            );
         }
     }
 
@@ -526,9 +534,6 @@ mod tests {
         let ts = Some(1_000_000_000i64);
         let asc = create("ses", Direction::Ascending, ts);
         let desc = create("ses", Direction::Descending, ts);
-        assert!(
-            asc < desc,
-            "ascending {asc} should be < descending {desc}"
-        );
+        assert!(asc < desc, "ascending {asc} should be < descending {desc}");
     }
 }

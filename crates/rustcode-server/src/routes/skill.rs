@@ -5,8 +5,8 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::get;
+use axum::{Json, Router};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::warn;
@@ -47,8 +47,13 @@ async fn list_skills(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     let disable_external = std::env::var("OPENCODE_DISABLE_EXTERNAL_SKILLS").is_ok();
     let extra_paths: Vec<PathBuf> = Vec::new();
 
-    let files =
-        rustcode_core::skill::discover_skill_files(&cwd, &cwd, &home, &extra_paths, disable_external);
+    let files = rustcode_core::skill::discover_skill_files(
+        &cwd,
+        &cwd,
+        &home,
+        &extra_paths,
+        disable_external,
+    );
 
     let mut skills: Vec<serde_json::Value> = Vec::new();
     for file_path in &files {

@@ -385,9 +385,7 @@ impl ToolRegistry {
     ) -> crate::error::Result<ExecuteResult> {
         let def = self
             .get(name)
-            .ok_or_else(|| {
-                crate::error::Error::Tool(format!("tool not found: {name}"))
-            })?;
+            .ok_or_else(|| crate::error::Error::Tool(format!("tool not found: {name}")))?;
         let tool = Arc::clone(&def.tool);
         tool.execute(args, ctx).await
     }

@@ -4,10 +4,11 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
+use tracing::info;
 
 use crate::server::AppState;
 
@@ -30,8 +31,14 @@ pub fn provider_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/provider", get(list_providers))
         .route("/provider/auth", get(provider_auth_methods))
-        .route("/provider/{providerID}/oauth/authorize", post(oauth_authorize))
-        .route("/provider/{providerID}/oauth/callback", post(oauth_callback))
+        .route(
+            "/provider/{providerID}/oauth/authorize",
+            post(oauth_authorize),
+        )
+        .route(
+            "/provider/{providerID}/oauth/callback",
+            post(oauth_callback),
+        )
         .with_state(state)
 }
 
@@ -87,6 +94,7 @@ async fn oauth_authorize(
                 "provider_id": provider_id,
                 "authorization_url": format!("https://auth.{provider_id}.com/oauth/authorize"),
             }))
+            .into_response()
         }
         None => (
             axum::http::StatusCode::NOT_FOUND,
@@ -110,6 +118,7 @@ async fn oauth_callback(
                 "provider_id": provider_id,
                 "success": true,
             }))
+            .into_response()
         }
         None => (
             axum::http::StatusCode::NOT_FOUND,

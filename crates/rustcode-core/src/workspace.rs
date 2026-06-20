@@ -34,9 +34,7 @@ impl WorkspaceId {
     /// `packages/core/src/workspace.ts` lines 11–13 — `ascending`.
     pub fn ascending(id: &str) -> Result<Self, WorkspaceIdError> {
         if !id.starts_with(WORKSPACE_ID_PREFIX) {
-            return Err(WorkspaceIdError::InvalidPrefix {
-                id: id.to_string(),
-            });
+            return Err(WorkspaceIdError::InvalidPrefix { id: id.to_string() });
         }
         Ok(Self(id.to_string()))
     }
@@ -63,9 +61,7 @@ impl WorkspaceId {
     /// Return the suffix after `"wrk_"`.
     #[must_use]
     pub fn suffix(&self) -> &str {
-        self.0
-            .strip_prefix(WORKSPACE_ID_PREFIX)
-            .unwrap_or(&self.0)
+        self.0.strip_prefix(WORKSPACE_ID_PREFIX).unwrap_or(&self.0)
     }
 }
 
@@ -343,7 +339,12 @@ impl WorkspaceService {
 
         // Update workspace to point to the new project/directory
         self.adapter
-            .update_workspace(workspace_id, Some(target_project_id), target_directory, None)
+            .update_workspace(
+                workspace_id,
+                Some(target_project_id),
+                target_directory,
+                None,
+            )
             .await
     }
 
@@ -691,9 +692,7 @@ mod tests {
 
     #[test]
     fn test_error_display() {
-        let err = WorkspaceIdError::InvalidPrefix {
-            id: "bad".into(),
-        };
+        let err = WorkspaceIdError::InvalidPrefix { id: "bad".into() };
         assert!(err.to_string().contains("bad"));
         let err = WorkspaceIdError::GenerationFailed("reason".into());
         assert!(err.to_string().contains("reason"));
@@ -725,7 +724,9 @@ mod tests {
     async fn test_create_workspace_with_explicit_id() {
         let svc = setup_workspace_service();
         let id = WorkspaceId::ascending("wrk_explicit123").expect("valid id");
-        let input = WorkspaceCreateInput { id: Some(id.clone()) };
+        let input = WorkspaceCreateInput {
+            id: Some(id.clone()),
+        };
 
         let record = svc
             .create(Some(&input), "proj-2", "explicit", "custom")
@@ -751,7 +752,10 @@ mod tests {
 
         // Second create with same ID should fail
         let result = svc.create(Some(&input), "proj-2", "second", "type").await;
-        assert!(matches!(result, Err(WorkspaceServiceError::AlreadyExists(_))));
+        assert!(matches!(
+            result,
+            Err(WorkspaceServiceError::AlreadyExists(_))
+        ));
     }
 
     #[tokio::test]
@@ -759,9 +763,18 @@ mod tests {
         let svc = setup_workspace_service();
 
         // Create multiple workspaces
-        let r1 = svc.create(None, "proj-1", "workspace-a", "default").await.unwrap();
-        let r2 = svc.create(None, "proj-2", "workspace-b", "custom").await.unwrap();
-        let r3 = svc.create(None, "proj-1", "workspace-c", "default").await.unwrap();
+        let r1 = svc
+            .create(None, "proj-1", "workspace-a", "default")
+            .await
+            .unwrap();
+        let r2 = svc
+            .create(None, "proj-2", "workspace-b", "custom")
+            .await
+            .unwrap();
+        let r3 = svc
+            .create(None, "proj-1", "workspace-c", "default")
+            .await
+            .unwrap();
 
         let all = svc.list(None).await.expect("list workspaces");
         assert_eq!(all.len(), 3);
@@ -771,9 +784,13 @@ mod tests {
     async fn test_list_workspaces_with_search() {
         let svc = setup_workspace_service();
 
-        svc.create(None, "proj-1", "alpha", "default").await.unwrap();
+        svc.create(None, "proj-1", "alpha", "default")
+            .await
+            .unwrap();
         svc.create(None, "proj-2", "beta", "custom").await.unwrap();
-        svc.create(None, "proj-3", "gamma", "default").await.unwrap();
+        svc.create(None, "proj-3", "gamma", "default")
+            .await
+            .unwrap();
 
         // Search for IDs containing specific pattern (all have wrk_ prefix)
         let input = WorkspaceListInput {
@@ -805,7 +822,10 @@ mod tests {
     #[tokio::test]
     async fn test_remove_workspace() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "to-remove", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "to-remove", "default")
+            .await
+            .unwrap();
 
         svc.remove(&record.id).await.expect("remove workspace");
 
@@ -825,9 +845,16 @@ mod tests {
     #[tokio::test]
     async fn test_get_workspace() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "find-me", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "find-me", "default")
+            .await
+            .unwrap();
 
-        let found = svc.get(&record.id).await.expect("get").expect("should exist");
+        let found = svc
+            .get(&record.id)
+            .await
+            .expect("get")
+            .expect("should exist");
         assert_eq!(found.name, "find-me");
         assert_eq!(found.project_id, "proj-1");
     }
@@ -843,7 +870,10 @@ mod tests {
     #[tokio::test]
     async fn test_warp_workspace() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "warp-test", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "warp-test", "default")
+            .await
+            .unwrap();
 
         // Warp to a different project
         let warped = svc
@@ -867,7 +897,10 @@ mod tests {
     #[tokio::test]
     async fn test_warp_preserves_name() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "keep-name", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "keep-name", "default")
+            .await
+            .unwrap();
 
         let warped = svc
             .warp(&record.id, "proj-2", Some("/other"))
@@ -881,7 +914,10 @@ mod tests {
     #[tokio::test]
     async fn test_touch_workspace() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "touch-me", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "touch-me", "default")
+            .await
+            .unwrap();
 
         let old_time = record.time_used;
         // Small sleep to ensure timestamp changes
@@ -889,7 +925,11 @@ mod tests {
 
         svc.touch(&record.id).await.expect("touch");
 
-        let updated = svc.get(&record.id).await.expect("get").expect("should exist");
+        let updated = svc
+            .get(&record.id)
+            .await
+            .expect("get")
+            .expect("should exist");
         assert!(updated.time_used > old_time);
     }
 
@@ -933,10 +973,7 @@ mod tests {
             .expect("should exist");
         assert_eq!(found.id, id);
 
-        adapter
-            .remove_workspace(&id)
-            .await
-            .expect("remove");
+        adapter.remove_workspace(&id).await.expect("remove");
 
         let gone = adapter.get_workspace(&id).await.expect("get");
         assert!(gone.is_none());
@@ -945,7 +982,10 @@ mod tests {
     #[tokio::test]
     async fn test_workspace_record_status_default_active() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "status-test", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "status-test", "default")
+            .await
+            .unwrap();
         assert_eq!(record.status, WorkspaceStatus::Active);
     }
 
@@ -959,7 +999,10 @@ mod tests {
     #[tokio::test]
     async fn test_warp_multiple_times() {
         let svc = setup_workspace_service();
-        let record = svc.create(None, "proj-1", "multi-warp", "default").await.unwrap();
+        let record = svc
+            .create(None, "proj-1", "multi-warp", "default")
+            .await
+            .unwrap();
 
         let w1 = svc.warp(&record.id, "proj-a", Some("/a")).await.unwrap();
         assert_eq!(w1.project_id, "proj-a");

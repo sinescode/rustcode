@@ -457,10 +457,7 @@ impl QuestionEvent {
 ///
 /// Produces a string like:
 /// `User has answered your questions: "What color?"="red, blue", ...`
-pub fn format_model_output(
-    questions: &[QuestionPrompt],
-    answers: &[QuestionAnswer],
-) -> String {
+pub fn format_model_output(questions: &[QuestionPrompt], answers: &[QuestionAnswer]) -> String {
     let formatted: Vec<String> = questions
         .iter()
         .enumerate()
@@ -963,17 +960,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_ask_and_reply() {
-        let svc = QuestionService::new();
+        let svc = Arc::new(QuestionService::new());
         let questions = vec![QuestionInfo::new("Color?", "Pick Color")
             .with_options(vec![QuestionOption::new("Red", "The red one")])];
 
         // Ask a question concurrently
+        let svc_clone = Arc::clone(&svc);
         let handle = {
-            let svc = &svc;
-            let questions = questions.clone();
-            tokio::spawn(async move {
-                svc.ask("ses_test", questions, None).await
-            })
+            tokio::spawn(async move { svc_clone.ask("ses_test", questions, None).await })
         };
 
         // Give the ask a moment to register
@@ -993,7 +987,10 @@ mod tests {
             .expect("reply should succeed");
 
         // The ask should resolve with the answer
-        let result = handle.await.expect("task should complete").expect("ask should succeed");
+        let result = handle
+            .await
+            .expect("task should complete")
+            .expect("ask should succeed");
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].labels(), &["Red"]);
 
@@ -1003,13 +1000,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_reject() {
-        let svc = QuestionService::new();
+        let svc = Arc::new(QuestionService::new());
         let questions = vec![QuestionInfo::new("Confirm?", "Confirm")];
 
+        let svc_clone = Arc::clone(&svc);
         let handle = {
-            let svc = &svc;
-            let questions = questions.clone();
-            tokio::spawn(async move { svc.ask("ses_test", questions, None).await })
+            tokio::spawn(async move { svc_clone.ask("ses_test", questions, None).await })
         };
 
         tokio::task::yield_now().await;
@@ -1058,31 +1054,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_list() {
-        let svc = QuestionService::new();
+        let svc = Arc::new(QuestionService::new());
 
         // Ask two questions concurrently
-        let handle1 = {
-            let svc = &svc;
-            tokio::spawn(async move {
-                svc.ask(
-                    "ses_a",
-                    vec![QuestionInfo::new("Q1?", "H1")],
-                    None,
-                )
+        let svc1 = Arc::clone(&svc);
+        let handle1 = tokio::spawn(async move {
+            svc1.ask("ses_a", vec![QuestionInfo::new("Q1?", "H1")], None)
                 .await
-            })
-        };
-        let handle2 = {
-            let svc = &svc;
-            tokio::spawn(async move {
-                svc.ask(
-                    "ses_b",
-                    vec![QuestionInfo::new("Q2?", "H2")],
-                    None,
-                )
+        });
+        let svc2 = Arc::clone(&svc);
+        let handle2 = tokio::spawn(async move {
+            svc2.ask("ses_b", vec![QuestionInfo::new("Q2?", "H2")], None)
                 .await
-            })
-        };
+        });
 
         tokio::task::yield_now().await;
 
@@ -1105,8 +1089,14 @@ mod tests {
         }
 
         // Both handles should resolve
-        let r1 = handle1.await.expect("task1 complete").expect("ask1 success");
-        let r2 = handle2.await.expect("task2 complete").expect("ask2 success");
+        let r1 = handle1
+            .await
+            .expect("task1 complete")
+            .expect("ask1 success");
+        let r2 = handle2
+            .await
+            .expect("task2 complete")
+            .expect("ask2 success");
         assert_eq!(r1[0].labels(), &["OK"]);
         assert_eq!(r2[0].labels(), &["OK"]);
 
@@ -1125,10 +1115,7 @@ mod tests {
         for i in 0..question_count {
             let svc = Arc::clone(&svc);
             handles.push(tokio::spawn(async move {
-                let questions = vec![QuestionInfo::new(
-                    format!("Q{}?", i),
-                    format!("H{}", i),
-                )];
+                let questions = vec![QuestionInfo::new(format!("Q{}?", i), format!("H{}", i))];
                 svc.ask(format!("ses_{}", i), questions, None).await
             }));
         }
@@ -1151,7 +1138,10 @@ mod tests {
 
         // All handles should resolve successfully
         for handle in handles {
-            let result = handle.await.expect("task should complete").expect("ask should succeed");
+            let result = handle
+                .await
+                .expect("task should complete")
+                .expect("ask should succeed");
             assert_eq!(result.len(), 1);
             assert!(!result[0].is_empty());
         }

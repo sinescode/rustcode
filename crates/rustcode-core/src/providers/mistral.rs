@@ -16,7 +16,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::error::Error;
 use crate::provider::{
-    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider, ToolDefinition, Usage,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
@@ -25,9 +26,10 @@ const DEFAULT_BASE_URL: &str = "https://api.mistral.ai/v1";
 const CHAT_PATH: &str = "/chat/completions";
 
 fn resolve_api_key() -> Result<String, Error> {
-    std::env::var("MISTRAL_API_KEY").ok().filter(|k| !k.is_empty()).ok_or_else(|| {
-        Error::Auth("MISTRAL_API_KEY environment variable not set".into())
-    })
+    std::env::var("MISTRAL_API_KEY")
+        .ok()
+        .filter(|k| !k.is_empty())
+        .ok_or_else(|| Error::Auth("MISTRAL_API_KEY environment variable not set".into()))
 }
 
 // ── Chat Completions Body (OpenAI-compatible) ──────────────────────────
@@ -195,14 +197,21 @@ impl MistralProvider {
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
-        Ok(Self { api_key, base_url, http_client, models: build_model_catalog() })
+        Ok(Self {
+            api_key,
+            base_url,
+            http_client,
+            models: build_model_catalog(),
+        })
     }
 
     pub fn with_api_key(api_key: String) -> Result<Self, Error> {
         Self::with_base_url(api_key, DEFAULT_BASE_URL.into())
     }
 
-    fn chat_url(&self) -> String { format!("{}{CHAT_PATH}", self.base_url.trim_end_matches('/')) }
+    fn chat_url(&self) -> String {
+        format!("{}{CHAT_PATH}", self.base_url.trim_end_matches('/'))
+    }
 
     fn build_chat_messages(messages: &[ChatMessage]) -> Vec<MistralChatMessage> {
         let mut result = Vec::new();
@@ -222,11 +231,17 @@ impl MistralProvider {
                     for part in content_parts(content) {
                         match part {
                             ContentPart::Text { text } => text_parts.push_str(&text),
-                            ContentPart::Image { image } => media_parts.push(MistralUserContentPart::ImageUrl {
-                                image_url: MistralImageUrl {
-                                    url: if image.starts_with("data:") { image.clone() } else { format!("data:image/png;base64,{image}") },
-                                },
-                            }),
+                            ContentPart::Image { image } => {
+                                media_parts.push(MistralUserContentPart::ImageUrl {
+                                    image_url: MistralImageUrl {
+                                        url: if image.starts_with("data:") {
+                                            image.clone()
+                                        } else {
+                                            format!("data:image/png;base64,{image}")
+                                        },
+                                    },
+                                })
+                            }
                             _ => {}
                         }
                     }
@@ -234,13 +249,17 @@ impl MistralProvider {
                         media_parts.extend(pending_images.drain(..));
                     }
                     if media_parts.is_empty() {
-                        result.push(MistralChatMessage::User { content: MistralChatUserContent::Text(text_parts) });
+                        result.push(MistralChatMessage::User {
+                            content: MistralChatUserContent::Text(text_parts),
+                        });
                     } else {
                         let mut parts = media_parts;
                         if !text_parts.is_empty() {
                             parts.insert(0, MistralUserContentPart::Text { text: text_parts });
                         }
-                        result.push(MistralChatMessage::User { content: MistralChatUserContent::Parts(parts) });
+                        result.push(MistralChatMessage::User {
+                            content: MistralChatUserContent::Parts(parts),
+                        });
                     }
                 }
                 ChatMessage::Assistant { content } => {
@@ -251,11 +270,17 @@ impl MistralProvider {
                         match part {
                             ContentPart::Text { text: t } => text.push_str(&t),
                             ContentPart::Reasoning { text: r, .. } => reasoning.push_str(&r),
-                            ContentPart::ToolCallPart { tool_call_id, tool_name } => {
+                            ContentPart::ToolCallPart {
+                                tool_call_id,
+                                tool_name,
+                            } => {
                                 tool_calls.push(MistralAssistantToolCall {
                                     id: tool_call_id.clone(),
                                     call_type: "function".into(),
-                                    function: MistralToolCallFunction { name: tool_name.clone(), arguments: "{}".into() },
+                                    function: MistralToolCallFunction {
+                                        name: tool_name.clone(),
+                                        arguments: "{}".into(),
+                                    },
                                 });
                             }
                             _ => {}
@@ -263,18 +288,29 @@ impl MistralProvider {
                     }
                     result.push(MistralChatMessage::Assistant {
                         content: if text.is_empty() { None } else { Some(text) },
-                        tool_calls: if tool_calls.is_empty() { None } else { Some(tool_calls) },
-                        reasoning_content: if reasoning.is_empty() { None } else { Some(reasoning) },
+                        tool_calls: if tool_calls.is_empty() {
+                            None
+                        } else {
+                            Some(tool_calls)
+                        },
+                        reasoning_content: if reasoning.is_empty() {
+                            None
+                        } else {
+                            Some(reasoning)
+                        },
                     });
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult { tool_call_id, output, .. } = part {
-                            result.push(MistralChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        let crate::provider::ToolResultPart::ToolResult {
+                            tool_call_id,
+                            output,
+                            ..
+                        } = part;
+                        result.push(MistralChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -286,7 +322,14 @@ impl MistralProvider {
 fn extract_text(content: &MessageContent) -> String {
     match content {
         MessageContent::Text(t) => t.clone(),
-        MessageContent::Parts(p) => p.iter().filter_map(|p| match p { ContentPart::Text { text } => Some(text.as_str()), _ => None }).collect::<Vec<_>>().join(""),
+        MessageContent::Parts(p) => p
+            .iter()
+            .filter_map(|p| match p {
+                ContentPart::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join(""),
     }
 }
 
@@ -299,11 +342,22 @@ fn content_parts(content: &MessageContent) -> &[ContentPart] {
 }
 
 fn build_tools(tools: &[ToolDefinition]) -> Option<Vec<MistralTool>> {
-    if tools.is_empty() { return None; }
-    Some(tools.iter().map(|t| MistralTool {
-        tool_type: "function".into(),
-        function: MistralFunctionDef { name: t.name.clone(), description: t.description.clone(), parameters: t.parameters.clone() },
-    }).collect())
+    if tools.is_empty() {
+        return None;
+    }
+    Some(
+        tools
+            .iter()
+            .map(|t| MistralTool {
+                tool_type: "function".into(),
+                function: MistralFunctionDef {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    parameters: t.parameters.clone(),
+                },
+            })
+            .collect(),
+    )
 }
 
 // ── Event Mapping ──────────────────────────────────────────────────────
@@ -319,24 +373,30 @@ fn map_finish_reason(reason: &str) -> FinishReason {
 }
 
 fn map_usage(u: &MistralUsage) -> Usage {
-    let cached = u.prompt_tokens_details.as_ref().and_then(|d| d.cached_tokens);
-    let reasoning = u.completion_tokens_details.as_ref().and_then(|d| d.reasoning_tokens);
-    let non_cached = u.prompt_tokens.map(|p| p.saturating_sub(cached.unwrap_or(0)));
+    let cached = u
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cached_tokens);
+    let reasoning = u
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|d| d.reasoning_tokens);
+    let non_cached = u
+        .prompt_tokens
+        .map(|p| p.saturating_sub(cached.unwrap_or(0)));
     Usage {
         input_tokens: u.prompt_tokens,
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
     }
 }
 
-fn events_from_chat(
-    event: MistralChatEvent,
-    state: &mut ChatStreamState,
-) -> Vec<LlmEvent> {
+fn events_from_chat(event: MistralChatEvent, state: &mut ChatStreamState) -> Vec<LlmEvent> {
     let mut events = Vec::new();
     let usage = event.usage.as_ref().map(map_usage).or(state.usage.clone());
     let choice = &event.choices.first();
@@ -345,25 +405,46 @@ fn events_from_chat(
         if let Some(ref rc) = delta.reasoning_content {
             if !state.reasoning_started {
                 state.reasoning_started = true;
-                events.push(LlmEvent::ReasoningStart { id: "reasoning-0".into(), provider_metadata: None });
+                events.push(LlmEvent::ReasoningStart {
+                    id: "reasoning-0".into(),
+                    provider_metadata: None,
+                });
             }
-            events.push(LlmEvent::ReasoningDelta { id: "reasoning-0".into(), text: rc.clone(), provider_metadata: None });
+            events.push(LlmEvent::ReasoningDelta {
+                id: "reasoning-0".into(),
+                text: rc.clone(),
+                provider_metadata: None,
+            });
         }
         if let Some(ref content) = delta.content {
             if !state.text_started {
                 state.text_started = true;
-                events.push(LlmEvent::TextStart { id: "text-0".into(), provider_metadata: None });
+                events.push(LlmEvent::TextStart {
+                    id: "text-0".into(),
+                    provider_metadata: None,
+                });
             }
-            events.push(LlmEvent::TextDelta { id: "text-0".into(), text: content.clone(), provider_metadata: None });
+            events.push(LlmEvent::TextDelta {
+                id: "text-0".into(),
+                text: content.clone(),
+                provider_metadata: None,
+            });
         }
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state.tool_stream.set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
-                        if !state.step_started { events.push(LlmEvent::StepStart { index: 0 }); state.step_started = true; }
+                        if !state.step_started {
+                            events.push(LlmEvent::StepStart { index: 0 });
+                            state.step_started = true;
+                        }
                         events.push(ev);
                     }
                 }
@@ -376,10 +457,29 @@ fn events_from_chat(
             events.push(tool_ev);
         }
         let reason = map_finish_reason(finish_reason);
-        if state.text_started { events.push(LlmEvent::TextEnd { id: "text-0".into(), provider_metadata: None }); }
-        if state.reasoning_started { events.push(LlmEvent::ReasoningEnd { id: "reasoning-0".into(), provider_metadata: None }); }
-        events.push(LlmEvent::StepFinish { index: 0, reason: reason.clone(), usage: usage.clone(), provider_metadata: None });
-        events.push(LlmEvent::Finish { reason, usage, provider_metadata: None });
+        if state.text_started {
+            events.push(LlmEvent::TextEnd {
+                id: "text-0".into(),
+                provider_metadata: None,
+            });
+        }
+        if state.reasoning_started {
+            events.push(LlmEvent::ReasoningEnd {
+                id: "reasoning-0".into(),
+                provider_metadata: None,
+            });
+        }
+        events.push(LlmEvent::StepFinish {
+            index: 0,
+            reason: reason.clone(),
+            usage: usage.clone(),
+            provider_metadata: None,
+        });
+        events.push(LlmEvent::Finish {
+            reason,
+            usage: usage.clone(),
+            provider_metadata: None,
+        });
         state.finished = true;
     }
 
@@ -400,19 +500,36 @@ struct ChatStreamState {
 
 #[async_trait]
 impl Provider for MistralProvider {
-    fn provider_id(&self) -> &str { "mistral" }
-    fn npm(&self) -> &str { "@ai-sdk/mistral" }
+    fn provider_id(&self) -> &str {
+        "mistral"
+    }
+    fn npm(&self) -> &str {
+        "@ai-sdk/mistral"
+    }
 
-    async fn list_models(&self) -> crate::error::Result<Vec<Model>> { Ok(self.models.clone()) }
+    async fn list_models(&self) -> crate::error::Result<Vec<Model>> {
+        Ok(self.models.clone())
+    }
 
     async fn get_model(&self, model_id: &str) -> crate::error::Result<Model> {
-        self.models.iter().find(|m| m.id == model_id).cloned()
-            .ok_or_else(|| Error::ModelNotFound { provider_id: "mistral".into(), model_id: model_id.into() })
+        self.models
+            .iter()
+            .find(|m| m.id == model_id)
+            .cloned()
+            .ok_or_else(|| Error::ModelNotFound {
+                provider_id: "mistral".into(),
+                model_id: model_id.into(),
+            })
     }
 
     async fn stream(
-        &self, model: &Model, messages: &[ChatMessage], tools: &[ToolDefinition],
-    ) -> crate::error::Result<Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>> {
+        &self,
+        model: &Model,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> crate::error::Result<
+        Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
+    > {
         let body = MistralChatBody {
             model: model.api.id.clone(),
             messages: Self::build_chat_messages(messages),
@@ -420,59 +537,111 @@ impl Provider for MistralProvider {
             tool_choice: None,
             stream: true,
             stream_options: serde_json::json!({"include_usage": true}),
-            max_tokens: Some(crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX)),
+            max_tokens: Some(crate::provider::max_output_tokens(
+                model,
+                crate::provider::OUTPUT_TOKEN_MAX,
+            )),
             temperature: None,
             top_p: None,
         };
 
-        let response = self.http_client.post(self.chat_url())
+        let response = self
+            .http_client
+            .post(self.chat_url())
             .header("Authorization", format!("Bearer {}", self.api_key))
             .header("Content-Type", "application/json")
-            .json(&body).send().await.map_err(|e| Error::Network(format!("Mistral request: {e}")))?;
+            .json(&body)
+            .send()
+            .await
+            .map_err(|e| Error::Network(format!("Mistral request: {e}")))?;
 
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(Error::Llm { module: "mistral".into(), method: "stream".into(), reason: Box::new(classify_error(status, &text)) });
+            return Err(Error::Llm {
+                module: "mistral".into(),
+                method: "stream".into(),
+                reason: Box::new(classify_error(status, &text)),
+            });
         }
 
         let sse_stream = parse_sse_stream(response);
         let state = ChatStreamState {
             tool_stream: ToolStreamAccumulator::new(),
-            text_started: false, reasoning_started: false, step_started: false,
-            usage: None, finished: false,
+            text_started: false,
+            reasoning_started: false,
+            step_started: false,
+            usage: None,
+            finished: false,
         };
 
         let llm_stream = futures::stream::unfold(
-            (Box::pin(sse_stream) as Pin<Box<dyn futures::Stream<Item = Result<crate::sse::SseEvent, crate::sse::SseError>> + Send + Unpin>>, state, VecDeque::new()),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() { return Some((ev, (sse, state, buffer))); }
-                    if state.finished { return None; }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) = serde_json::from_str::<MistralChatEvent>(&se.data) {
-                                for ev in events_from_chat(oe, &mut state) { buffer.push_back(Ok(ev)); }
-                                if let Some(ev) = buffer.pop_front() { return Some((ev, (sse, state, buffer))); }
-                            }
+            (
+                Box::pin(sse_stream)
+                    as Pin<
+                        Box<
+                            dyn futures::Stream<
+                                    Item = Result<crate::sse::SseEvent, crate::sse::SseError>,
+                                > + Send
+                                + Unpin,
+                        >,
+                    >,
+                state,
+                VecDeque::new(),
+            ),
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
                         }
-                        Some(Err(e)) => return Some((Err(Error::ResponseStream(format!("Mistral SSE: {e}"))), (sse, state, buffer))),
-                        None => return None,
-                        _ => continue,
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) = serde_json::from_str::<MistralChatEvent>(&se.data) {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Mistral SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ))
+                            }
+                            None => return None,
+                            _ => continue,
+                        }
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
     }
 
-    async fn complete(&self, model: &Model, messages: &[ChatMessage], tools: &[ToolDefinition]) -> crate::error::Result<crate::provider::LlmResponse> {
+    async fn complete(
+        &self,
+        model: &Model,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+    ) -> crate::error::Result<crate::provider::LlmResponse> {
         let mut stream = self.stream(model, messages, tools).await?;
         let mut events = Vec::new();
         let mut usage = None;
         while let Some(r) = stream.next().await {
             match r {
-                Ok(ev) => { if let Some(u) = ev.usage() { usage = Some(u.clone()); } events.push(ev); }
+                Ok(ev) => {
+                    if let Some(u) = ev.usage() {
+                        usage = Some(u.clone());
+                    }
+                    events.push(ev);
+                }
                 Err(_) => {}
             }
         }
@@ -480,28 +649,58 @@ impl Provider for MistralProvider {
     }
 }
 
-use std::pin::Pin;
 use crate::error::LlmErrorReason;
+use std::pin::Pin;
 
 fn classify_error(status: u16, body: &str) -> LlmErrorReason {
     let msg = || body.to_string();
     match status {
-        401 | 403 => LlmErrorReason::Authentication { message: msg(), kind: crate::error::AuthErrorKind::Invalid },
-        429 => LlmErrorReason::RateLimit { message: msg(), retry_after_ms: None },
+        401 | 403 => LlmErrorReason::Authentication {
+            message: msg(),
+            kind: crate::error::AuthErrorKind::Invalid,
+        },
+        429 => LlmErrorReason::RateLimit {
+            message: msg(),
+            retry_after_ms: None,
+        },
         400 | 413 => {
             if crate::error::is_context_overflow(body) {
-                LlmErrorReason::InvalidRequest { message: msg(), parameter: None, classification: Some("context-overflow".into()) }
-            } else { LlmErrorReason::InvalidRequest { message: msg(), parameter: None, classification: None } }
+                LlmErrorReason::InvalidRequest {
+                    message: msg(),
+                    parameter: None,
+                    classification: Some("context-overflow".into()),
+                }
+            } else {
+                LlmErrorReason::InvalidRequest {
+                    message: msg(),
+                    parameter: None,
+                    classification: None,
+                }
+            }
         }
-        500..=599 => LlmErrorReason::ProviderInternal { message: msg(), status, retry_after_ms: None },
-        _ => LlmErrorReason::UnknownProvider { message: msg(), status: Some(status) },
+        500..=599 => LlmErrorReason::ProviderInternal {
+            message: msg(),
+            status,
+            retry_after_ms: None,
+        },
+        _ => LlmErrorReason::UnknownProvider {
+            message: msg(),
+            status: Some(status),
+        },
     }
 }
 
 fn build_model_catalog() -> Vec<Model> {
     vec![
         make_model("mistral-large", "Mistral Large", 128_000, 128_000, 2.0, 6.0),
-        make_model("mistral-medium", "Mistral Medium", 32_000, 8_000, 2.70, 8.10),
+        make_model(
+            "mistral-medium",
+            "Mistral Medium",
+            32_000,
+            8_000,
+            2.70,
+            8.10,
+        ),
         make_model("mistral-small", "Mistral Small", 32_000, 4_000, 1.0, 3.0),
         make_model("mistral-nemo", "Mistral Nemo", 128_000, 128_000, 0.15, 0.15),
         make_model("codestral", "Codestral", 32_000, 8_000, 1.0, 3.0),
@@ -511,25 +710,102 @@ fn build_model_catalog() -> Vec<Model> {
 
 fn make_model(id: &str, name: &str, ctx: u64, out: u64, inp_cost: f64, out_cost: f64) -> Model {
     Model {
-        id: id.into(), provider_id: "mistral".into(), name: name.into(),
-        api: crate::provider::ApiInfo { id: id.into(), url: DEFAULT_BASE_URL.into(), npm: "@ai-sdk/mistral".into() },
+        id: id.into(),
+        provider_id: "mistral".into(),
+        name: name.into(),
+        api: crate::provider::ApiInfo {
+            id: id.into(),
+            url: DEFAULT_BASE_URL.into(),
+            npm: "@ai-sdk/mistral".into(),
+        },
         family: Some("mistral".into()),
-        capabilities: crate::provider::Capabilities { temperature: true, reasoning: true, attachment: true, toolcall: true, input: crate::provider::Modalities { text: true, image: false, ..Default::default() }, output: crate::provider::Modalities { text: true, ..Default::default() }, interleaved: Default::default() },
-        cost: crate::provider::Cost { input: inp_cost, output: out_cost, cache: Default::default(), tiers: None, experimental_over_200k: None },
-        limit: crate::provider::TokenLimit { context: ctx, input: None, output: out },
-        status: crate::provider::ModelStatus::Active, options: HashMap::new(), headers: HashMap::new(), release_date: "2024".into(), variants: None,
+        capabilities: crate::provider::Capabilities {
+            temperature: true,
+            reasoning: true,
+            attachment: true,
+            toolcall: true,
+            input: crate::provider::Modalities {
+                text: true,
+                image: false,
+                ..Default::default()
+            },
+            output: crate::provider::Modalities {
+                text: true,
+                ..Default::default()
+            },
+            interleaved: Default::default(),
+        },
+        cost: crate::provider::Cost {
+            input: inp_cost,
+            output: out_cost,
+            cache: Default::default(),
+            tiers: None,
+            experimental_over_200k: None,
+        },
+        limit: crate::provider::TokenLimit {
+            context: ctx,
+            input: None,
+            output: out,
+        },
+        status: crate::provider::ModelStatus::Active,
+        options: HashMap::new(),
+        headers: HashMap::new(),
+        release_date: "2024".into(),
+        variants: None,
     }
 }
 
-fn make_model_with_image(id: &str, name: &str, ctx: u64, out: u64, inp_cost: f64, out_cost: f64) -> Model {
+fn make_model_with_image(
+    id: &str,
+    name: &str,
+    ctx: u64,
+    out: u64,
+    inp_cost: f64,
+    out_cost: f64,
+) -> Model {
     Model {
-        id: id.into(), provider_id: "mistral".into(), name: name.into(),
-        api: crate::provider::ApiInfo { id: id.into(), url: DEFAULT_BASE_URL.into(), npm: "@ai-sdk/mistral".into() },
+        id: id.into(),
+        provider_id: "mistral".into(),
+        name: name.into(),
+        api: crate::provider::ApiInfo {
+            id: id.into(),
+            url: DEFAULT_BASE_URL.into(),
+            npm: "@ai-sdk/mistral".into(),
+        },
         family: Some("mistral".into()),
-        capabilities: crate::provider::Capabilities { temperature: true, reasoning: true, attachment: true, toolcall: true, input: crate::provider::Modalities { text: true, image: true, ..Default::default() }, output: crate::provider::Modalities { text: true, ..Default::default() }, interleaved: Default::default() },
-        cost: crate::provider::Cost { input: inp_cost, output: out_cost, cache: Default::default(), tiers: None, experimental_over_200k: None },
-        limit: crate::provider::TokenLimit { context: ctx, input: None, output: out },
-        status: crate::provider::ModelStatus::Active, options: HashMap::new(), headers: HashMap::new(), release_date: "2024".into(), variants: None,
+        capabilities: crate::provider::Capabilities {
+            temperature: true,
+            reasoning: true,
+            attachment: true,
+            toolcall: true,
+            input: crate::provider::Modalities {
+                text: true,
+                image: true,
+                ..Default::default()
+            },
+            output: crate::provider::Modalities {
+                text: true,
+                ..Default::default()
+            },
+            interleaved: Default::default(),
+        },
+        cost: crate::provider::Cost {
+            input: inp_cost,
+            output: out_cost,
+            cache: Default::default(),
+            tiers: None,
+            experimental_over_200k: None,
+        },
+        limit: crate::provider::TokenLimit {
+            context: ctx,
+            input: None,
+            output: out,
+        },
+        status: crate::provider::ModelStatus::Active,
+        options: HashMap::new(),
+        headers: HashMap::new(),
+        release_date: "2024".into(),
+        variants: None,
     }
 }
 
@@ -550,13 +826,20 @@ mod tests {
     #[test]
     fn test_model_catalog_all_have_provider_id_mistral() {
         for model in &build_model_catalog() {
-            assert_eq!(model.provider_id, "mistral", "model {} has wrong provider_id", model.id);
+            assert_eq!(
+                model.provider_id, "mistral",
+                "model {} has wrong provider_id",
+                model.id
+            );
         }
     }
 
     #[test]
     fn test_mistral_large() {
-        let model = build_model_catalog().into_iter().find(|m| m.id == "mistral-large").expect("mistral-large not found");
+        let model = build_model_catalog()
+            .into_iter()
+            .find(|m| m.id == "mistral-large")
+            .expect("mistral-large not found");
         assert_eq!(model.name, "Mistral Large");
         assert_eq!(model.limit.context, 128_000);
         assert_eq!(model.limit.output, 128_000);
@@ -566,7 +849,10 @@ mod tests {
 
     #[test]
     fn test_mistral_medium() {
-        let model = build_model_catalog().into_iter().find(|m| m.id == "mistral-medium").expect("mistral-medium not found");
+        let model = build_model_catalog()
+            .into_iter()
+            .find(|m| m.id == "mistral-medium")
+            .expect("mistral-medium not found");
         assert_eq!(model.name, "Mistral Medium");
         assert_eq!(model.limit.context, 32_000);
         assert_eq!(model.limit.output, 8_000);
@@ -574,7 +860,10 @@ mod tests {
 
     #[test]
     fn test_mistral_small() {
-        let model = build_model_catalog().into_iter().find(|m| m.id == "mistral-small").expect("mistral-small not found");
+        let model = build_model_catalog()
+            .into_iter()
+            .find(|m| m.id == "mistral-small")
+            .expect("mistral-small not found");
         assert_eq!(model.name, "Mistral Small");
         assert_eq!(model.limit.context, 32_000);
         assert_eq!(model.limit.output, 4_000);
@@ -582,7 +871,10 @@ mod tests {
 
     #[test]
     fn test_mistral_nemo() {
-        let model = build_model_catalog().into_iter().find(|m| m.id == "mistral-nemo").expect("mistral-nemo not found");
+        let model = build_model_catalog()
+            .into_iter()
+            .find(|m| m.id == "mistral-nemo")
+            .expect("mistral-nemo not found");
         assert_eq!(model.name, "Mistral Nemo");
         assert_eq!(model.limit.context, 128_000);
         assert_eq!(model.limit.output, 128_000);
@@ -593,7 +885,10 @@ mod tests {
 
     #[test]
     fn test_codestral() {
-        let model = build_model_catalog().into_iter().find(|m| m.id == "codestral").expect("codestral not found");
+        let model = build_model_catalog()
+            .into_iter()
+            .find(|m| m.id == "codestral")
+            .expect("codestral not found");
         assert_eq!(model.name, "Codestral");
         assert_eq!(model.limit.context, 32_000);
         assert_eq!(model.limit.output, 8_000);
@@ -602,12 +897,18 @@ mod tests {
 
     #[test]
     fn test_pixtral_large_multimodal() {
-        let model = build_model_catalog().into_iter().find(|m| m.id == "pixtral-large").expect("pixtral-large not found");
+        let model = build_model_catalog()
+            .into_iter()
+            .find(|m| m.id == "pixtral-large")
+            .expect("pixtral-large not found");
         assert_eq!(model.name, "Pixtral Large");
         assert_eq!(model.limit.context, 128_000);
         assert_eq!(model.limit.output, 8_000);
         // Pixtral is multimodal — supports image input
-        assert!(model.capabilities.input.image, "pixtral-large should support image input");
+        assert!(
+            model.capabilities.input.image,
+            "pixtral-large should support image input"
+        );
         assert!(model.capabilities.input.text);
     }
 
@@ -751,7 +1052,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_content_filter() {
-        assert_eq!(map_finish_reason("content_filter"), FinishReason::ContentFilter);
+        assert_eq!(
+            map_finish_reason("content_filter"),
+            FinishReason::ContentFilter
+        );
     }
 
     #[test]
@@ -762,7 +1066,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_unknown() {
-        assert_eq!(map_finish_reason("some_weird_reason"), FinishReason::Unknown);
+        assert_eq!(
+            map_finish_reason("some_weird_reason"),
+            FinishReason::Unknown
+        );
     }
 
     // ── API key resolution ─────────────────────────────────────────
@@ -804,7 +1111,8 @@ mod tests {
         let provider = MistralProvider::with_base_url(
             "test-key".into(),
             "https://mistral-proxy.example.com/v1/".into(),
-        ).expect("should construct with custom base");
+        )
+        .expect("should construct with custom base");
         let url = provider.chat_url();
         assert_eq!(url, "https://mistral-proxy.example.com/v1/chat/completions");
     }

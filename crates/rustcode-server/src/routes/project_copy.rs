@@ -5,8 +5,8 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{delete, get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -55,7 +55,10 @@ pub fn project_copy_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/experimental/project/{projectID}/copy", get(list_copies))
         .route("/experimental/project/{projectID}/copy", post(create_copy))
-        .route("/experimental/project/{projectID}/copy/{copyID}", get(get_copy))
+        .route(
+            "/experimental/project/{projectID}/copy/{copyID}",
+            get(get_copy),
+        )
         .route(
             "/experimental/project/{projectID}/copy/{copyID}",
             delete(delete_copy),
@@ -88,7 +91,14 @@ async fn create_copy(
     Json(_payload): Json<CreateCopyPayload>,
 ) -> impl IntoResponse {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-    let copy_id = format!("copy_{}", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("00000000"));
+    let copy_id = format!(
+        "copy_{}",
+        uuid::Uuid::new_v4()
+            .to_string()
+            .split('-')
+            .next()
+            .unwrap_or("00000000")
+    );
 
     // Check if the directory is a git repo
     let is_git = cwd.join(".git").exists();

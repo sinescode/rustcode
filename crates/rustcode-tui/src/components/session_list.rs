@@ -23,7 +23,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span, Text},
+    text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
     Frame,
 };
@@ -225,7 +225,7 @@ impl SessionListState {
                 code: KeyCode::Esc, ..
             } => {
                 self.hide();
-                return Some(SessionListAction::Close);
+                Some(SessionListAction::Close)
             }
 
             // Navigate
@@ -238,11 +238,12 @@ impl SessionListState {
                 ..
             } => {
                 self.prev();
-                return Some(SessionListAction::Navigate);
+                Some(SessionListAction::Navigate)
             }
 
             KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Char('j'),
@@ -250,7 +251,7 @@ impl SessionListState {
                 ..
             } => {
                 self.next();
-                return Some(SessionListAction::Navigate);
+                Some(SessionListAction::Navigate)
             }
 
             // Select
@@ -261,12 +262,13 @@ impl SessionListState {
             } => {
                 let id = self.selected_id();
                 self.hide();
-                return Some(SessionListAction::Select(id));
+                Some(SessionListAction::Select(id))
             }
 
             // Delete
             KeyEvent {
-                code: KeyCode::Delete, ..
+                code: KeyCode::Delete,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Char('d'),
@@ -279,7 +281,7 @@ impl SessionListState {
                     self.sessions.retain(|s| s.id != *sid);
                     self.update_filter();
                 }
-                return Some(SessionListAction::Delete(id));
+                Some(SessionListAction::Delete(id))
             }
 
             // Pin/unpin
@@ -294,7 +296,7 @@ impl SessionListState {
                         session.pinned = !session.pinned;
                     }
                 }
-                return Some(SessionListAction::Pin(id));
+                Some(SessionListAction::Pin(id))
             }
 
             // Toggle search focus
@@ -306,7 +308,7 @@ impl SessionListState {
                 self.search_focused = true;
                 self.query.clear();
                 self.update_filter();
-                return Some(SessionListAction::Navigate);
+                Some(SessionListAction::Navigate)
             }
 
             // Backspace in search
@@ -320,7 +322,7 @@ impl SessionListState {
                     self.update_filter();
                     self.selected = 0;
                 }
-                return Some(SessionListAction::Navigate);
+                Some(SessionListAction::Navigate)
             }
 
             // Printable characters in search
@@ -332,7 +334,7 @@ impl SessionListState {
                 self.query.push(ch);
                 self.update_filter();
                 self.selected = 0;
-                return Some(SessionListAction::Navigate);
+                Some(SessionListAction::Navigate)
             }
 
             _ => None,
@@ -376,13 +378,22 @@ pub fn render_session_list(f: &mut Frame, area: Rect, state: &SessionListState) 
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 
-    let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+    let dialog_area = Rect::new(
+        area.x + dialog_x,
+        area.y + dialog_y,
+        dialog_width,
+        dialog_height,
+    );
 
     f.render_widget(Clear, dialog_area);
 
     let pin_count = state.sessions.iter().filter(|s| s.pinned).count();
     let title = if pin_count > 0 {
-        format!(" Sessions ({} pinned, {} total) ", pin_count, state.sessions.len())
+        format!(
+            " Sessions ({} pinned, {} total) ",
+            pin_count,
+            state.sessions.len()
+        )
     } else {
         format!(" Sessions ({} total) ", state.sessions.len())
     };
@@ -390,9 +401,7 @@ pub fn render_session_list(f: &mut Frame, area: Rect, state: &SessionListState) 
     let block = Block::default()
         .borders(Borders::ALL)
         .title(title)
-        .title_bottom(format!(
-            " j/k:nav  Enter:select  Ctrl+D:delete  Ctrl+X:pin  /:search  Esc:close "
-        ))
+        .title_bottom(" j/k:nav  Enter:select  Ctrl+D:delete  Ctrl+X:pin  /:search  Esc:close ".to_string())
         .border_style(Style::default().fg(Color::Cyan))
         .style(Style::default().bg(Color::Black));
 
@@ -414,27 +423,36 @@ pub fn render_session_list(f: &mut Frame, area: Rect, state: &SessionListState) 
 
     let search_text = if state.query.is_empty() {
         if state.search_focused {
-            Span::styled(" Type to filter sessions... ", search_style.add_modifier(Modifier::BOLD))
+            Span::styled(
+                " Type to filter sessions... ",
+                search_style.add_modifier(Modifier::BOLD),
+            )
         } else {
             Span::styled(" Press / to search... ", search_style)
         }
     } else {
-        Span::styled(
-            format!(" /{} ", state.query),
-            search_style,
-        )
+        Span::styled(format!(" /{} ", state.query), search_style)
     };
 
     let search_block = Block::default()
         .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(if state.search_focused { Color::Yellow } else { Color::DarkGray }));
+        .border_style(Style::default().fg(if state.search_focused {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        }));
     let search_inner = search_block.inner(chunks[0]);
     f.render_widget(search_block, chunks[0]);
     f.render_widget(Paragraph::new(Line::from(search_text)), search_inner);
 
     // ── Session list ───────────────────────────────────────────
     let max_display = MAX_DISPLAY.min(state.filtered_count());
-    let visible_indices: Vec<usize> = state.filtered_indices.iter().take(max_display).copied().collect();
+    let visible_indices: Vec<usize> = state
+        .filtered_indices
+        .iter()
+        .take(max_display)
+        .copied()
+        .collect();
 
     if visible_indices.is_empty() {
         let no_results = if state.query.is_empty() {
@@ -485,20 +503,45 @@ pub fn render_session_list(f: &mut Frame, area: Rect, state: &SessionListState) 
             let time_ago = session.time_ago();
 
             let line = Line::from(vec![
-                Span::styled(pin_icon, if is_selected { row_style } else { Style::default().fg(Color::Yellow) }),
+                Span::styled(
+                    pin_icon,
+                    if is_selected {
+                        row_style
+                    } else {
+                        Style::default().fg(Color::Yellow)
+                    },
+                ),
                 Span::styled(active_marker, row_style),
                 Span::styled(agent_icon, row_style),
                 Span::raw(" "),
-                Span::styled(&title, row_style.add_modifier(Modifier::BOLD)),
+                Span::styled(title, row_style.add_modifier(Modifier::BOLD)),
                 Span::raw("  "),
-                Span::styled(model_str, if is_selected { Style::default().fg(Color::Black) } else { Style::default().fg(Color::DarkGray) }),
+                Span::styled(
+                    model_str,
+                    if is_selected {
+                        Style::default().fg(Color::Black)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
                 Span::raw("  "),
                 Span::styled(
                     format!("{} msgs", session.message_count),
-                    if is_selected { Style::default().fg(Color::Black) } else { Style::default().fg(Color::Gray) },
+                    if is_selected {
+                        Style::default().fg(Color::Black)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    },
                 ),
                 Span::raw("  "),
-                Span::styled(time_ago, if is_selected { Style::default().fg(Color::Black) } else { Style::default().fg(Color::DarkGray) }),
+                Span::styled(
+                    time_ago,
+                    if is_selected {
+                        Style::default().fg(Color::Black)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ),
             ]);
 
             ListItem::new(line)

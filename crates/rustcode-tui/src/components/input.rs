@@ -226,7 +226,7 @@ impl InputState {
     /// Call this on a timer (e.g., every 120 frames at 50ms = every 6 seconds).
     pub fn tick_placeholder(&mut self) {
         self.placeholder_tick = self.placeholder_tick.wrapping_add(1);
-        if self.placeholder_tick % 120 == 0 {
+        if self.placeholder_tick.is_multiple_of(120) {
             self.placeholder_index = (self.placeholder_index + 1) % PLACEHOLDERS.len();
             self.placeholder = PLACEHOLDERS[self.placeholder_index].to_string();
         }
@@ -435,10 +435,7 @@ impl InputState {
             let line_count = text.lines().count();
             let char_count = text.chars().count();
             self.insert_str(text);
-            Some(format!(
-                "Pasted {} chars, {} lines",
-                char_count, line_count
-            ))
+            Some(format!("Pasted {} chars, {} lines", char_count, line_count))
         } else {
             self.insert_str(text);
             None
@@ -494,9 +491,7 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
     };
 
     let cursor_style = if state.focused {
-        Style::default()
-            .fg(theme.background)
-            .bg(theme.accent)
+        Style::default().fg(theme.background).bg(theme.accent)
     } else {
         Style::default()
     };
@@ -512,7 +507,10 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
             } else if *ch == '\n' {
                 line.push_span(Span::styled("↵ ", Style::default().fg(theme.dim)));
             } else {
-                line.push_span(Span::styled(ch.to_string(), Style::default().fg(theme.foreground)));
+                line.push_span(Span::styled(
+                    ch.to_string(),
+                    Style::default().fg(theme.foreground),
+                ));
             }
         }
 
@@ -530,18 +528,17 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
     } else {
         // Replace newlines with visible markers when not focused
         let visible = display_text.replace('\n', "↵ ");
-        Line::from(Span::styled(&visible, Style::default().fg(theme.foreground)))
+        Line::from(Span::styled(visible, Style::default().fg(theme.foreground)))
     };
 
-    let input_widget = Paragraph::new(content).block(
-        Block::default()
-            .borders(Borders::TOP)
-            .border_style(if state.focused {
+    let input_widget =
+        Paragraph::new(content).block(Block::default().borders(Borders::TOP).border_style(
+            if state.focused {
                 Style::default().fg(theme.accent)
             } else {
                 Style::default().fg(theme.dim)
-            }),
-    );
+            },
+        ));
 
     f.render_widget(input_widget, area);
 
@@ -568,10 +565,7 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
             )
         };
 
-        let counter_span = Span::styled(
-            counter_text,
-            Style::default().fg(Color::DarkGray),
-        );
+        let counter_span = Span::styled(counter_text, Style::default().fg(Color::DarkGray));
 
         let status_line = Line::from(vec![
             Span::raw(" "),
@@ -729,10 +723,7 @@ mod tests {
     #[test]
     fn test_shift_enter_adds_newline() {
         let mut state = InputState::new();
-        let consumed = state.handle_key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::SHIFT,
-        ));
+        let consumed = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         assert!(consumed);
         assert_eq!(state.text, "\n");
     }
@@ -740,10 +731,7 @@ mod tests {
     #[test]
     fn test_ctrl_enter_adds_newline() {
         let mut state = InputState::new();
-        let consumed = state.handle_key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::CONTROL,
-        ));
+        let consumed = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
         assert!(consumed);
         assert_eq!(state.text, "\n");
     }
@@ -751,10 +739,7 @@ mod tests {
     #[test]
     fn test_plain_enter_not_consumed() {
         let mut state = InputState::new();
-        let consumed = state.handle_key(KeyEvent::new(
-            KeyCode::Enter,
-            KeyModifiers::NONE,
-        ));
+        let consumed = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(!consumed); // caller handles submit
     }
 }

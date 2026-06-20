@@ -724,7 +724,11 @@ impl HttpContext {
     }
 
     /// Add a response header.
-    pub fn with_response_header(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+    pub fn with_response_header(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<String>,
+    ) -> Self {
         self.response_headers
             .get_or_insert_with(HashMap::new)
             .insert(key.into(), value.into());
@@ -965,39 +969,82 @@ mod tests {
     fn test_all_error_variants_display() {
         // Verify every error variant has a non-empty Display message
         let errors: Vec<Error> = vec![
-            Error::FileSystem { path: "/tmp/test".into(), message: "permission denied".into() },
-            Error::StaleContent { path: "/tmp/stale".into() },
-            Error::TargetExists { path: "/tmp/exists".into() },
-            Error::BinaryFile { path: "/tmp/binary".into() },
-            Error::MediaIngestLimit { path: "/tmp/large".into() },
+            Error::FileSystem {
+                path: "/tmp/test".into(),
+                message: "permission denied".into(),
+            },
+            Error::StaleContent {
+                path: "/tmp/stale".into(),
+            },
+            Error::TargetExists {
+                path: "/tmp/exists".into(),
+            },
+            Error::BinaryFile {
+                path: "/tmp/binary".into(),
+            },
+            Error::MediaIngestLimit {
+                path: "/tmp/large".into(),
+            },
             Error::Config("invalid config".into()),
             Error::Database("connection failed".into()),
-            Error::ProviderInit { provider_id: "test".into(), message: "timeout".into() },
+            Error::ProviderInit {
+                provider_id: "test".into(),
+                message: "timeout".into(),
+            },
             Error::NoProviders,
-            Error::NoModels { provider_id: "test".into() },
-            Error::ModelNotFound { provider_id: "test".into(), model_id: "gpt-5".into() },
+            Error::NoModels {
+                provider_id: "test".into(),
+            },
+            Error::ModelNotFound {
+                provider_id: "test".into(),
+                model_id: "gpt-5".into(),
+            },
             Error::HeaderTimeout { ms: 30000 },
             Error::ResponseStream("broken pipe".into()),
             Error::ContextOverflow("too many tokens".into()),
             Error::Tool("exec failed".into()),
-            Error::ToolRegistration { name: "my_tool".into(), message: "duplicate".into() },
+            Error::ToolRegistration {
+                name: "my_tool".into(),
+                message: "duplicate".into(),
+            },
             Error::Session("timeout".into()),
-            Error::SessionNotFound { session_id: "ses_x".into() },
-            Error::SessionPromptConflict { session_id: "ses_x".into() },
-            Error::SessionOperationUnavailable { session_id: "ses_x".into(), reason: "locked".into() },
-            Error::StepLimitExceeded { session_id: "ses_x".into() },
+            Error::SessionNotFound {
+                session_id: "ses_x".into(),
+            },
+            Error::SessionPromptConflict {
+                session_id: "ses_x".into(),
+            },
+            Error::SessionOperationUnavailable {
+                session_id: "ses_x".into(),
+                reason: "locked".into(),
+            },
+            Error::StepLimitExceeded {
+                session_id: "ses_x".into(),
+            },
             Error::ModelNotSelected,
-            Error::MessageDecode { session_id: "ses_x".into(), message_id: "msg_x".into() },
+            Error::MessageDecode {
+                session_id: "ses_x".into(),
+                message_id: "msg_x".into(),
+            },
             Error::Git("merge conflict".into()),
             Error::Plugin("load failed".into()),
-            Error::McpNotFound { name: "my_server".into() },
+            Error::McpNotFound {
+                name: "my_server".into(),
+            },
             Error::LspInit("timeout".into()),
             Error::Network("dns error".into()),
             Error::Auth("expired token".into()),
             Error::QuestionRejected,
-            Error::QuestionNotFound { question_id: "que_x".into() },
-            Error::ProjectNotFound { project_id: "proj_x".into() },
-            Error::NotFound { entity: "file".into(), id: "test.txt".into() },
+            Error::QuestionNotFound {
+                question_id: "que_x".into(),
+            },
+            Error::ProjectNotFound {
+                project_id: "proj_x".into(),
+            },
+            Error::NotFound {
+                entity: "file".into(),
+                id: "test.txt".into(),
+            },
             Error::Search("ripgrep failed".into()),
             Error::InvalidSearchPattern("(unclosed".into()),
             Error::Aborted,
@@ -1074,12 +1121,18 @@ mod tests {
     fn test_permission_error_display_all_variants() {
         assert_eq!(PermissionError::Rejected.to_string(), "permission rejected");
         assert_eq!(
-            PermissionError::Corrected { feedback: "use bash instead".into() }.to_string(),
+            PermissionError::Corrected {
+                feedback: "use bash instead".into()
+            }
+            .to_string(),
             "permission corrected: use bash instead"
         );
         assert_eq!(PermissionError::Denied.to_string(), "permission denied");
         assert_eq!(
-            PermissionError::NotFound { request_id: "per_123".into() }.to_string(),
+            PermissionError::NotFound {
+                request_id: "per_123".into()
+            }
+            .to_string(),
             "permission request `per_123` not found"
         );
     }
@@ -1087,7 +1140,10 @@ mod tests {
     #[test]
     fn test_worktree_error_display_all_variants() {
         assert_eq!(WorktreeError::NotGit.to_string(), "not a git repository");
-        assert_eq!(WorktreeError::NameGenerationFailed.to_string(), "failed to generate worktree name");
+        assert_eq!(
+            WorktreeError::NameGenerationFailed.to_string(),
+            "failed to generate worktree name"
+        );
         assert_eq!(
             WorktreeError::CreateFailed("disk full".into()).to_string(),
             "failed to create worktree: disk full"
@@ -1112,36 +1168,80 @@ mod tests {
 
     #[test]
     fn test_image_error_display_all_variants() {
-        assert_eq!(ImageError::ResizerUnavailable.to_string(), "image resizer unavailable");
+        assert_eq!(
+            ImageError::ResizerUnavailable.to_string(),
+            "image resizer unavailable"
+        );
         assert_eq!(ImageError::InvalidDataUrl.to_string(), "invalid data URL");
         assert_eq!(ImageError::Decode.to_string(), "image decode error");
         assert_eq!(
-            ImageError::Size { width: 100, height: 200 }.to_string(),
+            ImageError::Size {
+                width: 100,
+                height: 200
+            }
+            .to_string(),
             "image too large: 100x200 exceeds limit"
         );
     }
 
     #[test]
     fn test_skill_error_display_all_variants() {
-        assert_eq!(SkillError::Invalid("bad syntax".into()).to_string(), "invalid skill: bad syntax");
         assert_eq!(
-            SkillError::NameMismatch { expected: "a".into(), actual: "b".into() }.to_string(),
+            SkillError::Invalid("bad syntax".into()).to_string(),
+            "invalid skill: bad syntax"
+        );
+        assert_eq!(
+            SkillError::NameMismatch {
+                expected: "a".into(),
+                actual: "b".into()
+            }
+            .to_string(),
             "skill name mismatch: expected `a`, got `b`"
         );
-        assert_eq!(SkillError::NotFound { name: "missing".into() }.to_string(), "skill `missing` not found");
+        assert_eq!(
+            SkillError::NotFound {
+                name: "missing".into()
+            }
+            .to_string(),
+            "skill `missing` not found"
+        );
     }
 
     #[test]
     fn test_api_error_display_all_variants() {
-        assert_eq!(ApiError::InvalidRequest("x".into()).to_string(), "invalid request: x");
+        assert_eq!(
+            ApiError::InvalidRequest("x".into()).to_string(),
+            "invalid request: x"
+        );
         assert_eq!(ApiError::Unauthorized.to_string(), "unauthorized");
         assert_eq!(ApiError::Forbidden.to_string(), "forbidden");
-        assert_eq!(ApiError::NotFound { entity: "item".into() }.to_string(), "not found: item");
-        assert_eq!(ApiError::Conflict("dup".into()).to_string(), "conflict: dup");
-        assert_eq!(ApiError::Timeout("slow".into()).to_string(), "timeout: slow");
-        assert_eq!(ApiError::Upstream("bad gateway".into()).to_string(), "upstream error: bad gateway");
-        assert_eq!(ApiError::ServiceUnavailable("down".into()).to_string(), "service unavailable: down");
-        assert_eq!(ApiError::Unknown("wtf".into()).to_string(), "unknown error: wtf");
+        assert_eq!(
+            ApiError::NotFound {
+                entity: "item".into()
+            }
+            .to_string(),
+            "not found: item"
+        );
+        assert_eq!(
+            ApiError::Conflict("dup".into()).to_string(),
+            "conflict: dup"
+        );
+        assert_eq!(
+            ApiError::Timeout("slow".into()).to_string(),
+            "timeout: slow"
+        );
+        assert_eq!(
+            ApiError::Upstream("bad gateway".into()).to_string(),
+            "upstream error: bad gateway"
+        );
+        assert_eq!(
+            ApiError::ServiceUnavailable("down".into()).to_string(),
+            "service unavailable: down"
+        );
+        assert_eq!(
+            ApiError::Unknown("wtf".into()).to_string(),
+            "unknown error: wtf"
+        );
     }
 
     #[test]
@@ -1160,9 +1260,14 @@ mod tests {
         assert_eq!(ctx.method, "POST");
         assert_eq!(ctx.url, "https://api.example.com/v1/messages");
         assert_eq!(ctx.response_status, Some(200));
-        assert_eq!(ctx.request_headers.get("Content-Type").map(|s| s.as_str()), Some("application/json"));
         assert_eq!(
-            ctx.response_headers.as_ref().and_then(|h| h.get("X-Request-Id").map(|s| s.as_str())),
+            ctx.request_headers.get("Content-Type").map(|s| s.as_str()),
+            Some("application/json")
+        );
+        assert_eq!(
+            ctx.response_headers
+                .as_ref()
+                .and_then(|h| h.get("X-Request-Id").map(|s| s.as_str())),
             Some("abc123")
         );
         assert_eq!(ctx.body.as_deref(), Some(r#"{"id":"msg_1"}"#));

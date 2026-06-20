@@ -4,8 +4,8 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{delete, get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
@@ -15,19 +15,25 @@ use crate::server::AppState;
 #[derive(Debug, Deserialize)]
 pub struct CreateWorkspacePayload {
     pub name: String,
-    #[serde(default)] pub r#type: Option<String>,
+    #[serde(default)]
+    pub r#type: Option<String>,
 }
 #[derive(Debug, Deserialize)]
 pub struct WarpPayload {
     pub id: Option<String>,
-    #[serde(rename = "sessionID")] pub session_id: String,
-    #[serde(default, rename = "copyChanges")] pub copy_changes: Option<bool>,
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    #[serde(default, rename = "copyChanges")]
+    pub copy_changes: Option<bool>,
 }
 
 pub fn workspace_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/experimental/workspace/adapter", get(list_adapters))
-        .route("/experimental/workspace", get(list_workspaces).post(create_workspace))
+        .route(
+            "/experimental/workspace",
+            get(list_workspaces).post(create_workspace),
+        )
         .route("/experimental/workspace/sync-list", post(sync_list))
         .route("/experimental/workspace/status", get(workspace_status))
         .route("/experimental/workspace/{id}", delete(remove_workspace))
@@ -107,6 +113,7 @@ async fn create_workspace(
         "name": payload.name,
         "type": payload.r#type,
     }))
+    .into_response()
 }
 
 async fn sync_list(State(_state): State<Arc<AppState>>) -> impl IntoResponse {

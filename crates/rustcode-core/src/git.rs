@@ -164,30 +164,36 @@ pub enum GitError {
 /// `packages/opencode/src/git/index.ts` lines 7–18.
 const GIT_CFG: &[&str] = &[
     "--no-optional-locks",
-    "-c", "core.autocrlf=false",
-    "-c", "core.fsmonitor=false",
-    "-c", "core.longpaths=true",
-    "-c", "core.symlinks=true",
-    "-c", "core.quotepath=false",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.longpaths=true",
+    "-c",
+    "core.symlinks=true",
+    "-c",
+    "core.quotepath=false",
 ];
 
 /// Subset of cfg for operations that need quotepath but not -z mode.
 const GIT_QUOTE: &[&str] = &[
     "--no-optional-locks",
-    "-c", "core.autocrlf=false",
-    "-c", "core.longpaths=true",
-    "-c", "core.symlinks=true",
-    "-c", "core.quotepath=false",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.longpaths=true",
+    "-c",
+    "core.symlinks=true",
+    "-c",
+    "core.quotepath=false",
 ];
 
 /// Core git flags for snapshot operations.
 ///
 /// # Source
 /// `packages/opencode/src/snapshot/index.ts` line 33.
-const GIT_CORE: &[&str] = &[
-    "-c", "core.longpaths=true",
-    "-c", "core.symlinks=true",
-];
+const GIT_CORE: &[&str] = &["-c", "core.longpaths=true", "-c", "core.symlinks=true"];
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Git struct
@@ -197,6 +203,7 @@ const GIT_CORE: &[&str] = &[
 ///
 /// # Source
 /// `packages/opencode/src/git/index.ts` lines 75–91 `Interface`.
+#[derive(Debug, Clone)]
 pub struct Git {
     worktree: PathBuf,
 }
@@ -609,14 +616,7 @@ impl Git {
     /// # Source
     /// `packages/opencode/src/git/index.ts` lines 301–320.
     pub fn stat_untracked(&self, file: &str) -> Result<Option<Stat>, GitError> {
-        let result = self.run(&[
-            "diff",
-            "--no-index",
-            "--numstat",
-            "--",
-            "/dev/null",
-            file,
-        ])?;
+        let result = self.run(&["diff", "--no-index", "--numstat", "--", "/dev/null", file])?;
         if result.truncated {
             return Ok(None);
         }
@@ -798,7 +798,9 @@ impl Git {
     /// `packages/core/src/git.ts` lines 353–355.
     pub fn worktree_create(&self, directory: &Path) -> Result<(), GitError> {
         let result = self.run(&[
-            "worktree", "add", "--detach",
+            "worktree",
+            "add",
+            "--detach",
             &directory.to_string_lossy(),
             "HEAD",
         ])?;
@@ -890,7 +892,14 @@ impl Git {
         // Untracked files
         let untracked = self.git_at(
             &repo_root,
-            &["ls-files", "--others", "--exclude-standard", "-z", "--", &scope],
+            &[
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                &scope,
+            ],
         )?;
         if untracked.exit_code != 0 {
             return Err(GitError::Patch {

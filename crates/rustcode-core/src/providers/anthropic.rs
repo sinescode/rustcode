@@ -16,8 +16,8 @@ use std::collections::{HashMap, VecDeque};
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
     ChatMessage, ContentBlockId, ContentPart, FinishReason, LlmEvent, MessageContent, Model,
-    Provider, ProviderId, ProviderInfo, ProviderSource, ReasoningEffort, ToolCallId, ToolDefinition,
-    Usage,
+    Provider, ProviderId, ProviderInfo, ProviderSource, ReasoningEffort, ToolCallId,
+    ToolDefinition, Usage,
 };
 use crate::sse::{parse_sse_stream, SseEvent};
 use crate::tool_stream::ToolStreamAccumulator;
@@ -63,10 +63,7 @@ enum AnthropicContentBlock {
         is_error: Option<bool>,
     },
     #[serde(rename = "thinking")]
-    Thinking {
-        thinking: String,
-        signature: String,
-    },
+    Thinking { thinking: String, signature: String },
     #[serde(rename = "server_tool_use")]
     ServerToolUse {
         id: String,
@@ -191,10 +188,7 @@ enum AnthropicEvent {
         content_block: AnthropicContentBlock,
     },
     #[serde(rename = "content_block_delta")]
-    ContentBlockDelta {
-        index: u64,
-        delta: AnthropicDelta,
-    },
+    ContentBlockDelta { index: u64, delta: AnthropicDelta },
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { index: u64 },
     #[serde(rename = "message_delta")]
@@ -205,9 +199,7 @@ enum AnthropicEvent {
     #[serde(rename = "message_stop")]
     MessageStop,
     #[serde(rename = "error")]
-    Error {
-        error: AnthropicErrorDetail,
-    },
+    Error { error: AnthropicErrorDetail },
     #[serde(rename = "ping")]
     Ping,
 }
@@ -309,7 +301,8 @@ fn build_anthropic_messages(
                 });
             }
             ChatMessage::Assistant { content } => {
-                let blocks = convert_assistant_content_to_blocks(content, &mut cache_breakpoints_used);
+                let blocks =
+                    convert_assistant_content_to_blocks(content, &mut cache_breakpoints_used);
                 anthropic_messages.push(AnthropicMessage {
                     role: "assistant".into(),
                     content: AnthropicMessageContent::Blocks(blocks),
@@ -327,7 +320,7 @@ fn build_anthropic_messages(
     }
 
     // Build tool definitions
-    let anthropic_tools = if tools.is_empty() {
+    let anthropic_tools: Option<Vec<AnthropicTool>> = if tools.is_empty() {
         None
     } else {
         Some(
@@ -397,7 +390,9 @@ fn convert_content_to_blocks(
                         cache_control: None,
                     }
                 }
-                ContentPart::File { data, media_type, .. } => AnthropicContentBlock::Image {
+                ContentPart::File {
+                    data, media_type, ..
+                } => AnthropicContentBlock::Image {
                     source: AnthropicImageSource {
                         source_type: "base64".into(),
                         media_type: media_type.clone(),
@@ -457,7 +452,9 @@ fn convert_assistant_content_to_blocks(
 }
 
 /// Convert tool result parts to Anthropic content blocks.
-fn convert_tool_results_to_blocks(parts: &[crate::provider::ToolResultPart]) -> Vec<AnthropicContentBlock> {
+fn convert_tool_results_to_blocks(
+    parts: &[crate::provider::ToolResultPart],
+) -> Vec<AnthropicContentBlock> {
     parts
         .iter()
         .map(|part| match part {
@@ -552,10 +549,7 @@ impl AnthropicStreamState {
 ///
 /// This is the core state machine that converts Anthropic's event stream
 /// into the canonical LlmEvent format.
-fn map_anthropic_event(
-    event: AnthropicEvent,
-    state: &mut AnthropicStreamState,
-) -> Vec<LlmEvent> {
+fn map_anthropic_event(event: AnthropicEvent, state: &mut AnthropicStreamState) -> Vec<LlmEvent> {
     let mut events: Vec<LlmEvent> = Vec::new();
 
     match event {
@@ -595,7 +589,9 @@ fn map_anthropic_event(
                 }
                 AnthropicContentBlock::ToolUse { id, name, .. } => {
                     state.tool_stream.start(index, name.clone(), id.clone());
-                    state.tool_stream.set_content_block_id(index, block_id.clone());
+                    state
+                        .tool_stream
+                        .set_content_block_id(index, block_id.clone());
                     events.push(LlmEvent::ToolInputStart {
                         id,
                         name,
@@ -654,7 +650,8 @@ fn map_anthropic_event(
             let block_id = state.block_ids.get(&index).cloned();
 
             // Check if this is a tool use block finishing
-            if state.tool_stream.has_pending() && state.tool_stream.pending_keys().contains(&index) {
+            if state.tool_stream.has_pending() && state.tool_stream.pending_keys().contains(&index)
+            {
                 // Emit ToolInputEnd + ToolCall
                 if let Some(acc) = state.tool_stream.finish(index) {
                     let (tool_name, tool_id) = if let LlmEvent::ToolCall { name, id, .. } = &acc {
@@ -822,10 +819,7 @@ fn is_retryable_error_type(error_type: &str) -> bool {
 /// Get the thinking config for a model, if applicable.
 fn get_thinking_config(model: &Model) -> Option<ThinkingConfig> {
     // Check if the model supports extended thinking
-    if model
-        .id
-        .to_lowercase()
-        .contains("claude-sonnet-4")
+    if model.id.to_lowercase().contains("claude-sonnet-4")
         || model.id.to_lowercase().contains("claude-opus-4")
         || model.id.to_lowercase().contains("claude-haiku-4")
     {
@@ -927,7 +921,8 @@ impl Provider for AnthropicProvider {
         let (system, anthropic_messages) = build_anthropic_messages(messages, tools, model)?;
 
         let thinking = get_thinking_config(model);
-        let max_tokens = crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX);
+        let max_tokens =
+            crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX);
 
         let body = AnthropicRequestBody {
             model: model.api.id.clone(),
@@ -967,16 +962,14 @@ impl Provider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| {
-                Error::Llm {
-                    module: "anthropic".into(),
-                    method: "stream".into(),
-                    reason: Box::new(LlmErrorReason::Transport {
-                        message: e.to_string(),
-                        kind: Some("connect".into()),
-                        url: Some(self.messages_url()),
-                    }),
-                }
+            .map_err(|e| Error::Llm {
+                module: "anthropic".into(),
+                method: "stream".into(),
+                reason: Box::new(LlmErrorReason::Transport {
+                    message: e.to_string(),
+                    kind: Some("connect".into()),
+                    url: Some(self.messages_url()),
+                }),
             })?;
 
         // Check for non-200 status
@@ -1013,83 +1006,78 @@ impl Provider for AnthropicProvider {
         // multiple LlmEvents from a single SSE event, they all get emitted.
         let sse_stream = parse_sse_stream(response);
 
-        struct StreamState {
-            sse: std::pin::Pin<
-                Box<dyn futures::Stream<Item = Result<crate::sse::SseEvent, crate::sse::SseError>>
-                    + Send
-                    + Unpin,
-            >,
-            state: AnthropicStreamState,
-            buffer: VecDeque<crate::error::Result<LlmEvent>>,
-        }
-
         let llm_stream = futures::stream::unfold(
-            StreamState {
-                sse: Box::pin(sse_stream),
-                state: AnthropicStreamState::new(),
-                buffer: VecDeque::new(),
-            },
-            |mut ss| async move {
-                loop {
-                    // Drain buffer first
-                    if let Some(event) = ss.buffer.pop_front() {
-                        return Some((event, ss));
-                    }
-
-                    // If we're finished and buffer is empty, end the stream
-                    if ss.state.finished {
-                        return None;
-                    }
-
-                    // Read next SSE event
-                    match futures::StreamExt::next(&mut ss.sse).await {
-                        Some(Ok(sse_event)) => {
-                            if sse_event.is_done() || !sse_event.has_data() {
-                                continue;
-                            }
-
-                            match serde_json::from_str::<AnthropicEvent>(&sse_event.data) {
-                                Ok(anthropic_event) => {
-                                    let llm_events =
-                                        map_anthropic_event(anthropic_event, &mut ss.state);
-                                    // Push all events into buffer; return first
-                                    for ev in llm_events {
-                                        ss.buffer.push_back(Ok(ev));
-                                    }
-                                    if let Some(event) = ss.buffer.pop_front() {
-                                        return Some((event, ss));
-                                    }
-                                    // No events produced and not finished — continue
-                                }
-                                Err(e) => {
-                                    let error = Err(Error::Llm {
-                                        module: "anthropic".into(),
-                                        method: "stream.event_parse".into(),
-                                        reason: Box::new(LlmErrorReason::InvalidProviderOutput {
-                                            message: format!(
-                                                "failed to parse Anthropic event: {e}"
-                                            ),
-                                            raw: Some(sse_event.data),
-                                        }),
-                                    });
-                                    return Some((error, ss));
-                                }
-                            }
+            (
+                Box::pin(sse_stream)
+                    as std::pin::Pin<
+                        Box<
+                            dyn futures::Stream<
+                                    Item = Result<crate::sse::SseEvent, crate::sse::SseError>,
+                                > + Send
+                                + Unpin,
+                        >,
+                    >,
+                AnthropicStreamState::new(),
+                VecDeque::<crate::error::Result<LlmEvent>>::new(),
+            ),
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(event) = buffer.pop_front() {
+                            return Some((event, (sse, state, buffer)));
                         }
-                        Some(Err(e)) => {
-                            let error =
-                                Err(Error::ResponseStream(format!("SSE error: {e}")));
-                            return Some((error, ss));
-                        }
-                        None => {
-                            // SSE stream ended unexpectedly
+                        if state.finished {
                             return None;
                         }
+                        match futures::StreamExt::next(&mut sse).await {
+                            Some(Ok(sse_event)) => {
+                                if sse_event.is_done() || !sse_event.has_data() {
+                                    continue;
+                                }
+                                match serde_json::from_str::<AnthropicEvent>(&sse_event.data) {
+                                    Ok(anthropic_event) => {
+                                        let llm_events =
+                                            map_anthropic_event(anthropic_event, &mut state);
+                                        for ev in llm_events {
+                                            buffer.push_back(Ok(ev));
+                                        }
+                                        if let Some(event) = buffer.pop_front() {
+                                            return Some((event, (sse, state, buffer)));
+                                        }
+                                    }
+                                    Err(e) => {
+                                        return Some((
+                                            Err(Error::Llm {
+                                                module: "anthropic".into(),
+                                                method: "stream.event_parse".into(),
+                                                reason: Box::new(
+                                                    LlmErrorReason::InvalidProviderOutput {
+                                                        message: format!(
+                                                            "failed to parse Anthropic event: {e}"
+                                                        ),
+                                                        raw: Some(sse_event.data),
+                                                    },
+                                                ),
+                                            }),
+                                            (sse, state, buffer),
+                                        ));
+                                    }
+                                }
+                            }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("SSE error: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => {
+                                return None;
+                            }
+                        }
                     }
-                }
+                })
             },
         );
-
         Ok(Box::new(llm_stream))
     }
 
@@ -1387,10 +1375,7 @@ mod tests {
         assert!(opus.capabilities.toolcall);
         assert!(opus.capabilities.reasoning);
 
-        let sonnet = models
-            .iter()
-            .find(|m| m.id == "claude-sonnet-4-6")
-            .unwrap();
+        let sonnet = models.iter().find(|m| m.id == "claude-sonnet-4-6").unwrap();
         assert_eq!(sonnet.limit.context, 200_000);
         assert_eq!(sonnet.limit.output, 8_192);
     }
@@ -1403,7 +1388,10 @@ mod tests {
             "claude-sonnet-4-6",
             200_000,
             8192,
-            3.0, 15.0, 0.75, 3.75,
+            3.0,
+            15.0,
+            0.75,
+            3.75,
         );
         let config = get_thinking_config(&sonnet);
         assert!(config.is_some());
@@ -1415,7 +1403,10 @@ mod tests {
             "claude-opus-4-8",
             200_000,
             32000,
-            15.0, 75.0, 3.75, 15.0,
+            15.0,
+            75.0,
+            3.75,
+            15.0,
         );
         let config = get_thinking_config(&opus);
         assert_eq!(config.unwrap().budget_tokens, 32_000);

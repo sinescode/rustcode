@@ -79,7 +79,11 @@ pub struct PolicyStatement {
 
 impl PolicyStatement {
     /// Create a new policy statement.
-    pub fn new(action: impl Into<String>, effect: PolicyEffect, resource: impl Into<String>) -> Self {
+    pub fn new(
+        action: impl Into<String>,
+        effect: PolicyEffect,
+        resource: impl Into<String>,
+    ) -> Self {
         Self {
             action: action.into(),
             effect,
@@ -226,12 +230,7 @@ impl PolicyEngine {
     ///
     /// # Source
     /// Ported from `packages/core/src/policy.ts` lines 35–41 (`evaluate()`).
-    pub fn evaluate(
-        &self,
-        action: &str,
-        resource: &str,
-        fallback: PolicyEffect,
-    ) -> PolicyEffect {
+    pub fn evaluate(&self, action: &str, resource: &str, fallback: PolicyEffect) -> PolicyEffect {
         self.statements
             .iter()
             .rev()
@@ -432,9 +431,7 @@ mod tests {
 
     #[test]
     fn engine_allow_all_pattern() {
-        let engine = PolicyEngine::with_statements(vec![
-            PolicyStatement::allow_all(),
-        ]);
+        let engine = PolicyEngine::with_statements(vec![PolicyStatement::allow_all()]);
         assert_eq!(
             engine.evaluate("any-action", "any-resource", PolicyEffect::Deny),
             PolicyEffect::Allow
@@ -443,9 +440,7 @@ mod tests {
 
     #[test]
     fn engine_deny_all_pattern() {
-        let engine = PolicyEngine::with_statements(vec![
-            PolicyStatement::deny_all(),
-        ]);
+        let engine = PolicyEngine::with_statements(vec![PolicyStatement::deny_all()]);
         assert_eq!(
             engine.evaluate("any-action", "any-resource", PolicyEffect::Allow),
             PolicyEffect::Deny
@@ -521,17 +516,13 @@ mod tests {
         let empty = PolicyEngine::new();
         assert!(!empty.has_statements());
 
-        let loaded = PolicyEngine::with_statements(vec![
-            PolicyStatement::allow_all(),
-        ]);
+        let loaded = PolicyEngine::with_statements(vec![PolicyStatement::allow_all()]);
         assert!(loaded.has_statements());
     }
 
     #[test]
     fn engine_load_replaces() {
-        let mut engine = PolicyEngine::with_statements(vec![
-            PolicyStatement::allow_all(),
-        ]);
+        let mut engine = PolicyEngine::with_statements(vec![PolicyStatement::allow_all()]);
         assert_eq!(engine.statement_count(), 1);
 
         engine.load(vec![

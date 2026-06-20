@@ -216,7 +216,6 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } if false => None, // Ctrl+H is used for backspace in terminals
         // Help is accessed via leader+h or F1
-
         KeyEvent {
             code: KeyCode::F(1),
             modifiers: KeyModifiers::NONE,
@@ -634,7 +633,8 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             modifiers: KeyModifiers::NONE,
             ..
         } => Some(TuiAction::QuickSwitch(
-            c.to_digit(10).expect("digit char '1'..='9' always yields a valid digit") as u8,
+            c.to_digit(10)
+                .expect("digit char '1'..='9' always yields a valid digit") as u8,
         )),
 
         // <leader> + down → first child
@@ -673,77 +673,305 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
 pub fn all_bindings() -> Vec<KeyBinding> {
     vec![
         // App-level
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL), description: "Quit", group: "App" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL), description: "Quit", group: "App" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL), description: "Command palette", group: "App" },
-        KeyBinding { key: KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE), description: "Help", group: "App" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE), description: "Interrupt / dismiss", group: "App" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL), description: "Suspend", group: "App" },
-
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            description: "Quit",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            description: "Quit",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            description: "Command palette",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::F(1), KeyModifiers::NONE),
+            description: "Help",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            description: "Interrupt / dismiss",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
+            description: "Suspend",
+            group: "App",
+        },
         // Session
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL), description: "Rename session", group: "Session" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL), description: "Background subagents", group: "Session" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL), description: "Fork session", group: "Session" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE), description: "Delete session", group: "Session" },
-
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+            description: "Rename session",
+            group: "Session",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('b'), KeyModifiers::CONTROL),
+            description: "Background subagents",
+            group: "Session",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL),
+            description: "Fork session",
+            group: "Session",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Delete, KeyModifiers::NONE),
+            description: "Delete session",
+            group: "Session",
+        },
         // Navigation
-        KeyBinding { key: KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), description: "Scroll up", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), description: "Scroll down", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), description: "Page up", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE), description: "Page down", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Home, KeyModifiers::NONE), description: "First message", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::End, KeyModifiers::NONE), description: "Last message", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL), description: "First message", group: "Navigation" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL), description: "Next message", group: "Navigation" },
-
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            description: "Scroll up",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            description: "Scroll down",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE),
+            description: "Page up",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE),
+            description: "Page down",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Home, KeyModifiers::NONE),
+            description: "First message",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::End, KeyModifiers::NONE),
+            description: "Last message",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+            description: "First message",
+            group: "Navigation",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+            description: "Next message",
+            group: "Navigation",
+        },
         // Agent/Model
-        KeyBinding { key: KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), description: "Next agent", group: "Agent" },
-        KeyBinding { key: KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT), description: "Prev agent", group: "Agent" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL), description: "Cycle variant", group: "Agent" },
-
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+            description: "Next agent",
+            group: "Agent",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT),
+            description: "Prev agent",
+            group: "Agent",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('t'), KeyModifiers::CONTROL),
+            description: "Cycle variant",
+            group: "Agent",
+        },
         // Toggles
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL), description: "Toggle timestamps", group: "Toggles" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL), description: "Toggle thinking", group: "Toggles" },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('s'), KeyModifiers::CONTROL),
+            description: "Toggle timestamps",
+            group: "Toggles",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('y'), KeyModifiers::CONTROL),
+            description: "Toggle thinking",
+            group: "Toggles",
+        },
     ]
 }
 
 /// Returns all leader-chord bindings for display in the help overlay.
 pub fn all_leader_bindings() -> Vec<KeyBinding> {
     vec![
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE), description: "Status", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE), description: "Export session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE), description: "Theme switch", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE), description: "Toggle sidebar", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE), description: "New session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE), description: "Session list", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE), description: "Agent list", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE), description: "Model list", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE), description: "Compact session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), description: "Quit", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE), description: "Undo", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE), description: "Redo", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE), description: "Copy message", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE), description: "Toggle conceal", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE), description: "Session timeline", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), description: "Export session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE), description: "Toggle tool details", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE), description: "Toggle timestamps", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE), description: "Toggle thinking", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE), description: "Toggle scrollbar", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE), description: "Command palette", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE), description: "Fork session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE), description: "Delete session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT), description: "Help", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE), description: "Toggle animations", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), description: "Toggle file context", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE), description: "Toggle diff wrap", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE), description: "Quick switch 1", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE), description: "Quick switch N", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Down, KeyModifiers::NONE), description: "First child", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Right, KeyModifiers::NONE), description: "Next child", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Left, KeyModifiers::NONE), description: "Prev child", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Up, KeyModifiers::NONE), description: "Parent session", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE), description: "Open in editor", group: "Leader" },
-        KeyBinding { key: KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE), description: "Toggle audio", group: "Leader" },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE),
+            description: "Status",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE),
+            description: "Export session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+            description: "Theme switch",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('b'), KeyModifiers::NONE),
+            description: "Toggle sidebar",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE),
+            description: "New session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('l'), KeyModifiers::NONE),
+            description: "Session list",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE),
+            description: "Agent list",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('m'), KeyModifiers::NONE),
+            description: "Model list",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE),
+            description: "Compact session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE),
+            description: "Quit",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('u'), KeyModifiers::NONE),
+            description: "Undo",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE),
+            description: "Redo",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE),
+            description: "Copy message",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('h'), KeyModifiers::NONE),
+            description: "Toggle conceal",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE),
+            description: "Session timeline",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            description: "Export session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('w'), KeyModifiers::NONE),
+            description: "Toggle tool details",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('i'), KeyModifiers::NONE),
+            description: "Toggle timestamps",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE),
+            description: "Toggle thinking",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('v'), KeyModifiers::NONE),
+            description: "Toggle scrollbar",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE),
+            description: "Command palette",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('f'), KeyModifiers::NONE),
+            description: "Fork session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE),
+            description: "Delete session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('?'), KeyModifiers::SHIFT),
+            description: "Help",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE),
+            description: "Toggle animations",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE),
+            description: "Toggle file context",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::NONE),
+            description: "Toggle diff wrap",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('1'), KeyModifiers::NONE),
+            description: "Quick switch 1",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('9'), KeyModifiers::NONE),
+            description: "Quick switch N",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Down, KeyModifiers::NONE),
+            description: "First child",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            description: "Next child",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
+            description: "Prev child",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Up, KeyModifiers::NONE),
+            description: "Parent session",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('E'), KeyModifiers::NONE),
+            description: "Open in editor",
+            group: "Leader",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('A'), KeyModifiers::NONE),
+            description: "Toggle audio",
+            group: "Leader",
+        },
     ]
 }

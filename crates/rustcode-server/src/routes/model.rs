@@ -4,8 +4,8 @@
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::get;
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{info, warn};
@@ -94,20 +94,19 @@ async fn list_models(
                             "cache_read": model.cost.cache.read,
                             "cache_write": model.cost.cache.write,
                         });
-                        entry["status"] = serde_json::json!(format!("{:?}", model.status).to_lowercase());
-                        entry["family"] = model.family;
-                        entry["api_id"] = model.api.id;
-                        entry["release_date"] = model.release_date;
+                        entry["status"] =
+                            serde_json::json!(format!("{:?}", model.status).to_lowercase());
+                        entry["family"] =
+                            serde_json::Value::String(model.family.unwrap_or_default());
+                        entry["api_id"] = serde_json::Value::String(model.api.id);
+                        entry["release_date"] = serde_json::Value::String(model.release_date);
                     }
 
                     models.push(entry);
                 }
             }
             Err(e) => {
-                warn!(
-                    "Failed to list models for provider '{}': {e}",
-                    provider_id
-                );
+                warn!("Failed to list models for provider '{}': {e}", provider_id);
             }
         }
     }

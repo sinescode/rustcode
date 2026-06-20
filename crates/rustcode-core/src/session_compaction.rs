@@ -4,8 +4,8 @@
 //! - `packages/core/src/session/compaction.ts` (lines 1–247)
 //! - `packages/opencode/src/session/compaction.ts` (lines 1–621)
 
-use serde::{Deserialize, Serialize};
 use crate::session_info::SessionId;
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Compaction Constants
@@ -286,7 +286,10 @@ impl SessionCompaction {
         messages_json: &serde_json::Value,
         model_context_limit: u64,
     ) -> CompactionSelection {
-        let messages = messages_json.as_array().map(|a| a.as_slice()).unwrap_or(&[]);
+        let messages = messages_json
+            .as_array()
+            .map(|a| a.as_slice())
+            .unwrap_or(&[]);
         let total_msgs = messages.len();
 
         if total_msgs == 0 {
@@ -299,7 +302,9 @@ impl SessionCompaction {
         // Count turns (user → assistant pairs)
         let turns = self.identify_turns(messages);
         let tail_turns = self.settings.tokens as usize / 4_000; // rough char estimate
-        let keep_turns = DEFAULT_TAIL_TURNS.max(tail_turns as u64).min(turns.len() as u64) as usize;
+        let keep_turns = DEFAULT_TAIL_TURNS
+            .max(tail_turns as u64)
+            .min(turns.len() as u64) as usize;
 
         if keep_turns >= turns.len() {
             // Not enough messages to split — return all as recent
@@ -309,7 +314,7 @@ impl SessionCompaction {
             };
         }
 
-        let split_turn = turns[turns.len() - keep_turns];
+        let split_turn = turns[turns.len() - keep_turns].clone();
         let split_index = split_turn.start;
 
         // Head: messages before the split

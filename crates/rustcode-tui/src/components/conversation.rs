@@ -12,9 +12,7 @@ use ratatui::{
     widgets::{Block, Borders, List, ListItem, Paragraph, Wrap},
     Frame,
 };
-use rustcode_core::session::{
-    FilePart, Message, MessageInfo, Part, TextPart, ToolState,
-};
+use rustcode_core::session::{Message, MessageInfo, Part, ToolState};
 use std::collections::HashMap;
 
 use crate::theme::Theme;
@@ -103,7 +101,9 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
         let welcome = Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
                 "Welcome to rustcode!",
-                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
             )),
             Line::from(""),
             Line::from(Span::styled(
@@ -168,7 +168,7 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
 }
 
 /// Build renderable list items from a message and its parts.
-fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListItem> {
+fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListItem<'static>> {
     let mut items = Vec::new();
 
     match &msg.info {
@@ -211,7 +211,9 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                         items.push(ListItem::new(Line::from(vec![
                             Span::styled("  📎 ", Style::default().fg(Color::Cyan)),
                             Span::styled(
-                                fp.filename.as_deref().unwrap_or("unnamed"),
+                                fp.filename
+                                    .clone()
+                                    .unwrap_or_else(|| String::from("unnamed")),
                                 Style::default()
                                     .fg(Color::Cyan)
                                     .add_modifier(Modifier::UNDERLINED),
@@ -247,8 +249,8 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
             };
             let model = assistant_info
                 .model_id
-                .as_deref()
-                .unwrap_or("unknown");
+                .clone()
+                .unwrap_or_else(|| String::from("unknown"));
 
             let mut header = vec![
                 Span::styled(
@@ -268,10 +270,7 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
             let has_usage = tokens.input > 0 || tokens.output > 0;
             if has_usage {
                 header.push(Span::styled(
-                    format!(
-                        " · {}↑ {}↓ ${:.4}",
-                        tokens.input, tokens.output, cost
-                    ),
+                    format!(" · {}↑ {}↓ ${:.4}", tokens.input, tokens.output, cost),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
@@ -308,7 +307,7 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                                     .fg(Color::Yellow)
                                     .add_modifier(Modifier::BOLD),
                             ),
-                            Span::styled(&first_line, Style::default().fg(Color::Yellow)),
+                            Span::styled(first_line, Style::default().fg(Color::Yellow)),
                         ])));
 
                         // Show remaining reasoning lines indented
@@ -320,7 +319,7 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                                 .collect();
                             items.push(ListItem::new(Line::from(vec![
                                 Span::raw("  "),
-                                Span::styled(&truncated, Style::default().fg(Color::Yellow)),
+                                Span::styled(truncated, Style::default().fg(Color::Yellow)),
                             ])));
                         }
                         if remaining_lines.len() > 5 {
@@ -350,7 +349,11 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                                 ),
                             ])));
                         }
-                        ToolState::Completed { ref title, ref output, .. } => {
+                        ToolState::Completed {
+                            ref title,
+                            ref output,
+                            ..
+                        } => {
                             items.push(ListItem::new(Line::from(vec![
                                 Span::styled(" ✓ ", Style::default().fg(Color::Green)),
                                 Span::styled(
@@ -364,9 +367,10 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                                     .lines()
                                     .take(3)
                                     .flat_map(|l| {
-                                        let truncated: String =
-                                            l.chars().take(width.saturating_sub(6) as usize)
-                                                .collect();
+                                        let truncated: String = l
+                                            .chars()
+                                            .take(width.saturating_sub(6) as usize)
+                                            .collect();
                                         vec![truncated]
                                     })
                                     .collect::<Vec<_>>()
@@ -374,7 +378,7 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                                 if !preview.is_empty() {
                                     items.push(ListItem::new(Line::from(vec![
                                         Span::raw("   "),
-                                        Span::styled(&preview, Style::default().fg(Color::DarkGray)),
+                                        Span::styled(preview, Style::default().fg(Color::DarkGray)),
                                     ])));
                                 }
                                 let line_count = output.lines().count();
@@ -398,16 +402,14 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                     },
 
                     Part::StepStart(_) => {
-                        items.push(ListItem::new(Line::from(
-                            Span::styled(
-                                " ── Step started ──",
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        )));
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            " ── Step started ──",
+                            Style::default().fg(Color::DarkGray),
+                        ))));
                     }
 
                     Part::StepFinish(sf) => {
-                        let reason = &sf.reason;
+                        let reason = sf.reason.clone();
                         let input_tokens = sf.tokens.input;
                         let output_tokens = sf.tokens.output;
                         let cost = sf.cost;
@@ -418,10 +420,7 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                             ),
                             Span::styled(reason, Style::default().fg(Color::Gray)),
                             Span::styled(
-                                format!(
-                                    " ({}↑ {}↓ ${:.4})",
-                                    input_tokens, output_tokens, cost
-                                ),
+                                format!(" ({}↑ {}↓ ${:.4})", input_tokens, output_tokens, cost),
                                 Style::default().fg(Color::DarkGray),
                             ),
                         ])));
@@ -431,7 +430,9 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                         items.push(ListItem::new(Line::from(vec![
                             Span::styled(" 📎 ", Style::default().fg(Color::Cyan)),
                             Span::styled(
-                                fp.filename.as_deref().unwrap_or("attachment"),
+                                fp.filename
+                                    .clone()
+                                    .unwrap_or_else(|| String::from("attachment")),
                                 Style::default()
                                     .fg(Color::Cyan)
                                     .add_modifier(Modifier::UNDERLINED),
@@ -444,22 +445,20 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                     }
 
                     Part::Patch(pp) => {
-                        let file_list: Vec<String> = pp
-                            .files
-                            .iter()
-                            .map(|f| f.path.clone())
-                            .collect();
+                        let file_list: Vec<String> =
+                            pp.files.iter().map(|f| f.path.clone()).collect();
                         items.push(ListItem::new(Line::from(vec![
                             Span::styled(" Patch: ", Style::default().fg(Color::Green)),
-                            Span::styled(
-                                file_list.join(", "),
-                                Style::default().fg(Color::Gray),
-                            ),
+                            Span::styled(file_list.join(", "), Style::default().fg(Color::Gray)),
                         ])));
                     }
 
                     Part::Compaction(cp) => {
-                        let label = if cp.auto { "auto-compacted" } else { "compacted" };
+                        let label = if cp.auto {
+                            "auto-compacted"
+                        } else {
+                            "compacted"
+                        };
                         items.push(ListItem::new(Line::from(Span::styled(
                             format!(" ── Context {label} ──"),
                             Style::default().fg(Color::DarkGray),
@@ -477,12 +476,16 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
 
             // ── Error display ─────────────────────────────────────────
             if let Some(ref error) = assistant_info.error {
-                let err_msg = error
+                let err_msg: String = error
                     .get("message")
                     .and_then(|m| m.as_str())
-                    .unwrap_or("unknown error");
+                    .map(String::from)
+                    .unwrap_or_else(|| String::from("unknown error"));
                 items.push(ListItem::new(Line::from(vec![
-                    Span::styled(" Error: ", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        " Error: ",
+                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                    ),
                     Span::styled(err_msg, Style::default().fg(Color::Red)),
                 ])));
             }
@@ -509,8 +512,8 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
 ///
 /// Detects ``` fences and applies a dimmed background to code blocks.
 /// Returns list items suitable for a ratatui `List`.
-fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem> {
-    let mut items: Vec<ListItem> = Vec::new();
+fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem<'static>> {
+    let mut items: Vec<ListItem<'static>> = Vec::new();
     let mut in_code_block = false;
     let code_style = Style::default().bg(Color::Rgb(30, 30, 40));
 

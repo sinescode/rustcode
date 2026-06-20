@@ -216,9 +216,10 @@ impl CommandData {
 
     /// Upsert a command (create or update).
     pub fn upsert(&mut self, input: CommandUpdateInput) {
-        let entry = self.commands.entry(input.name.clone()).or_insert_with(|| {
-            CommandInfo::new(&input.name, &input.template)
-        });
+        let entry = self
+            .commands
+            .entry(input.name.clone())
+            .or_insert_with(|| CommandInfo::new(&input.name, &input.template));
         entry.template = input.template;
         if input.description.is_some() {
             entry.description = input.description;
@@ -637,7 +638,11 @@ mod tests {
 
     #[test]
     fn test_command_source_roundtrip() {
-        let sources = vec![CommandSource::Command, CommandSource::Mcp, CommandSource::Skill];
+        let sources = vec![
+            CommandSource::Command,
+            CommandSource::Mcp,
+            CommandSource::Skill,
+        ];
         for source in sources {
             let json = serde_json::to_string(&source).expect("serialize");
             let parsed: CommandSource = serde_json::from_str(&json).expect("deserialize");
@@ -663,9 +668,7 @@ mod tests {
 
     #[test]
     fn test_load_skill_commands() {
-        let skills = vec![
-            ("format".into(), "Format $1".into()),
-        ];
+        let skills = vec![("format".into(), "Format $1".into())];
         let cmds = load_skill_commands(&skills);
         assert_eq!(cmds.len(), 1);
         assert_eq!(cmds[0].source, CommandSource::Skill);

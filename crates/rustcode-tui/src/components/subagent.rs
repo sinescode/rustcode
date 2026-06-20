@@ -93,9 +93,10 @@ pub struct SubagentEntry {
 }
 
 /// Which panel has focus in the subagent dialog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum SubagentFocus {
     /// Navigating the subagent list.
+    #[default]
     SubagentList,
     /// Filling in the spawn form.
     SpawnForm,
@@ -162,7 +163,7 @@ impl SubagentState {
     ) {
         self.visible = true;
         self.subagents = subagents;
-        self.selected = if subagents.is_empty() { 0 } else { 0 };
+        self.selected = if self.subagents.is_empty() { 0 } else { 0 };
         self.focus = SubagentFocus::SubagentList;
         self.spawn_task.clear();
         self.spawn_model = None;
@@ -253,7 +254,8 @@ impl SubagentState {
             }
 
             KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Char('j'),
@@ -295,7 +297,8 @@ impl SubagentState {
 
             // Agent selection
             KeyEvent {
-                code: KeyCode::Left, ..
+                code: KeyCode::Left,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Up, ..
@@ -312,10 +315,12 @@ impl SubagentState {
             }
 
             KeyEvent {
-                code: KeyCode::Right, ..
+                code: KeyCode::Right,
+                ..
             }
             | KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             } if self.focus == SubagentFocus::AgentSelect => {
                 self.next_agent();
                 Some(SubagentAction::Navigate)
@@ -345,7 +350,9 @@ impl SubagentState {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
-            } if self.focus == SubagentFocus::SpawnForm || self.focus == SubagentFocus::AgentSelect => {
+            } if self.focus == SubagentFocus::SpawnForm
+                || self.focus == SubagentFocus::AgentSelect =>
+            {
                 if !self.spawn_task.is_empty() {
                     let task = self.spawn_task.clone();
                     self.spawn_task.clear();
@@ -396,7 +403,12 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 
-    let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+    let dialog_area = Rect::new(
+        area.x + dialog_x,
+        area.y + dialog_y,
+        dialog_width,
+        dialog_height,
+    );
 
     f.render_widget(Clear, dialog_area);
 
@@ -425,10 +437,7 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
     // ── Layout ─────────────────────────────────────────────────
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),
-            Constraint::Percentage(50),
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(inner);
 
     // ── Left: Subagent list ────────────────────────────────────
@@ -441,10 +450,7 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
     let list_block = Block::default()
         .borders(Borders::RIGHT)
         .border_style(list_block_style)
-        .title(format!(
-            " Subagents ({}) ",
-            state.subagents.len()
-        ));
+        .title(format!(" Subagents ({}) ", state.subagents.len()));
 
     let list_inner = list_block.inner(columns[0]);
     f.render_widget(list_block, columns[0]);
@@ -462,8 +468,7 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
             .iter()
             .enumerate()
             .map(|(i, sub)| {
-                let is_selected = i == state.selected
-                    && state.focus == SubagentFocus::SubagentList;
+                let is_selected = i == state.selected && state.focus == SubagentFocus::SubagentList;
                 let status_color = sub.status.color();
                 let status_icon = sub.status.icon();
 
@@ -485,15 +490,26 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
                 };
 
                 let line = Line::from(vec![
-                    Span::styled(indent, if is_selected { row_style } else { Style::default().fg(Color::DarkGray) }),
+                    Span::styled(
+                        indent,
+                        if is_selected {
+                            row_style
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    ),
                     Span::styled(
                         format!("{} ", status_icon),
-                        if is_selected { row_style } else { Style::default().fg(status_color) },
+                        if is_selected {
+                            row_style
+                        } else {
+                            Style::default().fg(status_color)
+                        },
                     ),
-                    Span::styled(&title, row_style.add_modifier(Modifier::BOLD)),
+                    Span::styled(title, row_style.add_modifier(Modifier::BOLD)),
                     Span::raw("  "),
                     Span::styled(
-                        &sub.agent,
+                        sub.agent.clone(),
                         if is_selected {
                             Style::default().fg(Color::Black)
                         } else {
@@ -523,9 +539,9 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
     let spawn_cols = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // Agent selector
-            Constraint::Length(3),  // Task input
-            Constraint::Min(2),     // Info / submit
+            Constraint::Length(2), // Agent selector
+            Constraint::Length(3), // Task input
+            Constraint::Min(2),    // Info / submit
         ])
         .split(columns[1]);
 
@@ -546,15 +562,25 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
 
     let agent_line = Line::from(vec![
         Span::styled(
-            if state.focus == SubagentFocus::AgentSelect { "< " } else { "  " },
+            if state.focus == SubagentFocus::AgentSelect {
+                "< "
+            } else {
+                "  "
+            },
             agent_block_style,
         ),
         Span::styled(
             &state.spawn_agent,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            if state.focus == SubagentFocus::AgentSelect { " >" } else { "  " },
+            if state.focus == SubagentFocus::AgentSelect {
+                " >"
+            } else {
+                "  "
+            },
             agent_block_style,
         ),
     ]);
@@ -580,16 +606,14 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
         ""
     };
 
-    let task_line = Line::from(vec![
-        Span::styled(
-            format!("{task_label}{cursor}"),
-            if state.focus == SubagentFocus::SpawnForm {
-                Style::default().fg(Color::White)
-            } else {
-                Style::default().fg(Color::Gray)
-            },
-        ),
-    ]);
+    let task_line = Line::from(vec![Span::styled(
+        format!("{task_label}{cursor}"),
+        if state.focus == SubagentFocus::SpawnForm {
+            Style::default().fg(Color::White)
+        } else {
+            Style::default().fg(Color::Gray)
+        },
+    )]);
 
     let task_block = Block::default()
         .borders(Borders::ALL)
@@ -614,12 +638,10 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
         Span::styled("error", Style::default().fg(Color::Gray)),
     ]));
     info_lines.push(Line::from(""));
-    info_lines.push(Line::from(vec![
-        Span::styled(
-            "Enter: submit  |  Esc: cancel",
-            Style::default().fg(Color::DarkGray),
-        ),
-    ]));
+    info_lines.push(Line::from(vec![Span::styled(
+        "Enter: submit  |  Esc: cancel",
+        Style::default().fg(Color::DarkGray),
+    )]));
 
     if let Some(ref mid) = state.spawn_model {
         info_lines.push(Line::from(vec![
@@ -628,8 +650,5 @@ pub fn render_subagent_dialog(f: &mut Frame, area: Rect, state: &SubagentState) 
         ]));
     }
 
-    f.render_widget(
-        Paragraph::new(Text::from(info_lines)),
-        spawn_cols[2],
-    );
+    f.render_widget(Paragraph::new(Text::from(info_lines)), spawn_cols[2]);
 }

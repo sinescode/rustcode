@@ -34,9 +34,10 @@ use ratatui::{
 ///
 /// # Source
 /// Ported from `packages/tui/src/feature-plugins/system/diff-viewer.tsx`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum DiffViewMode {
     /// Single-column unified diff (like `git diff` output).
+    #[default]
     Unified,
     /// Side-by-side split diff (additions left, deletions right).
     Split,
@@ -267,12 +268,13 @@ impl DiffState {
                 ..
             } => {
                 self.hide();
-                return true;
+                true
             }
 
             // Navigation
             KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Char('j'),
@@ -280,7 +282,7 @@ impl DiffState {
                 ..
             } => {
                 self.scroll_down(1);
-                return true;
+                true
             }
 
             KeyEvent {
@@ -292,7 +294,7 @@ impl DiffState {
                 ..
             } => {
                 self.scroll_up(1);
-                return true;
+                true
             }
 
             // Next/prev file
@@ -302,7 +304,7 @@ impl DiffState {
                 ..
             } => {
                 self.next_file();
-                return true;
+                true
             }
 
             KeyEvent {
@@ -311,7 +313,7 @@ impl DiffState {
                 ..
             } => {
                 self.prev_file();
-                return true;
+                true
             }
 
             // Next/prev hunk
@@ -321,7 +323,7 @@ impl DiffState {
                 ..
             } => {
                 self.next_hunk();
-                return true;
+                true
             }
 
             KeyEvent {
@@ -330,7 +332,7 @@ impl DiffState {
                 ..
             } => {
                 self.prev_hunk();
-                return true;
+                true
             }
 
             // Mark reviewed
@@ -340,7 +342,7 @@ impl DiffState {
                 ..
             } => {
                 self.toggle_reviewed();
-                return true;
+                true
             }
 
             // Toggle view mode
@@ -350,7 +352,7 @@ impl DiffState {
                 ..
             } => {
                 self.toggle_view_mode();
-                return true;
+                true
             }
 
             _ => true, // Consume all other keys when visible
@@ -385,8 +387,7 @@ pub fn render_diff(f: &mut Frame, area: Rect, state: &DiffState) {
     f.render_widget(block, area);
 
     if state.files.is_empty() {
-        let msg = Paragraph::new("No changes to display.")
-            .style(Style::default().fg(Color::Gray));
+        let msg = Paragraph::new("No changes to display.").style(Style::default().fg(Color::Gray));
         f.render_widget(msg, inner);
         return;
     }
@@ -423,9 +424,7 @@ fn render_diff_sidebar(f: &mut Frame, area: Rect, state: &DiffState) {
         .map(|(i, file)| {
             let is_selected = i == state.selected_index;
             let style = if is_selected {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                Style::default().fg(Color::Black).bg(Color::Cyan)
             } else if file.reviewed {
                 Style::default().fg(Color::DarkGray)
             } else {
@@ -435,7 +434,10 @@ fn render_diff_sidebar(f: &mut Frame, area: Rect, state: &DiffState) {
             // Truncate path to fit
             let max_path = (area.width as usize).saturating_sub(14);
             let display_path = if file.path.len() > max_path {
-                format!("...{}", &file.path[file.path.len().saturating_sub(max_path - 3)..])
+                format!(
+                    "...{}",
+                    &file.path[file.path.len().saturating_sub(max_path - 3)..]
+                )
             } else {
                 file.path.clone()
             };
@@ -444,19 +446,14 @@ fn render_diff_sidebar(f: &mut Frame, area: Rect, state: &DiffState) {
 
             ListItem::new(Line::from(vec![
                 Span::styled(
-                    format!(
-                        " +{:<4} -{:<4}",
-                        file.additions, file.deletions,
-                    ),
+                    format!(" +{:<4} -{:<4}", file.additions, file.deletions,),
                     if is_selected {
-                        Style::default()
-                            .fg(Color::Green)
-                            .bg(Color::Cyan)
+                        Style::default().fg(Color::Green).bg(Color::Cyan)
                     } else {
                         Style::default().fg(Color::Green)
                     },
                 ),
-                Span::styled(&display_path, style),
+                Span::styled(display_path, style),
                 Span::styled(reviewed_marker, Style::default().fg(Color::DarkGray)),
             ]))
         })
@@ -485,9 +482,20 @@ fn render_diff_content(f: &mut Frame, area: Rect, state: &DiffState) {
     };
 
     header_lines.push(Line::from(vec![
-        Span::styled(format!(" {status_text} "), Style::default().fg(Color::Black).bg(status_color).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            format!(" {status_text} "),
+            Style::default()
+                .fg(Color::Black)
+                .bg(status_color)
+                .add_modifier(Modifier::BOLD),
+        ),
         Span::raw(" "),
-        Span::styled(&file.path, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            &file.path,
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
     ]));
 
     if let Some(ref old_path) = file.old_path {
@@ -538,7 +546,10 @@ fn render_unified_diff(f: &mut Frame, area: Rect, file: &DiffFile, scroll_offset
             "@@ -{},{} +{},{} @@",
             hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
         );
-        lines.push(Line::from(Span::styled(header, Style::default().fg(Color::Cyan))));
+        lines.push(Line::from(Span::styled(
+            header,
+            Style::default().fg(Color::Cyan),
+        )));
 
         // Hunk lines
         for line in &hunk.lines {
@@ -561,10 +572,7 @@ fn render_unified_diff(f: &mut Frame, area: Rect, file: &DiffFile, scroll_offset
             // Truncate content to fit area
             let max_content = (area.width as usize).saturating_sub(12);
             let content = line.text();
-            let display_content: String = content
-                .chars()
-                .take(max_content)
-                .collect();
+            let display_content: String = content.chars().take(max_content).collect();
 
             lines.push(Line::from(vec![
                 Span::styled(old_line, Style::default().fg(Color::DarkGray)),
@@ -589,10 +597,7 @@ fn render_unified_diff(f: &mut Frame, area: Rect, file: &DiffFile, scroll_offset
         .collect();
 
     let text = Text::from(visible_lines);
-    f.render_widget(
-        Paragraph::new(text).wrap(Wrap { trim: false }),
-        area,
-    );
+    f.render_widget(Paragraph::new(text).wrap(Wrap { trim: false }), area);
 }
 
 /// Render split diff (additions right, deletions left).
@@ -615,8 +620,14 @@ fn render_split_diff(f: &mut Frame, area: Rect, file: &DiffFile, scroll_offset: 
             "@@ -{},{} +{},{} @@",
             hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
         );
-        left_lines.push(Line::from(Span::styled(&header, Style::default().fg(Color::Cyan))));
-        right_lines.push(Line::from(Span::styled(&header, Style::default().fg(Color::Cyan))));
+        left_lines.push(Line::from(Span::styled(
+            header.clone(),
+            Style::default().fg(Color::Cyan),
+        )));
+        right_lines.push(Line::from(Span::styled(
+            header,
+            Style::default().fg(Color::Cyan),
+        )));
 
         for line in &hunk.lines {
             let content: String = line
@@ -813,19 +824,17 @@ mod tests {
     fn test_diff_file_total_lines() {
         let file = DiffFile {
             path: "test.rs".into(),
-            hunks: vec![
-                DiffHunk {
-                    old_start: 1,
-                    old_count: 3,
-                    new_start: 1,
-                    new_count: 4,
-                    lines: vec![
-                        DiffLine::Context("line1".into()),
-                        DiffLine::Addition("line2".into()),
-                        DiffLine::Context("line3".into()),
-                    ],
-                },
-            ],
+            hunks: vec![DiffHunk {
+                old_start: 1,
+                old_count: 3,
+                new_start: 1,
+                new_count: 4,
+                lines: vec![
+                    DiffLine::Context("line1".into()),
+                    DiffLine::Addition("line2".into()),
+                    DiffLine::Context("line3".into()),
+                ],
+            }],
             additions: 1,
             deletions: 0,
             reviewed: false,

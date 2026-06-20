@@ -58,7 +58,11 @@ impl GlobalPaths {
     /// Ported from `packages/core/src/global.ts` lines 11–15 (path computation)
     /// and lines 74–78 (`make()` factory).
     pub fn discover() -> Self {
-        Self::with_home(dirs::home_dir().map(|p| p.to_string_lossy().to_string()).unwrap_or_default())
+        Self::with_home(
+            dirs::home_dir()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default(),
+        )
     }
 
     /// Create paths rooted at a specific home directory.
@@ -354,9 +358,18 @@ mod tests {
     #[test]
     fn global_paths_contain_app_name() {
         let paths = GlobalPaths::discover();
-        assert!(paths.data.contains(APP_NAME), "data path should contain app name");
-        assert!(paths.config.contains(APP_NAME), "config path should contain app name");
-        assert!(paths.cache.contains(APP_NAME), "cache path should contain app name");
+        assert!(
+            paths.data.contains(APP_NAME),
+            "data path should contain app name"
+        );
+        assert!(
+            paths.config.contains(APP_NAME),
+            "config path should contain app name"
+        );
+        assert!(
+            paths.cache.contains(APP_NAME),
+            "cache path should contain app name"
+        );
     }
 
     #[test]
@@ -483,7 +496,12 @@ mod tests {
     fn xdg_dir_uses_default_when_not_set() {
         // Ensure the env var is not set
         std::env::remove_var("XDG_TEST_VAR");
-        let result = xdg_dir("XDG_TEST_VAR_NONEXISTENT", "/home/test", ".local/share", "testapp");
+        let result = xdg_dir(
+            "XDG_TEST_VAR_NONEXISTENT",
+            "/home/test",
+            ".local/share",
+            "testapp",
+        );
         assert!(result.starts_with("/home/test"));
         assert!(result.contains("testapp"));
     }

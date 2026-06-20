@@ -8,6 +8,7 @@
 
 use axum::response::sse::{Event as SseEvent, KeepAlive, Sse};
 use futures::stream::Stream;
+use futures::StreamExt;
 use std::convert::Infallible;
 use std::time::Duration;
 
@@ -25,9 +26,7 @@ const KEEP_ALIVE_INTERVAL_SECS: u64 = 15;
 /// # Source
 /// Ported from `packages/opencode/src/server/routes/instance/httpapi/handlers/event.ts`
 /// which transforms bus events into SSE format with correct `event:` type names.
-pub fn sse_stream<S, E>(
-    stream: S,
-) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>>
+pub fn sse_stream<S, E>(stream: S) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>>
 where
     S: Stream<Item = Result<serde_json::Value, E>> + Send + 'static,
     E: std::error::Error + Send + Sync + 'static,
@@ -41,9 +40,7 @@ where
 
             let data = serde_json::to_string(&value).unwrap_or_default();
 
-            Ok(SseEvent::default()
-                .event(event_type)
-                .data(data))
+            Ok(SseEvent::default().event(event_type).data(data))
         }
         Err(e) => {
             tracing::warn!("SSE stream error: {e}");

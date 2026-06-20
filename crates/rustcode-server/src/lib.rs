@@ -19,4 +19,4 @@ pub mod routes;
 pub mod server;
 pub mod sse;
 
-pub use server::{AppState, ServerConfig, build_router, serve};
+pub use server::{build_router, serve, AppState, ServerConfig};

@@ -200,7 +200,9 @@ impl WorktreeManager {
             // If branch is set, check it doesn't already exist
             if let Some(ref branch) = branch {
                 let ref_name = format!("refs/heads/{}", branch);
-                let result = self.git.run(&["show-ref", "--verify", "--quiet", &ref_name]);
+                let result = self
+                    .git
+                    .run(&["show-ref", "--verify", "--quiet", &ref_name]);
                 if let Ok(r) = result {
                     if r.exit_code == 0 {
                         continue;
@@ -273,9 +275,7 @@ impl WorktreeManager {
 
         // Ensure the worktree root directory exists
         let root = self.worktree_root();
-        std::fs::create_dir_all(&root).map_err(|e| {
-            crate::error::Error::Io(e)
-        })?;
+        std::fs::create_dir_all(&root).map_err(|e| crate::error::Error::Io(e))?;
 
         self.candidate(name, detached, 26)
     }
@@ -303,14 +303,14 @@ impl WorktreeManager {
         let dir_str = info.directory.to_string_lossy();
 
         let result = if let Some(ref branch) = info.branch {
-            self.git.run(&[
-                "worktree", "add", "--no-checkout",
-                "-b", branch,
-                &dir_str,
-            ])
+            self.git
+                .run(&["worktree", "add", "--no-checkout", "-b", branch, &dir_str])
         } else {
             self.git.run(&[
-                "worktree", "add", "--no-checkout", "--detach",
+                "worktree",
+                "add",
+                "--no-checkout",
+                "--detach",
                 &dir_str,
                 "HEAD",
             ])
@@ -334,7 +334,9 @@ impl WorktreeManager {
     /// # Source
     /// `packages/opencode/src/worktree/index.ts` lines 349–375 (`list`).
     pub fn list(&self) -> Result<Vec<WorktreeInfo>> {
-        let result = self.git.run(&["worktree", "list", "--porcelain"])
+        let result = self
+            .git
+            .run(&["worktree", "list", "--porcelain"])
             .map_err(|e| WorktreeError::ListFailed(e.to_string()))?;
 
         if result.exit_code != 0 {
@@ -363,10 +365,7 @@ impl WorktreeManager {
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| "unknown".to_string());
 
-            let branch = entry
-                .branch
-                .as_ref()
-                .map(|b| Self::strip_branch_prefix(b));
+            let branch = entry.branch.as_ref().map(|b| Self::strip_branch_prefix(b));
 
             infos.push(WorktreeInfo {
                 name,
@@ -393,7 +392,9 @@ impl WorktreeManager {
         let directory = Self::canonical(directory);
 
         // List worktrees to find the entry
-        let list_result = self.git.run(&["worktree", "list", "--porcelain"])
+        let list_result = self
+            .git
+            .run(&["worktree", "list", "--porcelain"])
             .map_err(|e| WorktreeError::RemoveFailed(e.to_string()))?;
 
         if list_result.exit_code != 0 {
@@ -402,16 +403,17 @@ impl WorktreeManager {
 
         let entries = Self::parse_porcelain(&list_result.text());
         let entry = entries.iter().find(|e| {
-            e.path.as_ref().map_or(false, |p| {
-                Self::canonical(Path::new(p)) == directory
-            })
+            e.path
+                .as_ref()
+                .map_or(false, |p| Self::canonical(Path::new(p)) == directory)
         });
 
         match entry.and_then(|e| e.path.as_deref()) {
             Some(worktree_path) => {
                 // Try git worktree remove
                 let result = if force {
-                    self.git.run(&["worktree", "remove", "--force", worktree_path])
+                    self.git
+                        .run(&["worktree", "remove", "--force", worktree_path])
                 } else {
                     self.git.run(&["worktree", "remove", worktree_path])
                 };
@@ -425,14 +427,16 @@ impl WorktreeManager {
                 }
 
                 // Fallback: check if it's gone from the list now (stale entry)
-                let next = self.git.run(&["worktree", "list", "--porcelain"])
+                let next = self
+                    .git
+                    .run(&["worktree", "list", "--porcelain"])
                     .map_err(|e| WorktreeError::RemoveFailed(e.to_string()))?;
 
                 let next_entries = Self::parse_porcelain(&next.text());
                 let still_exists = next_entries.iter().any(|e| {
-                    e.path.as_ref().map_or(false, |p| {
-                        Self::canonical(Path::new(p)) == directory
-                    })
+                    e.path
+                        .as_ref()
+                        .map_or(false, |p| Self::canonical(Path::new(p)) == directory)
                 });
 
                 if still_exists {
@@ -474,14 +478,15 @@ impl WorktreeManager {
 
         // Cannot reset the primary workspace
         if directory == primary {
-            return Err(WorktreeError::ResetFailed(
-                "Cannot reset the primary workspace".into(),
-            )
-            .into());
+            return Err(
+                WorktreeError::ResetFailed("Cannot reset the primary workspace".into()).into(),
+            );
         }
 
         // Verify the directory is a known worktree
-        let list_result = self.git.run(&["worktree", "list", "--porcelain"])
+        let list_result = self
+            .git
+            .run(&["worktree", "list", "--porcelain"])
             .map_err(|e| WorktreeError::ResetFailed(e.to_string()))?;
 
         if list_result.exit_code != 0 {
@@ -490,9 +495,9 @@ impl WorktreeManager {
 
         let entries = Self::parse_porcelain(&list_result.text());
         let entry = entries.iter().find(|e| {
-            e.path.as_ref().map_or(false, |p| {
-                Self::canonical(Path::new(p)) == directory
-            })
+            e.path
+                .as_ref()
+                .map_or(false, |p| Self::canonical(Path::new(p)) == directory)
         });
 
         let worktree_path = match entry.and_then(|e| e.path.as_deref()) {
@@ -503,12 +508,13 @@ impl WorktreeManager {
         };
 
         // Get the default branch
-        let base = self.git.default_branch()
+        let base = self
+            .git
+            .default_branch()
             .map_err(|e| WorktreeError::ResetFailed(e.to_string()))?;
 
-        let base = base.ok_or_else(|| {
-            WorktreeError::ResetFailed("Default branch not found".into())
-        })?;
+        let base =
+            base.ok_or_else(|| WorktreeError::ResetFailed("Default branch not found".into()))?;
 
         // Fetch latest from remote if applicable
         if let Some(pos) = base.ref_name.find('/') {
@@ -518,9 +524,10 @@ impl WorktreeManager {
                 let fetch = self.git.run(&["fetch", remote, branch]);
                 if let Ok(r) = fetch {
                     if r.exit_code != 0 {
-                        return Err(WorktreeError::ResetFailed(
-                            format!("Failed to fetch {}", base.ref_name),
-                        )
+                        return Err(WorktreeError::ResetFailed(format!(
+                            "Failed to fetch {}",
+                            base.ref_name
+                        ))
                         .into());
                     }
                 }
@@ -531,10 +538,7 @@ impl WorktreeManager {
         let reset_result = self.git.run(&["reset", "--hard", &base.ref_name]);
         if let Ok(r) = reset_result {
             if r.exit_code != 0 {
-                return Err(WorktreeError::ResetFailed(
-                    r.stderr_text(),
-                )
-                .into());
+                return Err(WorktreeError::ResetFailed(r.stderr_text()).into());
             }
         } else {
             return Err(WorktreeError::ResetFailed("Failed to run git reset".into()).into());
@@ -544,21 +548,17 @@ impl WorktreeManager {
         let clean = self.git.run(&["clean", "-ffdx"]);
         if let Ok(r) = clean {
             if r.exit_code != 0 {
-                return Err(WorktreeError::ResetFailed(
-                    r.stderr_text(),
-                )
-                .into());
+                return Err(WorktreeError::ResetFailed(r.stderr_text()).into());
             }
         }
 
         // Update submodules
-        let submodule = self.git.run(&["submodule", "update", "--init", "--recursive", "--force"]);
+        let submodule = self
+            .git
+            .run(&["submodule", "update", "--init", "--recursive", "--force"]);
         if let Ok(r) = submodule {
             if r.exit_code != 0 {
-                return Err(WorktreeError::ResetFailed(
-                    r.stderr_text(),
-                )
-                .into());
+                return Err(WorktreeError::ResetFailed(r.stderr_text()).into());
             }
         }
 
@@ -578,7 +578,10 @@ mod tests {
         assert_eq!(WorktreeManager::slugify("  Spaces  "), "spaces");
         assert_eq!(WorktreeManager::slugify("foo_bar"), "foo-bar");
         assert_eq!(WorktreeManager::slugify("a!b@c#d"), "a-b-c-d");
-        assert_eq!(WorktreeManager::slugify("---already--clean---"), "already-clean");
+        assert_eq!(
+            WorktreeManager::slugify("---already--clean---"),
+            "already-clean"
+        );
     }
 
     #[test]
@@ -637,10 +640,7 @@ mod tests {
             WorktreeManager::strip_branch_prefix("refs/heads/feature/x"),
             "feature/x"
         );
-        assert_eq!(
-            WorktreeManager::strip_branch_prefix("main"),
-            "main"
-        );
+        assert_eq!(WorktreeManager::strip_branch_prefix("main"), "main");
     }
 
     #[test]

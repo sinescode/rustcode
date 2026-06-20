@@ -19,7 +19,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::error::Error;
 use crate::provider::{
-    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider, ToolDefinition, Usage,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
@@ -304,17 +305,15 @@ impl GroqProvider {
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult {
+                        let crate::provider::ToolResultPart::ToolResult {
                             tool_call_id,
                             output,
                             ..
-                        } = part
-                        {
-                            result.push(GroqChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        } = part;
+                        result.push(GroqChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -393,6 +392,7 @@ fn map_usage(u: &GroqUsage) -> Usage {
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
@@ -436,9 +436,11 @@ fn events_from_chat(event: GroqChatEvent, state: &mut ChatStreamState) -> Vec<Ll
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state
-                        .tool_stream
-                        .set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
@@ -479,7 +481,7 @@ fn events_from_chat(event: GroqChatEvent, state: &mut ChatStreamState) -> Vec<Ll
         });
         events.push(LlmEvent::Finish {
             reason,
-            usage,
+            usage: usage.clone(),
             provider_metadata: None,
         });
         state.finished = true;
@@ -592,35 +594,37 @@ impl Provider for GroqProvider {
                 state,
                 VecDeque::new(),
             ),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() {
-                        return Some((ev, (sse, state, buffer)));
-                    }
-                    if state.finished {
-                        return None;
-                    }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) = serde_json::from_str::<GroqChatEvent>(&se.data) {
-                                for ev in events_from_chat(oe, &mut state) {
-                                    buffer.push_back(Ok(ev));
-                                }
-                                if let Some(ev) = buffer.pop_front() {
-                                    return Some((ev, (sse, state, buffer)));
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
+                        }
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) = serde_json::from_str::<GroqChatEvent>(&se.data) {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Groq SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::ResponseStream(format!("Groq SSE: {e}"))),
-                                (sse, state, buffer),
-                            ));
-                        }
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
@@ -650,8 +654,8 @@ impl Provider for GroqProvider {
     }
 }
 
-use std::pin::Pin;
 use crate::error::LlmErrorReason;
+use std::pin::Pin;
 
 fn classify_error(status: u16, body: &str) -> LlmErrorReason {
     let msg = || body.to_string();
@@ -922,7 +926,11 @@ mod tests {
     fn test_all_models_have_text_io() {
         let models = build_model_catalog();
         for m in &models {
-            assert!(m.capabilities.input.text, "model {} should support text input", m.id);
+            assert!(
+                m.capabilities.input.text,
+                "model {} should support text input",
+                m.id
+            );
             assert!(
                 m.capabilities.output.text,
                 "model {} should support text output",
@@ -935,47 +943,41 @@ mod tests {
 
     #[test]
     fn test_provider_id_static() {
-        let provider = GroqProvider::with_base_url(
-            "test-key".into(),
-            DEFAULT_BASE_URL.into(),
-        )
-        .expect("should construct with test key");
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct with test key");
         assert_eq!(provider.provider_id(), "groq");
         assert_eq!(provider.npm(), "@ai-sdk/groq");
     }
 
     // ── Model lookup ───────────────────────────────────────────────
 
-    #[test]
-    fn test_get_model_found() {
-        let provider =
-            GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let model = provider.get_model("llama-4-maverick");
+    #[tokio::test]
+    async fn test_get_model_found() {
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let model = provider.get_model("llama-4-maverick").await;
         assert!(model.is_ok());
         let m = model.unwrap();
         assert_eq!(m.id, "llama-4-maverick");
         assert_eq!(m.name, "Llama 4 Maverick");
     }
 
-    #[test]
-    fn test_get_model_found_mixtral() {
-        let provider =
-            GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let model = provider.get_model("mixtral-8x7b-32768");
+    #[tokio::test]
+    async fn test_get_model_found_mixtral() {
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let model = provider.get_model("mixtral-8x7b-32768").await;
         assert!(model.is_ok());
         let m = model.unwrap();
         assert_eq!(m.id, "mixtral-8x7b-32768");
         assert_eq!(m.name, "Mixtral 8x7B");
     }
 
-    #[test]
-    fn test_get_model_not_found() {
-        let provider =
-            GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let result = provider.get_model("nonexistent-model");
+    #[tokio::test]
+    async fn test_get_model_not_found() {
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let result = provider.get_model("nonexistent-model").await;
         assert!(result.is_err());
         match result {
             Err(Error::ModelNotFound {
@@ -989,21 +991,19 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_model_case_sensitive() {
-        let provider =
-            GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let result = provider.get_model("Llama-4-Maverick");
+    #[tokio::test]
+    async fn test_get_model_case_sensitive() {
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let result = provider.get_model("Llama-4-Maverick").await;
         assert!(result.is_err(), "model lookup should be case-sensitive");
     }
 
-    #[test]
-    fn test_list_models_returns_all() {
-        let provider =
-            GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let models = provider.list_models();
+    #[tokio::test]
+    async fn test_list_models_returns_all() {
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let models = provider.list_models().await;
         assert!(models.is_ok());
         assert_eq!(models.unwrap().len(), 5);
     }
@@ -1035,19 +1035,12 @@ mod tests {
 
     #[test]
     fn test_classify_error_context_overflow() {
-        let err = classify_error(
-            400,
-            "prompt is too long: input exceeds the context window",
-        );
+        let err = classify_error(400, "prompt is too long: input exceeds the context window");
         match err {
-            LlmErrorReason::InvalidRequest {
-                classification, ..
-            } => {
+            LlmErrorReason::InvalidRequest { classification, .. } => {
                 assert_eq!(classification, Some("context-overflow".into()));
             }
-            other => panic!(
-                "expected InvalidRequest with context-overflow, got: {other:?}"
-            ),
+            other => panic!("expected InvalidRequest with context-overflow, got: {other:?}"),
         }
     }
 
@@ -1115,7 +1108,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_content_filter() {
-        assert_eq!(map_finish_reason("content_filter"), FinishReason::ContentFilter);
+        assert_eq!(
+            map_finish_reason("content_filter"),
+            FinishReason::ContentFilter
+        );
     }
 
     #[test]
@@ -1159,9 +1155,8 @@ mod tests {
 
     #[test]
     fn test_chat_url_default() {
-        let provider =
-            GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
+        let provider = GroqProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
         assert_eq!(
             provider.chat_url(),
             "https://api.groq.com/openai/v1/chat/completions"
@@ -1288,9 +1283,7 @@ mod tests {
     #[test]
     fn test_extract_text_mixed_parts() {
         let content = MessageContent::Parts(vec![
-            ContentPart::Text {
-                text: "hi ".into(),
-            },
+            ContentPart::Text { text: "hi ".into() },
             ContentPart::Reasoning {
                 text: "let me think...".into(),
                 provider_options: None,
@@ -1353,8 +1346,16 @@ mod tests {
     fn test_model_costs_are_reasonable() {
         let models = build_model_catalog();
         for m in &models {
-            assert!(m.cost.input >= 0.0, "model {} has negative input cost", m.id);
-            assert!(m.cost.output >= 0.0, "model {} has negative output cost", m.id);
+            assert!(
+                m.cost.input >= 0.0,
+                "model {} has negative input cost",
+                m.id
+            );
+            assert!(
+                m.cost.output >= 0.0,
+                "model {} has negative output cost",
+                m.id
+            );
         }
     }
 

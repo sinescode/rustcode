@@ -12,8 +12,8 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
+use axum::routing::{get, post, put};
 use axum::{Json, Router};
-use axum::routing::{get, patch, post, put};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tracing::info;
@@ -76,7 +76,10 @@ pub fn global_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/global/health", get(health))
         .route("/global/event", get(global_event))
-        .route("/global/config", get(global_config_get).patch(global_config_update))
+        .route(
+            "/global/config",
+            get(global_config_get).patch(global_config_update),
+        )
         .route("/global/dispose", post(global_dispose))
         .route("/global/upgrade", post(global_upgrade))
         .route("/auth/{provider_id}", put(put_auth))
@@ -177,7 +180,11 @@ async fn global_config_update(
     let path = {
         let json = config_dir.join("config.json");
         let opencode = config_dir.join("opencode.json");
-        if json.exists() { json } else { opencode }
+        if json.exists() {
+            json
+        } else {
+            opencode
+        }
     };
 
     // Load existing global config from the file and deep-merge the incoming patch

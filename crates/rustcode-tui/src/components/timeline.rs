@@ -102,16 +102,11 @@ impl TimelineState {
 
         let mut metas: Vec<MsgMeta> = Vec::new();
 
-        for (i, msg) in messages.iter().enumerate() {
+        for (_i, msg) in messages.iter().enumerate() {
             let (id, role, parent_id, preview) = match &msg.info {
                 rustcode_core::session::MessageInfo::User(info) => {
                     let preview = Self::preview_from_parts(&msg.parts, 60);
-                    (
-                        info.id.clone(),
-                        "user".to_string(),
-                        None::<String>,
-                        preview,
-                    )
+                    (info.id.clone(), "user".to_string(), None::<String>, preview)
                 }
                 rustcode_core::session::MessageInfo::Assistant(info) => {
                     let preview = Self::preview_from_parts(&msg.parts, 60);
@@ -177,7 +172,11 @@ impl TimelineState {
         ) {
             let meta = &metas[node_idx];
 
-            let label = format!("{} {}", Tet::role_icon(&meta.role), &meta.preview[..meta.preview.len().min(50)]);
+            let label = format!(
+                "{} {}",
+                Tet::role_icon(&meta.role),
+                &meta.preview[..meta.preview.len().min(50)]
+            );
 
             let node = TimelineNode {
                 label,
@@ -301,7 +300,8 @@ impl TimelineState {
             }
 
             KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Char('j'),
@@ -395,7 +395,12 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 
-    let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+    let dialog_area = Rect::new(
+        area.x + dialog_x,
+        area.y + dialog_y,
+        dialog_width,
+        dialog_height,
+    );
 
     f.render_widget(Clear, dialog_area);
 
@@ -467,7 +472,11 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
                 }
 
                 let expander = if node.has_children {
-                    if node.expanded { "[-] " } else { "[+] " }
+                    if node.expanded {
+                        "[-] "
+                    } else {
+                        "[+] "
+                    }
                 } else {
                     "    "
                 };
@@ -484,11 +493,18 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
                 };
 
                 let line = Line::from(vec![
-                    Span::styled(&prefix, if is_selected { row_style } else { Style::default().fg(Color::DarkGray) }),
+                    Span::styled(
+                        prefix,
+                        if is_selected {
+                            row_style
+                        } else {
+                            Style::default().fg(Color::DarkGray)
+                        },
+                    ),
                     Span::styled(expander, row_style),
-                    Span::styled(&role_tag, row_style.add_modifier(Modifier::BOLD)),
+                    Span::styled(role_tag, row_style.add_modifier(Modifier::BOLD)),
                     Span::raw(" "),
-                    Span::styled(&preview_text, row_style),
+                    Span::styled(preview_text, row_style),
                 ]);
 
                 ListItem::new(line)
@@ -516,7 +532,9 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
                 Span::styled("Role: ", Style::default().fg(Color::Gray)),
                 Span::styled(
                     &node.role,
-                    Style::default().fg(Tet::role_color(&node.role)).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Tet::role_color(&node.role))
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
             if let Some(ref mid) = node.message_id {
@@ -527,14 +545,19 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
             }
             preview_lines.push(Line::from(vec![
                 Span::styled("Depth:", Style::default().fg(Color::Gray)),
-                Span::styled(format!(" {}", node.depth), Style::default().fg(Color::White)),
-            ]));
-            preview_lines.push(Line::from(vec![
                 Span::styled(
-                    if node.has_children { "Children: yes" } else { "Children: no" },
-                    Style::default().fg(Color::Gray),
+                    format!(" {}", node.depth),
+                    Style::default().fg(Color::White),
                 ),
             ]));
+            preview_lines.push(Line::from(vec![Span::styled(
+                if node.has_children {
+                    "Children: yes"
+                } else {
+                    "Children: no"
+                },
+                Style::default().fg(Color::Gray),
+            )]));
             preview_lines.push(Line::from(""));
             preview_lines.push(Line::from(Span::styled(
                 "─".repeat(preview_inner.width.max(10) as usize),
@@ -546,7 +569,10 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
             )));
 
             let text = Text::from(preview_lines);
-            f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), preview_inner);
+            f.render_widget(
+                Paragraph::new(text).wrap(Wrap { trim: true }),
+                preview_inner,
+            );
         }
     }
 }

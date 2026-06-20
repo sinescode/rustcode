@@ -303,9 +303,9 @@ impl ExternalId {
 /// (`Newtype<Self>()` function).
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct TaggedString<const TAG: &'static str>(pub String);
+pub struct TaggedString(pub String);
 
-impl<const TAG: &'static str> TaggedString<TAG> {
+impl TaggedString {
     /// Create a new tagged string.
     pub fn new(value: impl Into<String>) -> Self {
         Self(value.into())
@@ -320,20 +320,15 @@ impl<const TAG: &'static str> TaggedString<TAG> {
     pub fn into_inner(self) -> String {
         self.0
     }
-
-    /// Return the tag name.
-    pub fn tag() -> &'static str {
-        TAG
-    }
 }
 
-impl<const TAG: &'static str> fmt::Display for TaggedString<TAG> {
+impl fmt::Display for TaggedString {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.0.fmt(f)
     }
 }
 
-impl<const TAG: &'static str> AsRef<str> for TaggedString<TAG> {
+impl AsRef<str> for TaggedString {
     fn as_ref(&self) -> &str {
         &self.0
     }
@@ -472,18 +467,15 @@ mod tests {
 
     #[test]
     fn tagged_string_creation() {
-        type SessionID = TaggedString<"SessionID">;
-        let id = SessionID::new("abc-123");
+        let id = TaggedString::new("abc-123");
         assert_eq!(id.as_str(), "abc-123");
-        assert_eq!(SessionID::tag(), "SessionID");
     }
 
     #[test]
     fn tagged_string_serde_roundtrip() {
-        type MyTag = TaggedString<"MyTag">;
-        let val = MyTag::new("hello");
+        let val = TaggedString::new("hello");
         let json = serde_json::to_string(&val).unwrap();
-        let back: MyTag = serde_json::from_str(&json).unwrap();
+        let back: TaggedString = serde_json::from_str(&json).unwrap();
         assert_eq!(val, back);
     }
 

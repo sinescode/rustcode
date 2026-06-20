@@ -209,6 +209,7 @@ pub const ALL_THEMES: &[&Theme] = &[
 
 /// Persistent theme state managed by the TUI app.
 #[derive(Debug, Clone)]
+#[derive(Default)]
 pub struct ThemeState {
     /// Index into `ALL_THEMES` for the currently active theme.
     theme_index: usize,
@@ -216,14 +217,6 @@ pub struct ThemeState {
     locked: bool,
 }
 
-impl Default for ThemeState {
-    fn default() -> Self {
-        Self {
-            theme_index: 0, // THEME_DARK
-            locked: false,
-        }
-    }
-}
 
 impl ThemeState {
     /// Create a new ThemeState with the default (dark) theme.
@@ -310,9 +303,15 @@ impl ThemeState {
         }
         // If no other theme matches, just switch between dark and light directly
         if target_mode == ThemeMode::Light {
-            self.theme_index = ALL_THEMES.iter().position(|t| t.name == "light").unwrap_or(0);
+            self.theme_index = ALL_THEMES
+                .iter()
+                .position(|t| t.name == "light")
+                .unwrap_or(0);
         } else {
-            self.theme_index = ALL_THEMES.iter().position(|t| t.name == "dark").unwrap_or(0);
+            self.theme_index = ALL_THEMES
+                .iter()
+                .position(|t| t.name == "dark")
+                .unwrap_or(0);
         }
         Some(self.current().name)
     }
@@ -419,7 +418,19 @@ mod tests {
     #[test]
     fn test_theme_names() {
         let names = ThemeState::theme_names();
-        assert_eq!(names, vec!["dark", "light", "dracula", "monokai", "nord", "solarized", "github", "tokyonight"]);
+        assert_eq!(
+            names,
+            vec![
+                "dark",
+                "light",
+                "dracula",
+                "monokai",
+                "nord",
+                "solarized",
+                "github",
+                "tokyonight"
+            ]
+        );
     }
 
     #[test]

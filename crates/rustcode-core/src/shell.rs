@@ -55,10 +55,7 @@ impl ShellItem {
         if !pb.exists() {
             return None;
         }
-        let name = pb
-            .file_name()?
-            .to_str()?
-            .to_string();
+        let name = pb.file_name()?.to_str()?.to_string();
         let acceptable = is_shell_allowed(&name);
         Some(Self {
             path: pb,
@@ -147,7 +144,7 @@ pub fn args(shell: &ShellItem, command: &str, cwd: &str) -> Vec<String> {
         "bash" | "zsh" => {
             let quoted = shlex::try_quote(command)
                 .map(|c| c.into_owned())
-                .unwrap_or_else(|| command.to_string());
+                .unwrap_or_else(|_| command.to_string());
             vec![
                 "-l".into(),
                 "-c".into(),
@@ -242,9 +239,7 @@ static CACHED_ACCEPTABLE: OnceLock<Vec<ShellItem>> = OnceLock::new();
 pub fn cached_preferred() -> Option<&'static ShellItem> {
     CACHED_PREFERRED
         .get_or_init(|| {
-            let shell = std::env::var("SHELL")
-                .ok()
-                .filter(|s| !s.is_empty());
+            let shell = std::env::var("SHELL").ok().filter(|s| !s.is_empty());
             shell.and_then(|s| select(Some(&s)))
         })
         .as_ref()
@@ -305,13 +300,11 @@ pub fn select(shell_path: Option<&str>) -> Option<ShellItem> {
     }
     #[cfg(target_os = "linux")]
     {
-        return ShellItem::from_path("/bin/bash")
-            .or_else(|| ShellItem::from_path("/bin/sh"));
+        return ShellItem::from_path("/bin/bash").or_else(|| ShellItem::from_path("/bin/sh"));
     }
     #[cfg(target_os = "windows")]
     {
-        return ShellItem::from_path("pwsh")
-            .or_else(|| ShellItem::from_path("powershell"));
+        return ShellItem::from_path("pwsh").or_else(|| ShellItem::from_path("powershell"));
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     {
@@ -391,7 +384,14 @@ pub enum ShellError {
 ///
 /// Ported from: `shell.ts` — detection order
 pub const COMMON_SHELLS: &[&str] = &[
-    "bash", "zsh", "fish", "dash", "sh", "ksh", "pwsh", "powershell",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "sh",
+    "ksh",
+    "pwsh",
+    "powershell",
 ];
 
 /// Service for shell detection and command execution.
@@ -415,7 +415,11 @@ impl ShellService {
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                 let name = name.to_string();
                 let acceptable = is_shell_allowed(&name) && path.exists();
-                found.push(ShellItem { path, name, acceptable });
+                found.push(ShellItem {
+                    path,
+                    name,
+                    acceptable,
+                });
                 return found;
             }
         }
@@ -475,10 +479,10 @@ impl ShellService {
         let full_command = if let Some(ref init) = self.config.init_command {
             let escaped_init = shlex::try_quote(init)
                 .map(|c| c.into_owned())
-                .unwrap_or_else(|| init.clone());
+                .unwrap_or_else(|_| init.clone());
             let escaped_cmd = shlex::try_quote(command)
                 .map(|c| c.into_owned())
-                .unwrap_or_else(|| command.to_string());
+                .unwrap_or_else(|_| command.to_string());
             format!("{}; {}", escaped_init, escaped_cmd)
         } else {
             command.to_string()
@@ -498,15 +502,13 @@ impl ShellService {
         cmd.kill_on_drop(true);
 
         let start = std::time::Instant::now();
-        let mut child = cmd.spawn().map_err(|e| ShellError::Io(e))?;
+        let child = cmd.spawn().map_err(|e| ShellError::Io(e))?;
+        let child_id = child.id();
 
-        let result = tokio::time::timeout(
-            std::time::Duration::from_millis(timeout),
-            async {
-                let output = child.wait_with_output().await.map_err(ShellError::Io)?;
-                Ok::<_, ShellError>(output)
-            },
-        )
+        let result = tokio::time::timeout(std::time::Duration::from_millis(timeout), async {
+            let output = child.wait_with_output().await.map_err(ShellError::Io)?;
+            Ok::<_, ShellError>(output)
+        })
         .await;
 
         let duration_ms = start.elapsed().as_millis() as u64;
@@ -528,11 +530,12 @@ impl ShellService {
             Ok(Err(e)) => Err(e),
             Err(_timeout) => {
                 // Kill the process tree on timeout
-                if let Some(id) = child.id() {
+                if let Some(id) = child_id {
                     let _ = Self::kill_tree(id).await;
                 }
-                let _ = child.kill().await;
-                Err(ShellError::Timeout { seconds: timeout / 1000 })
+                Err(ShellError::Timeout {
+                    seconds: timeout / 1000,
+                })
             }
         }
     }
@@ -762,7 +765,11 @@ mod tests {
         let shells = service.detect();
         // On a typical Linux system, /bin/sh or /bin/bash should exist
         let has_bash = shells.iter().any(|s| s.name == "bash" || s.name == "sh");
-        assert!(has_bash, "Should find at least bash or sh on PATH: {:?}", shells);
+        assert!(
+            has_bash,
+            "Should find at least bash or sh on PATH: {:?}",
+            shells
+        );
     }
 
     #[tokio::test]
@@ -821,11 +828,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_shell_service_kill_tree_accepts_any_pid() {
+    #[tokio::test]
+    async fn test_shell_service_kill_tree_accepts_any_pid() {
         // kill_tree should not panic on arbitrary PID
-        let result = ShellService::kill_tree(99999);
-        assert!(result.is_ok());
+        let result = ShellService::kill_tree(99999).await;
+        assert!(result.is_ok(), "kill_tree should succeed or be a no-op");
     }
 
     #[test]
@@ -931,15 +938,25 @@ mod tests {
         let shells = parse_etc_shells();
         assert!(!shells.is_empty());
         // Should contain at least /bin/sh or /bin/bash
-        let has_common = shells.iter().any(|s| s.contains("sh") || s.contains("bash"));
-        assert!(has_common, "Expected common shell in /etc/shells: {:?}", shells);
+        let has_common = shells
+            .iter()
+            .any(|s| s.contains("sh") || s.contains("bash"));
+        assert!(
+            has_common,
+            "Expected common shell in /etc/shells: {:?}",
+            shells
+        );
     }
 
     #[test]
     fn test_parse_etc_shells_excludes_comments() {
         let shells = parse_etc_shells();
         for shell in &shells {
-            assert!(!shell.starts_with('#'), "Should not contain comment: {}", shell);
+            assert!(
+                !shell.starts_with('#'),
+                "Should not contain comment: {}",
+                shell
+            );
             assert!(!shell.trim().is_empty(), "Should not contain empty lines");
         }
     }
@@ -1064,9 +1081,8 @@ mod tests {
     #[test]
     fn test_cached_preferred_is_stable() {
         // Calling twice should return the same static reference
-        let a = cached_preferred() as *const Option<ShellItem>;
-        let b = cached_preferred() as *const Option<ShellItem>;
-        assert_eq!(a, b);
+        // Calling twice should return the same static reference
+        assert_eq!(cached_preferred(), cached_preferred());
     }
 
     #[test]

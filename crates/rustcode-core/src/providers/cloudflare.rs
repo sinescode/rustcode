@@ -22,7 +22,8 @@ use std::pin::Pin;
 
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
-    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider, ToolDefinition, Usage,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
@@ -192,6 +193,7 @@ struct CloudflareCompletionTokenDetails {
 
 // ── Cloudflare Provider ──────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct CloudflareProvider {
     api_token: String,
     account_id: String,
@@ -211,13 +213,23 @@ impl CloudflareProvider {
 
     /// Create with explicit credentials and a custom base URL
     /// (for proxies or testing).
-    pub fn with_config(account_id: String, api_token: String, base_url: String) -> Result<Self, Error> {
+    pub fn with_config(
+        account_id: String,
+        api_token: String,
+        base_url: String,
+    ) -> Result<Self, Error> {
         let http_client = reqwest::Client::builder()
             .user_agent(format!("rustcode/{}", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
-        Ok(Self { api_token, account_id, base_url, http_client, models: build_model_catalog() })
+        Ok(Self {
+            api_token,
+            account_id,
+            base_url,
+            http_client,
+            models: build_model_catalog(),
+        })
     }
 
     /// Build the chat URL for a specific model. Cloudflare embeds the model
@@ -244,8 +256,8 @@ impl CloudflareProvider {
                     for part in content_parts(content) {
                         match part {
                             ContentPart::Text { text } => text_parts.push_str(text),
-                            ContentPart::Image { image } => media_parts.push(
-                                CloudflareUserContentPart::ImageUrl {
+                            ContentPart::Image { image } => {
+                                media_parts.push(CloudflareUserContentPart::ImageUrl {
                                     image_url: CloudflareImageUrl {
                                         url: if image.starts_with("data:") {
                                             image.clone()
@@ -253,8 +265,8 @@ impl CloudflareProvider {
                                             format!("data:image/png;base64,{image}")
                                         },
                                     },
-                                },
-                            ),
+                                })
+                            }
                             _ => {}
                         }
                     }
@@ -283,7 +295,10 @@ impl CloudflareProvider {
                         match part {
                             ContentPart::Text { text: t } => text.push_str(t),
                             ContentPart::Reasoning { text: r, .. } => reasoning.push_str(r),
-                            ContentPart::ToolCallPart { tool_call_id, tool_name } => {
+                            ContentPart::ToolCallPart {
+                                tool_call_id,
+                                tool_name,
+                            } => {
                                 tool_calls.push(CloudflareAssistantToolCall {
                                     id: tool_call_id.clone(),
                                     call_type: "function".into(),
@@ -312,15 +327,15 @@ impl CloudflareProvider {
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult {
-                            tool_call_id, output, ..
-                        } = part
-                        {
-                            result.push(CloudflareChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        let crate::provider::ToolResultPart::ToolResult {
+                            tool_call_id,
+                            output,
+                            ..
+                        } = part;
+                        result.push(CloudflareChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -399,16 +414,14 @@ fn map_usage(u: &CloudflareUsage) -> Usage {
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
     }
 }
 
-fn events_from_chat(
-    event: CloudflareChatEvent,
-    state: &mut ChatStreamState,
-) -> Vec<LlmEvent> {
+fn events_from_chat(event: CloudflareChatEvent, state: &mut ChatStreamState) -> Vec<LlmEvent> {
     let mut events = Vec::new();
     let usage = event.usage.as_ref().map(map_usage).or(state.usage.clone());
     let choice = event.choices.first();
@@ -445,9 +458,11 @@ fn events_from_chat(
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state
-                        .tool_stream
-                        .set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
@@ -488,7 +503,7 @@ fn events_from_chat(
         });
         events.push(LlmEvent::Finish {
             reason,
-            usage,
+            usage: usage.clone(),
             provider_metadata: None,
         });
         state.finished = true;
@@ -738,37 +753,39 @@ impl Provider for CloudflareProvider {
                 state,
                 VecDeque::new(),
             ),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() {
-                        return Some((ev, (sse, state, buffer)));
-                    }
-                    if state.finished {
-                        return None;
-                    }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) =
-                                serde_json::from_str::<CloudflareChatEvent>(&se.data)
-                            {
-                                for ev in events_from_chat(oe, &mut state) {
-                                    buffer.push_back(Ok(ev));
-                                }
-                                if let Some(ev) = buffer.pop_front() {
-                                    return Some((ev, (sse, state, buffer)));
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
+                        }
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) =
+                                    serde_json::from_str::<CloudflareChatEvent>(&se.data)
+                                {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Cloudflare SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::ResponseStream(format!("Cloudflare SSE: {e}"))),
-                                (sse, state, buffer),
-                            ));
-                        }
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
@@ -851,11 +868,20 @@ mod tests {
     #[test]
     fn test_model_catalog_context_window() {
         let models = build_model_catalog();
-        let maverick = models.iter().find(|m| m.id == "@cf/meta/llama-4-maverick").unwrap();
+        let maverick = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-maverick")
+            .unwrap();
         assert_eq!(maverick.limit.context, 128_000);
-        let scout = models.iter().find(|m| m.id == "@cf/meta/llama-4-scout").unwrap();
+        let scout = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-scout")
+            .unwrap();
         assert_eq!(scout.limit.context, 128_000);
-        let deepseek = models.iter().find(|m| m.id == "@cf/deepseek/deepseek-v3").unwrap();
+        let deepseek = models
+            .iter()
+            .find(|m| m.id == "@cf/deepseek/deepseek-v3")
+            .unwrap();
         assert_eq!(deepseek.limit.context, 128_000);
         let qwen = models.iter().find(|m| m.id == "@cf/qwen/qwen3").unwrap();
         assert_eq!(qwen.limit.context, 32_000);
@@ -864,11 +890,20 @@ mod tests {
     #[test]
     fn test_model_catalog_output_tokens() {
         let models = build_model_catalog();
-        let maverick = models.iter().find(|m| m.id == "@cf/meta/llama-4-maverick").unwrap();
+        let maverick = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-maverick")
+            .unwrap();
         assert_eq!(maverick.limit.output, 4_096);
-        let scout = models.iter().find(|m| m.id == "@cf/meta/llama-4-scout").unwrap();
+        let scout = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-scout")
+            .unwrap();
         assert_eq!(scout.limit.output, 4_096);
-        let deepseek = models.iter().find(|m| m.id == "@cf/deepseek/deepseek-v3").unwrap();
+        let deepseek = models
+            .iter()
+            .find(|m| m.id == "@cf/deepseek/deepseek-v3")
+            .unwrap();
         assert_eq!(deepseek.limit.output, 8_192);
         let qwen = models.iter().find(|m| m.id == "@cf/qwen/qwen3").unwrap();
         assert_eq!(qwen.limit.output, 8_192);
@@ -877,7 +912,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_maverick() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "@cf/meta/llama-4-maverick").expect("llama-4-maverick not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-maverick")
+            .expect("llama-4-maverick not found");
         assert!(m.capabilities.temperature);
         assert!(!m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -888,7 +926,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_scout() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "@cf/meta/llama-4-scout").expect("llama-4-scout not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-scout")
+            .expect("llama-4-scout not found");
         assert!(m.capabilities.temperature);
         assert!(!m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -913,7 +954,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_qwen3() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "@cf/qwen/qwen3").expect("qwen3 not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "@cf/qwen/qwen3")
+            .expect("qwen3 not found");
         assert!(m.capabilities.temperature);
         assert!(!m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -924,11 +968,20 @@ mod tests {
     #[test]
     fn test_model_catalog_families() {
         let models = build_model_catalog();
-        let maverick = models.iter().find(|m| m.id == "@cf/meta/llama-4-maverick").unwrap();
+        let maverick = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-maverick")
+            .unwrap();
         assert_eq!(maverick.family.as_deref(), Some("llama"));
-        let scout = models.iter().find(|m| m.id == "@cf/meta/llama-4-scout").unwrap();
+        let scout = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-scout")
+            .unwrap();
         assert_eq!(scout.family.as_deref(), Some("llama"));
-        let deepseek = models.iter().find(|m| m.id == "@cf/deepseek/deepseek-v3").unwrap();
+        let deepseek = models
+            .iter()
+            .find(|m| m.id == "@cf/deepseek/deepseek-v3")
+            .unwrap();
         assert_eq!(deepseek.family.as_deref(), Some("deepseek"));
         let qwen = models.iter().find(|m| m.id == "@cf/qwen/qwen3").unwrap();
         assert_eq!(qwen.family.as_deref(), Some("qwen"));
@@ -952,7 +1005,10 @@ mod tests {
     #[test]
     fn test_get_model_by_id() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "@cf/meta/llama-4-maverick").unwrap();
+        let m = models
+            .iter()
+            .find(|m| m.id == "@cf/meta/llama-4-maverick")
+            .unwrap();
         assert_eq!(m.id, "@cf/meta/llama-4-maverick");
         assert_eq!(m.name, "Llama 4 Maverick");
     }
@@ -1036,10 +1092,7 @@ mod tests {
 
     #[test]
     fn test_classify_error_context_overflow() {
-        let reason = classify_error(
-            400,
-            "This input exceeds the context window of the model",
-        );
+        let reason = classify_error(400, "This input exceeds the context window of the model");
         assert!(matches!(
             reason,
             LlmErrorReason::InvalidRequest {
@@ -1052,13 +1105,19 @@ mod tests {
     #[test]
     fn test_classify_error_provider_internal_500() {
         let reason = classify_error(500, "Internal server error");
-        assert!(matches!(reason, LlmErrorReason::ProviderInternal { status: 500, .. }));
+        assert!(matches!(
+            reason,
+            LlmErrorReason::ProviderInternal { status: 500, .. }
+        ));
     }
 
     #[test]
     fn test_classify_error_provider_internal_503() {
         let reason = classify_error(503, "Service unavailable");
-        assert!(matches!(reason, LlmErrorReason::ProviderInternal { status: 503, .. }));
+        assert!(matches!(
+            reason,
+            LlmErrorReason::ProviderInternal { status: 503, .. }
+        ));
     }
 
     #[test]
@@ -1109,7 +1168,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_unknown() {
-        assert_eq!(map_finish_reason("some_unknown_reason"), FinishReason::Unknown);
+        assert_eq!(
+            map_finish_reason("some_unknown_reason"),
+            FinishReason::Unknown
+        );
     }
 
     // ── Usage mapping ────────────────────────────────────────────
@@ -1287,7 +1349,11 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("create runtime");
         let result = rt.block_on(provider.get_model("nonexistent"));
         assert!(result.is_err());
-        if let Err(Error::ModelNotFound { provider_id, model_id }) = result {
+        if let Err(Error::ModelNotFound {
+            provider_id,
+            model_id,
+        }) = result
+        {
             assert_eq!(provider_id, "cloudflare");
             assert_eq!(model_id, "nonexistent");
         } else {
@@ -1451,8 +1517,12 @@ mod tests {
         let events = events_from_chat(event, &mut state);
         assert!(!events.is_empty());
         // Should include TextStart + TextDelta
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::TextStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::TextDelta { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::TextStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::TextDelta { .. })));
         assert!(state.text_started);
     }
 
@@ -1479,7 +1549,9 @@ mod tests {
         };
         let events = events_from_chat(event, &mut state);
         assert!(!events.is_empty());
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::ReasoningStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::ReasoningStart { .. })));
         assert!(events
             .iter()
             .any(|e| matches!(e, LlmEvent::ReasoningDelta { .. })));
@@ -1545,7 +1617,10 @@ mod tests {
             finished: false,
         };
         let events = events_from_chat(event, &mut state);
-        let finish_event = events.iter().find(|e| matches!(e, LlmEvent::Finish { .. })).unwrap();
+        let finish_event = events
+            .iter()
+            .find(|e| matches!(e, LlmEvent::Finish { .. }))
+            .unwrap();
         if let LlmEvent::Finish { usage, .. } = finish_event {
             assert_eq!(usage.as_ref().unwrap().input_tokens, Some(20));
             assert_eq!(usage.as_ref().unwrap().output_tokens, Some(10));

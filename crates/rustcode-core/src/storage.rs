@@ -159,11 +159,7 @@ impl Storage {
     ///
     /// # Errors
     /// Returns `Error::Io` or serialization/deserialization errors.
-    pub fn update_or_insert<T>(
-        &self,
-        key: &[&str],
-        f: impl FnOnce(&mut T),
-    ) -> Result<T>
+    pub fn update_or_insert<T>(&self, key: &[&str], f: impl FnOnce(&mut T)) -> Result<T>
     where
         T: serde::de::DeserializeOwned + serde::Serialize + Default,
     {
@@ -362,7 +358,7 @@ impl Database {
     /// same query pattern used throughout `packages/core/src/database/`.
     pub async fn query_row<T>(&self, sql: &str) -> Result<Option<T>>
     where
-        T: for<'r> sqlx::FromRow<'r, sqlx::SqliteRow> + Send + Unpin,
+        T: for<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> + Send + Unpin,
     {
         sqlx::query_as::<_, T>(sql)
             .fetch_optional(&self.pool)
@@ -861,13 +857,12 @@ mod tests {
         assert!(result.is_err(), "failing migration should return an error");
 
         // The transaction should have rolled back — table must NOT exist
-        let tables: Vec<(String,)> =
-            sqlx::query_as(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='this_should_rollback'",
-            )
-            .fetch_all(db.pool())
-            .await
-            .expect("query sqlite_master should succeed");
+        let tables: Vec<(String,)> = sqlx::query_as(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='this_should_rollback'",
+        )
+        .fetch_all(db.pool())
+        .await
+        .expect("query sqlite_master should succeed");
         assert!(
             tables.is_empty(),
             "this_should_rollback table should not exist after rollback"
@@ -1012,12 +1007,14 @@ mod tests {
         assert!(names.contains(&"message"), "message table should persist");
 
         // Data should persist
-        let (name,): (String,) =
-            sqlx::query_as("SELECT name FROM project WHERE id = 'persist-1'")
-                .fetch_one(db2.pool())
-                .await
-                .expect("query project should succeed");
-        assert_eq!(name, "persistent test", "data should persist across reopens");
+        let (name,): (String,) = sqlx::query_as("SELECT name FROM project WHERE id = 'persist-1'")
+            .fetch_one(db2.pool())
+            .await
+            .expect("query project should succeed");
+        assert_eq!(
+            name, "persistent test",
+            "data should persist across reopens"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

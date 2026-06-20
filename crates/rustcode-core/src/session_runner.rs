@@ -123,7 +123,8 @@ impl SessionRunner {
         let tool_defs = self.tool_registry.to_definitions();
         let mut messages = build_chat_messages(input, &system_prompt).await?;
         let input_clone = input.clone();
-        self.run_loop(provider, model, &mut messages, &tool_defs, &input_clone).await
+        self.run_loop(provider, model, &mut messages, &tool_defs, &input_clone)
+            .await
     }
 
     /// Run the tool loop starting from pre-built messages.
@@ -150,7 +151,8 @@ impl SessionRunner {
             variant: None,
             parts: vec![],
         };
-        self.run_loop(provider, model, messages, &tool_defs, &dummy_input).await
+        self.run_loop(provider, model, messages, &tool_defs, &dummy_input)
+            .await
     }
 
     /// Build the system prompt from instructions + tool descriptions.
@@ -192,17 +194,15 @@ impl SessionRunner {
 
             if iterations > self.max_iterations {
                 aborted = true;
-                abort_reason = Some(format!(
-                    "exceeded max iterations ({})",
-                    self.max_iterations
-                ));
+                abort_reason = Some(format!("exceeded max iterations ({})", self.max_iterations));
                 break;
             }
 
             if let Some((tool, count)) = detect_doom_loop(&tool_calls_made) {
                 aborted = true;
-                abort_reason =
-                    Some(format!("doom loop: tool '{tool}' called {count}x with same input"));
+                abort_reason = Some(format!(
+                    "doom loop: tool '{tool}' called {count}x with same input"
+                ));
                 break;
             }
 
@@ -212,7 +212,7 @@ impl SessionRunner {
                 Err(e) => {
                     let msg = e.to_string();
                     if is_context_overflow(&msg) {
-                        abort_reason = Some("context overflow during stream".to_string());
+                        let _ = "context overflow during stream";
                     }
                     return Err(e);
                 }
@@ -226,11 +226,20 @@ impl SessionRunner {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
-                        if let LlmEvent::TextDelta { text: ref delta, .. } = &event {
+                        if let LlmEvent::TextDelta {
+                            text: ref delta, ..
+                        } = &event
+                        {
                             step_text.push_str(delta);
                             final_text.push_str(delta);
                         }
-                        if let LlmEvent::ToolCall { ref id, ref name, ref input, .. } = &event {
+                        if let LlmEvent::ToolCall {
+                            ref id,
+                            ref name,
+                            ref input,
+                            ..
+                        } = &event
+                        {
                             has_tool_calls = true;
                             pending_tool_calls.insert(
                                 id.clone(),
@@ -281,7 +290,9 @@ impl SessionRunner {
 
             let mut assistant_parts: Vec<ContentPart> = Vec::new();
             if !step_text.is_empty() {
-                assistant_parts.push(ContentPart::Text { text: step_text.clone() });
+                assistant_parts.push(ContentPart::Text {
+                    text: step_text.clone(),
+                });
             }
             for tc in pending_tool_calls.values() {
                 assistant_parts.push(ContentPart::ToolCallPart {
@@ -569,13 +580,11 @@ mod tests {
                 format: None,
                 system: None,
                 variant: None,
-                parts: vec![PromptPart::Text(
-                    crate::session_prompt::PromptTextPart {
-                        id: None,
-                        text: "Hello, can you help me?".into(),
-                        synthetic: false,
-                    },
-                )],
+                parts: vec![PromptPart::Text(crate::session_prompt::PromptTextPart {
+                    id: None,
+                    text: "Hello, can you help me?".into(),
+                    synthetic: false,
+                })],
             };
 
             let messages = build_chat_messages(&input, "You are helpful.")
@@ -617,9 +626,7 @@ mod tests {
                 parts: vec![],
             };
 
-            let messages = build_chat_messages(&input, "Default system")
-                .await
-                .unwrap();
+            let messages = build_chat_messages(&input, "Default system").await.unwrap();
 
             assert_eq!(messages.len(), 2);
             match &messages[0] {

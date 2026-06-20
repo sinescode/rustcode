@@ -128,7 +128,11 @@ impl AisdkModelOptions {
 
     /// Insert a setting and return self for chaining.
     #[must_use]
-    pub fn with_setting(mut self, key: impl Into<String>, value: impl Into<serde_json::Value>) -> Self {
+    pub fn with_setting(
+        mut self,
+        key: impl Into<String>,
+        value: impl Into<serde_json::Value>,
+    ) -> Self {
         self.settings.insert(key.into(), value.into());
         self
     }
@@ -181,8 +185,14 @@ mod tests {
             cause: "API key not found".into(),
         };
         let msg = err.to_string();
-        assert!(msg.contains("openai"), "message should contain provider: {msg}");
-        assert!(msg.contains("API key not found"), "message should contain cause: {msg}");
+        assert!(
+            msg.contains("openai"),
+            "message should contain provider: {msg}"
+        );
+        assert!(
+            msg.contains("API key not found"),
+            "message should contain cause: {msg}"
+        );
     }
 
     #[test]
@@ -247,9 +257,7 @@ mod tests {
             Some(4096)
         );
         assert_eq!(
-            opts.settings
-                .get("temperature")
-                .and_then(|v| v.as_f64()),
+            opts.settings.get("temperature").and_then(|v| v.as_f64()),
             Some(1.0)
         );
     }
@@ -269,13 +277,13 @@ mod tests {
         let restored: AisdkModelOptions =
             serde_json::from_str(&json).expect("deserialize should succeed");
         assert_eq!(restored.name, "openai");
-        assert_eq!(restored.base_url.as_deref(), Some("https://api.openai.com/v1"));
+        assert_eq!(
+            restored.base_url.as_deref(),
+            Some("https://api.openai.com/v1")
+        );
         assert_eq!(restored.api_key.as_deref(), Some("sk-test"));
         assert_eq!(
-            restored
-                .settings
-                .get("top_p")
-                .and_then(|v| v.as_f64()),
+            restored.settings.get("top_p").and_then(|v| v.as_f64()),
             Some(0.95)
         );
     }

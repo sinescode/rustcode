@@ -296,10 +296,12 @@ pub fn is_ignored(filepath: &str, opts: Option<&IgnoreMatchOptions>) -> bool {
     }
 
     // Check file-level patterns.
-    let extra: &[String] = opts
-        .and_then(|o| o.extra.as_deref())
-        .unwrap_or(&[]);
-    for pattern in IGNORE_FILES.iter().map(|s| *s).chain(extra.iter().map(|s| s.as_str())) {
+    let extra: &[String] = opts.and_then(|o| o.extra.as_deref()).unwrap_or(&[]);
+    for pattern in IGNORE_FILES
+        .iter()
+        .map(|s| *s)
+        .chain(extra.iter().map(|s| s.as_str()))
+    {
         if glob_matches(pattern, filepath) {
             return true;
         }
@@ -715,7 +717,10 @@ pub fn read_file(root: &Path, input: &ReadInput) -> Result<Content, FileSystemEr
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `list()` method (lines 98–121).
-pub fn list_directory(root: &Path, input: Option<&ListInput>) -> Result<Vec<Entry>, FileSystemError> {
+pub fn list_directory(
+    root: &Path,
+    input: Option<&ListInput>,
+) -> Result<Vec<Entry>, FileSystemError> {
     let rel_path = input
         .and_then(|i| i.path.as_ref())
         .cloned()
@@ -723,7 +728,9 @@ pub fn list_directory(root: &Path, input: Option<&ListInput>) -> Result<Vec<Entr
     let absolute = resolve_safe(root, &rel_path)?;
     let metadata = std::fs::metadata(&absolute)?;
     if !metadata.is_dir() {
-        return Err(FileSystemError::NotADirectory(absolute.display().to_string()));
+        return Err(FileSystemError::NotADirectory(
+            absolute.display().to_string(),
+        ));
     }
 
     let mut entries: Vec<Entry> = Vec::new();
@@ -735,7 +742,11 @@ pub fn list_directory(root: &Path, input: Option<&ListInput>) -> Result<Vec<Entr
         let name = item.file_name().to_string_lossy().to_string();
 
         let (entry_type, mime, path_suffix) = if file_type.is_dir() {
-            (FileType::Directory, "application/x-directory".to_string(), format!("{name}/"))
+            (
+                FileType::Directory,
+                "application/x-directory".to_string(),
+                format!("{name}/"),
+            )
         } else if file_type.is_file() {
             let item_abs = item.path();
             (FileType::File, mime_type(&item_abs), name.clone())
@@ -764,12 +775,10 @@ pub fn list_directory(root: &Path, input: Option<&ListInput>) -> Result<Vec<Entr
     }
 
     // Sort: directories first, then alphabetically
-    entries.sort_by(|a, b| {
-        match (a.entry_type, b.entry_type) {
-            (FileType::Directory, FileType::File) => std::cmp::Ordering::Less,
-            (FileType::File, FileType::Directory) => std::cmp::Ordering::Greater,
-            _ => a.path.as_str().cmp(b.path.as_str()),
-        }
+    entries.sort_by(|a, b| match (a.entry_type, b.entry_type) {
+        (FileType::Directory, FileType::File) => std::cmp::Ordering::Less,
+        (FileType::File, FileType::Directory) => std::cmp::Ordering::Greater,
+        _ => a.path.as_str().cmp(b.path.as_str()),
     });
 
     Ok(entries)
@@ -782,15 +791,13 @@ pub fn list_directory(root: &Path, input: Option<&ListInput>) -> Result<Vec<Entr
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `find()` method.
-pub fn find_files(
-    root: &Path,
-    input: &FindInput,
-) -> Result<Vec<Entry>, FileSystemError> {
+pub fn find_files(root: &Path, input: &FindInput) -> Result<Vec<Entry>, FileSystemError> {
     let limit = input.limit.unwrap_or(50) as usize;
     let mut results: Vec<Entry> = Vec::new();
+    let added = std::cell::Cell::new(0usize);
 
-    walk_for_entries(root, root, &mut results, |entry| {
-        if results.len() >= limit {
+    walk_for_entries(root, root, &mut results, &|entry| {
+        if added.get() >= limit {
             return false;
         }
         // Type filter
@@ -804,7 +811,12 @@ pub fn find_files(
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        fuzzy_match(&input.query, file_name)
+        if fuzzy_match(&input.query, file_name) {
+            added.set(added.get() + 1);
+            true
+        } else {
+            false
+        }
     })?;
 
     Ok(results)
@@ -816,12 +828,10 @@ pub fn find_files(
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `glob()` method.
-pub fn glob_search(
-    root: &Path,
-    input: &GlobInput,
-) -> Result<Vec<Entry>, FileSystemError> {
+pub fn glob_search(root: &Path, input: &GlobInput) -> Result<Vec<Entry>, FileSystemError> {
     let limit = input.limit.unwrap_or(100) as usize;
     let mut results: Vec<Entry> = Vec::new();
+    let added = std::cell::Cell::new(0usize);
 
     let search_root = if let Some(ref rel_path) = input.path {
         resolve_safe(root, rel_path)?
@@ -833,11 +843,16 @@ pub fn glob_search(
         return Ok(results);
     }
 
-    walk_for_entries(root, &search_root, &mut results, |entry| {
-        if results.len() >= limit {
+    walk_for_entries(root, &search_root, &mut results, &|entry| {
+        if added.get() >= limit {
             return false;
         }
-        glob_matches(&input.pattern, entry.path.as_str())
+        if glob_matches(&input.pattern, entry.path.as_str()) {
+            added.set(added.get() + 1);
+            true
+        } else {
+            false
+        }
     })?;
 
     Ok(results)
@@ -850,10 +865,7 @@ pub fn glob_search(
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `grep()` method.
-pub fn grep_search(
-    root: &Path,
-    input: &GrepInput,
-) -> Result<Vec<Match>, FileSystemError> {
+pub fn grep_search(root: &Path, input: &GrepInput) -> Result<Vec<Match>, FileSystemError> {
     let limit = input.limit.unwrap_or(50) as usize;
     let re = regex::Regex::new(&input.pattern)
         .map_err(|e| FileSystemError::InvalidPattern(format!("regex error: {e}")))?;
@@ -871,7 +883,7 @@ pub fn grep_search(
 
     // Collect files to search (filtered by include pattern and ignore)
     let mut files: Vec<Entry> = Vec::new();
-    walk_for_entries(root, &search_root, &mut files, |entry| {
+    walk_for_entries(root, &search_root, &mut files, &|entry| {
         if entry.entry_type != FileType::File {
             return false;
         }
@@ -1024,7 +1036,7 @@ fn walk_for_entries(
     root: &Path,
     current: &Path,
     results: &mut Vec<Entry>,
-    predicate: impl Fn(&Entry) -> bool,
+    predicate: &dyn Fn(&Entry) -> bool,
 ) -> Result<(), FileSystemError> {
     if !current.is_dir() {
         return Ok(());
@@ -1555,14 +1567,8 @@ mod tests {
 
     #[test]
     fn glob_matches_deep_path() {
-        assert!(glob_matches(
-            "**/logs/**",
-            "logs/2024/01/error.txt"
-        ));
-        assert!(glob_matches(
-            "**/logs/**",
-            "deep/path/logs/something"
-        ));
+        assert!(glob_matches("**/logs/**", "logs/2024/01/error.txt"));
+        assert!(glob_matches("**/logs/**", "deep/path/logs/something"));
     }
 
     // ── Filesystem operations tests ───────────────────────────────────
@@ -1581,13 +1587,41 @@ mod tests {
         // Create test files
         std::fs::write(root.join("README.md"), "# Test Project\nHello world\n").unwrap();
         std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"test\"\n").unwrap();
-        std::fs::write(root.join("src/main.rs"), "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
-        std::fs::write(root.join("src/lib.rs"), "pub fn add(a: i32, b: i32) -> i32 { a + b }\n").unwrap();
-        std::fs::write(root.join("src/components/mod.rs"), "pub mod button;\npub mod input;\n").unwrap();
-        std::fs::write(root.join("src/components/button.rs"), "// TODO: implement button\n").unwrap();
-        std::fs::write(root.join("src/utils/helpers.rs"), "pub fn helper() -> bool { true }\n").unwrap();
-        std::fs::write(root.join("tests/integration.rs"), "#[test]\nfn it_works() {}\n").unwrap();
-        std::fs::write(root.join("node_modules/pkg/index.js"), "module.exports = {};\n").unwrap();
+        std::fs::write(
+            root.join("src/main.rs"),
+            "fn main() {\n    println!(\"hello\");\n}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/lib.rs"),
+            "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/components/mod.rs"),
+            "pub mod button;\npub mod input;\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/components/button.rs"),
+            "// TODO: implement button\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("src/utils/helpers.rs"),
+            "pub fn helper() -> bool { true }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("tests/integration.rs"),
+            "#[test]\nfn it_works() {}\n",
+        )
+        .unwrap();
+        std::fs::write(
+            root.join("node_modules/pkg/index.js"),
+            "module.exports = {};\n",
+        )
+        .unwrap();
 
         (dir, root)
     }
@@ -1634,7 +1668,7 @@ mod tests {
         assert!(paths.contains(&"README.md"));
         assert!(paths.contains(&"Cargo.toml"));
         assert!(paths.contains(&"src/")); // directories get trailing slash
-        // node_modules should be ignored
+                                          // node_modules should be ignored
         assert!(!paths.iter().any(|p| p.contains("node_modules")));
     }
 
@@ -1757,7 +1791,9 @@ mod tests {
         let matches = grep_search(&root, &input).expect("grep search");
         assert!(!matches.is_empty());
         // The button.rs file contains "TODO"
-        assert!(matches.iter().any(|m| m.entry.path.as_str().contains("button.rs")));
+        assert!(matches
+            .iter()
+            .any(|m| m.entry.path.as_str().contains("button.rs")));
     }
 
     #[test]
@@ -1864,7 +1900,9 @@ mod tests {
         let (_dir, root) = setup_test_fs();
         let entries = list_directory(&root, None).expect("list directory");
         // First entries should be directories
-        let first_dir_idx = entries.iter().position(|e| e.entry_type == FileType::Directory);
+        let first_dir_idx = entries
+            .iter()
+            .position(|e| e.entry_type == FileType::Directory);
         let first_file_idx = entries.iter().position(|e| e.entry_type == FileType::File);
         if let (Some(d_idx), Some(f_idx)) = (first_dir_idx, first_file_idx) {
             assert!(d_idx < f_idx, "directories should come before files");

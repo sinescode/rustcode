@@ -21,7 +21,8 @@ use std::pin::Pin;
 
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
-    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider, ToolDefinition, Usage,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
@@ -202,6 +203,7 @@ struct BedrockCompletionTokenDetails {
 
 // ── Bedrock Provider ───────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct BedrockProvider {
     api_key: String,
     secret_key: String,
@@ -235,7 +237,14 @@ impl BedrockProvider {
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
-        Ok(Self { api_key, secret_key, region, base_url, http_client, models: build_model_catalog() })
+        Ok(Self {
+            api_key,
+            secret_key,
+            region,
+            base_url,
+            http_client,
+            models: build_model_catalog(),
+        })
     }
 
     fn chat_url(&self) -> String {
@@ -260,8 +269,8 @@ impl BedrockProvider {
                     for part in content_parts(content) {
                         match part {
                             ContentPart::Text { text } => text_parts.push_str(text),
-                            ContentPart::Image { image } => media_parts.push(
-                                BedrockUserContentPart::ImageUrl {
+                            ContentPart::Image { image } => {
+                                media_parts.push(BedrockUserContentPart::ImageUrl {
                                     image_url: BedrockImageUrl {
                                         url: if image.starts_with("data:") {
                                             image.clone()
@@ -269,8 +278,8 @@ impl BedrockProvider {
                                             format!("data:image/png;base64,{image}")
                                         },
                                     },
-                                },
-                            ),
+                                })
+                            }
                             _ => {}
                         }
                     }
@@ -299,7 +308,10 @@ impl BedrockProvider {
                         match part {
                             ContentPart::Text { text: t } => text.push_str(t),
                             ContentPart::Reasoning { text: r, .. } => reasoning.push_str(r),
-                            ContentPart::ToolCallPart { tool_call_id, tool_name } => {
+                            ContentPart::ToolCallPart {
+                                tool_call_id,
+                                tool_name,
+                            } => {
                                 tool_calls.push(BedrockAssistantToolCall {
                                     id: tool_call_id.clone(),
                                     call_type: "function".into(),
@@ -328,15 +340,15 @@ impl BedrockProvider {
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult {
-                            tool_call_id, output, ..
-                        } = part
-                        {
-                            result.push(BedrockChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        let crate::provider::ToolResultPart::ToolResult {
+                            tool_call_id,
+                            output,
+                            ..
+                        } = part;
+                        result.push(BedrockChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -415,16 +427,14 @@ fn map_usage(u: &BedrockUsage) -> Usage {
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
     }
 }
 
-fn events_from_chat(
-    event: BedrockChatEvent,
-    state: &mut ChatStreamState,
-) -> Vec<LlmEvent> {
+fn events_from_chat(event: BedrockChatEvent, state: &mut ChatStreamState) -> Vec<LlmEvent> {
     let mut events = Vec::new();
     let usage = event.usage.as_ref().map(map_usage).or(state.usage.clone());
     let choice = event.choices.first();
@@ -461,9 +471,11 @@ fn events_from_chat(
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state
-                        .tool_stream
-                        .set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
@@ -504,7 +516,7 @@ fn events_from_chat(
         });
         events.push(LlmEvent::Finish {
             reason,
-            usage,
+            usage: usage.clone(),
             provider_metadata: None,
         });
         state.finished = true;
@@ -765,37 +777,37 @@ impl Provider for BedrockProvider {
                 state,
                 VecDeque::new(),
             ),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() {
-                        return Some((ev, (sse, state, buffer)));
-                    }
-                    if state.finished {
-                        return None;
-                    }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) =
-                                serde_json::from_str::<BedrockChatEvent>(&se.data)
-                            {
-                                for ev in events_from_chat(oe, &mut state) {
-                                    buffer.push_back(Ok(ev));
-                                }
-                                if let Some(ev) = buffer.pop_front() {
-                                    return Some((ev, (sse, state, buffer)));
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
+                        }
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) = serde_json::from_str::<BedrockChatEvent>(&se.data) {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Bedrock SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::ResponseStream(format!("Bedrock SSE: {e}"))),
-                                (sse, state, buffer),
-                            ));
-                        }
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
@@ -881,11 +893,20 @@ mod tests {
     fn test_model_catalog_context_windows() {
         let models = build_model_catalog();
         // Claude models: 200_000
-        let sonnet4 = models.iter().find(|m| m.id == "claude-sonnet-4-20250514").unwrap();
+        let sonnet4 = models
+            .iter()
+            .find(|m| m.id == "claude-sonnet-4-20250514")
+            .unwrap();
         assert_eq!(sonnet4.limit.context, 200_000);
-        let opus4 = models.iter().find(|m| m.id == "claude-opus-4-20250514").unwrap();
+        let opus4 = models
+            .iter()
+            .find(|m| m.id == "claude-opus-4-20250514")
+            .unwrap();
         assert_eq!(opus4.limit.context, 200_000);
-        let haiku4 = models.iter().find(|m| m.id == "claude-haiku-4-20250514").unwrap();
+        let haiku4 = models
+            .iter()
+            .find(|m| m.id == "claude-haiku-4-20250514")
+            .unwrap();
         assert_eq!(haiku4.limit.context, 200_000);
         // Llama: 128_000
         let llama = models.iter().find(|m| m.id == "llama-4-maverick").unwrap();
@@ -899,7 +920,11 @@ mod tests {
     fn test_model_catalog_output_tokens() {
         let models = build_model_catalog();
         // Claude models: 8_192
-        for id in &["claude-sonnet-4-20250514", "claude-opus-4-20250514", "claude-haiku-4-20250514"] {
+        for id in &[
+            "claude-sonnet-4-20250514",
+            "claude-opus-4-20250514",
+            "claude-haiku-4-20250514",
+        ] {
             let m = models.iter().find(|m| m.id == *id).unwrap();
             assert_eq!(m.limit.output, 8_192, "model {id} output mismatch");
         }
@@ -914,7 +939,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_claude_sonnet() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "claude-sonnet-4-20250514").expect("claude-sonnet-4 not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "claude-sonnet-4-20250514")
+            .expect("claude-sonnet-4 not found");
         assert!(m.capabilities.temperature);
         assert!(m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -925,7 +953,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_claude_opus() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "claude-opus-4-20250514").expect("claude-opus-4 not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "claude-opus-4-20250514")
+            .expect("claude-opus-4 not found");
         assert!(m.capabilities.temperature);
         assert!(m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -936,7 +967,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_claude_haiku() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "claude-haiku-4-20250514").expect("claude-haiku-4 not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "claude-haiku-4-20250514")
+            .expect("claude-haiku-4 not found");
         assert!(m.capabilities.temperature);
         assert!(!m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -947,7 +981,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_llama() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "llama-4-maverick").expect("llama-4-maverick not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "llama-4-maverick")
+            .expect("llama-4-maverick not found");
         assert!(m.capabilities.temperature);
         assert!(!m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -958,7 +995,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_titan() {
         let models = build_model_catalog();
-        let m = models.iter().find(|m| m.id == "titan-text").expect("titan-text not found");
+        let m = models
+            .iter()
+            .find(|m| m.id == "titan-text")
+            .expect("titan-text not found");
         assert!(m.capabilities.temperature);
         assert!(!m.capabilities.reasoning);
         assert!(m.capabilities.toolcall);
@@ -969,11 +1009,20 @@ mod tests {
     #[test]
     fn test_model_catalog_families() {
         let models = build_model_catalog();
-        let sonnet = models.iter().find(|m| m.id == "claude-sonnet-4-20250514").unwrap();
+        let sonnet = models
+            .iter()
+            .find(|m| m.id == "claude-sonnet-4-20250514")
+            .unwrap();
         assert_eq!(sonnet.family.as_deref(), Some("claude"));
-        let opus = models.iter().find(|m| m.id == "claude-opus-4-20250514").unwrap();
+        let opus = models
+            .iter()
+            .find(|m| m.id == "claude-opus-4-20250514")
+            .unwrap();
         assert_eq!(opus.family.as_deref(), Some("claude"));
-        let haiku = models.iter().find(|m| m.id == "claude-haiku-4-20250514").unwrap();
+        let haiku = models
+            .iter()
+            .find(|m| m.id == "claude-haiku-4-20250514")
+            .unwrap();
         assert_eq!(haiku.family.as_deref(), Some("claude"));
         let llama = models.iter().find(|m| m.id == "llama-4-maverick").unwrap();
         assert_eq!(llama.family.as_deref(), Some("llama"));
@@ -999,7 +1048,10 @@ mod tests {
     #[test]
     fn test_get_model_by_id() {
         let models = build_model_catalog();
-        let sonnet = models.iter().find(|m| m.id == "claude-sonnet-4-20250514").unwrap();
+        let sonnet = models
+            .iter()
+            .find(|m| m.id == "claude-sonnet-4-20250514")
+            .unwrap();
         assert_eq!(sonnet.id, "claude-sonnet-4-20250514");
         assert_eq!(sonnet.name, "Claude Sonnet 4");
     }
@@ -1086,10 +1138,7 @@ mod tests {
 
     #[test]
     fn test_classify_error_context_overflow() {
-        let reason = classify_error(
-            400,
-            "This input exceeds the context window of the model",
-        );
+        let reason = classify_error(400, "This input exceeds the context window of the model");
         assert!(matches!(
             reason,
             LlmErrorReason::InvalidRequest {
@@ -1102,13 +1151,19 @@ mod tests {
     #[test]
     fn test_classify_error_provider_internal_500() {
         let reason = classify_error(500, "Internal server error");
-        assert!(matches!(reason, LlmErrorReason::ProviderInternal { status: 500, .. }));
+        assert!(matches!(
+            reason,
+            LlmErrorReason::ProviderInternal { status: 500, .. }
+        ));
     }
 
     #[test]
     fn test_classify_error_provider_internal_503() {
         let reason = classify_error(503, "Service unavailable");
-        assert!(matches!(reason, LlmErrorReason::ProviderInternal { status: 503, .. }));
+        assert!(matches!(
+            reason,
+            LlmErrorReason::ProviderInternal { status: 503, .. }
+        ));
     }
 
     #[test]
@@ -1159,7 +1214,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_unknown() {
-        assert_eq!(map_finish_reason("some_unknown_reason"), FinishReason::Unknown);
+        assert_eq!(
+            map_finish_reason("some_unknown_reason"),
+            FinishReason::Unknown
+        );
     }
 
     // ── Usage mapping ────────────────────────────────────────────
@@ -1240,7 +1298,10 @@ mod tests {
             "https://bedrock-runtime.us-east-1.amazonaws.com/".into(),
         )
         .expect("create provider");
-        assert_eq!(provider.chat_url(), "https://bedrock-runtime.us-east-1.amazonaws.com/chat/completions");
+        assert_eq!(
+            provider.chat_url(),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/chat/completions"
+        );
     }
 
     #[test]
@@ -1252,7 +1313,10 @@ mod tests {
             "https://bedrock-runtime.us-east-1.amazonaws.com".into(),
         )
         .expect("create provider");
-        assert_eq!(provider.chat_url(), "https://bedrock-runtime.us-east-1.amazonaws.com/chat/completions");
+        assert_eq!(
+            provider.chat_url(),
+            "https://bedrock-runtime.us-east-1.amazonaws.com/chat/completions"
+        );
     }
 
     // ── Provider trait methods ───────────────────────────────────
@@ -1324,7 +1388,11 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("create runtime");
         let result = rt.block_on(provider.get_model("nonexistent"));
         assert!(result.is_err());
-        if let Err(Error::ModelNotFound { provider_id, model_id }) = result {
+        if let Err(Error::ModelNotFound {
+            provider_id,
+            model_id,
+        }) = result
+        {
             assert_eq!(provider_id, "bedrock");
             assert_eq!(model_id, "nonexistent");
         } else {
@@ -1484,8 +1552,12 @@ mod tests {
         };
         let events = events_from_chat(event, &mut state);
         assert!(!events.is_empty());
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::TextStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::TextDelta { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::TextStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::TextDelta { .. })));
         assert!(state.text_started);
     }
 
@@ -1512,7 +1584,9 @@ mod tests {
         };
         let events = events_from_chat(event, &mut state);
         assert!(!events.is_empty());
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::ReasoningStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::ReasoningStart { .. })));
         assert!(events
             .iter()
             .any(|e| matches!(e, LlmEvent::ReasoningDelta { .. })));

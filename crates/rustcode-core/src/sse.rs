@@ -71,9 +71,9 @@ pub const MAX_SSE_EVENT_SIZE: usize = 1024 * 1024;
 pub fn parse_sse_stream(
     body: reqwest::Response,
 ) -> impl Stream<Item = Result<SseEvent, SseError>> + Send + Unpin {
-    let byte_stream = body.bytes_stream().map(|result| {
-        result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
-    });
+    let byte_stream = body
+        .bytes_stream()
+        .map(|result| result.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)));
 
     let reader = StreamReader::new(byte_stream);
     let lines = tokio_util::io::ReaderStream::new(reader);
@@ -128,11 +128,11 @@ where
                     // Check for SSE event boundary: a double newline
                     // SSE events are separated by "\n\n"
                     if let Some(pos) = find_double_newline(&self.buffer) {
-                        let event_block = &self.buffer[..pos];
+                        let block_bytes = self.buffer[..pos].to_vec();
                         let remainder = self.buffer[pos + 2..].to_vec();
 
                         // Parse the event block (lines joined by \n)
-                        if let Ok(block_str) = std::str::from_utf8(event_block) {
+                        if let Ok(block_str) = std::str::from_utf8(&block_bytes) {
                             self.parse_event_block(block_str);
                         }
 
@@ -144,11 +144,7 @@ where
                         }
 
                         // Check for done sentinel
-                        if self
-                            .current_data
-                            .trim()
-                            .eq_ignore_ascii_case("[DONE]")
-                        {
+                        if self.current_data.trim().eq_ignore_ascii_case("[DONE]") {
                             self.done = true;
                             // Yield the done event
                             let event = self.take_event().unwrap_or(SseEvent {
@@ -174,7 +170,8 @@ where
                 std::task::Poll::Ready(None) => {
                     // Stream ended — flush any remaining event
                     if !self.buffer.is_empty() || !self.current_data.is_empty() {
-                        if let Ok(block_str) = std::str::from_utf8(&self.buffer) {
+                        let block_bytes = self.buffer.clone();
+                        if let Ok(block_str) = std::str::from_utf8(&block_bytes) {
                             if !block_str.trim().is_empty() {
                                 self.parse_event_block(block_str);
                             }
@@ -291,7 +288,7 @@ mod tests {
             done: false,
         };
 
-        let events: Vec<SseEvent> = futures::StreamExt::collect(stream)
+        let events: Vec<SseEvent> = futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
             .await
             .into_iter()
             .filter_map(|r| r.ok())
@@ -317,7 +314,7 @@ mod tests {
             done: false,
         };
 
-        let events: Vec<SseEvent> = futures::StreamExt::collect(stream)
+        let events: Vec<SseEvent> = futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
             .await
             .into_iter()
             .filter_map(|r| r.ok())
@@ -326,10 +323,7 @@ mod tests {
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].event_type.as_deref(), Some("message_start"));
         assert_eq!(events[0].data, r#"{"type":"start"}"#);
-        assert_eq!(
-            events[1].event_type.as_deref(),
-            Some("content_block_delta")
-        );
+        assert_eq!(events[1].event_type.as_deref(), Some("content_block_delta"));
         assert_eq!(events[1].data, r#"{"text":"hi"}"#);
     }
 
@@ -347,7 +341,7 @@ mod tests {
             done: false,
         };
 
-        let events: Vec<SseEvent> = futures::StreamExt::collect(stream)
+        let events: Vec<SseEvent> = futures::StreamExt::collect::<Vec<Result<SseEvent, SseError>>>(stream)
             .await
             .into_iter()
             .filter_map(|r| r.ok())
@@ -358,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test]
-    fn test_sse_event_is_done() {
+    async fn test_sse_event_is_done() {
         let event = SseEvent {
             event_type: None,
             data: "[DONE]".into(),
@@ -377,7 +371,7 @@ mod tests {
     }
 
     #[tokio::test]
-    fn test_find_double_newline() {
+    async fn test_find_double_newline() {
         assert_eq!(find_double_newline(b"hello\n\nworld"), Some(5));
         assert_eq!(find_double_newline(b"no double newline"), None);
         assert_eq!(find_double_newline(b"\n\nstart"), Some(0));

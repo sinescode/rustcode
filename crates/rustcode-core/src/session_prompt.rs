@@ -4,8 +4,8 @@
 //! - `packages/core/src/session/prompt.ts` (lines 1–47)
 //! - `packages/opencode/src/session/prompt.ts` (lines 1594–1723)
 
-use serde::{Deserialize, Serialize};
 use crate::session_info::{ModelRef, SessionId};
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Prompt Input
@@ -264,11 +264,7 @@ impl SessionPromptBuilder {
     }
 
     /// Add instructions from a plugin definition.
-    pub fn add_plugin_instructions(
-        &mut self,
-        plugin_name: &str,
-        instructions: &[String],
-    ) {
+    pub fn add_plugin_instructions(&mut self, plugin_name: &str, instructions: &[String]) {
         self.add_instruction(format!("## Plugin: {plugin_name}"));
         for instr in instructions {
             self.add_instruction(instr.as_str());
@@ -346,10 +342,7 @@ impl SessionPromptBuilder {
                     result.push(format!("[Agent: {}]", a.name));
                 }
                 PromptPart::Subtask(s) => {
-                    result.push(format!(
-                        "[Subtask: {} — {}]",
-                        s.agent, s.description
-                    ));
+                    result.push(format!("[Subtask: {} — {}]", s.agent, s.description));
                 }
             }
         }
@@ -611,10 +604,13 @@ Never use unwrap.
     #[test]
     fn test_prompt_builder_plugin_instructions() {
         let mut builder = SessionPromptBuilder::new();
-        builder.add_plugin_instructions("my-plugin", &[
-            "Use this plugin for database access.".into(),
-            "Always sanitize inputs.".into(),
-        ]);
+        builder.add_plugin_instructions(
+            "my-plugin",
+            &[
+                "Use this plugin for database access.".into(),
+                "Always sanitize inputs.".into(),
+            ],
+        );
 
         let instructions = builder.instructions();
         assert_eq!(instructions.len(), 3); // header + 2 instructions
@@ -649,13 +645,11 @@ Never use unwrap.
             format: None,
             system: None,
             variant: None,
-            parts: vec![
-                PromptPart::Text(PromptTextPart {
-                    id: None,
-                    text: "Fix the bug in main.rs".into(),
-                    synthetic: false,
-                }),
-            ],
+            parts: vec![PromptPart::Text(PromptTextPart {
+                id: None,
+                text: "Fix the bug in main.rs".into(),
+                synthetic: false,
+            })],
         };
 
         let result = builder.build_prompt(&input, None, &[]);

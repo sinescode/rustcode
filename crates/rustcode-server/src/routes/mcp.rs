@@ -5,15 +5,15 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use axum::routing::{delete, get, post};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{info, warn};
 
 use crate::server::AppState;
-use rustcode_core::mcp::{McpServerConfig, McpServerRegistry, sanitize_name};
+use rustcode_core::mcp::{sanitize_name, McpServerConfig, McpServerRegistry};
 
 #[derive(Debug, Deserialize)]
 pub struct AddMcpPayload {
@@ -29,39 +29,56 @@ pub struct AuthCallbackPayload {
 /// Build the MCP routes, wiring the persistent registry into the router.
 pub fn mcp_routes(state: Arc<AppState>) -> Router {
     // A single persistent registry shared across all MCP route handlers.
-    let mcp_registry: Arc<McpServerRegistry> =
-        Arc::new(McpServerRegistry::new());
+    let mcp_registry: Arc<McpServerRegistry> = Arc::new(McpServerRegistry::new());
 
     Router::new()
-        .route("/mcp", get({
-            let store = mcp_registry.clone();
-            move |state, query| mcp_status(store, state, query)
-        }).post({
-            let store = mcp_registry.clone();
-            move |state, payload| add_mcp(store, state, payload)
-        }))
-        .route("/mcp/{name}/auth", post({
-            let store = mcp_registry.clone();
-            move |path, state| mcp_auth_start(store, path, state)
-        }).delete({
-            let store = mcp_registry.clone();
-            move |path, state| mcp_auth_remove(store, path, state)
-        }))
-        .route("/mcp/{name}/auth/callback", post({
-            let store = mcp_registry.clone();
-            move |path, state, payload| mcp_auth_callback(store, path, state, payload)
-        }))
-        .route("/mcp/{name}/auth/authenticate", post({
-            move |path, state| mcp_auth_authenticate(path, state)
-        }))
-        .route("/mcp/{name}/connect", post({
-            let store = mcp_registry.clone();
-            move |path, state| mcp_connect(store, path, state)
-        }))
-        .route("/mcp/{name}/disconnect", post({
-            let store = mcp_registry;
-            move |path, state| mcp_disconnect(store, path, state)
-        }))
+        .route(
+            "/mcp",
+            get({
+                let store = mcp_registry.clone();
+                move |state, query| mcp_status(store, state, query)
+            })
+            .post({
+                let store = mcp_registry.clone();
+                move |state, payload| add_mcp(store, state, payload)
+            }),
+        )
+        .route(
+            "/mcp/{name}/auth",
+            post({
+                let store = mcp_registry.clone();
+                move |path, state| mcp_auth_start(store, path, state)
+            })
+            .delete({
+                let store = mcp_registry.clone();
+                move |path, state| mcp_auth_remove(store, path, state)
+            }),
+        )
+        .route(
+            "/mcp/{name}/auth/callback",
+            post({
+                let store = mcp_registry.clone();
+                move |path, state, payload| mcp_auth_callback(store, path, state, payload)
+            }),
+        )
+        .route(
+            "/mcp/{name}/auth/authenticate",
+            post(move |path, state| mcp_auth_authenticate(path, state)),
+        )
+        .route(
+            "/mcp/{name}/connect",
+            post({
+                let store = mcp_registry.clone();
+                move |path, state| mcp_connect(store, path, state)
+            }),
+        )
+        .route(
+            "/mcp/{name}/disconnect",
+            post({
+                let store = mcp_registry;
+                move |path, state| mcp_disconnect(store, path, state)
+            }),
+        )
         .with_state(state)
 }
 
@@ -96,7 +113,7 @@ async fn add_mcp(
                 Json(serde_json::json!({
                     "error": format!("invalid MCP server type: '{bad}' — expected 'local' or 'remote'")
                 })),
-            );
+            ).into_response();
         }
         None => {
             return (
@@ -104,7 +121,8 @@ async fn add_mcp(
                 Json(serde_json::json!({
                     "error": "MCP server config must have a 'type' field"
                 })),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -117,21 +135,22 @@ async fn add_mcp(
                 Json(serde_json::json!({
                     "error": format!("invalid MCP server config: {e}")
                 })),
-            );
+            )
+                .into_response();
         }
     };
 
     // Additional validation based on type
     match config_type.as_str() {
         "local" => {
-            if config.command.is_none() || config.command.as_ref().is_some_and(|c| c.is_empty())
-            {
+            if config.command.is_none() || config.command.as_ref().is_some_and(|c| c.is_empty()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
                         "error": "local MCP server config must have a non-empty 'command' field"
                     })),
-                );
+                )
+                    .into_response();
             }
         }
         "remote" => {
@@ -141,7 +160,8 @@ async fn add_mcp(
                     Json(serde_json::json!({
                         "error": "remote MCP server config must have a 'url' field"
                     })),
-                );
+                )
+                    .into_response();
             }
         }
         _ => unreachable!("type already validated"),
@@ -154,6 +174,7 @@ async fn add_mcp(
         "added": true,
         "name": name,
     }))
+    .into_response()
 }
 
 /// `POST /mcp/{name}/connect` — connect to an MCP server, discover its
@@ -181,7 +202,8 @@ async fn mcp_connect(
                 Json(serde_json::json!({
                     "error": format!("failed to connect to MCP server '{name}': {e}")
                 })),
-            );
+            )
+                .into_response();
         }
     };
 
@@ -201,6 +223,7 @@ async fn mcp_connect(
         "tools": tools,
         "tools_registered": tools_registered,
     }))
+    .into_response()
 }
 
 /// `POST /mcp/{name}/disconnect` — disconnect from an MCP server, kill
@@ -218,14 +241,13 @@ async fn mcp_disconnect(
     // 2. Disconnect via the registry (kills subprocess, cleans up state)
     match store.disconnect(&name).await {
         Ok(()) => {
-            info!(
-                "MCP: disconnected from '{name}' — unregistered {unregistered} tools"
-            );
+            info!("MCP: disconnected from '{name}' — unregistered {unregistered} tools");
             Json(serde_json::json!({
                 "disconnected": true,
                 "name": name,
                 "tools_unregistered": unregistered,
             }))
+            .into_response()
         }
         Err(e) => {
             warn!("MCP: error disconnecting from '{name}': {e}");
@@ -235,6 +257,7 @@ async fn mcp_disconnect(
                     "error": format!("failed to disconnect MCP server '{name}': {e}")
                 })),
             )
+                .into_response()
         }
     }
 }

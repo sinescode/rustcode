@@ -49,11 +49,11 @@ impl ToolStreamAccumulator {
     /// Called when the provider signals a new tool use block has started.
     /// The `id` and `name` may be partial at this point; they can be updated
     /// by subsequent calls to `set_identity`.
-    pub fn start(&mut self, key: u64, name: String, id: ToolCallId) {
+    pub fn start(&mut self, key: u64, name: impl AsRef<str>, id: ToolCallId) {
         self.tools.insert(
             key,
             Accumulator {
-                name,
+                name: name.as_ref().to_string(),
                 id,
                 json_text: String::new(),
                 content_block_id: None,
@@ -65,9 +65,9 @@ impl ToolStreamAccumulator {
     ///
     /// Some protocols (OpenAI Chat) deliver the tool name/id on the first delta,
     /// not on a separate start event.
-    pub fn set_identity(&mut self, key: u64, name: String, id: ToolCallId) {
+    pub fn set_identity(&mut self, key: u64, name: impl AsRef<str>, id: ToolCallId) {
         if let Some(acc) = self.tools.get_mut(&key) {
-            acc.name = name;
+            acc.name = name.as_ref().to_string();
             acc.id = id;
         } else {
             self.start(key, name, id);
@@ -155,7 +155,7 @@ mod tests {
     #[test]
     fn test_start_and_finish_simple() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "bash".into(), "toolu_01".into());
+        acc.start(0, "bash", "toolu_01".to_string());
         acc.append(0, r#"{"command":"#);
         acc.append(0, r#"ls"}"#);
 
@@ -175,7 +175,7 @@ mod tests {
     #[test]
     fn test_finish_empty_json() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "read".into(), "toolu_02".into());
+        acc.start(0, "read", "toolu_02".to_string());
         // No append calls
 
         let event = acc.finish(0).unwrap();
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn test_append_returns_delta_event() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "grep".into(), "toolu_03".into());
+        acc.start(0, "grep", "toolu_03".to_string());
 
         let delta = acc.append(0, r#"{"pattern":"#);
         assert!(delta.is_some());
@@ -203,9 +203,9 @@ mod tests {
     #[test]
     fn test_finish_all() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "bash".into(), "t1".into());
+        acc.start(0, "bash", "t1".to_string());
         acc.append(0, r#"{"cmd":"ls"}"#);
-        acc.start(1, "read".into(), "t2".into());
+        acc.start(1, "read", "t2".to_string());
         acc.append(1, r#"{"path":"/tmp"}"#);
 
         let events = acc.finish_all();
@@ -231,11 +231,11 @@ mod tests {
         assert!(!acc.has_pending());
         assert_eq!(acc.pending_count(), 0);
 
-        acc.start(0, "bash".into(), "t1".into());
+        acc.start(0, "bash", "t1".to_string());
         assert!(acc.has_pending());
         assert_eq!(acc.pending_count(), 1);
 
-        acc.start(1, "read".into(), "t2".into());
+        acc.start(1, "read", "t2".to_string());
         assert_eq!(acc.pending_count(), 2);
 
         acc.finish(0);
@@ -245,8 +245,8 @@ mod tests {
     #[test]
     fn test_set_identity_existing() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "unknown".into(), "t_unknown".into());
-        acc.set_identity(0, "bash".into(), "toolu_01".into());
+        acc.start(0, "unknown", "t_unknown".to_string());
+        acc.set_identity(0, "bash", "toolu_01".to_string());
 
         acc.append(0, r#"{"cmd":"pwd"}"#);
         let event = acc.finish(0).unwrap();
@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn test_set_identity_new() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.set_identity(5, "grep".into(), "t_grep".into());
+        acc.set_identity(5, "grep", "t_grep".to_string());
         assert_eq!(acc.pending_count(), 1);
         assert_eq!(acc.name(5), Some("grep"));
     }
@@ -269,7 +269,7 @@ mod tests {
     #[test]
     fn test_finish_malformed_json() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "bash".into(), "t1".into());
+        acc.start(0, "bash", "t1".to_string());
         acc.append(0, "{bad json that can't be parsed");
 
         let event = acc.finish(0).unwrap();
@@ -284,7 +284,7 @@ mod tests {
     #[test]
     fn test_content_block_id() {
         let mut acc = ToolStreamAccumulator::new();
-        acc.start(0, "bash".into(), "t1".into());
+        acc.start(0, "bash", "t1".to_string());
         acc.set_content_block_id(0, "bdrk_01".into());
 
         // The content_block_id is internal — verify through finish output

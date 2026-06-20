@@ -307,7 +307,8 @@ impl ModelSelectorState {
             }
 
             KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             }
             | KeyEvent {
                 code: KeyCode::Char('j'),
@@ -413,7 +414,12 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 
-    let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+    let dialog_area = Rect::new(
+        area.x + dialog_x,
+        area.y + dialog_y,
+        dialog_width,
+        dialog_height,
+    );
 
     f.render_widget(Clear, dialog_area);
 
@@ -431,8 +437,8 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(2),  // Search bar
-            Constraint::Min(3),     // List + metadata
+            Constraint::Length(2), // Search bar
+            Constraint::Min(3),    // List + metadata
         ])
         .split(inner);
 
@@ -458,13 +464,11 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
 
     let search_block = Block::default()
         .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(
-            if state.search_focused {
-                Color::Yellow
-            } else {
-                Color::DarkGray
-            },
-        ));
+        .border_style(Style::default().fg(if state.search_focused {
+            Color::Yellow
+        } else {
+            Color::DarkGray
+        }));
     let search_inner = search_block.inner(chunks[0]);
     f.render_widget(search_block, chunks[0]);
     f.render_widget(Paragraph::new(Line::from(search_text)), search_inner);
@@ -472,10 +476,7 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
     // ── List + metadata ────────────────────────────────────────
     let list_cols = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(55),
-            Constraint::Percentage(45),
-        ])
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(chunks[1]);
 
     // ── Left: Model list ───────────────────────────────────────
@@ -487,12 +488,8 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
             list_cols[0],
         );
     } else {
-        let display_entries: Vec<(usize, &ModelListEntry)> = state
-            .entries
-            .iter()
-            .enumerate()
-            .take(MAX_DISPLAY)
-            .collect();
+        let display_entries: Vec<(usize, &ModelListEntry)> =
+            state.entries.iter().enumerate().take(MAX_DISPLAY).collect();
 
         let items: Vec<ListItem> = display_entries
             .iter()
@@ -506,7 +503,8 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
                         model_count,
                         ..
                     } => {
-                        let is_current = state.current_provider.as_deref() == Some(provider_id.as_str());
+                        let is_current =
+                            state.current_provider.as_deref() == Some(provider_id.as_str());
                         let line = Line::from(vec![
                             Span::styled(
                                 if is_selected { " ▶ " } else { "   " },
@@ -519,9 +517,17 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
                             Span::styled(
                                 provider_name,
                                 Style::default()
-                                    .fg(if is_selected { Color::Black } else { Color::Cyan })
+                                    .fg(if is_selected {
+                                        Color::Black
+                                    } else {
+                                        Color::Cyan
+                                    })
                                     .add_modifier(Modifier::BOLD)
-                                    .bg(if is_selected { Color::Yellow } else { Color::Reset }),
+                                    .bg(if is_selected {
+                                        Color::Yellow
+                                    } else {
+                                        Color::Reset
+                                    }),
                             ),
                             Span::raw("  "),
                             Span::styled(
@@ -532,11 +538,10 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
                         ListItem::new(line)
                     }
                     ModelListEntry::Model {
-                        provider_id,
-                        model,
-                        ..
+                        provider_id, model, ..
                     } => {
-                        let is_current = state.current_provider.as_deref() == Some(provider_id.as_str())
+                        let is_current = state.current_provider.as_deref()
+                            == Some(provider_id.as_str())
                             && state.current_model.as_deref() == Some(model.id.as_str());
 
                         let row_style = if is_selected {
@@ -552,7 +557,7 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
                         };
 
                         let name = &model.name;
-                        let context = Self::format_context_size(model.limit.context);
+                        let context = ModelSelectorState::format_context_size(model.limit.context);
 
                         let line = Line::from(vec![
                             Span::raw("     "),
@@ -562,7 +567,9 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
                                 if is_selected {
                                     row_style.add_modifier(Modifier::BOLD)
                                 } else {
-                                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD)
+                                    Style::default()
+                                        .fg(Color::White)
+                                        .add_modifier(Modifier::BOLD)
                                 },
                             ),
                             Span::raw("  "),
@@ -576,7 +583,7 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
                             ),
                             Span::raw("  "),
                             Span::styled(
-                                Self::capability_tags(&model.capabilities),
+                                ModelSelectorState::capability_tags(&model.capabilities),
                                 if is_selected {
                                     Style::default().fg(Color::Black)
                                 } else {
@@ -605,12 +612,19 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
     f.render_widget(detail_block, list_cols[1]);
 
     match state.entries.get(state.selected) {
-        Some(ModelListEntry::Model { model, provider_id, .. }) => {
+        Some(ModelListEntry::Model {
+            model, provider_id, ..
+        }) => {
             let mut lines: Vec<Line> = Vec::new();
 
             lines.push(Line::from(vec![
                 Span::styled("Name: ", Style::default().fg(Color::Gray)),
-                Span::styled(&model.name, Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    &model.name,
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
+                ),
             ]));
 
             lines.push(Line::from(vec![
@@ -635,19 +649,29 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
 
             lines.push(Line::from(vec![
                 Span::styled("Cost: ", Style::default().fg(Color::Gray)),
-                Span::styled(Self::format_cost(&model.cost), Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    ModelSelectorState::format_cost(&model.cost),
+                    Style::default().fg(Color::Yellow),
+                ),
             ]));
 
             lines.push(Line::from(""));
 
-            lines.push(Line::from(vec![
-                Span::styled("Capabilities:", Style::default().fg(Color::Gray).add_modifier(Modifier::BOLD)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "Capabilities:",
+                Style::default()
+                    .fg(Color::Gray)
+                    .add_modifier(Modifier::BOLD),
+            )]));
 
             lines.push(Line::from(vec![
                 Span::raw("  Reasoning: "),
                 Span::styled(
-                    if model.capabilities.reasoning { "yes" } else { "no" },
+                    if model.capabilities.reasoning {
+                        "yes"
+                    } else {
+                        "no"
+                    },
                     if model.capabilities.reasoning {
                         Style::default().fg(Color::Green)
                     } else {
@@ -659,7 +683,11 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
             lines.push(Line::from(vec![
                 Span::raw("  Tool calls: "),
                 Span::styled(
-                    if model.capabilities.toolcall { "yes" } else { "no" },
+                    if model.capabilities.toolcall {
+                        "yes"
+                    } else {
+                        "no"
+                    },
                     if model.capabilities.toolcall {
                         Style::default().fg(Color::Green)
                     } else {
@@ -671,7 +699,11 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
             lines.push(Line::from(vec![
                 Span::raw("  Attachments: "),
                 Span::styled(
-                    if model.capabilities.attachment { "yes" } else { "no" },
+                    if model.capabilities.attachment {
+                        "yes"
+                    } else {
+                        "no"
+                    },
                     if model.capabilities.attachment {
                         Style::default().fg(Color::Green)
                     } else {
@@ -683,9 +715,10 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
             lines.push(Line::from(vec![
                 Span::raw("  Input mods: "),
                 Span::styled(
-                    format!("text:{} img:{}",
-                        model.capabilities.input.text,
-                        model.capabilities.input.image),
+                    format!(
+                        "text:{} img:{}",
+                        model.capabilities.input.text, model.capabilities.input.image
+                    ),
                     Style::default().fg(Color::White),
                 ),
             ]));
@@ -700,22 +733,28 @@ pub fn render_model_selector(f: &mut Frame, area: Rect, state: &ModelSelectorSta
             let text = Text::from(lines);
             f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), detail_inner);
         }
-        Some(ModelListEntry::ProviderHeader { provider_name, model_count, .. }) => {
+        Some(ModelListEntry::ProviderHeader {
+            provider_name,
+            model_count,
+            ..
+        }) => {
             let mut lines: Vec<Line> = Vec::new();
-            lines.push(Line::from(vec![
-                Span::styled(provider_name, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                provider_name,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )]));
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} model(s) available", model_count),
-                    Style::default().fg(Color::Gray),
-                ),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                format!("{} model(s) available", model_count),
+                Style::default().fg(Color::Gray),
+            )]));
             lines.push(Line::from(""));
-            lines.push(Line::from(vec![
-                Span::styled("Use Enter to select a model below.", Style::default().fg(Color::DarkGray)),
-            ]));
+            lines.push(Line::from(vec![Span::styled(
+                "Use Enter to select a model below.",
+                Style::default().fg(Color::DarkGray),
+            )]));
 
             let text = Text::from(lines);
             f.render_widget(Paragraph::new(text).wrap(Wrap { trim: true }), detail_inner);

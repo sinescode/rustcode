@@ -6,8 +6,8 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::get;
+use axum::{Json, Router};
 use std::sync::Arc;
 
 use crate::server::AppState;

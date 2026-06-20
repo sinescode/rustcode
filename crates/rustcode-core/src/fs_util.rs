@@ -9,14 +9,24 @@ use std::path::{Path, PathBuf};
 /// Error type for filesystem operations.
 ///
 /// Ported from: `fs-util.ts` — `FSUtil.FileSystemError`
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-#[error("filesystem error in {method}: {cause}")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileSystemError {
     /// The method that failed (e.g., "readDirectoryEntries", "glob")
     pub method: String,
     /// Optional underlying cause message
     pub cause: Option<String>,
 }
+
+impl std::fmt::Display for FileSystemError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.cause {
+            Some(cause) => write!(f, "filesystem error in {}: {}", self.method, cause),
+            None => write!(f, "filesystem error in {}", self.method),
+        }
+    }
+}
+
+impl std::error::Error for FileSystemError {}
 
 /// A directory entry returned by read_directory.
 ///
@@ -101,10 +111,7 @@ pub struct FindUpOptions {
 ///
 /// Falls back to `"application/octet-stream"` for unknown extensions.
 pub fn mime_type(path: &Path) -> String {
-    let ext = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("");
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     match ext {
         "txt" => "text/plain".into(),
         "html" | "htm" => "text/html".into(),
@@ -183,7 +190,11 @@ pub fn windows_path(p: &Path) -> PathBuf {
     }
 
     // Pattern: /X:/... or /X:\... → X:/...
-    if s.len() >= 3 && s.starts_with('/') && is_drive(s.as_bytes()[1] as char) && s.as_bytes()[2] == b':' {
+    if s.len() >= 3
+        && s.starts_with('/')
+        && is_drive(s.as_bytes()[1] as char)
+        && s.as_bytes()[2] == b':'
+    {
         let drive = s[1..2].to_uppercase();
         let rest = &s[3..];
         return PathBuf::from(format!("{drive}:/{rest}"));
@@ -201,13 +212,21 @@ pub fn windows_path(p: &Path) -> PathBuf {
     // Pattern: /cygdrive/X/... → X:/...
     if s.starts_with("/cygdrive/") && s.len() >= 12 && is_drive(s.as_bytes()[10] as char) {
         let drive = s[10..11].to_uppercase();
-        let rest = if s.len() > 11 { &s[11..].trim_start_matches('/') } else { "" };
+        let rest = if s.len() > 11 {
+            &s[11..].trim_start_matches('/')
+        } else {
+            ""
+        };
         return PathBuf::from(format!("{drive}:/{rest}"));
     }
     // Pattern: /mnt/X/... → X:/...
     if s.starts_with("/mnt/") && s.len() >= 7 && is_drive(s.as_bytes()[5] as char) {
         let drive = s[5..6].to_uppercase();
-        let rest = if s.len() > 6 { &s[6..].trim_start_matches('/') } else { "" };
+        let rest = if s.len() > 6 {
+            &s[6..].trim_start_matches('/')
+        } else {
+            ""
+        };
         return PathBuf::from(format!("{drive}:/{rest}"));
     }
     PathBuf::from(s.into_owned())
@@ -236,7 +255,11 @@ pub fn normalize_path_pattern(p: &str) -> String {
     // Check if ends with \*/ or /* pattern
     if p.ends_with("\\*") || p.ends_with("/*") {
         let dir = &p[..p.len() - 2];
-        format!("{}{}*", normalize_path(Path::new(dir)).display(), std::path::MAIN_SEPARATOR)
+        format!(
+            "{}{}*",
+            normalize_path(Path::new(dir)).display(),
+            std::path::MAIN_SEPARATOR
+        )
     } else {
         normalize_path(Path::new(p)).display().to_string()
     }
@@ -370,8 +393,7 @@ mod tests {
             serde_json::to_string(&GlobInclude::Directory).expect("serialize"),
             r#""directory""#
         );
-        let parsed: GlobInclude =
-            serde_json::from_str(r#""all""#).expect("deserialize");
+        let parsed: GlobInclude = serde_json::from_str(r#""all""#).expect("deserialize");
         assert_eq!(parsed, GlobInclude::All);
     }
 

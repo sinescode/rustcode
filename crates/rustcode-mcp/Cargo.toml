@@ -15,4 +15,4 @@ async-trait.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
-temp_env = "0.3"
+temp-env = "0.3"

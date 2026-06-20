@@ -5,8 +5,8 @@
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::get;
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -65,10 +65,10 @@ async fn query_data(
         .unwrap_or_default();
 
     match query.query_type.as_str() {
-        "sessions" => query_sessions(&state, limit, offset, &filters).await,
-        "models" => query_models(&state).await,
-        "stats" => query_stats(&state).await,
-        "projects" => query_projects(&state, limit, offset).await,
+        "sessions" => query_sessions(&state, limit, offset, &filters).await.into_response(),
+        "models" => query_models(&state).await.into_response(),
+        "stats" => query_stats(&state).await.into_response(),
+        "projects" => query_projects(&state, limit, offset).await.into_response(),
         _ => Json(serde_json::json!({
             "error": format!("unknown query type: '{}'. Supported: sessions, models, stats, projects", query.query_type),
             "supported_types": ["sessions", "models", "stats", "projects"],
@@ -165,10 +165,7 @@ async fn query_models(state: &AppState) -> impl IntoResponse {
                 }));
             }
             Err(e) => {
-                warn!(
-                    "Failed to list models for provider '{}': {e}",
-                    provider_id
-                );
+                warn!("Failed to list models for provider '{}': {e}", provider_id);
             }
         }
     }
@@ -212,11 +209,7 @@ async fn query_stats(state: &AppState) -> impl IntoResponse {
 }
 
 /// Query projects with session counts.
-async fn query_projects(
-    _state: &AppState,
-    limit: usize,
-    offset: usize,
-) -> impl IntoResponse {
+async fn query_projects(_state: &AppState, limit: usize, offset: usize) -> impl IntoResponse {
     // In a full implementation, this would query a projects table.
     // For now, return a placeholder.
     Json(serde_json::json!({

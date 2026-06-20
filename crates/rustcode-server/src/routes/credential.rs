@@ -4,8 +4,8 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
+use axum::routing::patch;
 use axum::{Json, Router};
-use axum::routing::{delete, patch};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;

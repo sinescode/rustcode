@@ -216,11 +216,8 @@ mod tests {
 
     #[test]
     fn construct_stored_generates_cred_prefix_id() {
-        let stored = CredentialStored::new(
-            "int_github".into(),
-            "default".into(),
-            sample_key_info(),
-        );
+        let stored =
+            CredentialStored::new("int_github".into(), "default".into(), sample_key_info());
         assert!(
             stored.id.starts_with("cred_"),
             "expected 'cred_' prefix, got: {}",
@@ -237,11 +234,7 @@ mod tests {
 
     #[test]
     fn construct_stored_id_has_expected_length() {
-        let stored = CredentialStored::new(
-            "int_test".into(),
-            "test".into(),
-            sample_key_info(),
-        );
+        let stored = CredentialStored::new("int_test".into(), "test".into(), sample_key_info());
         // "cred_" (5) + 12 hex + 14 base62 = 31 characters
         assert_eq!(
             stored.id.len(),
@@ -428,25 +421,22 @@ mod tests {
 
     #[test]
     fn stored_serialize_includes_integration_id() {
-        let stored = CredentialStored::new(
-            "int_gh".into(),
-            "github-prod".into(),
-            sample_oauth_info(),
-        );
+        let stored =
+            CredentialStored::new("int_gh".into(), "github-prod".into(), sample_oauth_info());
         let json = serde_json::to_value(&stored).expect("serialize CredentialStored");
         assert_eq!(json["integrationID"], "int_gh");
         assert_eq!(json["label"], "github-prod");
-        assert!(json["id"].as_str().expect("id is string").starts_with("cred_"));
+        assert!(json["id"]
+            .as_str()
+            .expect("id is string")
+            .starts_with("cred_"));
         assert_eq!(json["value"]["type"], "oauth");
     }
 
     #[test]
     fn stored_roundtrip_via_json() {
-        let original = CredentialStored::new(
-            "int_rt".into(),
-            "roundtrip".into(),
-            sample_key_info(),
-        );
+        let original =
+            CredentialStored::new("int_rt".into(), "roundtrip".into(), sample_key_info());
         let json = serde_json::to_string(&original).expect("serialize");
         let restored: CredentialStored = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(restored, original);
@@ -529,6 +519,9 @@ mod tests {
             "key": "val"
         });
         let result: Result<CredentialInfo, _> = serde_json::from_value(json);
-        assert!(result.is_err(), "unknown variant should fail deserialization");
+        assert!(
+            result.is_err(),
+            "unknown variant should fail deserialization"
+        );
     }
 }

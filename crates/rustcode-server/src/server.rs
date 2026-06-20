@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::signal;
-use tracing::{error, info};
+use tracing::info;
 
 use crate::cors::cors_layer;
 use crate::routes;
@@ -38,10 +38,7 @@ pub struct AppState {
     pub runner: Arc<rustcode_core::session_runner::SessionRunner>,
 
     /// Registered LLM providers (provider_id → provider).
-    pub providers: std::collections::HashMap<
-        String,
-        Arc<dyn rustcode_core::provider::Provider>,
-    >,
+    pub providers: std::collections::HashMap<String, Arc<dyn rustcode_core::provider::Provider>>,
 
     /// Server version string.
     pub version: String,
@@ -75,10 +72,7 @@ impl AppState {
         permissions: Arc<rustcode_core::permission::PermissionService>,
         questions: Arc<rustcode_core::question::QuestionService>,
         runner: Arc<rustcode_core::session_runner::SessionRunner>,
-        providers: std::collections::HashMap<
-            String,
-            Arc<dyn rustcode_core::provider::Provider>,
-        >,
+        providers: std::collections::HashMap<String, Arc<dyn rustcode_core::provider::Provider>>,
         agent_service: Option<Arc<rustcode_core::agent::AgentService>>,
         command_data: Arc<rustcode_core::command::CommandData>,
         integration_service: Arc<rustcode_core::integration::IntegrationService>,

@@ -13,7 +13,6 @@
 //! even when the server restarts or the network is unstable.
 
 use reqwest::header::HeaderMap;
-use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::broadcast;
 use tracing::{debug, error, info, warn};
@@ -74,10 +73,8 @@ impl SseClient {
         if let Some(pw) = password {
             let auth = format!("{username}:{pw}");
             let encoded = base64_encode(&auth);
-            if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Basic {encoded}"))
-            {
-                self.headers
-                    .insert(reqwest::header::AUTHORIZATION, value);
+            if let Ok(value) = reqwest::header::HeaderValue::from_str(&format!("Basic {encoded}")) {
+                self.headers.insert(reqwest::header::AUTHORIZATION, value);
             }
         }
     }
@@ -127,15 +124,20 @@ impl SseClient {
                     if !response.status().is_success() {
                         let status = response.status();
                         if status.as_u16() == 401 {
-                            error!("SSE: authentication failed (HTTP 401) — check username/password");
+                            error!(
+                                "SSE: authentication failed (HTTP 401) — check username/password"
+                            );
                             return Err(anyhow::anyhow!(
                                 "SSE authentication failed: server returned 401"
                             ));
                         }
                         warn!("SSE: server returned HTTP {status}, retrying...");
                         sleep_with_jitter(reconnect_delay, BACKOFF_FUZZ).await;
-                        reconnect_delay =
-                            next_backoff(reconnect_delay, MAX_RECONNECT_DELAY_MS, BACKOFF_MULTIPLIER);
+                        reconnect_delay = next_backoff(
+                            reconnect_delay,
+                            MAX_RECONNECT_DELAY_MS,
+                            BACKOFF_MULTIPLIER,
+                        );
                         continue;
                     }
 
@@ -155,15 +157,13 @@ impl SseClient {
 
             // Exponential backoff before reconnecting
             sleep_with_jitter(reconnect_delay, BACKOFF_FUZZ).await;
-            reconnect_delay = next_backoff(reconnect_delay, MAX_RECONNECT_DELAY_MS, BACKOFF_MULTIPLIER);
+            reconnect_delay =
+                next_backoff(reconnect_delay, MAX_RECONNECT_DELAY_MS, BACKOFF_MULTIPLIER);
         }
     }
 
     /// Stream SSE events from the response, parsing and broadcasting each one.
-    async fn stream_events(
-        &self,
-        response: reqwest::Response,
-    ) -> anyhow::Result<()> {
+    async fn stream_events(&self, response: reqwest::Response) -> anyhow::Result<()> {
         use futures::StreamExt;
 
         let mut stream = response.bytes_stream();
@@ -190,12 +190,16 @@ impl SseClient {
                 buffer = buffer[line_end + 1..].to_string();
 
                 // Trim trailing \r
-                line = line.trim_end_matches(|c| c == '\r' || c == '\n').to_string();
+                line = line
+                    .trim_end_matches(['\r', '\n'])
+                    .to_string();
 
                 if line.is_empty() {
                     // Empty line = end of event
                     if !current_data.is_empty() {
-                        let event_type = current_event.take().unwrap_or_else(|| "message".to_string());
+                        let event_type = current_event
+                            .take()
+                            .unwrap_or_else(|| "message".to_string());
                         self.dispatch_sse_event(&event_type, &current_data);
                         current_data.clear();
                     }

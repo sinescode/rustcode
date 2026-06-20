@@ -642,10 +642,7 @@ mod tests {
         // A new handle sees all keys
         let dir2 = store.for_directory("/tmp/multikey");
         for i in 0..10 {
-            assert_eq!(
-                dir2.get(&format!("KEY_{i}")).unwrap(),
-                format!("val_{i}")
-            );
+            assert_eq!(dir2.get(&format!("KEY_{i}")).unwrap(), format!("val_{i}"));
         }
     }
 

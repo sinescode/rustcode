@@ -634,12 +634,17 @@ mod tests {
         assert_eq!(bus1.receiver_count(), 2, "two active subscribers");
 
         // Publish from the clone handle
-        bus2
-            .publish(GlobalEvent::new(json!({"type": "from-clone"})))
+        bus2.publish(GlobalEvent::new(json!({"type": "from-clone"})))
             .expect("publish from clone should succeed");
 
-        let ev1 = sub1.recv().await.expect("sub1 should receive event from clone publish");
-        let ev2 = sub2.recv().await.expect("sub2 should receive event from clone publish");
+        let ev1 = sub1
+            .recv()
+            .await
+            .expect("sub1 should receive event from clone publish");
+        let ev2 = sub2
+            .recv()
+            .await
+            .expect("sub2 should receive event from clone publish");
 
         assert_eq!(ev1.payload["type"], "from-clone");
         assert_eq!(ev2.payload["type"], "from-clone");
@@ -650,16 +655,25 @@ mod tests {
         );
 
         // Publish from the original handle
-        bus1
-            .publish(GlobalEvent::new(json!({"type": "from-original"})))
+        bus1.publish(GlobalEvent::new(json!({"type": "from-original"})))
             .expect("publish from original should succeed");
 
-        let ev3 = sub1.recv().await.expect("sub1 should receive event from original publish");
-        let ev4 = sub2.recv().await.expect("sub2 should receive event from original publish");
+        let ev3 = sub1
+            .recv()
+            .await
+            .expect("sub1 should receive event from original publish");
+        let ev4 = sub2
+            .recv()
+            .await
+            .expect("sub2 should receive event from original publish");
 
         assert_eq!(ev3.payload["type"], "from-original");
         assert_eq!(ev4.payload["type"], "from-original");
-        assert_eq!(ev3.id(), ev4.id(), "both should see the same second event ID");
+        assert_eq!(
+            ev3.id(),
+            ev4.id(),
+            "both should see the same second event ID"
+        );
     }
 
     // -- GlobalEvent all-variant context fields + serde roundtrip ------------
@@ -679,8 +693,8 @@ mod tests {
         assert_eq!(event.payload["data"], "test-value");
 
         // Serialize to JSON
-        let serialized =
-            serde_json::to_string(&event).expect("serialization of full-context event should succeed");
+        let serialized = serde_json::to_string(&event)
+            .expect("serialization of full-context event should succeed");
 
         // Deserialize back
         let deserialized: GlobalEvent = serde_json::from_str(&serialized)
@@ -709,8 +723,7 @@ mod tests {
     #[test]
     fn global_event_all_fields_none_serde_omits_nulls() {
         let event = GlobalEvent::new(json!({"type": "bare"}));
-        let serialized =
-            serde_json::to_string(&event).expect("serialization should succeed");
+        let serialized = serde_json::to_string(&event).expect("serialization should succeed");
         let parsed: serde_json::Value =
             serde_json::from_str(&serialized).expect("should be valid JSON");
 
@@ -750,11 +763,7 @@ mod tests {
         );
 
         let sub = bus.subscribe();
-        assert_eq!(
-            bus.receiver_count(),
-            1,
-            "one subscriber after subscribe()"
-        );
+        assert_eq!(bus.receiver_count(), 1, "one subscriber after subscribe()");
 
         // Verify publish works while subscribed
         bus.publish(GlobalEvent::new(json!({"type": "alive"})))
@@ -891,7 +900,10 @@ mod tests {
         bus.publish(GlobalEvent::new(json!({"type": "default-shared"})))
             .expect("SharedBus::default() should support publish");
 
-        let received = sub.recv().await.expect("SharedBus::default() should deliver events");
+        let received = sub
+            .recv()
+            .await
+            .expect("SharedBus::default() should deliver events");
         assert_eq!(received.payload["type"], "default-shared");
 
         // Verify capacity is sufficient for many events (default = 1024)
@@ -920,7 +932,10 @@ mod tests {
         bus.publish(GlobalEvent::new(json!({"type": "default-eventbus"})))
             .expect("EventBus::default() should support publish");
 
-        let received = sub.recv().await.expect("EventBus::default() should deliver events");
+        let received = sub
+            .recv()
+            .await
+            .expect("EventBus::default() should deliver events");
         assert_eq!(received.payload["type"], "default-eventbus");
     }
 }

@@ -23,7 +23,8 @@ use std::pin::Pin;
 
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
-    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider, ToolDefinition, Usage,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
@@ -42,7 +43,9 @@ fn resolve_config() -> Result<(String, String, String), Error> {
     let deployment = std::env::var("AZURE_OPENAI_DEPLOYMENT")
         .ok()
         .filter(|k| !k.is_empty())
-        .ok_or_else(|| Error::Auth("AZURE_OPENAI_DEPLOYMENT environment variable not set".into()))?;
+        .ok_or_else(|| {
+            Error::Auth("AZURE_OPENAI_DEPLOYMENT environment variable not set".into())
+        })?;
     Ok((api_key, endpoint, deployment))
 }
 
@@ -193,6 +196,7 @@ struct AzureCompletionTokenDetails {
 
 // ── Azure Provider ─────────────────────────────────────────────────────
 
+#[derive(Debug)]
 pub struct AzureProvider {
     api_key: String,
     base_url: String,
@@ -210,7 +214,11 @@ impl AzureProvider {
 
     /// Create with explicit configuration values.
     /// Constructs the base URL as `{endpoint}/openai/deployments/{deployment}`.
-    pub fn with_config(api_key: String, endpoint: String, deployment: String) -> Result<Self, Error> {
+    pub fn with_config(
+        api_key: String,
+        endpoint: String,
+        deployment: String,
+    ) -> Result<Self, Error> {
         let base_url = format!(
             "{}/openai/deployments/{}",
             endpoint.trim_end_matches('/'),
@@ -221,7 +229,12 @@ impl AzureProvider {
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
-        Ok(Self { api_key, base_url, http_client, models: build_model_catalog(&base_url) })
+        Ok(Self {
+            api_key,
+            base_url: base_url.clone(),
+            http_client,
+            models: build_model_catalog(&base_url),
+        })
     }
 
     fn chat_url(&self) -> String {
@@ -246,8 +259,8 @@ impl AzureProvider {
                     for part in content_parts(content) {
                         match part {
                             ContentPart::Text { text } => text_parts.push_str(text),
-                            ContentPart::Image { image } => media_parts.push(
-                                AzureUserContentPart::ImageUrl {
+                            ContentPart::Image { image } => {
+                                media_parts.push(AzureUserContentPart::ImageUrl {
                                     image_url: AzureImageUrl {
                                         url: if image.starts_with("data:") {
                                             image.clone()
@@ -255,8 +268,8 @@ impl AzureProvider {
                                             format!("data:image/png;base64,{image}")
                                         },
                                     },
-                                },
-                            ),
+                                })
+                            }
                             _ => {}
                         }
                     }
@@ -285,7 +298,10 @@ impl AzureProvider {
                         match part {
                             ContentPart::Text { text: t } => text.push_str(t),
                             ContentPart::Reasoning { text: r, .. } => reasoning.push_str(r),
-                            ContentPart::ToolCallPart { tool_call_id, tool_name } => {
+                            ContentPart::ToolCallPart {
+                                tool_call_id,
+                                tool_name,
+                            } => {
                                 tool_calls.push(AzureAssistantToolCall {
                                     id: tool_call_id.clone(),
                                     call_type: "function".into(),
@@ -314,15 +330,15 @@ impl AzureProvider {
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult {
-                            tool_call_id, output, ..
-                        } = part
-                        {
-                            result.push(AzureChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        let crate::provider::ToolResultPart::ToolResult {
+                            tool_call_id,
+                            output,
+                            ..
+                        } = part;
+                        result.push(AzureChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -401,16 +417,14 @@ fn map_usage(u: &AzureUsage) -> Usage {
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
     }
 }
 
-fn events_from_chat(
-    event: AzureChatEvent,
-    state: &mut ChatStreamState,
-) -> Vec<LlmEvent> {
+fn events_from_chat(event: AzureChatEvent, state: &mut ChatStreamState) -> Vec<LlmEvent> {
     let mut events = Vec::new();
     let usage = event.usage.as_ref().map(map_usage).or(state.usage.clone());
     let choice = event.choices.first();
@@ -447,9 +461,11 @@ fn events_from_chat(
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state
-                        .tool_stream
-                        .set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
@@ -490,7 +506,7 @@ fn events_from_chat(
         });
         events.push(LlmEvent::Finish {
             reason,
-            usage,
+            usage: usage.clone(),
             provider_metadata: None,
         });
         state.finished = true;
@@ -554,14 +570,7 @@ fn classify_error(status: u16, body: &str) -> LlmErrorReason {
 fn build_model_catalog(base_url: &str) -> Vec<Model> {
     vec![
         make_model(
-            "gpt-5.2",
-            "GPT-5.2",
-            128_000,
-            16_384,
-            "gpt",
-            true,
-            true,
-            base_url,
+            "gpt-5.2", "GPT-5.2", 128_000, 16_384, "gpt", true, true, base_url,
         ),
         make_model(
             "gpt-5.2-mini",
@@ -574,14 +583,7 @@ fn build_model_catalog(base_url: &str) -> Vec<Model> {
             base_url,
         ),
         make_model(
-            "gpt-5.1",
-            "GPT-5.1",
-            128_000,
-            16_384,
-            "gpt",
-            true,
-            true,
-            base_url,
+            "gpt-5.1", "GPT-5.1", 128_000, 16_384, "gpt", true, true, base_url,
         ),
     ]
 }
@@ -735,37 +737,37 @@ impl Provider for AzureProvider {
                 state,
                 VecDeque::new(),
             ),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() {
-                        return Some((ev, (sse, state, buffer)));
-                    }
-                    if state.finished {
-                        return None;
-                    }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) =
-                                serde_json::from_str::<AzureChatEvent>(&se.data)
-                            {
-                                for ev in events_from_chat(oe, &mut state) {
-                                    buffer.push_back(Ok(ev));
-                                }
-                                if let Some(ev) = buffer.pop_front() {
-                                    return Some((ev, (sse, state, buffer)));
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
+                        }
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) = serde_json::from_str::<AzureChatEvent>(&se.data) {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Azure SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::ResponseStream(format!("Azure SSE: {e}"))),
-                                (sse, state, buffer),
-                            ));
-                        }
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
@@ -875,7 +877,10 @@ mod tests {
     #[test]
     fn test_model_catalog_capabilities_gpt52() {
         let models = build_model_catalog(&test_base_url());
-        let model = models.iter().find(|m| m.id == "gpt-5.2").expect("gpt-5.2 not found");
+        let model = models
+            .iter()
+            .find(|m| m.id == "gpt-5.2")
+            .expect("gpt-5.2 not found");
         assert!(model.capabilities.temperature);
         assert!(model.capabilities.reasoning);
         assert!(model.capabilities.toolcall);
@@ -915,7 +920,12 @@ mod tests {
     fn test_model_catalog_families() {
         let models = build_model_catalog(&test_base_url());
         for m in &models {
-            assert_eq!(m.family.as_deref(), Some("gpt"), "model {} family mismatch", m.id);
+            assert_eq!(
+                m.family.as_deref(),
+                Some("gpt"),
+                "model {} family mismatch",
+                m.id
+            );
         }
     }
 
@@ -1051,10 +1061,7 @@ mod tests {
 
     #[test]
     fn test_classify_error_context_overflow() {
-        let reason = classify_error(
-            400,
-            "This input exceeds the context window of the model",
-        );
+        let reason = classify_error(400, "This input exceeds the context window of the model");
         assert!(matches!(
             reason,
             LlmErrorReason::InvalidRequest {
@@ -1067,13 +1074,19 @@ mod tests {
     #[test]
     fn test_classify_error_provider_internal_500() {
         let reason = classify_error(500, "Internal server error");
-        assert!(matches!(reason, LlmErrorReason::ProviderInternal { status: 500, .. }));
+        assert!(matches!(
+            reason,
+            LlmErrorReason::ProviderInternal { status: 500, .. }
+        ));
     }
 
     #[test]
     fn test_classify_error_provider_internal_503() {
         let reason = classify_error(503, "Service unavailable");
-        assert!(matches!(reason, LlmErrorReason::ProviderInternal { status: 503, .. }));
+        assert!(matches!(
+            reason,
+            LlmErrorReason::ProviderInternal { status: 503, .. }
+        ));
     }
 
     #[test]
@@ -1124,7 +1137,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_unknown() {
-        assert_eq!(map_finish_reason("some_unknown_reason"), FinishReason::Unknown);
+        assert_eq!(
+            map_finish_reason("some_unknown_reason"),
+            FinishReason::Unknown
+        );
     }
 
     // ── Usage mapping ────────────────────────────────────────────
@@ -1233,7 +1249,11 @@ mod tests {
         let rt = tokio::runtime::Runtime::new().expect("create runtime");
         let result = rt.block_on(provider.get_model("nonexistent"));
         assert!(result.is_err());
-        if let Err(Error::ModelNotFound { provider_id, model_id }) = result {
+        if let Err(Error::ModelNotFound {
+            provider_id,
+            model_id,
+        }) = result
+        {
             assert_eq!(provider_id, "azure");
             assert_eq!(model_id, "nonexistent");
         } else {
@@ -1410,8 +1430,12 @@ mod tests {
         let events = events_from_chat(event, &mut state);
         assert!(!events.is_empty());
         // Should include TextStart + TextDelta
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::TextStart { .. })));
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::TextDelta { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::TextStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::TextDelta { .. })));
         assert!(state.text_started);
     }
 
@@ -1438,7 +1462,9 @@ mod tests {
         };
         let events = events_from_chat(event, &mut state);
         assert!(!events.is_empty());
-        assert!(events.iter().any(|e| matches!(e, LlmEvent::ReasoningStart { .. })));
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, LlmEvent::ReasoningStart { .. })));
         assert!(events
             .iter()
             .any(|e| matches!(e, LlmEvent::ReasoningDelta { .. })));

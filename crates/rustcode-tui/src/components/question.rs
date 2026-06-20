@@ -54,15 +54,12 @@ impl QuestionState {
     }
 
     /// Show a question request.
-    pub fn show(
-        &mut self,
-        request_id: String,
-        questions: Vec<super::super::event::QuestionItem>,
-    ) {
+    pub fn show(&mut self, request_id: String, questions: Vec<super::super::event::QuestionItem>) {
         self.request_id = Some(request_id);
+        let qlen = questions.len();
         self.questions = questions;
-        self.answers = vec![Vec::new(); questions.len()];
-        self.custom = vec![String::new(); questions.len()];
+        self.answers = vec![Vec::new(); qlen];
+        self.custom = vec![String::new(); qlen];
         self.tab = 0;
         self.selected_option = 0;
         self.editing = false;
@@ -110,7 +107,11 @@ impl QuestionState {
         match self.current_question() {
             Some(q) => {
                 let base = q.options.len();
-                if q.custom { base + 1 } else { base }
+                if q.custom {
+                    base + 1
+                } else {
+                    base
+                }
             }
             None => 0,
         }
@@ -120,10 +121,7 @@ impl QuestionState {
     /// - `Some(questions, answers)` if the dialog should submit
     /// - `Some(questions, vec![])` if the dialog should reject
     /// - `None` if still interacting
-    pub fn handle_key(
-        &mut self,
-        key: KeyEvent,
-    ) -> Option<(String, Vec<Vec<String>>)> {
+    pub fn handle_key(&mut self, key: KeyEvent) -> Option<(String, Vec<Vec<String>>)> {
         if !self.visible {
             return None;
         }
@@ -139,10 +137,7 @@ impl QuestionState {
         self.handle_selection_key(key)
     }
 
-    fn handle_selection_key(
-        &mut self,
-        key: KeyEvent,
-    ) -> Option<(String, Vec<Vec<String>>)> {
+    fn handle_selection_key(&mut self, key: KeyEvent) -> Option<(String, Vec<Vec<String>>)> {
         let total = self.option_count();
 
         match key {
@@ -160,45 +155,42 @@ impl QuestionState {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                let q = match self.current_question() {
-                    Some(q) => q,
-                    None => return None,
-                };
-
-                let is_custom = self.selected_option >= q.options.len();
+                // Extract needed data before mutating self.answers
+                let (is_custom, is_multiple, opt_label): (bool, bool, Option<String>) =
+                    match self.current_question() {
+                        Some(q) => {
+                            let custom = self.selected_option >= q.options.len();
+                            let multiple = q.multiple;
+                            let label = if !custom {
+                                q.options.get(self.selected_option).map(|o| o.label.clone())
+                            } else {
+                                None
+                            };
+                            (custom, multiple, label)
+                        }
+                        None => return None,
+                    };
 
                 if is_custom {
-                    // Enter editing mode for custom text
-                    if q.multiple {
-                        // Toggle custom value
-                        self.editing = true;
-                        return None;
-                    } else {
-                        self.editing = true;
-                        return None;
-                    }
+                    self.editing = true;
+                    return None;
                 }
 
-                // Regular option
-                if let Some(opt) = q.options.get(self.selected_option) {
-                    if q.multiple {
-                        // Toggle
+                if let Some(ref label) = opt_label {
+                    if is_multiple {
                         let answers = &mut self.answers[self.tab];
-                        if let Some(pos) = answers.iter().position(|a| a == &opt.label) {
+                        if let Some(pos) = answers.iter().position(|a| a == label) {
                             answers.remove(pos);
                         } else {
-                            answers.push(opt.label.clone());
+                            answers.push(label.clone());
                         }
                     } else {
-                        // Single select → pick and advance
-                        self.answers[self.tab] = vec![opt.label.clone()];
+                        self.answers[self.tab] = vec![label.clone()];
                         if self.is_single() {
-                            // Auto-submit
                             let request_id = self.request_id.clone().unwrap_or_default();
                             let answers = std::mem::take(&mut self.answers);
                             return Some((request_id, answers));
                         }
-                        // Advance to next tab
                         self.next_tab();
                     }
                 }
@@ -285,16 +277,16 @@ impl QuestionState {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                let idx =
-                    ch.to_digit(10).expect("digit char '1'..='9' always yields a valid digit") as usize
+                let idx = ch
+                    .to_digit(10)
+                    .expect("digit char '1'..='9' always yields a valid digit")
+                    as usize
                     - 1;
                 if idx < total {
                     self.selected_option = idx;
                     // Simulate Enter
-                    return self.handle_selection_key(KeyEvent::new(
-                        KeyCode::Enter,
-                        KeyModifiers::NONE,
-                    ));
+                    return self
+                        .handle_selection_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
                 }
                 None
             }
@@ -303,10 +295,7 @@ impl QuestionState {
         }
     }
 
-    fn handle_confirm_key(
-        &mut self,
-        key: KeyEvent,
-    ) -> Option<(String, Vec<Vec<String>>)> {
+    fn handle_confirm_key(&mut self, key: KeyEvent) -> Option<(String, Vec<Vec<String>>)> {
         match key {
             KeyEvent {
                 code: KeyCode::Enter,
@@ -355,10 +344,7 @@ impl QuestionState {
         }
     }
 
-    fn handle_editing_key(
-        &mut self,
-        key: KeyEvent,
-    ) -> Option<(String, Vec<Vec<String>>)> {
+    fn handle_editing_key(&mut self, key: KeyEvent) -> Option<(String, Vec<Vec<String>>)> {
         match key {
             KeyEvent {
                 code: KeyCode::Esc, ..
@@ -371,12 +357,11 @@ impl QuestionState {
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
-                let text = std::mem::take(&mut self.custom[self.tab]).trim().to_string();
+                let text = std::mem::take(&mut self.custom[self.tab])
+                    .trim()
+                    .to_string();
                 if !text.is_empty() {
-                    let q = match self.questions.get(self.tab) {
-                        Some(q) => q,
-                        None => return None,
-                    };
+                    let q = self.questions.get(self.tab)?;
                     if q.multiple {
                         let answers = &mut self.answers[self.tab];
                         if !answers.contains(&text) {
@@ -480,9 +465,7 @@ pub fn render_question(f: &mut Frame, area: Rect, state: &QuestionState) {
             let header = q.header.as_deref().unwrap_or(&q.question);
 
             let style = if is_active {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Cyan)
+                Style::default().fg(Color::Black).bg(Color::Cyan)
             } else if is_answered {
                 Style::default().fg(Color::White)
             } else {
@@ -492,9 +475,7 @@ pub fn render_question(f: &mut Frame, area: Rect, state: &QuestionState) {
         }
         // Confirm tab
         let confirm_style = if state.is_confirm_tab() {
-            Style::default()
-                .fg(Color::Black)
-                .bg(Color::Cyan)
+            Style::default().fg(Color::Black).bg(Color::Cyan)
         } else {
             Style::default().fg(Color::Gray)
         };
@@ -519,7 +500,7 @@ pub fn render_question(f: &mut Frame, area: Rect, state: &QuestionState) {
             let header = q.header.as_deref().unwrap_or(&q.question);
             lines.push(Line::from(vec![
                 Span::styled(format!("{header}: "), Style::default().fg(Color::Gray)),
-                Span::styled(&value, Style::default().fg(Color::White)),
+                Span::styled(value, Style::default().fg(Color::White)),
             ]));
         }
         lines.push(Line::from(""));
@@ -531,7 +512,9 @@ pub fn render_question(f: &mut Frame, area: Rect, state: &QuestionState) {
         // Question text
         lines.push(Line::from(Span::styled(
             &q.question,
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )));
         if q.multiple {
             lines.push(Line::from(Span::styled(
@@ -561,7 +544,7 @@ pub fn render_question(f: &mut Frame, area: Rect, state: &QuestionState) {
             };
 
             lines.push(Line::from(vec![
-                Span::styled(&prefix, style),
+                Span::styled(prefix, style),
                 Span::styled(&opt.label, style),
             ]));
 

@@ -69,16 +69,23 @@ const FILE_SIZE_LIMIT: u64 = 2 * 1024 * 1024;
 /// # Source
 /// `packages/opencode/src/snapshot/index.ts` lines 33–35.
 const SNAPSHOT_CFG: &[&str] = &[
-    "-c", "core.autocrlf=false",
-    "-c", "core.longpaths=true",
-    "-c", "core.symlinks=true",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.longpaths=true",
+    "-c",
+    "core.symlinks=true",
 ];
 
 const SNAPSHOT_QUOTE: &[&str] = &[
-    "-c", "core.autocrlf=false",
-    "-c", "core.longpaths=true",
-    "-c", "core.symlinks=true",
-    "-c", "core.quotepath=false",
+    "-c",
+    "core.autocrlf=false",
+    "-c",
+    "core.longpaths=true",
+    "-c",
+    "core.symlinks=true",
+    "-c",
+    "core.quotepath=false",
 ];
 
 /// Prune age for snapshot garbage collection.
@@ -189,7 +196,7 @@ impl SnapshotService {
         std::fs::create_dir_all(&self.gitdir)?;
 
         // git init
-        self.snapshot_git(&["init"], Some(self.gitdir_env()))?;
+        self.snapshot_git(&["init"], self.gitdir_env())?;
 
         // Configure snapshot git repo
         let configs = [
@@ -249,15 +256,32 @@ impl SnapshotService {
         // Get tracked (diff-files) and untracked (ls-files --others) files
         let diff = self.snapshot_git(
             &["diff-files", "--name-only", "-z", "--", "."],
-            Some(self.cwd_env()),
+            self.cwd_env(),
         )?;
         let other = self.snapshot_git(
-            &["ls-files", "--others", "--exclude-standard", "-z", "--", "."],
-            Some(self.cwd_env()),
+            &[
+                "ls-files",
+                "--others",
+                "--exclude-standard",
+                "-z",
+                "--",
+                ".",
+            ],
+            self.cwd_env(),
         )?;
 
-        let tracked: Vec<String> = diff.text.split('\0').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
-        let untracked: Vec<String> = other.text.split('\0').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
+        let tracked: Vec<String> = diff
+            .text
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
+        let untracked: Vec<String> = other
+            .text
+            .split('\0')
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string())
+            .collect();
 
         let mut all = tracked.clone();
         all.extend(untracked.clone());
@@ -266,7 +290,7 @@ impl SnapshotService {
 
         if all.is_empty() {
             // Write tree anyway to get a stable hash for empty state
-            let tree = self.snapshot_git(&["write-tree"], Some(self.cwd_env()))?;
+            let tree = self.snapshot_git(&["write-tree"], self.cwd_env())?;
             let hash = tree.text.trim().to_string();
             return Ok(if hash.is_empty() { None } else { Some(hash) });
         }
@@ -278,7 +302,7 @@ impl SnapshotService {
         if !ignored.is_empty() {
             let _ = self.snapshot_git(
                 &["rm", "--cached", "-f", "--ignore-unmatch", "--"],
-                Some(self.cwd_env()),
+                self.cwd_env(),
             );
         }
 
@@ -293,7 +317,7 @@ impl SnapshotService {
             .collect();
 
         if allowed.is_empty() {
-            let tree = self.snapshot_git(&["write-tree"], Some(self.cwd_env()))?;
+            let tree = self.snapshot_git(&["write-tree"], self.cwd_env())?;
             let hash = tree.text.trim().to_string();
             return Ok(if hash.is_empty() { None } else { Some(hash) });
         }
@@ -303,11 +327,11 @@ impl SnapshotService {
         let _add = self.snapshot_git_stdin(
             &["add", "--all", "--sparse", "--pathspec-file-nul"],
             &stdin,
-            Some(self.cwd_env()),
+            self.cwd_env(),
         )?;
 
         // Write tree
-        let tree = self.snapshot_git(&["write-tree"], Some(self.cwd_env()))?;
+        let tree = self.snapshot_git(&["write-tree"], self.cwd_env())?;
         let hash = tree.text.trim().to_string();
         Ok(if hash.is_empty() { None } else { Some(hash) })
     }
@@ -324,8 +348,16 @@ impl SnapshotService {
         self.sync_excludes(&[])?;
 
         let result = self.snapshot_git(
-            &["diff", "--cached", "--no-ext-diff", "--name-only", hash, "--", "."],
-            Some(self.cwd_env()),
+            &[
+                "diff",
+                "--cached",
+                "--no-ext-diff",
+                "--name-only",
+                hash,
+                "--",
+                ".",
+            ],
+            self.cwd_env(),
         )?;
 
         let files: Vec<String> = result
@@ -360,16 +392,11 @@ impl SnapshotService {
         self.ensure_init()?;
         let _guard = self.lock.lock().map_err(|_| SnapshotError::LockPoison)?;
 
-        let read_tree = self.snapshot_git(
-            &["read-tree", snapshot],
-            Some(self.worktree_env()),
-        )?;
+        let read_tree = self.snapshot_git(&["read-tree", snapshot], self.worktree_env())?;
 
         if read_tree.code == 0 {
-            let checkout = self.snapshot_git(
-                &["checkout-index", "-a", "-f"],
-                Some(self.worktree_env()),
-            )?;
+            let checkout =
+                self.snapshot_git(&["checkout-index", "-a", "-f"], self.worktree_env())?;
             if checkout.code != 0 {
                 return Err(SnapshotError::Other(format!(
                     "checkout-index failed: {}",
@@ -412,17 +439,11 @@ impl SnapshotService {
 
         // Process each operation
         for (hash, file, rel) in &ops {
-            let result = self.snapshot_git(
-                &["checkout", hash, "--", file],
-                Some(self.worktree_env()),
-            )?;
+            let result = self.snapshot_git(&["checkout", hash, "--", file], self.worktree_env())?;
 
             if result.code != 0 {
                 // Check if file existed in snapshot
-                let tree = self.snapshot_git(
-                    &["ls-tree", hash, "--", rel],
-                    Some(self.worktree_env()),
-                )?;
+                let tree = self.snapshot_git(&["ls-tree", hash, "--", rel], self.worktree_env())?;
                 if tree.code == 0 && !tree.text.trim().is_empty() {
                     // File existed but checkout failed — keep it
                     continue;
@@ -448,7 +469,7 @@ impl SnapshotService {
 
         let result = self.snapshot_git(
             &["diff", "--cached", "--no-ext-diff", hash, "--", "."],
-            Some(self.worktree_env()),
+            self.worktree_env(),
         )?;
 
         if result.code != 0 {
@@ -467,8 +488,17 @@ impl SnapshotService {
 
         // Get name-status
         let statuses = self.snapshot_git(
-            &["diff", "--no-ext-diff", "--name-status", "--no-renames", from, to, "--", "."],
-            Some(self.cwd_env()),
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--name-status",
+                "--no-renames",
+                from,
+                to,
+                "--",
+                ".",
+            ],
+            self.cwd_env(),
         )?;
 
         let mut status_map: HashMap<String, String> = HashMap::new();
@@ -490,8 +520,17 @@ impl SnapshotService {
 
         // Get numstat
         let numstat = self.snapshot_git(
-            &["diff", "--no-ext-diff", "--no-renames", "--numstat", from, to, "--", "."],
-            Some(self.cwd_env()),
+            &[
+                "diff",
+                "--no-ext-diff",
+                "--no-renames",
+                "--numstat",
+                from,
+                to,
+                "--",
+                ".",
+            ],
+            self.cwd_env(),
         )?;
 
         struct Row {
@@ -516,7 +555,10 @@ impl SnapshotService {
                 let file = parts[2].to_string();
                 let binary = adds == "-" && dels == "-";
                 Some(Row {
-                    status: status_map.get(&file).cloned().unwrap_or_else(|| "modified".into()),
+                    status: status_map
+                        .get(&file)
+                        .cloned()
+                        .unwrap_or_else(|| "modified".into()),
                     file,
                     binary,
                     additions: if binary { 0 } else { adds.parse().unwrap_or(0) },
@@ -576,10 +618,7 @@ impl SnapshotService {
             return Ok(());
         }
 
-        let result = self.snapshot_git(
-            &["gc", &format!("--prune={PRUNE_AGE}")],
-            None,
-        )?;
+        let result = self.snapshot_git(&["gc", &format!("--prune={PRUNE_AGE}")], None)?;
         if result.code != 0 {
             // Non-fatal — gc failures shouldn't break the app
             return Ok(());
@@ -679,7 +718,12 @@ impl SnapshotService {
     }
 
     /// Generate a unified diff for a file between two commits.
-    fn generate_file_diff(&self, from: &str, to: &str, file: &str) -> Result<String, SnapshotError> {
+    fn generate_file_diff(
+        &self,
+        from: &str,
+        to: &str,
+        file: &str,
+    ) -> Result<String, SnapshotError> {
         let result = self.snapshot_git(
             &[
                 "diff",
@@ -698,19 +742,26 @@ impl SnapshotService {
     }
 
     /// Check which files are gitignored.
-    fn check_ignored(&self, files: &[String]) -> Result<std::collections::HashSet<String>, SnapshotError> {
+    fn check_ignored(
+        &self,
+        files: &[String],
+    ) -> Result<std::collections::HashSet<String>, SnapshotError> {
         if files.is_empty() {
             return Ok(std::collections::HashSet::new());
         }
 
-        let stdin = null_join(files);
+        let stdin = null_join(&files.iter().map(|s| s.as_str()).collect::<Vec<_>>());
         let result = run_git_in_worktree(
             &self.worktree,
             &[
-                "-c", "core.autocrlf=false",
-                "-c", "core.longpaths=true",
-                "-c", "core.symlinks=true",
-                "-c", "core.quotepath=false",
+                "-c",
+                "core.autocrlf=false",
+                "-c",
+                "core.longpaths=true",
+                "-c",
+                "core.symlinks=true",
+                "-c",
+                "core.quotepath=false",
                 "check-ignore",
                 "--no-index",
                 "--stdin",
@@ -732,7 +783,10 @@ impl SnapshotService {
     }
 
     /// Find files larger than the size limit.
-    fn find_large_files(&self, files: &[String]) -> Result<std::collections::HashSet<String>, SnapshotError> {
+    fn find_large_files(
+        &self,
+        files: &[String],
+    ) -> Result<std::collections::HashSet<String>, SnapshotError> {
         let mut large = std::collections::HashSet::new();
         for file in files {
             let path = self.directory.join(file);
@@ -750,12 +804,20 @@ impl SnapshotService {
         std::fs::create_dir_all(self.gitdir.join("info"))?;
 
         let exclude_path = self.gitdir.join("info").join("exclude");
-        let mut lines: Vec<String> = extra.iter().map(|s| format!("/{}", s.replace('\\', "/"))).collect();
+        let mut lines: Vec<String> = extra
+            .iter()
+            .map(|s| format!("/{}", s.replace('\\', "/")))
+            .collect();
         if lines.is_empty() {
             lines.push(String::new());
         }
         let text = lines.join("\n");
-        std::fs::write(&exclude_path, if text.is_empty() { "\n" } else { &format!("{text}\n") })?;
+        let content = if text.is_empty() {
+            "\n".to_string()
+        } else {
+            format!("{text}\n")
+        };
+        std::fs::write(&exclude_path, &content)?;
         Ok(())
     }
 
@@ -809,7 +871,10 @@ impl SnapshotService {
     fn gitdir_env(&self) -> Option<Vec<(String, String)>> {
         Some(vec![
             ("GIT_DIR".into(), self.gitdir.to_string_lossy().to_string()),
-            ("GIT_WORK_TREE".into(), self.worktree.to_string_lossy().to_string()),
+            (
+                "GIT_WORK_TREE".into(),
+                self.worktree.to_string_lossy().to_string(),
+            ),
         ])
     }
 }
@@ -1088,7 +1153,8 @@ mod tests {
             status: Some("modified".into()),
         };
         let json = serde_json::to_string(&diff).expect("serialize zero-change diff");
-        let parsed: SnapshotFileDiff = serde_json::from_str(&json).expect("deserialize zero-change diff");
+        let parsed: SnapshotFileDiff =
+            serde_json::from_str(&json).expect("deserialize zero-change diff");
         assert_eq!(parsed.additions, 0);
         assert_eq!(parsed.deletions, 0);
         // "patch" should be absent since it's None with skip_serializing_if
@@ -1120,11 +1186,10 @@ mod tests {
                 deletions: 1,
                 status: Some(status.to_string()),
             };
-            let json = serde_json::to_string(&diff)
-                .expect("serialize diff with status");
-            let parsed: SnapshotFileDiff = serde_json::from_str(&json)
-                .expect("deserialize diff with status");
-            assert_eq!(parsed.status.as_deref(), Some(status));
+            let json = serde_json::to_string(&diff).expect("serialize diff with status");
+            let parsed: SnapshotFileDiff =
+                serde_json::from_str(&json).expect("deserialize diff with status");
+            assert_eq!(parsed.status.as_deref(), Some(*status));
         }
     }
 
@@ -1138,7 +1203,8 @@ mod tests {
             status: None,
         };
         let json = serde_json::to_string(&diff).expect("serialize file-none diff");
-        let parsed: SnapshotFileDiff = serde_json::from_str(&json).expect("deserialize file-none diff");
+        let parsed: SnapshotFileDiff =
+            serde_json::from_str(&json).expect("deserialize file-none diff");
         assert_eq!(parsed.file, None);
         // All optional fields with skip_serializing_if=None should be absent
         assert!(!json.contains("file"));

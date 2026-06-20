@@ -299,17 +299,15 @@ impl XaiProvider {
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult {
+                        let crate::provider::ToolResultPart::ToolResult {
                             tool_call_id,
                             output,
                             ..
-                        } = part
-                        {
-                            result.push(XaiChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        } = part;
+                        result.push(XaiChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -388,6 +386,7 @@ fn map_usage(u: &XaiUsage) -> Usage {
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
@@ -431,9 +430,11 @@ fn events_from_chat(event: XaiChatEvent, state: &mut ChatStreamState) -> Vec<Llm
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state
-                        .tool_stream
-                        .set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
@@ -474,7 +475,7 @@ fn events_from_chat(event: XaiChatEvent, state: &mut ChatStreamState) -> Vec<Llm
         });
         events.push(LlmEvent::Finish {
             reason,
-            usage,
+            usage: usage.clone(),
             provider_metadata: None,
         });
         state.finished = true;
@@ -586,35 +587,37 @@ impl Provider for XaiProvider {
                 state,
                 VecDeque::new(),
             ),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() {
-                        return Some((ev, (sse, state, buffer)));
-                    }
-                    if state.finished {
-                        return None;
-                    }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) = serde_json::from_str::<XaiChatEvent>(&se.data) {
-                                for ev in events_from_chat(oe, &mut state) {
-                                    buffer.push_back(Ok(ev));
-                                }
-                                if let Some(ev) = buffer.pop_front() {
-                                    return Some((ev, (sse, state, buffer)));
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
+                        }
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) = serde_json::from_str::<XaiChatEvent>(&se.data) {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("xAI SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::ResponseStream(format!("xAI SSE: {e}"))),
-                                (sse, state, buffer),
-                            ));
-                        }
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
@@ -686,13 +689,7 @@ fn classify_error(status: u16, body: &str) -> LlmErrorReason {
 
 fn build_model_catalog() -> Vec<Model> {
     vec![
-        make_model(
-            "grok-4",
-            "Grok 4",
-            "grok-4",
-            1_000_000,
-            128_000,
-        ),
+        make_model("grok-4", "Grok 4", "grok-4", 1_000_000, 128_000),
         make_model(
             "grok-4-mini",
             "Grok 4 Mini",
@@ -707,20 +704,8 @@ fn build_model_catalog() -> Vec<Model> {
             1_000_000,
             128_000,
         ),
-        make_model(
-            "grok-3",
-            "Grok 3",
-            "grok-3",
-            128_000,
-            16_384,
-        ),
-        make_model(
-            "grok-3-mini",
-            "Grok 3 Mini",
-            "grok-3-mini",
-            128_000,
-            16_384,
-        ),
+        make_model("grok-3", "Grok 3", "grok-3", 128_000, 16_384),
+        make_model("grok-3-mini", "Grok 3 Mini", "grok-3-mini", 128_000, 16_384),
     ]
 }
 
@@ -839,10 +824,22 @@ mod tests {
         for model in &models {
             assert!(!model.id.is_empty(), "model has empty id");
             assert!(!model.name.is_empty(), "model {} has empty name", model.id);
-            assert_eq!(model.provider_id, "xai", "model {} has wrong provider_id", model.id);
-            assert!(model.limit.context > 0, "model {} has zero context", model.id);
+            assert_eq!(
+                model.provider_id, "xai",
+                "model {} has wrong provider_id",
+                model.id
+            );
+            assert!(
+                model.limit.context > 0,
+                "model {} has zero context",
+                model.id
+            );
             assert!(model.limit.output > 0, "model {} has zero output", model.id);
-            assert_eq!(model.api.npm, "@ai-sdk/xai", "model {} has wrong npm", model.id);
+            assert_eq!(
+                model.api.npm, "@ai-sdk/xai",
+                "model {} has wrong npm",
+                model.id
+            );
             assert_eq!(model.status, crate::provider::ModelStatus::Active);
         }
     }
@@ -968,7 +965,10 @@ mod tests {
 
     #[test]
     fn test_map_finish_reason_content_filter() {
-        assert_eq!(map_finish_reason("content_filter"), FinishReason::ContentFilter);
+        assert_eq!(
+            map_finish_reason("content_filter"),
+            FinishReason::ContentFilter
+        );
     }
 
     #[test]
@@ -1051,9 +1051,7 @@ mod tests {
     #[test]
     fn test_extract_text_mixed_parts() {
         let content = MessageContent::Parts(vec![
-            ContentPart::Text {
-                text: "hi ".into(),
-            },
+            ContentPart::Text { text: "hi ".into() },
             ContentPart::Reasoning {
                 text: "let me think...".into(),
                 provider_options: None,

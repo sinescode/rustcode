@@ -4,8 +4,8 @@
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{error, info};
@@ -14,13 +14,19 @@ use crate::server::AppState;
 
 #[derive(Debug, Deserialize, Default)]
 pub struct VcsDiffQuery {
-    #[serde(default)] pub directory: Option<String>,
-    #[serde(default)] pub workspace: Option<String>,
-    #[serde(default)] pub mode: Option<String>,
-    #[serde(default)] pub context: Option<u32>,
+    #[serde(default)]
+    pub directory: Option<String>,
+    #[serde(default)]
+    pub workspace: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub context: Option<u32>,
 }
 #[derive(Debug, Deserialize)]
-pub struct VcsApplyPayload { pub patch: String }
+pub struct VcsApplyPayload {
+    pub patch: String,
+}
 
 pub fn instance_routes(state: Arc<AppState>) -> Router {
     Router::new()
@@ -39,7 +45,9 @@ pub fn instance_routes(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-fn home_dir() -> String { std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string()) }
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string())
+}
 
 async fn dispose_instance(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     info!("Dispose instance requested");
@@ -68,7 +76,10 @@ async fn vcs_info(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
     let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
     let git = rustcode_core::git::Git::new(&cwd);
     if git.is_repo() {
-        let branch = git.branch().unwrap_or(None).unwrap_or_else(|| "HEAD".into());
+        let branch = git
+            .branch()
+            .unwrap_or(None)
+            .unwrap_or_else(|| "HEAD".into());
         let has_head = git.has_head().unwrap_or(false);
         let prefix = git.prefix().unwrap_or_default();
         let default_branch = git.default_branch().ok().flatten();
@@ -151,13 +162,19 @@ async fn vcs_diff_raw(State(_state): State<Arc<AppState>>) -> impl IntoResponse 
         match git.patch_all("HEAD", None) {
             Ok(patch) => (
                 axum::http::StatusCode::OK,
-                [(axum::http::header::CONTENT_TYPE, "text/x-diff; charset=utf-8")],
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/x-diff; charset=utf-8",
+                )],
                 patch.text,
             )
                 .into_response(),
             Err(e) => (
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                [(
+                    axum::http::header::CONTENT_TYPE,
+                    "text/plain; charset=utf-8",
+                )],
                 e.to_string(),
             )
                 .into_response(),
@@ -165,7 +182,10 @@ async fn vcs_diff_raw(State(_state): State<Arc<AppState>>) -> impl IntoResponse 
     } else {
         (
             axum::http::StatusCode::OK,
-            [(axum::http::header::CONTENT_TYPE, "text/x-diff; charset=utf-8")],
+            [(
+                axum::http::header::CONTENT_TYPE,
+                "text/x-diff; charset=utf-8",
+            )],
             String::new(),
         )
             .into_response()
@@ -237,7 +257,7 @@ async fn list_skills(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
         if let Ok(entries) = std::fs::read_dir(&skills_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map_or(false, |ext| ext == "md") {
+                if path.extension().is_some_and(|ext| ext == "md") {
                     if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
                         skills.push(serde_json::json!({
                             "name": name,

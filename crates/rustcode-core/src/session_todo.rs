@@ -4,8 +4,8 @@
 //! - `packages/core/src/session/todo.ts` (lines 1–92)
 //! - `packages/opencode/src/session/todo.ts` (lines 1–91)
 
-use serde::{Deserialize, Serialize};
 use crate::session_info::SessionId;
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Todo Info

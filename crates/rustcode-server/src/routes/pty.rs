@@ -12,11 +12,11 @@
 //! - `POST   /pty/{ptyID}/connect`     — get connect token
 //! - `WS     /pty/{ptyID}/ws`          — WebSocket connection
 
-use axum::extract::{Path, State, WebSocketUpgrade};
 use axum::extract::ws::{Message, WebSocket};
+use axum::extract::{Path, State, WebSocketUpgrade};
 use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
 use axum::{Json, Router};
-use axum::routing::{get, post, put, delete};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::{info, warn};

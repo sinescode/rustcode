@@ -25,6 +25,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fmt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
@@ -183,7 +184,11 @@ pub struct EventDefinition {
 
 impl EventDefinition {
     /// Create a new event definition.
-    pub fn new(event_type: impl Into<String>, sync: Option<SyncConfig>, data_schema: serde_json::Value) -> Self {
+    pub fn new(
+        event_type: impl Into<String>,
+        sync: Option<SyncConfig>,
+        data_schema: serde_json::Value,
+    ) -> Self {
         Self {
             event_type: event_type.into(),
             sync,
@@ -202,7 +207,9 @@ impl EventDefinition {
     /// Ported from `packages/core/src/event.ts` lines 81–83:
     /// `versionedType(type, version) => `${type}.${version}``
     pub fn versioned_type(&self) -> Option<String> {
-        self.sync.as_ref().map(|s| versioned_type(&self.event_type, s.version))
+        self.sync
+            .as_ref()
+            .map(|s| versioned_type(&self.event_type, s.version))
     }
 }
 
@@ -380,7 +387,7 @@ pub struct CursorEvent {
 ///
 /// # Source
 /// Ported from `packages/core/src/event.ts` lines 139–145.
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct PublishOptions {
     /// Optional explicit event ID (auto-generated if not provided).
     pub id: Option<EventId>,
@@ -400,6 +407,17 @@ pub struct PublishOptions {
 /// `readonly commit?: (seq: number) => Effect.Effect<void>`
 pub type CommitFn = Arc<dyn Fn(u64) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>;
 
+impl fmt::Debug for PublishOptions {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PublishOptions")
+            .field("id", &self.id)
+            .field("metadata", &self.metadata)
+            .field("location", &self.location)
+            .field("commit", &self.commit.as_ref().map(|_| "CommitFn(...)"))
+            .finish()
+    }
+}
+
 use std::future::Future;
 use std::pin::Pin;
 
@@ -412,28 +430,44 @@ use std::pin::Pin;
 /// # Source
 /// Ported from `packages/core/src/event.ts` line 53:
 /// `Projector<D> = (event: Payload<D>) => Effect.Effect<void>`
-pub type ProjectorFn = Arc<dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>> + Send + Sync>;
+pub type ProjectorFn = Arc<
+    dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A commit guard — runs before an event is committed, can abort the commit.
 ///
 /// # Source
 /// Ported from `packages/core/src/event.ts` line 55:
 /// `CommitGuard = (event: Payload) => Effect.Effect<void>`
-pub type CommitGuardFn = Arc<dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>> + Send + Sync>;
+pub type CommitGuardFn = Arc<
+    dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A listener — notified of every event after publication with error isolation.
 ///
 /// # Source
 /// Ported from `packages/core/src/event.ts` line 56:
 /// `Listener = (event: Payload) => Effect.Effect<void>`
-pub type ListenerFn = Arc<dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>> + Send + Sync>;
+pub type ListenerFn = Arc<
+    dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// A sync handler — notified of every synchronized event after it is committed.
 ///
 /// # Source
 /// Ported from `packages/core/src/event.ts` line 57:
 /// `Sync = (event: Payload) => Effect.Effect<void>`
-pub type SyncFn = Arc<dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>> + Send + Sync>;
+pub type SyncFn = Arc<
+    dyn Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>>
+        + Send
+        + Sync,
+>;
 
 /// An unsubscribe effect — called to remove a listener or sync handler.
 ///
@@ -458,16 +492,11 @@ pub enum EventError {
     /// # Source
     /// Ported from `packages/core/src/event.ts` lines 73–79.
     #[error("InvalidSyncEvent: type={event_type}, message={message}")]
-    InvalidSyncEvent {
-        event_type: String,
-        message: String,
-    },
+    InvalidSyncEvent { event_type: String, message: String },
 
     /// Unknown sync event type during replay.
     #[error("Unknown sync event type: {event_type}")]
-    UnknownSyncType {
-        event_type: String,
-    },
+    UnknownSyncType { event_type: String },
 
     /// Event already exists in the store.
     #[error("Event {event_id} already exists at aggregate {aggregate_id} sequence {seq}")]
@@ -479,10 +508,7 @@ pub enum EventError {
 
     /// Replay diverged — stored event differs from replayed event.
     #[error("Replay diverged at aggregate {aggregate_id} sequence {seq}")]
-    ReplayDiverged {
-        aggregate_id: String,
-        seq: u64,
-    },
+    ReplayDiverged { aggregate_id: String, seq: u64 },
 
     /// Sequence mismatch during replay.
     #[error("Sequence mismatch for aggregate {aggregate_id}: expected {expected}, got {actual}")]
@@ -497,7 +523,9 @@ pub enum EventError {
     AggregateMismatch,
 
     /// Replay owner mismatch.
-    #[error("Replay owner mismatch for aggregate {aggregate_id}: expected {expected}, got {actual}")]
+    #[error(
+        "Replay owner mismatch for aggregate {aggregate_id}: expected {expected}, got {actual}"
+    )]
     OwnerMismatch {
         aggregate_id: String,
         expected: String,
@@ -506,21 +534,15 @@ pub enum EventError {
 
     /// Local commit hooks require a synchronized event.
     #[error("Local commit hooks require a synchronized event, got type={event_type}")]
-    CommitRequiresSync {
-        event_type: String,
-    },
+    CommitRequiresSync { event_type: String },
 
     /// Aggregate ID is not a string.
     #[error("Expected string aggregate field `{field}` in event data")]
-    AggregateNotString {
-        field: String,
-    },
+    AggregateNotString { field: String },
 
     /// No pubsub channel for event type (all subscribers dropped).
     #[error("No pubsub channel for event type: {event_type}")]
-    NoChannel {
-        event_type: String,
-    },
+    NoChannel { event_type: String },
 
     /// Internal error in the event system.
     #[error("Event system internal error: {0}")]
@@ -557,7 +579,10 @@ impl EventRegistry {
     pub async fn define(&self, definition: EventDefinition) {
         let mut defs = self.definitions.write().await;
         let existing = defs.get(&definition.event_type);
-        let should_replace = match (definition.sync.as_ref(), existing.and_then(|e| e.sync.as_ref())) {
+        let should_replace = match (
+            definition.sync.as_ref(),
+            existing.and_then(|e| e.sync.as_ref()),
+        ) {
             (Some(new_sync), Some(old_sync)) => new_sync.version >= old_sync.version,
             _ => true,
         };
@@ -624,7 +649,10 @@ impl EventPubSub {
     /// Publish an event to all subscribers of this type.
     ///
     /// Returns the number of receivers that received the message.
-    pub fn publish(&self, event: EventPayload) -> Result<usize, tokio::sync::broadcast::error::SendError<EventPayload>> {
+    pub fn publish(
+        &self,
+        event: EventPayload,
+    ) -> Result<usize, tokio::sync::broadcast::error::SendError<EventPayload>> {
         self.sender.send(event)
     }
 
@@ -654,7 +682,10 @@ impl EventSubscription {
         match self.receiver.recv().await {
             Ok(event) => Some(event),
             Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
-                tracing::warn!(skipped, "event subscriber lagged — {skipped} events skipped");
+                tracing::warn!(
+                    skipped,
+                    "event subscriber lagged — {skipped} events skipped"
+                );
                 self.receiver.recv().await.ok()
             }
             Err(tokio::sync::broadcast::error::RecvError::Closed) => None,
@@ -741,7 +772,7 @@ impl EventV2 {
         let id = opts.id.unwrap_or_else(EventId::create);
         let version = definition.sync.as_ref().map(|s| s.version);
 
-        let mut payload = EventPayload {
+        let payload = EventPayload {
             id,
             event_type: definition.event_type.clone(),
             data,
@@ -886,13 +917,11 @@ impl EventV2 {
         event: SerializedEvent,
         options: Option<ReplayOptions>,
     ) -> Result<(), EventError> {
-        let definition = self
-            .registry
-            .get(&event.event_type)
-            .await
-            .ok_or_else(|| EventError::UnknownSyncType {
+        let definition = self.registry.get(&event.event_type).await.ok_or_else(|| {
+            EventError::UnknownSyncType {
                 event_type: event.event_type.clone(),
-            })?;
+            }
+        })?;
 
         let payload = EventPayload {
             id: event.id,
@@ -922,9 +951,7 @@ impl EventV2 {
         events: Vec<SerializedEvent>,
         options: Option<ReplayOptions>,
     ) -> Result<Option<String>, EventError> {
-        let source = events
-            .first()
-            .map(|e| e.aggregate_id.clone());
+        let source = events.first().map(|e| e.aggregate_id.clone());
 
         if let Some(ref src) = source {
             if events.iter().any(|e| e.aggregate_id != *src) {
@@ -1479,13 +1506,25 @@ pub struct ToolFailedEvent {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RetryErrorInfo {
     pub message: String,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "statusCode")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "statusCode"
+    )]
     pub status_code: Option<f64>,
     #[serde(rename = "isRetryable")]
     pub is_retryable: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "responseHeaders")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "responseHeaders"
+    )]
     pub response_headers: Option<HashMap<String, String>>,
-    #[serde(default, skip_serializing_if = "Option::is_none", rename = "responseBody")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        rename = "responseBody"
+    )]
     pub response_body: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata: Option<HashMap<String, String>>,
@@ -1643,7 +1682,11 @@ mod tests {
     #[test]
     fn event_id_create_has_evt_prefix() {
         let id = EventId::create();
-        assert!(id.as_str().starts_with("evt_"), "Expected evt_ prefix, got: {}", id);
+        assert!(
+            id.as_str().starts_with("evt_"),
+            "Expected evt_ prefix, got: {}",
+            id
+        );
     }
 
     #[test]
@@ -1901,7 +1944,10 @@ mod tests {
                 input: 1500.0,
                 output: 300.0,
                 reasoning: 0.0,
-                cache: CacheTokens { read: 0.0, write: 0.0 },
+                cache: CacheTokens {
+                    read: 0.0,
+                    write: 0.0,
+                },
             },
             snapshot: None,
         };
@@ -2090,15 +2136,11 @@ mod tests {
 
         // Can't easily test async listener in unit test without channels.
         // Verify listener registration doesn't panic.
-        ev.listen(Arc::new(|_payload| {
-            Box::pin(async { Ok(()) })
-        }))
-        .await;
+        ev.listen(Arc::new(|_payload| Box::pin(async { Ok(()) })))
+            .await;
 
         // Publish should succeed even with a listener registered
-        let result = ev
-            .publish(&def, json!({"test": true}), None)
-            .await;
+        let result = ev.publish(&def, json!({"test": true}), None).await;
         assert!(result.is_ok());
     }
 

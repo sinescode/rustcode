@@ -52,7 +52,11 @@ pub struct Skill {
 
 impl Skill {
     /// Create a built-in skill (not from a file).
-    pub fn builtin(name: impl Into<String>, description: impl Into<String>, content: impl Into<String>) -> Self {
+    pub fn builtin(
+        name: impl Into<String>,
+        description: impl Into<String>,
+        content: impl Into<String>,
+    ) -> Self {
         Self {
             name: name.into(),
             description: Some(description.into()),
@@ -94,7 +98,10 @@ pub enum ParseError {
 ///
 /// Ported from the logic in `packages/opencode/src/skill/index.ts` `add()` function,
 /// which uses `ConfigMarkdown.parse()` internally.
-fn extract_frontmatter(content: &str, path: &str) -> Result<(SkillFrontmatter, String), ParseError> {
+fn extract_frontmatter(
+    content: &str,
+    path: &str,
+) -> Result<(SkillFrontmatter, String), ParseError> {
     let trimmed = content.trim_start();
 
     // Frontmatter must start with --- at the very beginning
@@ -132,10 +139,11 @@ fn extract_frontmatter(content: &str, path: &str) -> Result<(SkillFrontmatter, S
         });
     };
 
-    let frontmatter: SkillFrontmatter = serde_yaml::from_str(yaml_str).map_err(|e| ParseError::InvalidYaml {
-        path: path.to_string(),
-        message: e.to_string(),
-    })?;
+    let frontmatter: SkillFrontmatter =
+        serde_yaml::from_str(yaml_str).map_err(|e| ParseError::InvalidYaml {
+            path: path.to_string(),
+            message: e.to_string(),
+        })?;
 
     if frontmatter.name.trim().is_empty() {
         return Err(ParseError::MissingName {
@@ -355,9 +363,7 @@ impl SkillRegistry {
 
         let prev = self.skills.insert(skill.name.clone(), skill);
         if prev.is_some() {
-            tracing::warn!(
-                "duplicate skill name detected, later skill overrides earlier one"
-            );
+            tracing::warn!("duplicate skill name detected, later skill overrides earlier one");
         }
         prev
     }
@@ -369,11 +375,9 @@ impl SkillRegistry {
 
     /// Require a skill by name, returning an error if not found.
     pub fn require(&self, name: &str) -> Result<&Skill, SkillError> {
-        self.skills
-            .get(name)
-            .ok_or_else(|| SkillError::NotFound {
-                name: name.to_string(),
-            })
+        self.skills.get(name).ok_or_else(|| SkillError::NotFound {
+            name: name.to_string(),
+        })
     }
 
     /// Return all registered skills.
@@ -511,8 +515,7 @@ mod tests {
     #[test]
     fn test_extract_frontmatter_basic() {
         let content = "---\nname: test-skill\ndescription: A skill for testing\n---\n\n# Body\n\nInstructions here.\n";
-        let (fm, body) =
-            extract_frontmatter(content, "test.md").expect("should parse frontmatter");
+        let (fm, body) = extract_frontmatter(content, "test.md").expect("should parse frontmatter");
         assert_eq!(fm.name, "test-skill");
         assert_eq!(fm.description.as_deref(), Some("A skill for testing"));
         assert!(body.contains("# Body"));
@@ -522,8 +525,7 @@ mod tests {
     #[test]
     fn test_extract_frontmatter_no_description() {
         let content = "---\nname: simple-skill\n---\n\n# Simple\n\nJust content.\n";
-        let (fm, body) =
-            extract_frontmatter(content, "test.md").expect("should parse frontmatter");
+        let (fm, body) = extract_frontmatter(content, "test.md").expect("should parse frontmatter");
         assert_eq!(fm.name, "simple-skill");
         assert!(fm.description.is_none());
         assert!(body.contains("# Simple"));
@@ -531,7 +533,8 @@ mod tests {
 
     #[test]
     fn test_extract_frontmatter_windows_newlines() {
-        let content = "---\r\nname: win-skill\r\ndescription: Windows newlines\r\n---\r\n\r\n# Body\r\n";
+        let content =
+            "---\r\nname: win-skill\r\ndescription: Windows newlines\r\n---\r\n\r\n# Body\r\n";
         let (fm, _body) =
             extract_frontmatter(content, "test.md").expect("should parse frontmatter");
         assert_eq!(fm.name, "win-skill");
@@ -598,7 +601,10 @@ mod tests {
 
         assert!(prev.is_some());
         assert_eq!(prev.unwrap().description.as_deref(), Some("First"));
-        assert_eq!(registry.get("dup").unwrap().description.as_deref(), Some("Second"));
+        assert_eq!(
+            registry.get("dup").unwrap().description.as_deref(),
+            Some("Second")
+        );
         assert_eq!(registry.count(), 1);
     }
 
@@ -782,8 +788,11 @@ mod tests {
         // Create a skill with no frontmatter — should be skipped silently
         let skill_dir = tmp.join(".opencode").join("skill").join("no-fm");
         std::fs::create_dir_all(&skill_dir).expect("create dirs");
-        std::fs::write(skill_dir.join("SKILL.md"), "# No frontmatter\n\nJust content.\n")
-            .expect("write SKILL.md");
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            "# No frontmatter\n\nJust content.\n",
+        )
+        .expect("write SKILL.md");
 
         let registry = discover_and_load(&tmp, &tmp, &tmp, &[], true);
         let _ = std::fs::remove_dir_all(&tmp);
@@ -925,8 +934,7 @@ mod tests {
         std::fs::create_dir_all(&worktree).expect("create worktree dir");
 
         let extra_paths = vec![extra_dir.clone()];
-        let files =
-            discover_skill_files(&worktree, &worktree, &worktree, &extra_paths, true);
+        let files = discover_skill_files(&worktree, &worktree, &worktree, &extra_paths, true);
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&worktree);
 
@@ -950,8 +958,7 @@ mod tests {
 
     #[test]
     fn test_glob_home_skills_nonexistent_dir() {
-        let nonexistent =
-            std::path::Path::new("/tmp/rustcode-definitely-does-not-exist-98765");
+        let nonexistent = std::path::Path::new("/tmp/rustcode-definitely-does-not-exist-98765");
         let results = glob_home_skills(nonexistent);
         assert!(results.is_empty());
     }
@@ -1096,8 +1103,7 @@ mod tests {
 
     #[test]
     fn test_parse_error_read_display() {
-        let io_err =
-            std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
+        let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "permission denied");
         let err = ParseError::Read {
             path: "/home/user/.claude/skills/SKILL.md".to_string(),
             source: io_err,

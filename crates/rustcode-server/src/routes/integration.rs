@@ -4,8 +4,8 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
@@ -42,8 +42,14 @@ pub fn integration_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/integration", get(list_integrations))
         .route("/integration/{integrationID}", get(get_integration))
-        .route("/integration/{integrationID}/connect", post(connect_integration))
-        .route("/integration/{integrationID}/attempt/{attemptID}", get(get_attempt_status))
+        .route(
+            "/integration/{integrationID}/connect",
+            post(connect_integration),
+        )
+        .route(
+            "/integration/{integrationID}/attempt/{attemptID}",
+            get(get_attempt_status),
+        )
         .with_state(state)
 }
 
@@ -186,9 +192,7 @@ async fn connect_integration(
 ) -> impl IntoResponse {
     // If an API key is provided, just record it and return success
     if let Some(api_key) = payload.api_key {
-        info!(
-            "API key connection requested for integration '{integration_id}'"
-        );
+        info!("API key connection requested for integration '{integration_id}'");
         let _ = api_key; // In production, store the key securely
         return Json(serde_json::json!({
             "status": "connected",

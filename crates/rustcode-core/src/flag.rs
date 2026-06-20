@@ -8,7 +8,11 @@ static GIT_BASH_PATH: OnceLock<Option<String>> = OnceLock::new();
 
 pub fn git_bash_path() -> Option<&'static str> {
     GIT_BASH_PATH
-        .get_or_init(|| std::env::var("OPENCODE_GIT_BASH_PATH").ok().filter(|s| !s.is_empty()))
+        .get_or_init(|| {
+            std::env::var("OPENCODE_GIT_BASH_PATH")
+                .ok()
+                .filter(|s| !s.is_empty())
+        })
         .as_deref()
 }
 
@@ -69,7 +73,9 @@ mod tests {
     fn test_set_and_get_git_bash_path() {
         // This test must run in a fresh process or before any other call to git_bash_path().
         // OnceLock can only be initialized once, so we test the constructor logic directly.
-        let path = std::env::var("OPENCODE_GIT_BASH_PATH").ok().filter(|s| !s.is_empty());
+        let path = std::env::var("OPENCODE_GIT_BASH_PATH")
+            .ok()
+            .filter(|s| !s.is_empty());
         // If OPENCODE_GIT_BASH_PATH is not set, path should be None
         assert!(path.is_none());
     }

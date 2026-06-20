@@ -9,9 +9,8 @@
 
 use axum::extract::State;
 use axum::response::IntoResponse;
+use axum::routing::get;
 use axum::{Json, Router};
-use axum::routing::{get, patch};
-use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
 

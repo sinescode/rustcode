@@ -631,9 +631,7 @@ impl IntegrationService {
         let attempt = IntegrationAttempt {
             attempt_id: attempt_id.clone(),
             url,
-            instructions: format!(
-                "Visit the URL to authorize {integration_id}",
-            ),
+            instructions: format!("Visit the URL to authorize {integration_id}",),
             mode: AttemptMode::Auto,
             time: AttemptTime {
                 created: now,
@@ -922,8 +920,7 @@ mod tests {
             value: "us-east-1".into(),
         };
         let json = serde_json::to_string(&w).expect("serialize When");
-        let parsed: serde_json::Value =
-            serde_json::from_str(&json).expect("parse JSON");
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("parse JSON");
         assert_eq!(parsed["key"], "region");
         assert_eq!(parsed["op"], "eq");
         assert_eq!(parsed["value"], "us-east-1");
@@ -1313,7 +1310,8 @@ mod tests {
         let mut svc = IntegrationService::new();
         svc.register(make_github_integration());
 
-        let attempt = svc.authenticate("github", "github-oauth")
+        let attempt = svc
+            .authenticate("github", "github-oauth")
             .expect("authenticate should succeed");
 
         assert!(attempt.attempt_id.starts_with("con_"));
@@ -1338,7 +1336,8 @@ mod tests {
         let attempt = svc.authenticate("github", "github-oauth").unwrap();
         let attempt_id = attempt.attempt_id.clone();
 
-        let status = svc.callback(&attempt_id, None)
+        let status = svc
+            .callback(&attempt_id, None)
             .expect("callback should succeed");
 
         match status {
@@ -1581,7 +1580,9 @@ mod tests {
         assert!(attempt.url.contains("client_id=gh_client_id"));
         assert!(attempt.url.contains("scope=repo"));
         assert!(attempt.url.contains("response_type=code"));
-        assert!(attempt.url.contains(&format!("state={}", attempt.attempt_id)));
+        assert!(attempt
+            .url
+            .contains(&format!("state={}", attempt.attempt_id)));
     }
 
     #[test]

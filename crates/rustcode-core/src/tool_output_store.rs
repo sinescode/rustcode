@@ -96,8 +96,7 @@ pub struct BoundResult {
 /// Error during tool output storage.
 ///
 /// Ported from: `tool-output-store.ts` — `StorageError`
-#[derive(Debug, Clone, Serialize, Deserialize, thiserror::Error)]
-#[error("tool output storage error in {operation}")]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutputStorageError {
     /// The operation that failed
     pub operation: ToolOutputOperation,
@@ -105,12 +104,29 @@ pub struct ToolOutputStorageError {
     pub cause: String,
 }
 
+impl std::fmt::Display for ToolOutputStorageError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "tool output storage error in {}", self.operation)
+    }
+}
+
+impl std::error::Error for ToolOutputStorageError {}
+
 /// Operations that can fail in tool output storage.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ToolOutputOperation {
     Encode,
     Write,
+}
+
+impl std::fmt::Display for ToolOutputOperation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Encode => write!(f, "encode"),
+            Self::Write => write!(f, "write"),
+        }
+    }
 }
 
 /// Storage limits configuration.

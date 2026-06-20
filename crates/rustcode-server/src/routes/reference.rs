@@ -4,8 +4,8 @@
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::get;
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 

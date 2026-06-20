@@ -4,8 +4,8 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{get, patch, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -120,6 +120,7 @@ async fn init_git(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
         "initialized": true,
         "was_already_repo": already_repo,
     }))
+    .into_response()
 }
 
 async fn update_project(

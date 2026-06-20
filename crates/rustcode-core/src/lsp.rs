@@ -522,7 +522,10 @@ pub fn language_extensions() -> &'static HashMap<&'static str, &'static str> {
 /// Ported from `packages/opencode/src/lsp/client.ts` line 560:
 /// `const languageId = LANGUAGE_EXTENSIONS[extension] ?? "plaintext"`
 pub fn language_id_for_extension(ext: &str) -> &'static str {
-    language_extensions().get(ext).copied().unwrap_or("plaintext")
+    language_extensions()
+        .get(ext)
+        .copied()
+        .unwrap_or("plaintext")
 }
 
 // ---------------------------------------------------------------------------

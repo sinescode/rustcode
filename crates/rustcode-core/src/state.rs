@@ -10,15 +10,14 @@
 //!
 //! - A base `State` value is created from `initial()`.
 //! - **Transforms** (scoped) are registered and replayed in registration order
-//!   whenever any transform changes. Each transform wraps the mutable draft in
-//!   a domain-specific `Editor`.
+//!   whenever any transform changes. Each transform mutates the state directly.
 //! - **Mutations** are one-shot, non-replayable edits applied directly to the
 //!   current materialized state.
 //! - **Finalize** runs after every commit (transform rebuild or direct mutate).
 //!
 //! In Rust:
-//! - [`AppState<S, E>`] is the generic state container.
-//! - [`Transform<S, E>`] is a scoped, replayable transformation.
+//! - [`AppState<S>`] is the generic state container.
+//! - [`Transform<S>`] is a scoped, replayable transformation.
 //! - Transforms are stored as ordered closures. On any change, the state is
 //!   rebuilt from `initial()` by replaying all active transforms.
 
@@ -30,22 +29,12 @@ use tokio::sync::Mutex;
 // Core type aliases
 // ---------------------------------------------------------------------------
 
-/// A replayable transform applied to an editor during rebuild.
-///
-/// Transforms are intentionally synchronous and mutation-shaped: domain editors
-/// hide the draft representation while preserving concise plugin/config code.
+/// A replayable transform applied directly to the state during rebuild.
 ///
 /// # Source
 /// Ported from `packages/core/src/state.ts` line 12:
-/// `Transform<Editor> = (editor: Editor) => void`
-pub type Transform<Editor> = Arc<dyn Fn(&mut Editor) + Send + Sync>;
-
-/// A factory that wraps a mutable draft state in a domain-specific editor.
-///
-/// # Source
-/// Ported from `packages/core/src/state.ts` line 13:
-/// `MakeEditor<State, Editor> = (draft: Draft<State>) => Editor`
-pub type MakeEditor<State, Editor> = Arc<dyn Fn(&mut State) -> Editor + Send + Sync>;
+/// `Transform = (state: State) => void`
+pub type Transform<State> = Arc<dyn Fn(&mut State) + Send + Sync>;
 
 // ---------------------------------------------------------------------------
 // StateOptions — configuration for an AppState
@@ -55,35 +44,31 @@ pub type MakeEditor<State, Editor> = Arc<dyn Fn(&mut State) -> Editor + Send + S
 ///
 /// # Source
 /// Ported from `packages/core/src/state.ts` lines 15–29.
-pub struct StateOptions<State, Editor> {
+pub struct StateOptions<State> {
     /// Creates the base value for initial state and every scoped-transform rebuild.
     pub initial: Arc<dyn Fn() -> State + Send + Sync>,
-    /// Wraps the mutable draft in a domain-specific editor.
-    pub editor: MakeEditor<State, Editor>,
     /// Completes every committed edit.
     ///
     /// For rebuilds, this runs after all active transforms have been replayed and
     /// before the rebuilt state becomes visible. For direct updates, this runs
     /// after the current state has already been edited. The optional reason is
     /// caller-defined metadata for exceptional update origins.
-    pub finalize: Option<Arc<dyn Fn(&Editor, Option<&str>) + Send + Sync>>,
+    pub finalize: Option<Arc<dyn Fn(&State, Option<&str>) + Send + Sync>>,
 }
 
-impl<State, Editor> fmt::Debug for StateOptions<State, Editor> {
+impl<State> fmt::Debug for StateOptions<State> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StateOptions")
             .field("initial", &"<closure>")
-            .field("editor", &"<closure>")
             .field("finalize", &self.finalize.as_ref().map(|_| "<closure>"))
             .finish()
     }
 }
 
-impl<State, Editor> Clone for StateOptions<State, Editor> {
+impl<State> Clone for StateOptions<State> {
     fn clone(&self) -> Self {
         Self {
             initial: Arc::clone(&self.initial),
-            editor: Arc::clone(&self.editor),
             finalize: self.finalize.clone(),
         }
     }
@@ -101,34 +86,41 @@ impl<State, Editor> Clone for StateOptions<State, Editor> {
 ///
 /// # Source
 /// Ported from `packages/core/src/state.ts` lines 74–98 (`transform()`).
-#[derive(Clone)]
-pub struct TransformSlot<Editor> {
+pub struct TransformSlot<State> {
     /// The current transform function (can be replaced on update).
-    transform: Arc<Mutex<Transform<Editor>>>,
+    transform: Arc<Mutex<Transform<State>>>,
 }
 
-impl<Editor> TransformSlot<Editor> {
+impl<State> TransformSlot<State> {
     /// Create a new transform slot with the given transform.
-    fn new(transform: Transform<Editor>) -> Self {
+    fn new(transform: Transform<State>) -> Self {
         Self {
             transform: Arc::new(Mutex::new(transform)),
         }
     }
 
     /// Update this slot's transform.
-    pub async fn update(&self, new_transform: Transform<Editor>) {
+    pub async fn update(&self, new_transform: Transform<State>) {
         let mut t = self.transform.lock().await;
         *t = new_transform;
     }
 
-    /// Apply this slot's transform to the given editor.
-    pub async fn apply(&self, editor: &mut Editor) {
+    /// Apply this slot's transform to the given state.
+    pub async fn apply(&self, state: &mut State) {
         let t = self.transform.lock().await;
-        t(editor);
+        t(state);
     }
 }
 
-impl<Editor> fmt::Debug for TransformSlot<Editor> {
+impl<State> Clone for TransformSlot<State> {
+    fn clone(&self) -> Self {
+        Self {
+            transform: self.transform.clone(),
+        }
+    }
+}
+
+impl<State> fmt::Debug for TransformSlot<State> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TransformSlot").finish()
     }
@@ -149,31 +141,29 @@ impl<Editor> fmt::Debug for TransformSlot<Editor> {
 ///
 /// # Source
 /// Ported from `packages/core/src/state.ts` lines 55–112 (`create()`).
-pub struct AppState<State, Editor>
+pub struct AppState<State>
 where
     State: Clone + Send + 'static,
-    Editor: Send + 'static,
 {
     /// The materialized (current) state.
     current: Mutex<State>,
-    /// Configuration: initial value factory, editor wrapper, finalize hook.
-    options: StateOptions<State, Editor>,
+    /// Configuration: initial value factory, finalize hook.
+    options: StateOptions<State>,
     /// Ordered list of active transform slots.
-    transforms: Mutex<Vec<(u64, TransformSlot<Editor>)>>,
+    transforms: Mutex<Vec<(u64, TransformSlot<State>)>>,
     /// Monotonic slot ID counter for stable ordering.
     next_slot_id: Mutex<u64>,
 }
 
-impl<State, Editor> AppState<State, Editor>
+impl<State> AppState<State>
 where
     State: Clone + Send + 'static,
-    Editor: Send + 'static,
 {
     /// Create a new application state from the given options.
     ///
     /// # Source
     /// Ported from `packages/core/src/state.ts` lines 55–112 (`create()`).
-    pub fn new(options: StateOptions<State, Editor>) -> Self {
+    pub fn new(options: StateOptions<State>) -> Self {
         let initial_state = (options.initial)();
         Self {
             current: Mutex::new(initial_state),
@@ -198,10 +188,7 @@ where
     ///
     /// # Source
     /// Ported from `packages/core/src/state.ts` lines 76–98.
-    pub async fn register_transform(
-        &self,
-        transform: Transform<Editor>,
-    ) -> TransformSlot<Editor> {
+    pub async fn register_transform(&self, transform: Transform<State>) -> TransformSlot<State> {
         let slot = TransformSlot::new(transform);
         let mut slot_id = self.next_slot_id.lock().await;
         let id = *slot_id;
@@ -225,7 +212,7 @@ where
     ///
     /// # Source
     /// Ported from `packages/core/src/state.ts` lines 101–104 (`update()`).
-    pub async fn update(&self, transform_fn: Transform<Editor>) -> TransformSlot<Editor> {
+    pub async fn update(&self, transform_fn: Transform<State>) -> TransformSlot<State> {
         self.register_transform(transform_fn).await
     }
 
@@ -239,15 +226,14 @@ where
     /// Ported from `packages/core/src/state.ts` lines 105–109 (`mutate()`).
     pub async fn mutate<F>(&self, reason: Option<&str>, mutator: F)
     where
-        F: FnOnce(&mut Editor),
+        F: FnOnce(&mut State),
     {
         let mut state = self.current.lock().await;
-        let mut editor = (self.options.editor)(&mut state);
-        mutator(&mut editor);
+        mutator(&mut state);
 
         // Run finalize hook if present
         if let Some(ref finalize) = self.options.finalize {
-            finalize(&editor, reason);
+            finalize(&state, reason);
         }
     }
 
@@ -257,16 +243,16 @@ where
     /// Ported from `packages/core/src/state.ts` lines 66–72 (`rebuild()`).
     async fn rebuild(&self) {
         let mut next = (self.options.initial)();
-        let mut editor = (self.options.editor)(&mut next);
 
         let transforms = self.transforms.lock().await;
         for (_id, slot) in transforms.iter() {
-            slot.apply(&mut editor).await;
+            slot.apply(&mut next).await;
         }
+        drop(transforms);
 
         // Run finalize hook if present
         if let Some(ref finalize) = self.options.finalize {
-            finalize(&editor, None);
+            finalize(&next, None);
         }
 
         let mut current = self.current.lock().await;
@@ -276,7 +262,7 @@ where
     /// Remove a specific transform slot (by slot closure identity) and rebuild.
     ///
     /// In practice, this is called when a scope is dropped / finalized.
-    pub async fn remove_transform(&self, slot: &TransformSlot<Editor>) {
+    pub async fn remove_transform(&self, slot: &TransformSlot<State>) {
         let mut transforms = self.transforms.lock().await;
         // Compare by Arc pointer identity
         let slot_ptr = Arc::as_ptr(&slot.transform) as usize;
@@ -292,10 +278,9 @@ where
     }
 }
 
-impl<State, Editor> fmt::Debug for AppState<State, Editor>
+impl<State> fmt::Debug for AppState<State>
 where
     State: Clone + Send + fmt::Debug + 'static,
-    Editor: Send + 'static,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AppState")
@@ -312,7 +297,7 @@ where
 mod tests {
     use super::*;
 
-    /// A simple document state and its editor for testing.
+    /// A simple document state for testing.
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct Document {
         title: String,
@@ -320,41 +305,13 @@ mod tests {
         tags: Vec<String>,
     }
 
-    /// Simple domain editor wrapping a mutable document.
-    struct DocumentEditor<'a> {
-        doc: &'a mut Document,
-    }
-
-    impl<'a> DocumentEditor<'a> {
-        fn set_title(&mut self, title: &str) {
-            self.doc.title = title.to_string();
-        }
-
-        fn append_content(&mut self, text: &str) {
-            self.doc.content.push_str(text);
-        }
-
-        fn add_tag(&mut self, tag: &str) {
-            self.doc.tags.push(tag.to_string());
-        }
-
-        fn title(&self) -> &str {
-            &self.doc.title
-        }
-
-        fn content(&self) -> &str {
-            &self.doc.content
-        }
-    }
-
-    fn make_document_options() -> StateOptions<Document, for<'a> DocumentEditor<'a>> {
+    fn make_document_options() -> StateOptions<Document> {
         StateOptions {
             initial: Arc::new(|| Document {
                 title: String::new(),
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
             finalize: None,
         }
     }
@@ -373,8 +330,8 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Hello");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Hello".to_string();
             }))
             .await;
 
@@ -387,20 +344,20 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("First");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "First".to_string();
             }))
             .await;
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("Hello ");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("Hello ");
             }))
             .await;
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("World");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("World");
             }))
             .await;
 
@@ -415,15 +372,15 @@ mod tests {
         assert_eq!(state.transform_count().await, 0);
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("T1");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "T1".to_string();
             }))
             .await;
         assert_eq!(state.transform_count().await, 1);
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("T2");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "T2".to_string();
             }))
             .await;
         assert_eq!(state.transform_count().await, 2);
@@ -434,15 +391,15 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Replayable");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Replayable".to_string();
             }))
             .await;
 
         // Direct mutation
         state
-            .mutate(Some("direct-edit"), |editor| {
-                editor.add_tag("urgent");
+            .mutate(Some("direct-edit"), |doc: &mut Document| {
+                doc.tags.push("urgent".to_string());
             })
             .await;
 
@@ -457,22 +414,22 @@ mod tests {
 
         // Set a replayable transform
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Base");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Base".to_string();
             }))
             .await;
 
         // Direct mutation — this is lost on rebuild
         state
-            .mutate(None, |editor| {
-                editor.add_tag("temp");
+            .mutate(None, |doc: &mut Document| {
+                doc.tags.push("temp".to_string());
             })
             .await;
 
         // Trigger a rebuild by adding another transform
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content(" rebuilt");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str(" rebuilt");
             }))
             .await;
 
@@ -487,14 +444,14 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         let slot = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("V1");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "V1".to_string();
             }))
             .await;
 
         // Update the existing slot
-        slot.update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-            editor.set_title("V2");
+        slot.update(Arc::new(|doc: &mut Document| {
+            doc.title = "V2".to_string();
         }))
         .await;
 
@@ -507,8 +464,8 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         let slot = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Removable");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Removable".to_string();
             }))
             .await;
 
@@ -533,18 +490,19 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
-            finalize: Some(Arc::new(move |_editor: &DocumentEditor<'_>, reason: Option<&str>| {
-                let mut log = finalized_clone.blocking_lock();
-                log.push(reason.unwrap_or("none").to_string());
-            })),
+            finalize: Some(Arc::new(
+                move |_doc: &Document, reason: Option<&str>| {
+                    let mut log = finalized_clone.blocking_lock();
+                    log.push(reason.unwrap_or("none").to_string());
+                },
+            )),
         };
 
         let state = AppState::new(options);
 
         state
-            .mutate(Some("mutation-1"), |editor| {
-                editor.set_title("Test");
+            .mutate(Some("mutation-1"), |doc: &mut Document| {
+                doc.title = "Test".to_string();
             })
             .await;
 
@@ -563,26 +521,27 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
-            finalize: Some(Arc::new(move |_editor: &DocumentEditor<'_>, _reason: Option<&str>| {
-                let mut log = finalized_clone.blocking_lock();
-                log.push("finalized".to_string());
-            })),
+            finalize: Some(Arc::new(
+                move |_doc: &Document, _reason: Option<&str>| {
+                    let mut log = finalized_clone.blocking_lock();
+                    log.push("finalized".to_string());
+                },
+            )),
         };
 
         let state = AppState::new(options);
 
         // First transform triggers a rebuild + finalize
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Init");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Init".to_string();
             }))
             .await;
 
         // Second transform triggers another rebuild + finalize
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("Content");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("Content");
             }))
             .await;
 
@@ -596,8 +555,8 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Original");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Original".to_string();
             }))
             .await;
 
@@ -617,22 +576,22 @@ mod tests {
         let s3 = Arc::clone(&state);
 
         let h1 = tokio::spawn(async move {
-            s1.update(Arc::new(|e: &mut DocumentEditor<'_>| {
-                e.append_content("A");
+            s1.update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("A");
             }))
             .await;
         });
 
         let h2 = tokio::spawn(async move {
-            s2.update(Arc::new(|e: &mut DocumentEditor<'_>| {
-                e.append_content("B");
+            s2.update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("B");
             }))
             .await;
         });
 
         let h3 = tokio::spawn(async move {
-            s3.update(Arc::new(|e: &mut DocumentEditor<'_>| {
-                e.append_content("C");
+            s3.update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("C");
             }))
             .await;
         });
@@ -657,8 +616,8 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         let slot = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Cloneable");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Cloneable".to_string();
             }))
             .await;
 
@@ -679,9 +638,8 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
             finalize: Some(Arc::new(
-                move |_editor: &DocumentEditor<'_>, reason: Option<&str>| {
+                move |_doc: &Document, reason: Option<&str>| {
                     let mut log = reasons_clone.blocking_lock();
                     log.push(reason.expect("reason").to_string());
                 },
@@ -691,14 +649,14 @@ mod tests {
         let state = AppState::new(options);
 
         state
-            .mutate(Some("urgent-bugfix"), |editor| {
-                editor.set_title("Patched");
+            .mutate(Some("urgent-bugfix"), |doc: &mut Document| {
+                doc.title = "Patched".to_string();
             })
             .await;
 
         state
-            .mutate(Some("routine-cleanup"), |editor| {
-                editor.append_content("Cleaned");
+            .mutate(Some("routine-cleanup"), |doc: &mut Document| {
+                doc.content.push_str("Cleaned");
             })
             .await;
 
@@ -714,20 +672,20 @@ mod tests {
 
         // Register transforms that append markers in order
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("[T1]");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("[T1]");
             }))
             .await;
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("[T2]");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("[T2]");
             }))
             .await;
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("[T3]");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("[T3]");
             }))
             .await;
 
@@ -736,8 +694,8 @@ mod tests {
 
         // Trigger a rebuild by adding another transform
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("[T4]");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("[T4]");
             }))
             .await;
 
@@ -747,8 +705,8 @@ mod tests {
 
         // Another rebuild: add T5, verify full order preserved
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("[T5]");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("[T5]");
             }))
             .await;
 
@@ -767,9 +725,8 @@ mod tests {
                 content: String::new(),
                 tags: Vec::new(),
             }),
-            editor: Arc::new(|state: &mut Document| DocumentEditor { doc: state }),
             finalize: Some(Arc::new(
-                move |_editor: &DocumentEditor<'_>, _reason: Option<&str>| {
+                move |_doc: &Document, _reason: Option<&str>| {
                     let mut called = called_clone.blocking_lock();
                     *called = true;
                 },
@@ -782,8 +739,8 @@ mod tests {
 
         // Mutate — finalize hook should still run
         state
-            .mutate(Some("no-transforms-yet"), |editor| {
-                editor.set_title("First Edit");
+            .mutate(Some("no-transforms-yet"), |doc: &mut Document| {
+                doc.title = "First Edit".to_string();
             })
             .await;
 
@@ -799,8 +756,8 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         let slot = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Original");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Original".to_string();
             }))
             .await;
 
@@ -808,9 +765,9 @@ mod tests {
         assert_eq!(doc.title, "Original");
 
         // Update the slot's transform function — should trigger rebuild
-        slot.update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-            editor.set_title("Updated");
-            editor.append_content("NewContent");
+        slot.update(Arc::new(|doc: &mut Document| {
+            doc.title = "Updated".to_string();
+            doc.content.push_str("NewContent");
         }))
         .await;
 
@@ -824,20 +781,20 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         let _slot_a = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("A");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "A".to_string();
             }))
             .await;
 
         let slot_b = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.append_content("B");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.content.push_str("B");
             }))
             .await;
 
         let _slot_c = state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.add_tag("C");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.tags.push("C".to_string());
             }))
             .await;
 
@@ -865,8 +822,8 @@ mod tests {
 
         // Set up a transform as baseline
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Concurrent");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Concurrent".to_string();
             }))
             .await;
 
@@ -876,9 +833,12 @@ mod tests {
         for i in 0..10 {
             let s = Arc::clone(&state);
             handles.push(tokio::spawn(async move {
-                s.mutate(Some("concurrent"), move |editor: &mut DocumentEditor<'_>| {
-                    editor.append_content(&format!("M{}", i));
-                })
+                s.mutate(
+                    Some("concurrent"),
+                    move |doc: &mut Document| {
+                        doc.content.push_str(&format!("M{}", i));
+                    },
+                )
                 .await;
             }));
         }
@@ -888,7 +848,6 @@ mod tests {
             let s = Arc::clone(&state);
             handles.push(tokio::spawn(async move {
                 let doc = s.get().await;
-                // Just verify we can read without panicking
                 let _ = doc.title.len();
                 let _ = doc.content.len();
             }));
@@ -898,22 +857,18 @@ mod tests {
             handle.await.expect("concurrent task should not panic");
         }
 
-        // Final read — state should be internally consistent
         let doc = state.get().await;
         assert_eq!(doc.title, "Concurrent");
-        // Content may vary due to interleaving, but no data race means no panic/corruption
     }
 
     #[tokio::test]
     async fn test_state_default_options_no_finalize() {
-        // make_document_options already has finalize: None
         let state = AppState::new(make_document_options());
 
-        // Mutate without a finalize hook — must not panic
         state
-            .mutate(Some("no-hook"), |editor| {
-                editor.set_title("Safe");
-                editor.append_content("No finalize needed");
+            .mutate(Some("no-hook"), |doc: &mut Document| {
+                doc.title = "Safe".to_string();
+                doc.content.push_str("No finalize needed");
             })
             .await;
 
@@ -927,18 +882,16 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Immutable Base");
-                editor.append_content("Original");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Immutable Base".to_string();
+                doc.content.push_str("Original");
             }))
             .await;
 
-        // get() returns a clone — modifying it must not affect the real state
         let mut doc_clone = state.get().await;
         doc_clone.title = "Hacked".to_string();
         doc_clone.content.push_str("Tampered");
 
-        // Fetch again — should be unchanged
         let doc = state.get().await;
         assert_eq!(doc.title, "Immutable Base");
         assert_eq!(doc.content, "Original");
@@ -949,12 +902,11 @@ mod tests {
         let state = AppState::new(make_document_options());
 
         state
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("Debug Me");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "Debug Me".to_string();
             }))
             .await;
 
-        // Debug output must not panic
         let debug_str = format!("{:?}", state);
         assert!(debug_str.contains("AppState"));
         assert!(debug_str.contains("StateOptions"));
@@ -964,21 +916,20 @@ mod tests {
     async fn test_stateoptions_clone() {
         let options_a = make_document_options();
 
-        // Clone the options — both must work independently
         let options_b = options_a.clone();
 
         let state_a = AppState::new(options_a);
         let state_b = AppState::new(options_b);
 
         state_a
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("State A");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "State A".to_string();
             }))
             .await;
 
         state_b
-            .update(Arc::new(|editor: &mut DocumentEditor<'_>| {
-                editor.set_title("State B");
+            .update(Arc::new(|doc: &mut Document| {
+                doc.title = "State B".to_string();
             }))
             .await;
 

@@ -179,9 +179,7 @@ impl MutationPathError {
     /// Create a non-directory ancestor error.
     #[must_use]
     pub fn non_directory_ancestor(path: impl Into<String>) -> Self {
-        Self::NonDirectoryAncestor {
-            path: path.into(),
-        }
+        Self::NonDirectoryAncestor { path: path.into() }
     }
 }
 
@@ -415,11 +413,12 @@ pub fn layer(
     ref_: &LocationRef,
     project_service: &dyn ProjectResolver,
 ) -> Result<LocationFull, LocationError> {
-    let resolved = project_service
-        .resolve(&ref_.directory)
-        .ok_or_else(|| LocationError::Unresolvable {
-            directory: ref_.directory.clone(),
-        })?;
+    let resolved =
+        project_service
+            .resolve(&ref_.directory)
+            .ok_or_else(|| LocationError::Unresolvable {
+                directory: ref_.directory.clone(),
+            })?;
     Ok(LocationFull {
         directory: ref_.directory.clone(),
         workspace_id: ref_.workspace_id.clone(),
@@ -660,9 +659,9 @@ impl MutationService {
             // Check if this component exists and is not a directory.
             if let Ok(meta) = std::fs::metadata(&current) {
                 if !meta.is_dir() {
-                    return Err(MutationPathError::non_directory_ancestor(
-                        path_to_string(&current),
-                    ));
+                    return Err(MutationPathError::non_directory_ancestor(path_to_string(
+                        &current,
+                    )));
                 }
             }
             // If metadata fails (e.g., parent doesn't exist yet), that's fine —
@@ -901,10 +900,7 @@ mod tests {
         let ws = WorkspaceId::ascending("wrk_key1").expect("valid");
         let r = LocationRef::with_workspace("/ws/proj", ws);
         let key: LocationServiceKey = r.into();
-        assert_eq!(
-            key.workspace_id.unwrap().as_str(),
-            "wrk_key1"
-        );
+        assert_eq!(key.workspace_id.unwrap().as_str(), "wrk_key1");
     }
 
     #[test]
@@ -999,6 +995,7 @@ mod tests {
             Some(ProjectVcs::Git { store }) => {
                 assert_eq!(store, "/home/user/myproject/.git");
             }
+            None => {}
         }
     }
 
@@ -1014,14 +1011,13 @@ mod tests {
         let ws = WorkspaceId::ascending("wrk_resloc").expect("valid");
         let ref_ = LocationRef::with_workspace("/ws/proj", ws.clone());
         let result = resolve_location(&ref_, |_dir| {
-            Some((
-                ProjectId::new("p_ws"),
-                "/ws/proj".to_string(),
-                None,
-            ))
+            Some((ProjectId::new("p_ws"), "/ws/proj".to_string(), None))
         });
         let full = result.expect("resolver mapped the directory");
-        assert_eq!(full.workspace_id.as_ref().expect("has workspace").as_str(), "wrk_resloc");
+        assert_eq!(
+            full.workspace_id.as_ref().expect("has workspace").as_str(),
+            "wrk_resloc"
+        );
         assert_eq!(full.project.id.0, "p_ws");
     }
 
@@ -1129,7 +1125,9 @@ mod tests {
             path: "src/main.rs".into(),
             kind: Some(MutationKind::File),
         };
-        let target = svc.resolve(&input).expect("resolve with trailing-slash root");
+        let target = svc
+            .resolve(&input)
+            .expect("resolve with trailing-slash root");
         assert_eq!(target.canonical, "/app/src/main.rs");
         assert_eq!(target.resource, "src/main.rs");
     }
@@ -1204,7 +1202,9 @@ mod tests {
             path: "../outside".into(),
             kind: None,
         };
-        let err = svc.resolve(&input).expect_err("relative escape should fail");
+        let err = svc
+            .resolve(&input)
+            .expect_err("relative escape should fail");
         match err {
             MutationPathError::RelativeEscape { path } => {
                 assert_eq!(path, "../outside");
@@ -1357,7 +1357,8 @@ mod tests {
 
         // Create a symlink inside location pointing outside
         #[cfg(unix)]
-        std::os::unix::fs::symlink(tmp.join("outside"), tmp.join("location/link")).expect("symlink");
+        std::os::unix::fs::symlink(tmp.join("outside"), tmp.join("location/link"))
+            .expect("symlink");
 
         let location_dir = tmp.join("location");
         let svc = MutationService::new(location_dir.to_string_lossy());
@@ -1369,7 +1370,9 @@ mod tests {
 
         #[cfg(unix)]
         {
-            let err = svc.resolve_with_fs(&input).expect_err("symlink escape should fail");
+            let err = svc
+                .resolve_with_fs(&input)
+                .expect_err("symlink escape should fail");
             match err {
                 MutationPathError::LocationEscape { path } => {
                     assert!(path.contains("link/file.txt"));
@@ -1391,11 +1394,8 @@ mod tests {
 
         // Create a symlink inside location pointing to another location inside
         #[cfg(unix)]
-        std::os::unix::fs::symlink(
-            tmp.join("location/subdir"),
-            tmp.join("location/link"),
-        )
-        .expect("symlink");
+        std::os::unix::fs::symlink(tmp.join("location/subdir"), tmp.join("location/link"))
+            .expect("symlink");
 
         let location_dir = tmp.join("location");
         let svc = MutationService::new(location_dir.to_string_lossy());
@@ -1407,7 +1407,9 @@ mod tests {
 
         #[cfg(unix)]
         {
-            let target = svc.resolve_with_fs(&input).expect("resolve symlink staying inside");
+            let target = svc
+                .resolve_with_fs(&input)
+                .expect("resolve symlink staying inside");
             assert!(target.canonical.contains("subdir/file.txt"));
         }
 
@@ -1463,7 +1465,9 @@ mod tests {
             kind: Some(MutationKind::File),
         };
 
-        let target = svc.resolve_with_fs(&input).expect("missing path should resolve");
+        let target = svc
+            .resolve_with_fs(&input)
+            .expect("missing path should resolve");
         assert_eq!(
             target.canonical,
             tmp.join("new_dir/file.txt").to_string_lossy()
@@ -1564,11 +1568,7 @@ mod tests {
                     directory.to_string(),
                     Some(ProjectVcs::git("/home/user/project/.git")),
                 )),
-                "/ws/proj" => Some((
-                    ProjectId::new("p_ws_mock"),
-                    directory.to_string(),
-                    None,
-                )),
+                "/ws/proj" => Some((ProjectId::new("p_ws_mock"), directory.to_string(), None)),
                 _ => None,
             }
         }

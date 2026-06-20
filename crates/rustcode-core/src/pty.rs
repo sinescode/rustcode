@@ -24,6 +24,12 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct PtyId(String);
 
+impl From<&str> for PtyId {
+    fn from(s: &str) -> Self {
+        Self(s.to_string())
+    }
+}
+
 impl PtyId {
     /// Create a new `PtyId` with validation.
     ///
@@ -626,7 +632,8 @@ pub trait PtyService: Send + Sync {
     fn list(&self) -> impl std::future::Future<Output = Result<Vec<PtyInfo>, PtyError>> + Send;
 
     /// Get a single PTY by ID.
-    fn get(&self, id: PtyId) -> impl std::future::Future<Output = Result<PtyInfo, PtyError>> + Send;
+    fn get(&self, id: PtyId)
+        -> impl std::future::Future<Output = Result<PtyInfo, PtyError>> + Send;
 
     /// Create a new PTY session.
     fn create(
@@ -645,7 +652,11 @@ pub trait PtyService: Send + Sync {
     fn remove(&self, id: PtyId) -> impl std::future::Future<Output = Result<(), PtyError>> + Send;
 
     /// Write data to the PTY process stdin.
-    fn write(&self, id: PtyId, data: String) -> impl std::future::Future<Output = Result<(), PtyError>> + Send;
+    fn write(
+        &self,
+        id: PtyId,
+        data: String,
+    ) -> impl std::future::Future<Output = Result<(), PtyError>> + Send;
 }
 
 /// PTY service error.
@@ -653,9 +664,9 @@ pub trait PtyService: Send + Sync {
 pub enum PtyError {
     #[error("invalid PTY ID: {id}")]
     InvalidId { id: String },
-    #[error("PTY not found: {id}")]
+    #[error("PTY not found: {0}")]
     NotFound(PtyId),
-    #[error("PTY already exited: {id}")]
+    #[error("PTY already exited: {0}")]
     Exited(PtyId),
     #[error("PTY I/O error: {0}")]
     Io(String),
@@ -865,18 +876,18 @@ mod tests {
 
     #[test]
     fn test_pty_error_display() {
-        assert!(
-            PtyError::NotFound(valid_id("pty_x"))
-                .to_string()
-                .contains("pty_x")
-        );
-        assert!(
-            PtyError::Exited(valid_id("pty_y"))
-                .to_string()
-                .contains("pty_y")
-        );
-        assert!(PtyError::Io("broken pipe".into()).to_string().contains("broken pipe"));
-        assert!(PtyError::Other("something".into()).to_string().contains("something"));
+        assert!(PtyError::NotFound(valid_id("pty_x"))
+            .to_string()
+            .contains("pty_x"));
+        assert!(PtyError::Exited(valid_id("pty_y"))
+            .to_string()
+            .contains("pty_y"));
+        assert!(PtyError::Io("broken pipe".into())
+            .to_string()
+            .contains("broken pipe"));
+        assert!(PtyError::Other("something".into())
+            .to_string()
+            .contains("something"));
     }
 
     #[test]
@@ -952,7 +963,7 @@ mod tests {
 
     #[test]
     fn test_decode_input_empty() {
-        assert_eq!(decode_input(b""), Some(""));
+        assert_eq!(decode_input(b""), Some(String::new()));
     }
 
     #[test]

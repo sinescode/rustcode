@@ -13,21 +13,21 @@ use std::sync::OnceLock;
 
 // ── Entry Types ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EntryType {
     File,
     Directory,
     Symlink,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RipgrepEntry {
     pub path: String,
     pub entry_type: EntryType,
     pub mime: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RipgrepMatch {
     pub entry: RipgrepEntry,
     pub line: u64,
@@ -169,7 +169,7 @@ pub struct GrepResult {
 /// Crawls a directory tree and returns matching file paths up to `limit`.
 ///
 /// Ported from: `packages/core/src/ripgrep.ts` — `FindInput`
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct FindInput {
     /// Working directory to search from.
     pub cwd: String,
@@ -190,6 +190,34 @@ pub struct FindInput {
     /// Optional callback invoked for each file entry found.
     #[serde(skip, default)]
     pub on_entry: Option<Box<dyn Fn(&RipgrepEntry) + Send + Sync>>,
+}
+
+impl std::fmt::Debug for FindInput {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("FindInput")
+            .field("cwd", &self.cwd)
+            .field("pattern", &self.pattern)
+            .field("limit", &self.limit)
+            .field("hidden", &self.hidden)
+            .field("follow", &self.follow)
+            .field("signal", &self.signal)
+            .field("on_entry", &self.on_entry.as_ref().map(|_| "Fn"))
+            .finish()
+    }
+}
+
+impl Clone for FindInput {
+    fn clone(&self) -> Self {
+        Self {
+            cwd: self.cwd.clone(),
+            pattern: self.pattern.clone(),
+            limit: self.limit,
+            hidden: self.hidden,
+            follow: self.follow,
+            signal: self.signal,
+            on_entry: None,
+        }
+    }
 }
 
 /// Input for a ripgrep glob search (list files matching a glob pattern).
@@ -453,29 +481,28 @@ pub async fn download_binary(cache_dir: &str) -> Result<String, RipgrepError> {
         .await
         .map_err(|e| RipgrepError::with_cause("failed to download ripgrep", e.to_string()))?;
 
-    let bytes = response
-        .bytes()
-        .await
-        .map_err(|e| RipgrepError::with_cause("failed to read ripgrep download body", e.to_string()))?;
+    let bytes = response.bytes().await.map_err(|e| {
+        RipgrepError::with_cause("failed to read ripgrep download body", e.to_string())
+    })?;
 
     let archive_path = format!("{}/rg.tar.gz", cache_dir);
-    std::fs::write(&archive_path, &bytes).map_err(|e| {
-        RipgrepError::with_cause(
-            "failed to write ripgrep archive",
-            e.to_string(),
-        )
-    })?;
+    std::fs::write(&archive_path, &bytes)
+        .map_err(|e| RipgrepError::with_cause("failed to write ripgrep archive", e.to_string()))?;
 
     std::process::Command::new("tar")
         .args(["-xzf", &archive_path, "-C", cache_dir])
         .output()
-        .map_err(|e| RipgrepError::with_cause("failed to extract ripgrep archive", e.to_string()))?;
+        .map_err(|e| {
+            RipgrepError::with_cause("failed to extract ripgrep archive", e.to_string())
+        })?;
 
     let binary = format!("{}/rg", cache_dir);
     if std::path::Path::new(&binary).exists() {
         Ok(binary)
     } else {
-        Err(RipgrepError::new("extraction succeeded but rg binary not found"))
+        Err(RipgrepError::new(
+            "extraction succeeded but rg binary not found",
+        ))
     }
 }
 
@@ -501,6 +528,12 @@ pub struct RipgrepBinaryState {
 
 // ── RipgrepService ────────────────────────────────────────────────────────
 
+/// Raw output from `run_rg_grep`, including the exit code.
+struct RgGrepOutput {
+    stdout: String,
+    exit_code: i32,
+}
+
 /// Service for running ripgrep search operations.
 ///
 /// Ported from: `packages/core/src/ripgrep.ts`
@@ -513,9 +546,7 @@ impl RipgrepService {
     /// Create a new RipgrepService, using the cached binary path if available.
     pub fn new() -> Self {
         Self {
-            binary_path: cached_binary_path()
-                .unwrap_or("rg")
-                .to_string(),
+            binary_path: cached_binary_path().unwrap_or("rg").to_string(),
         }
     }
 
@@ -543,8 +574,8 @@ impl RipgrepService {
         }
 
         // Check system PATH
-        if let Ok(path) = which::which("rg") {
-            return Ok(path.to_string_lossy().to_string());
+        if let Some(path) = find_on_path("rg") {
+            return Ok(path);
         }
 
         // Check bundled binary
@@ -568,8 +599,8 @@ impl RipgrepService {
     /// Get the current binary state information.
     pub fn binary_state(&self) -> RipgrepBinaryState {
         let path = std::path::Path::new(&self.binary_path);
-        let is_system = !self.binary_path.contains(".cache")
-            && !self.binary_path.contains(".local/share");
+        let is_system =
+            !self.binary_path.contains(".cache") && !self.binary_path.contains(".local/share");
 
         let version = Self::detect_version(&self.binary_path);
 
@@ -817,12 +848,6 @@ impl RipgrepService {
         }
     }
 
-    /// Raw output from `run_rg_grep`, including the exit code.
-    struct RgGrepOutput {
-        stdout: String,
-        exit_code: i32,
-    }
-
     /// Execute ripgrep for grep operations, returning stdout + exit code.
     ///
     /// Unlike `run_rg`, exit code 2 returns stdout (partial results) instead of
@@ -866,6 +891,20 @@ impl Default for RipgrepService {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+/// Find an executable on the system PATH.
+fn find_on_path(name: &str) -> Option<String> {
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var).find_map(|dir| {
+            let path = dir.join(name);
+            if path.is_file() {
+                Some(path.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+    })
+}
 
 /// Normalize a file path by stripping leading `./`, `/`, or `\` and converting backslashes to forward slashes.
 fn normalize_path(path: &str) -> String {
@@ -980,8 +1019,7 @@ mod tests {
         assert!(json.contains(r#""match":"hello""#));
         assert!(!json.contains("match_text"));
 
-        let parsed: RawSubmatch =
-            serde_json::from_str(&json).expect("deserialize RawSubmatch");
+        let parsed: RawSubmatch = serde_json::from_str(&json).expect("deserialize RawSubmatch");
         assert_eq!(parsed.match_text, "hello");
         assert_eq!(parsed.start, 5);
         assert_eq!(parsed.end, 10);
@@ -1002,8 +1040,7 @@ mod tests {
         // signal is skipped during serialization
         assert!(!json.contains("signal"));
 
-        let parsed: FindInput =
-            serde_json::from_str(&json).expect("deserialize FindInput");
+        let parsed: FindInput = serde_json::from_str(&json).expect("deserialize FindInput");
         assert_eq!(parsed.cwd, "/home/user/project");
         assert_eq!(parsed.pattern, "*.rs");
         assert_eq!(parsed.limit, 200);
@@ -1026,8 +1063,7 @@ mod tests {
         assert!(!json.contains("hidden"));
         assert!(!json.contains("follow"));
 
-        let parsed: GlobInput =
-            serde_json::from_str(&json).expect("deserialize GlobInput");
+        let parsed: GlobInput = serde_json::from_str(&json).expect("deserialize GlobInput");
         assert_eq!(parsed.cwd, ".");
         assert_eq!(parsed.pattern, "**/*.ts");
         assert_eq!(parsed.limit, 50);
@@ -1043,8 +1079,7 @@ mod tests {
             limit: 100,
         };
         let json = serde_json::to_string(&input).expect("serialize GrepInput");
-        let parsed: GrepInput =
-            serde_json::from_str(&json).expect("deserialize GrepInput");
+        let parsed: GrepInput = serde_json::from_str(&json).expect("deserialize GrepInput");
         assert_eq!(parsed.cwd, "/src");
         assert_eq!(parsed.pattern, r"fn\s+\w+");
         assert_eq!(parsed.file.as_deref(), Some("src/lib.rs"));
@@ -1065,8 +1100,7 @@ mod tests {
         assert!(!json.contains("file"));
         assert!(!json.contains("include"));
 
-        let parsed: GrepInput =
-            serde_json::from_str(&json).expect("deserialize GrepInput");
+        let parsed: GrepInput = serde_json::from_str(&json).expect("deserialize GrepInput");
         assert_eq!(parsed.file, None);
         assert_eq!(parsed.include, None);
     }
@@ -1090,10 +1124,7 @@ mod tests {
             "x64-win32",
         ];
         for key in &expected_keys {
-            assert!(
-                platforms.contains_key(key),
-                "missing platform key: {key}"
-            );
+            assert!(platforms.contains_key(key), "missing platform key: {key}");
         }
     }
 
@@ -1114,10 +1145,7 @@ mod tests {
             let cfg = platforms
                 .get(*key)
                 .unwrap_or_else(|| panic!("{key} platform must exist"));
-            assert_eq!(
-                cfg.extension, "zip",
-                "{key} must have zip extension"
-            );
+            assert_eq!(cfg.extension, "zip", "{key} must have zip extension");
         }
     }
 
@@ -1132,7 +1160,10 @@ mod tests {
             assert_eq!(cfg.platform, "x86_64-unknown-linux-musl");
             assert_eq!(cfg.extension, "tar.gz");
         } else if cfg!(all(target_os = "macos", target_arch = "aarch64")) {
-            assert!(current.is_some(), "arm64-darwin platform should be detected");
+            assert!(
+                current.is_some(),
+                "arm64-darwin platform should be detected"
+            );
             let cfg = current.expect("current platform");
             assert_eq!(cfg.platform, "aarch64-apple-darwin");
         } else if cfg!(all(target_os = "windows", target_arch = "x86_64")) {
@@ -1210,9 +1241,7 @@ mod tests {
         let b = RawMatchLines {
             text: "fn main() {".into(),
         };
-        let c = RawMatchLines {
-            text: "}".into(),
-        };
+        let c = RawMatchLines { text: "}".into() };
         assert_eq!(a, b);
         assert_ne!(a, c);
     }
@@ -1239,7 +1268,10 @@ mod tests {
     #[test]
     fn test_ripgrep_service_resolve_binary() {
         let path = RipgrepService::resolve_binary();
-        assert!(!path.is_empty(), "resolve_binary should return a non-empty string");
+        assert!(
+            !path.is_empty(),
+            "resolve_binary should return a non-empty string"
+        );
     }
 
     #[test]
@@ -1252,7 +1284,12 @@ mod tests {
     #[test]
     fn test_ripgrep_service_default() {
         let service = RipgrepService::default();
-        assert!(!service.binary_state().filepath.as_deref().unwrap_or("").is_empty());
+        assert!(!service
+            .binary_state()
+            .filepath
+            .as_deref()
+            .unwrap_or("")
+            .is_empty());
     }
 
     #[test]
@@ -1676,8 +1713,11 @@ mod tests {
     fn test_cached_binary_path_returns_option() {
         let path = cached_binary_path();
         // Should return Some if rg is on PATH, or None if not
-        if which::which("rg").is_ok() {
-            assert!(path.is_some(), "rg is installed, cached_binary_path should be Some");
+        if std::process::Command::new("rg").arg("--version").output().is_ok() {
+            assert!(
+                path.is_some(),
+                "rg is installed, cached_binary_path should be Some"
+            );
         }
         // In either case, it should not panic
     }
@@ -1782,7 +1822,7 @@ mod tests {
     #[test]
     fn test_resolve_binary_from_path_ok() {
         let result = RipgrepService::resolve_binary_from_path();
-        if which::which("rg").is_ok() {
+        if std::process::Command::new("rg").arg("--version").output().is_ok() {
             assert!(result.is_ok());
         }
     }

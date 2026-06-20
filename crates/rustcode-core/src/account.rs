@@ -354,7 +354,7 @@ pub fn normalize_server_url(url: &str) -> Result<String, AccountError> {
 ///
 /// Ported from: `packages/core/src/account/sql.ts` — `AccountTable`
 /// (`sqliteTable("account", ...)` via drizzle-orm).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AccountTableRow {
     /// Unique account identifier (primary key).
     pub id: AccountId,
@@ -379,7 +379,7 @@ pub struct AccountTableRow {
 ///
 /// Ported from: `packages/core/src/account/sql.ts` — `AccountStateTable`
 /// (`sqliteTable("account_state", ...)` via drizzle-orm).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct AccountStateTableRow {
     /// Row ID (primary key).
     pub id: i64,
@@ -450,17 +450,14 @@ impl AccountService {
     pub async fn login(&self) -> Result<AccountLogin, AccountError> {
         let url = format!("{}/device/code", self.server_url);
 
-        let response = self
-            .http_client
-            .post(&url)
-            .send()
-            .await
-            .map_err(|e| AccountError::TransportError(AccountTransportError {
+        let response = self.http_client.post(&url).send().await.map_err(|e| {
+            AccountError::TransportError(AccountTransportError {
                 method: "POST".to_string(),
                 url: url.clone(),
                 description: Some(e.to_string()),
                 cause: Some(e.to_string()),
-            }))?;
+            })
+        })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -496,12 +493,14 @@ impl AccountService {
             .json(&serde_json::json!({ "code": code }))
             .send()
             .await
-            .map_err(|e| AccountError::TransportError(AccountTransportError {
-                method: "POST".to_string(),
-                url: url.clone(),
-                description: Some(e.to_string()),
-                cause: Some(e.to_string()),
-            }))?;
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "POST".to_string(),
+                    url: url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -534,10 +533,12 @@ impl AccountService {
         let account = accounts
             .iter()
             .find(|a| a.id == *account_id)
-            .ok_or_else(|| AccountError::RepoError(AccountRepoError {
-                message: format!("account {account_id} not found"),
-                cause: None,
-            }))?;
+            .ok_or_else(|| {
+                AccountError::RepoError(AccountRepoError {
+                    message: format!("account {account_id} not found"),
+                    cause: None,
+                })
+            })?;
 
         let now_ms = chrono::Utc::now().timestamp_millis();
         let needs_refresh = account
@@ -552,10 +553,12 @@ impl AccountService {
             let account = accounts
                 .iter()
                 .find(|a| a.id == *account_id)
-                .ok_or_else(|| AccountError::RepoError(AccountRepoError {
-                    message: format!("account {account_id} not found after refresh"),
-                    cause: None,
-                }))?;
+                .ok_or_else(|| {
+                    AccountError::RepoError(AccountRepoError {
+                        message: format!("account {account_id} not found after refresh"),
+                        cause: None,
+                    })
+                })?;
             Ok(account.access_token.clone())
         } else {
             Ok(account.access_token.clone())
@@ -573,6 +576,7 @@ impl AccountService {
         };
         drop(state);
 
+        let active_org_id = state_from_accounts(&self.state).await;
         let accounts = self.accounts.read().await;
         let account = accounts.iter().find(|a| a.id == active_id);
 
@@ -580,7 +584,7 @@ impl AccountService {
             id: a.id.clone(),
             email: a.email.clone(),
             url: a.url.clone(),
-            active_org_id: state_from_accounts(&self.state).await,
+            active_org_id: active_org_id.clone(),
         }))
     }
 
@@ -667,12 +671,14 @@ impl AccountService {
             .bearer_auth(&access_token)
             .send()
             .await
-            .map_err(|e| AccountError::TransportError(AccountTransportError {
-                method: "GET".to_string(),
-                url: url.clone(),
-                description: Some(e.to_string()),
-                cause: Some(e.to_string()),
-            }))?;
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "GET".to_string(),
+                    url: url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -730,10 +736,12 @@ impl AccountService {
             let account = accounts
                 .iter()
                 .find(|a| a.id == *account_id)
-                .ok_or_else(|| AccountError::RepoError(AccountRepoError {
-                    message: format!("account {account_id} not found"),
-                    cause: None,
-                }))?;
+                .ok_or_else(|| {
+                    AccountError::RepoError(AccountRepoError {
+                        message: format!("account {account_id} not found"),
+                        cause: None,
+                    })
+                })?;
             (account.refresh_token.clone(), account.url.clone())
         };
 
@@ -744,12 +752,14 @@ impl AccountService {
             .json(&serde_json::json!({ "refresh_token": refresh_token }))
             .send()
             .await
-            .map_err(|e| AccountError::TransportError(AccountTransportError {
-                method: "POST".to_string(),
-                url: refresh_url.clone(),
-                description: Some(e.to_string()),
-                cause: Some(e.to_string()),
-            }))?;
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "POST".to_string(),
+                    url: refresh_url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -792,7 +802,9 @@ impl AccountService {
 }
 
 /// Helper to read the active org ID from the state.
-async fn state_from_accounts(state: &Arc<tokio::sync::RwLock<AccountStateTableRow>>) -> Option<OrgId> {
+async fn state_from_accounts(
+    state: &Arc<tokio::sync::RwLock<AccountStateTableRow>>,
+) -> Option<OrgId> {
     let s = state.read().await;
     s.active_org_id.clone()
 }
@@ -825,10 +837,12 @@ impl AccountRepo {
         )
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| AccountError::RepoError(AccountRepoError {
-            message: "failed to query account_state".to_string(),
-            cause: Some(e.to_string()),
-        }))?;
+        .map_err(|e| {
+            AccountError::RepoError(AccountRepoError {
+                message: "failed to query account_state".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
 
         let active_id = match state_row {
             Some(s) => match s.active_account_id {
@@ -875,10 +889,12 @@ impl AccountRepo {
             .bind(account_id)
             .execute(&self.pool)
             .await
-            .map_err(|e| AccountError::RepoError(AccountRepoError {
-                message: format!("failed to remove account {account_id}"),
-                cause: Some(e.to_string()),
-            }))?;
+            .map_err(|e| {
+                AccountError::RepoError(AccountRepoError {
+                    message: format!("failed to remove account {account_id}"),
+                    cause: Some(e.to_string()),
+                })
+            })?;
 
         if result.rows_affected() == 0 {
             return Err(AccountError::RepoError(AccountRepoError {
@@ -903,15 +919,16 @@ impl AccountRepo {
 
     /// Set the active account to `account_id`.
     pub async fn use_account(&self, account_id: &str) -> Result<(), AccountError> {
-        let exists: Option<(String,)> =
-            sqlx::query_as("SELECT id FROM account WHERE id = ?")
-                .bind(account_id)
-                .fetch_optional(&self.pool)
-                .await
-                .map_err(|e| AccountError::RepoError(AccountRepoError {
+        let exists: Option<(String,)> = sqlx::query_as("SELECT id FROM account WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(|e| {
+                AccountError::RepoError(AccountRepoError {
                     message: format!("failed to check account {account_id}"),
                     cause: Some(e.to_string()),
-                }))?;
+                })
+            })?;
 
         if exists.is_none() {
             return Err(AccountError::RepoError(AccountRepoError {
@@ -1141,7 +1158,8 @@ mod tests {
     #[test]
     fn test_poll_result_deserialize_success() {
         let json = r#"{"type":"PollSuccess","email":"dev@example.com"}"#;
-        let parsed: PollResult = serde_json::from_str(json).expect("deserialize PollResult::Success");
+        let parsed: PollResult =
+            serde_json::from_str(json).expect("deserialize PollResult::Success");
 
         match parsed {
             PollResult::Success(s) => assert_eq!(s.email, "dev@example.com"),
@@ -1152,7 +1170,8 @@ mod tests {
     #[test]
     fn test_poll_result_deserialize_denied() {
         let json = r#"{"type":"PollDenied"}"#;
-        let parsed: PollResult = serde_json::from_str(json).expect("deserialize PollResult::Denied");
+        let parsed: PollResult =
+            serde_json::from_str(json).expect("deserialize PollResult::Denied");
 
         assert!(matches!(parsed, PollResult::Denied(_)));
     }
@@ -1315,7 +1334,8 @@ mod tests {
         };
 
         let json = serde_json::to_string(&row).expect("serialize AccountTableRow");
-        let parsed: AccountTableRow = serde_json::from_str(&json).expect("deserialize AccountTableRow");
+        let parsed: AccountTableRow =
+            serde_json::from_str(&json).expect("deserialize AccountTableRow");
 
         assert_eq!(parsed.id, "acct_99");
         assert_eq!(parsed.email, "row@example.com");
@@ -1513,12 +1533,7 @@ mod tests {
     async fn test_persist_token_unknown_account_returns_error() {
         let svc = service_with_accounts(vec![], None, None);
         let result = svc
-            .persist_token(
-                "ghost".to_string(),
-                "a".to_string(),
-                "r".to_string(),
-                None,
-            )
+            .persist_token("ghost".to_string(), "a".to_string(), "r".to_string(), None)
             .await;
         assert!(result.is_err());
     }
@@ -1599,19 +1614,17 @@ mod tests {
     // from_http_client_error
     // ===================================================================
 
-    #[test]
-    fn test_from_http_client_error_creates_transport_error() {
+    #[tokio::test]
+    async fn test_from_http_client_error_creates_transport_error() {
         // Build a reqwest error by making an invalid URL request synchronously
         let client = reqwest::Client::new();
         let err = client
             .get("https://definitely-not-a-real-host.invalid")
-            .build()
-            .expect("build request")
-            .error_for_status()
+            .send()
+            .await
             .unwrap_err();
 
-        let account_err =
-            AccountService::from_http_client_error("GET", "https://example.com", err);
+        let account_err = AccountService::from_http_client_error("GET", "https://example.com", err);
         match account_err {
             AccountError::TransportError(te) => {
                 assert_eq!(te.method, "GET");

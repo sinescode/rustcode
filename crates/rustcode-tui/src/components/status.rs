@@ -93,7 +93,10 @@ pub fn render_status(f: &mut Frame, area: Rect, state: &StatusState, theme: &The
     let dir_display = if state.directory.len() > max_dir_len {
         let home = std::env::var("HOME").unwrap_or_default();
         if !home.is_empty() && state.directory.starts_with(&home) {
-            format!("~/{}", &state.directory[home.len()..].trim_start_matches('/'))
+            format!(
+                "~/{}",
+                &state.directory[home.len()..].trim_start_matches('/')
+            )
         } else {
             state.directory.clone()
         }
@@ -101,15 +104,15 @@ pub fn render_status(f: &mut Frame, area: Rect, state: &StatusState, theme: &The
         state.directory.clone()
     };
     let dir_display = if dir_display.len() > max_dir_len {
-        format!("...{}", &dir_display[dir_display.len().saturating_sub(max_dir_len - 3)..])
+        format!(
+            "...{}",
+            &dir_display[dir_display.len().saturating_sub(max_dir_len - 3)..]
+        )
     } else {
         dir_display
     };
 
-    left_spans.push(Span::styled(
-        &dir_display,
-        Style::default().fg(theme.dim),
-    ));
+    left_spans.push(Span::styled(&dir_display, Style::default().fg(theme.dim)));
 
     // Git branch
     if let Some(ref branch) = state.git_branch {
@@ -165,12 +168,13 @@ pub fn render_status(f: &mut Frame, area: Rect, state: &StatusState, theme: &The
 
         // Permission count badge
         if state.permission_count > 0 {
+            center_spans.push(Span::styled("△ ", Style::default().fg(Color::Yellow)));
             center_spans.push(Span::styled(
-                "△ ",
-                Style::default().fg(Color::Yellow),
-            ));
-            center_spans.push(Span::styled(
-                format!("{} Permission{}", state.permission_count, if state.permission_count > 1 { "s" } else { "" }),
+                format!(
+                    "{} Permission{}",
+                    state.permission_count,
+                    if state.permission_count > 1 { "s" } else { "" }
+                ),
                 Style::default().fg(Color::Yellow),
             ));
             center_spans.push(Span::raw("  "));
@@ -185,7 +189,9 @@ pub fn render_status(f: &mut Frame, area: Rect, state: &StatusState, theme: &The
                 SessionStatus::Busy => {
                     center_spans.push(Span::styled("⟳ busy", Style::default().fg(Color::Yellow)));
                 }
-                SessionStatus::Retry { attempt, message, .. } => {
+                SessionStatus::Retry {
+                    attempt, message, ..
+                } => {
                     center_spans.push(Span::styled(
                         format!("△ retry (attempt {attempt}) — {message}"),
                         Style::default().fg(Color::Red),

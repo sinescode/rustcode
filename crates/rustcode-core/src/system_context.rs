@@ -237,7 +237,11 @@ struct Loaded {
 impl Loaded {
     /// Render the baseline text and snapshot.
     fn baseline(&self) -> Result<Rendered, SystemContextError> {
-        let text = require_text(self.source.key(), "baseline", self.source.baseline(&self.data))?;
+        let text = require_text(
+            self.source.key(),
+            "baseline",
+            self.source.baseline(&self.data),
+        )?;
         let removal = self.source.removed();
         Ok(Rendered {
             text,
@@ -558,10 +562,13 @@ fn reconcile_observation(
     entries: &[Entry],
     previous: &Snapshot,
 ) -> Result<ReconcileResult, SystemContextError> {
-    let current_keys: HashSet<_> = entries.iter().filter_map(|e| match e {
-        Entry::Available(a) => Some(a.key.clone()),
-        Entry::Unavailable { key } => Some(key.clone()),
-    }).collect();
+    let current_keys: HashSet<_> = entries
+        .iter()
+        .filter_map(|e| match e {
+            Entry::Available(a) => Some(a.key.clone()),
+            Entry::Unavailable { key } => Some(key.clone()),
+        })
+        .collect();
 
     // First pass: compare available entries that have a previous snapshot.
     let mut comparisons: HashMap<SystemContextKey, Compared> = HashMap::new();
@@ -680,8 +687,7 @@ impl SystemContextSource for EnvironmentSource {
     fn key(&self) -> &SystemContextKey {
         static KEY: OnceLock<SystemContextKey> = OnceLock::new();
         KEY.get_or_init(|| {
-            SystemContextKey::new("core/environment")
-                .expect("valid system context key")
+            SystemContextKey::new("core/environment").expect("valid system context key")
         })
     }
 
@@ -745,10 +751,7 @@ pub struct DateSource;
 impl SystemContextSource for DateSource {
     fn key(&self) -> &SystemContextKey {
         static KEY: OnceLock<SystemContextKey> = OnceLock::new();
-        KEY.get_or_init(|| {
-            SystemContextKey::new("core/date")
-                .expect("valid system context key")
-        })
+        KEY.get_or_init(|| SystemContextKey::new("core/date").expect("valid system context key"))
     }
 
     fn load(&self) -> Result<serde_json::Value, Box<dyn std::error::Error + Send + Sync>> {
@@ -991,7 +994,13 @@ mod tests {
 
     #[test]
     fn make_context_single_source() {
-        let source = StubSource::new("project/current", json!("my-project"), "Project: my-project", "Updated: my-project", "Project removed");
+        let source = StubSource::new(
+            "project/current",
+            json!("my-project"),
+            "Project: my-project",
+            "Updated: my-project",
+            "Project removed",
+        );
         let ctx = SystemContext::make(source);
         assert_eq!(ctx.len(), 1);
         assert!(!ctx.is_empty());
@@ -1009,7 +1018,9 @@ mod tests {
         let ctx = SystemContext::make(source);
         let gen = ctx.initialize().expect("initialize");
         assert_eq!(gen.baseline, "Environment: dev");
-        assert!(gen.snapshot.contains_key(&SystemContextKey::new("env/dev").expect("valid")));
+        assert!(gen
+            .snapshot
+            .contains_key(&SystemContextKey::new("env/dev").expect("valid")));
     }
 
     #[test]
@@ -1102,7 +1113,8 @@ mod tests {
         match result {
             ReconcileResult::Updated { text, snapshot } => {
                 assert_eq!(text, "Project is now new-project");
-                assert!(snapshot.contains_key(&SystemContextKey::new("project/current").expect("valid")));
+                assert!(snapshot
+                    .contains_key(&SystemContextKey::new("project/current").expect("valid")));
             }
             other => panic!("expected Updated, got: {other:?}"),
         }
@@ -1223,10 +1235,7 @@ mod tests {
         let result = ctx.replace(&prev_snapshot);
         // No previous snapshot for the unavailable key → not blocked
         // But initialize_observation will fail → ReplacementBlocked
-        assert!(matches!(
-            result,
-            ReconcileResult::ReplacementBlocked
-        ));
+        assert!(matches!(result, ReconcileResult::ReplacementBlocked));
     }
 
     // -- Registry -------------------------------------------------------
@@ -1278,11 +1287,8 @@ mod tests {
     fn multiple_sources_initialize_joined_baseline() {
         let a = StubSource::new("a/one", json!(1), "Source A", "A updated", "A removed");
         let b = StubSource::new("b/two", json!(2), "Source B", "B updated", "B removed");
-        let ctx = SystemContext::combine(vec![
-            SystemContext::make(a),
-            SystemContext::make(b),
-        ])
-        .expect("combine");
+        let ctx = SystemContext::combine(vec![SystemContext::make(a), SystemContext::make(b)])
+            .expect("combine");
 
         let gen = ctx.initialize().expect("initialize");
         assert_eq!(gen.baseline, "Source A\n\nSource B");
@@ -1293,11 +1299,8 @@ mod tests {
     fn multiple_sources_reconcile_mixed_changes() {
         let a = StubSource::new("a/one", json!(1), "Source A", "A updated", "A removed");
         let b = StubSource::new("b/two", json!(2), "Source B", "B updated", "B removed");
-        let ctx = SystemContext::combine(vec![
-            SystemContext::make(a),
-            SystemContext::make(b),
-        ])
-        .expect("combine");
+        let ctx = SystemContext::combine(vec![SystemContext::make(a), SystemContext::make(b)])
+            .expect("combine");
 
         // Previous: a unchanged, b different
         let mut prev = Snapshot::new();
@@ -1383,9 +1386,9 @@ mod tests {
         let ctx = SystemContext::make(EnvironmentSource);
         let gen = ctx.initialize().expect("initialize");
         assert!(gen.baseline.contains("Here is some useful information"));
-        assert!(gen.snapshot.contains_key(
-            &SystemContextKey::new("core/environment").expect("valid")
-        ));
+        assert!(gen
+            .snapshot
+            .contains_key(&SystemContextKey::new("core/environment").expect("valid")));
     }
 
     // ── DateSource ────────────────────────────────────────────────────
@@ -1435,9 +1438,9 @@ mod tests {
         let ctx = SystemContext::make(DateSource);
         let gen = ctx.initialize().expect("initialize");
         assert!(gen.baseline.starts_with("Today's date: "));
-        assert!(gen.snapshot.contains_key(
-            &SystemContextKey::new("core/date").expect("valid")
-        ));
+        assert!(gen
+            .snapshot
+            .contains_key(&SystemContextKey::new("core/date").expect("valid")));
     }
 
     #[test]

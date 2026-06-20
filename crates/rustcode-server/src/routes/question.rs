@@ -4,8 +4,8 @@
 
 use axum::extract::{Path, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::{get, post};
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::sync::Arc;
 use tracing::info;
@@ -51,6 +51,7 @@ async fn reply_question(
                 "request_id": request_id,
                 "answer_count": answer_count,
             }))
+            .into_response()
         }
         Err(e) => (
             axum::http::StatusCode::NOT_FOUND,
@@ -72,6 +73,7 @@ async fn reject_question(
                 "rejected": true,
                 "request_id": request_id,
             }))
+            .into_response()
         }
         Err(e) => (
             axum::http::StatusCode::NOT_FOUND,

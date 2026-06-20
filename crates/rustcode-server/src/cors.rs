@@ -3,6 +3,7 @@
 //! Ported from: `packages/opencode/src/server/routes/instance/httpapi/middleware/cors-vary.ts`
 //! and `packages/opencode/src/server/routes/instance/httpapi/server.ts` (lines 112–119).
 
+use std::time::Duration;
 use tower_http::cors::{Any, CorsLayer};
 
 /// Create the CORS middleware layer.
@@ -29,7 +30,7 @@ pub fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
             .allow_origin(Any)
             .allow_methods(Any)
             .allow_headers(Any)
-            .max_age(tower_http::cors::MaxAge::from_secs(86_400))
+            .max_age(tower_http::cors::MaxAge::exact(Duration::from_secs(86_400)))
     } else {
         let origins = allowed_origins
             .iter()
@@ -40,6 +41,6 @@ pub fn cors_layer(allowed_origins: &[String]) -> CorsLayer {
             .allow_origin(origins)
             .allow_methods(Any)
             .allow_headers(Any)
-            .max_age(tower_http::cors::MaxAge::from_secs(86_400))
+            .max_age(tower_http::cors::MaxAge::exact(Duration::from_secs(86_400)))
     }
 }

@@ -68,9 +68,7 @@ pub fn open_in_editor(file_path: &str) -> bool {
             match child.wait() {
                 Ok(status) => {
                     if !status.success() {
-                        tracing::warn!(
-                            "editor '{editor}' exited with status: {status}"
-                        );
+                        tracing::warn!("editor '{editor}' exited with status: {status}");
                     }
                     true
                 }

@@ -558,11 +558,7 @@ fn parse_update(lines: &[&str], start: usize) -> PatchResult<(Vec<UpdateFileChun
 ///
 /// Returns [`PatchError::ApplyError`] if any chunk's `old_lines` cannot be
 /// located in the file, or if a `change_context` hint cannot be found.
-pub fn derive(
-    path: &str,
-    chunks: &[UpdateFileChunk],
-    original: &str,
-) -> PatchResult<FileUpdate> {
+pub fn derive(path: &str, chunks: &[UpdateFileChunk], original: &str) -> PatchResult<FileUpdate> {
     let (source_bom, source_text) = split_bom(original);
 
     // Split into lines, removing a trailing empty line (matching TS behavior)
@@ -685,12 +681,7 @@ fn compute_replacements(
 /// offset where the pattern could fit) rather than scanning from `start`.
 ///
 /// Returns `None` if no match is found (equivalent to TS returning `-1`).
-fn seek(
-    lines: &[String],
-    pattern: &[String],
-    start: usize,
-    eof: bool,
-) -> Option<usize> {
+fn seek(lines: &[String], pattern: &[String], start: usize, eof: bool) -> Option<usize> {
     if pattern.is_empty() {
         return None;
     }
@@ -936,8 +927,14 @@ mod tests {
                 assert_eq!(path, "src/lib.rs");
                 assert!(move_path.is_none());
                 assert_eq!(chunks.len(), 1);
-                assert_eq!(chunks[0].old_lines, vec!["unchanged context", "old removed line"]);
-                assert_eq!(chunks[0].new_lines, vec!["unchanged context", "new added line"]);
+                assert_eq!(
+                    chunks[0].old_lines,
+                    vec!["unchanged context", "old removed line"]
+                );
+                assert_eq!(
+                    chunks[0].new_lines,
+                    vec!["unchanged context", "new added line"]
+                );
                 assert_eq!(chunks[0].change_context, Some("-1 +1 @@".to_string()));
             }
             _ => panic!("expected Update hunk"),

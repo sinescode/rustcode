@@ -32,8 +32,8 @@
 
 use axum::extract::{Path, Query, State};
 use axum::response::IntoResponse;
+use axum::routing::{delete, get, post};
 use axum::{Json, Router};
-use axum::routing::{delete, get, patch, post};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -253,7 +253,9 @@ pub fn session_routes(state: Arc<AppState>) -> Router {
         // Single session
         .route(
             "/session/{sessionID}",
-            get(get_session).patch(update_session).delete(delete_session),
+            get(get_session)
+                .patch(update_session)
+                .delete(delete_session),
         )
         // Children
         .route("/session/{sessionID}/children", get(list_children))
@@ -262,7 +264,10 @@ pub fn session_routes(state: Arc<AppState>) -> Router {
         // Diff
         .route("/session/{sessionID}/diff", get(get_diff))
         // Messages
-        .route("/session/{sessionID}/message", get(list_messages).post(post_prompt))
+        .route(
+            "/session/{sessionID}/message",
+            get(list_messages).post(post_prompt),
+        )
         .route(
             "/session/{sessionID}/message/{messageID}",
             get(get_message).delete(delete_message),
@@ -314,6 +319,7 @@ async fn list_sessions(
         roots: query.roots,
         search: query.search,
         limit: query.limit,
+        project_id: None,
     };
     match state.sessions.list(Some(input)).await {
         Ok(sessions) => Json(serde_json::to_value(sessions).unwrap_or_default()).into_response(),
@@ -337,6 +343,7 @@ async fn session_status(
         roots: query.roots,
         search: query.search,
         limit: query.limit,
+        project_id: None,
     });
     match state.sessions.list(input).await {
         Ok(sessions) => {
@@ -394,11 +401,13 @@ async fn create_session(
         parent_id: payload.parent_id,
         title: payload.title,
         agent: payload.agent,
-        model: payload.model.map(|m| rustcode_core::session::ModelSelection {
-            id: m.id,
-            provider_id: m.provider_id,
-            variant: m.variant,
-        }),
+        model: payload
+            .model
+            .map(|m| rustcode_core::session::ModelSelection {
+                id: m.id,
+                provider_id: m.provider_id,
+                variant: m.variant,
+            }),
         metadata: None,
         permission: None,
     };
@@ -508,7 +517,9 @@ async fn get_todos(
                             if tp.tool == "todowrite" || tp.tool == "todo_write" {
                                 match &tp.state {
                                     rustcode_core::session::ToolState::Completed {
-                                        output, title, ..
+                                        output,
+                                        title,
+                                        ..
                                     } => Some(serde_json::json!({
                                         "id": tp.id,
                                         "tool": tp.tool,
@@ -708,10 +719,20 @@ async fn post_prompt(
     // Run the prompt through the session runner
     info!(
         "Running prompt for session {} with model {}/{}",
-        input.session_id, input.model.as_ref().map(|m| m.provider_id.as_str()).unwrap_or("?"), input.model.as_ref().map(|m| m.id.as_str()).unwrap_or("?")
+        input.session_id,
+        input
+            .model
+            .as_ref()
+            .map(|m| m.provider_id.as_str())
+            .unwrap_or("?"),
+        input.model.as_ref().map(|m| m.id.as_str()).unwrap_or("?")
     );
 
-    match state.runner.run(provider.as_ref(), &model, &input, &instructions).await {
+    match state
+        .runner
+        .run(provider.as_ref(), &model, &input, &instructions)
+        .await
+    {
         Ok(result) => {
             info!(
                 "Prompt completed for session {}: {} chars, {} events, {} tool calls, {} iterations",
@@ -814,7 +835,7 @@ async fn delete_part(
                         Part::Compaction(tp) => &tp.id,
                         Part::Subtask(tp) => &tp.id,
                     };
-                    pid != part_id
+                    *pid != part_id
                 });
                 let removed = before - msg.parts.len();
                 info!(
@@ -898,7 +919,11 @@ async fn fork_session(
     Path(session_id): Path<String>,
     Json(payload): Json<ForkPayload>,
 ) -> impl IntoResponse {
-    match state.sessions.fork(&session_id, payload.message_id.as_deref()).await {
+    match state
+        .sessions
+        .fork(&session_id, payload.message_id.as_deref())
+        .await
+    {
         Ok(session) => {
             let new_id = session.id.clone();
             let dir = session.directory.clone();
@@ -1044,7 +1069,11 @@ async fn summarize_session(
         }
     };
     // Build a summarization prompt using the existing messages
-    let messages = state.sessions.get_messages(&session_id).await.unwrap_or_default();
+    let messages = state
+        .sessions
+        .get_messages(&session_id)
+        .await
+        .unwrap_or_default();
     let conversation: String = messages
         .iter()
         .map(|m| {
@@ -1070,15 +1099,16 @@ async fn summarize_session(
         "Summarize the following conversation in 2-3 sentences, focusing on what was discussed and any key decisions. Then provide a list of files that were mentioned or modified.\n\nConversation:\n{conversation}"
     );
     // Build chat messages for the summary model
-    let chat_messages = vec![
-        rustcode_core::provider::ChatMessage::User {
-            content: rustcode_core::provider::MessageContent::Text(summary_prompt),
-        },
-    ];
+    let chat_messages = vec![rustcode_core::provider::ChatMessage::User {
+        content: rustcode_core::provider::MessageContent::Text(summary_prompt),
+    }];
     match provider.complete(&model, &chat_messages, &[]).await {
         Ok(response) => {
             let summary_text = response.text();
-            info!("Summarization complete for session {session_id}: {} chars", summary_text.len());
+            info!(
+                "Summarization complete for session {session_id}: {} chars",
+                summary_text.len()
+            );
             // Update the session with the summary
             let summary = rustcode_core::session::SessionSummary {
                 additions: 0,
@@ -1157,9 +1187,7 @@ async fn prompt_async(
                         },
                     )],
                 };
-                let instructions = vec![
-                    "You are a helpful coding assistant.".to_string(),
-                ];
+                let instructions = vec!["You are a helpful coding assistant.".to_string()];
                 let result = state_clone
                     .runner
                     .run(provider.as_ref(), &model, &input, &instructions)
@@ -1188,7 +1216,10 @@ async fn post_command(
     Path(session_id): Path<String>,
     Json(payload): Json<CommandPayload>,
 ) -> impl IntoResponse {
-    info!("Executing command '{}' in session {session_id}", payload.command);
+    info!(
+        "Executing command '{}' in session {session_id}",
+        payload.command
+    );
     // Look up the tool in the registry
     match state.tools.get(&payload.command) {
         Some(tool_def) => {
@@ -1399,7 +1430,10 @@ async fn permission_respond(
                 "response": &payload.response,
             }));
             let _ = state.bus.publish(event);
-            info!("Permission {permission_id} resolved: {:?} for session {session_id}", reply);
+            info!(
+                "Permission {permission_id} resolved: {:?} for session {session_id}",
+                reply
+            );
             Json(serde_json::json!({
                 "processed": true,
                 "session_id": session_id,
@@ -1415,4 +1449,3 @@ async fn permission_respond(
             .into_response(),
     }
 }
-

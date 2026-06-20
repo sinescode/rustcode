@@ -6,9 +6,9 @@
 //! - `packages/core/src/session/run-coordinator.ts` (lines 1–285)
 //! - `packages/core/src/session/error.ts` (lines 1–21)
 
-use serde::{Deserialize, Serialize};
 use crate::session_info::SessionId;
 use crate::session_message::SessionMessageId;
+use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Execution Interface
@@ -35,16 +35,30 @@ pub enum DrainMode {
 /// `packages/opencode/src/session/run-coordinator.ts` lines 29–38 `Coordinator`.
 pub trait SessionExecution: Send + Sync {
     /// Explicitly drain one session, making at least one provider attempt.
-    fn resume(&self, session_id: SessionId) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
+    fn resume(
+        &self,
+        session_id: SessionId,
+    ) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
 
     /// Schedule a drain after durable work is recorded.
-    fn wake(&self, session_id: SessionId, seq: Option<u64>) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
+    fn wake(
+        &self,
+        session_id: SessionId,
+        seq: Option<u64>,
+    ) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
 
     /// Interrupt active work owned by this process.
-    fn interrupt(&self, session_id: SessionId, seq: Option<u64>) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
+    fn interrupt(
+        &self,
+        session_id: SessionId,
+        seq: Option<u64>,
+    ) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
 
     /// Wait until the current ownership chain settles.
-    fn await_idle(&self, session_id: SessionId) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
+    fn await_idle(
+        &self,
+        session_id: SessionId,
+    ) -> impl std::future::Future<Output = Result<(), SessionRunError>> + Send;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -120,9 +134,21 @@ pub fn coalesce_demand(left: Option<&Demand>, right: &Demand) -> Demand {
     if matches!(left, Some(Demand::Run)) || matches!(right, Demand::Run) {
         return Demand::Run;
     }
-    match (left.and_then(|d| match d { Demand::Wake { seq } => *seq, _ => None }), right) {
+    match (
+        left.and_then(|d| match d {
+            Demand::Wake { seq } => *seq,
+            _ => None,
+        }),
+        right,
+    ) {
         (_, Demand::Wake { seq }) => Demand::Wake {
-            seq: match (left.and_then(|d| match d { Demand::Wake { seq } => *seq, _ => None }), *seq) {
+            seq: match (
+                left.and_then(|d| match d {
+                    Demand::Wake { seq } => *seq,
+                    _ => None,
+                }),
+                *seq,
+            ) {
                 (None, r) => r,
                 (Some(l), None) => Some(l),
                 (Some(l), Some(r)) => Some(l.max(r)),

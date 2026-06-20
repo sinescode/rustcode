@@ -161,17 +161,11 @@ impl RepositoryReference {
 pub enum RepositoryError {
     /// The repository string is not a valid reference.
     #[error("invalid repository reference '{repository}': {message}")]
-    InvalidReference {
-        repository: String,
-        message: String,
-    },
+    InvalidReference { repository: String, message: String },
 
     /// Local file repositories are not supported for remote operations.
     #[error("local repository not supported '{repository}': {message}")]
-    UnsupportedLocal {
-        repository: String,
-        message: String,
-    },
+    UnsupportedLocal { repository: String, message: String },
 
     /// The branch name fails validation.
     #[error("invalid branch name '{branch}': {message}")]
@@ -251,7 +245,7 @@ pub fn parse_repository(input: &str) -> Option<RepositoryReference> {
         let segments = repo_parts(url.path());
         return Some(build_remote(RemoteBuildInput {
             host: url.host_str().unwrap_or("").to_string(),
-            segments,
+            segments: segments.clone(),
             remote: if url.host_str() == Some("github.com") {
                 Some(github_remote_url("github.com", &segments.join("/")))
             } else {
@@ -271,7 +265,9 @@ pub fn parse_repository(input: &str) -> Option<RepositoryReference> {
 pub fn parse_remote_repository(input: &str) -> Result<RemoteReference, RepositoryError> {
     let reference = parse_repository(input).ok_or_else(|| RepositoryError::InvalidReference {
         repository: input.to_string(),
-        message: "Repository must be a git URL, host/path reference, or GitHub owner/repo shorthand".into(),
+        message:
+            "Repository must be a git URL, host/path reference, or GitHub owner/repo shorthand"
+                .into(),
     })?;
 
     match reference {
@@ -476,6 +472,7 @@ pub fn is_fetch_error(err: &RepositoryCacheError) -> bool {
 /// released when the `CacheLock` is dropped.
 ///
 /// Ported from: `EffectFlock` in the TypeScript source.
+#[derive(Debug)]
 pub struct CacheLock {
     lock_path: std::path::PathBuf,
     _file: std::fs::File,
@@ -509,7 +506,10 @@ impl CacheLock {
                 },
             })?;
 
-        Ok(Self { lock_path, _file: file })
+        Ok(Self {
+            lock_path,
+            _file: file,
+        })
     }
 
     /// Attempt to acquire a lock, retrying with exponential backoff.
@@ -598,7 +598,9 @@ fn resolve_reset_target(local_path: &Path) -> Result<String, RepositoryCacheErro
             message: e.to_string(),
         })?;
 
-    let branch = String::from_utf8_lossy(&branch_output.stdout).trim().to_string();
+    let branch = String::from_utf8_lossy(&branch_output.stdout)
+        .trim()
+        .to_string();
     if branch == "HEAD" || branch.is_empty() {
         Ok("origin/HEAD".to_string())
     } else {
@@ -644,12 +646,17 @@ fn is_host_like(input: &str) -> bool {
 
 /// Validate a host string: non-empty, no leading `-`, no whitespace/backslash.
 fn is_safe_host(host: &str) -> bool {
-    !host.is_empty() && !host.starts_with('-') && !host.contains(|c: char| c.is_whitespace() || c == '\\')
+    !host.is_empty()
+        && !host.starts_with('-')
+        && !host.contains(|c: char| c.is_whitespace() || c == '\\')
 }
 
 /// Validate a path segment: not `.` or `..`, no `:`, no whitespace/backslash.
 fn is_safe_segment(segment: &str) -> bool {
-    segment != "." && segment != ".." && !segment.contains(':') && !segment.contains(|c: char| c.is_whitespace() || c == '\\')
+    segment != "."
+        && segment != ".."
+        && !segment.contains(':')
+        && !segment.contains(|c: char| c.is_whitespace() || c == '\\')
 }
 
 /// Generate the GitHub remote URL for a given pathname.
@@ -691,10 +698,7 @@ fn build_remote(input: RemoteBuildInput) -> RepositoryReference {
             } else {
                 None
             },
-            repo: segments
-                .last()
-                .cloned()
-                .unwrap_or_else(|| "unknown".into()),
+            repo: segments.last().cloned().unwrap_or_else(|| "unknown".into()),
             remote: input.remote.unwrap_or_else(|| {
                 if host == "github.com" {
                     github_remote_url(&host, &repository_path)
@@ -855,12 +859,10 @@ impl RepositoryService {
 
         // Ensure parent directory exists
         if let Some(parent) = local_path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                RepositoryCacheError::CacheOperation {
-                    operation: "mkdir".into(),
-                    path: parent.display().to_string(),
-                    message: e.to_string(),
-                }
+            std::fs::create_dir_all(parent).map_err(|e| RepositoryCacheError::CacheOperation {
+                operation: "mkdir".into(),
+                path: parent.display().to_string(),
+                message: e.to_string(),
             })?;
         }
 
@@ -886,13 +888,14 @@ impl RepositoryService {
         if let Some(b) = branch {
             cmd.args(["--branch", b]);
         }
-        cmd.arg(remote_url)
-            .arg(local_path.display().to_string());
+        cmd.arg(remote_url).arg(local_path.display().to_string());
 
-        let output = cmd.output().map_err(|e| RepositoryCacheError::CloneFailed {
-            repository: reference.base.label.clone(),
-            message: format!("failed to run git clone: {e}"),
-        })?;
+        let output = cmd
+            .output()
+            .map_err(|e| RepositoryCacheError::CloneFailed {
+                repository: reference.base.label.clone(),
+                message: format!("failed to run git clone: {e}"),
+            })?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -984,11 +987,12 @@ impl RepositoryService {
     /// # Source
     /// Ported from `packages/core/src/repository-cache.ts` HEAD resolution.
     pub fn resolve(&self, local_path: &Path) -> Result<String, RepositoryCacheError> {
-        self.resolve_head(local_path).map_err(|e| RepositoryCacheError::CacheOperation {
-            operation: "resolve".into(),
-            path: local_path.display().to_string(),
-            message: e.to_string(),
-        })
+        self.resolve_head(local_path)
+            .map_err(|e| RepositoryCacheError::CacheOperation {
+                operation: "resolve".into(),
+                path: local_path.display().to_string(),
+                message: e.to_string(),
+            })
     }
 
     /// Resolve the current branch name from a repository.
@@ -1037,7 +1041,8 @@ impl RepositoryService {
         let needs_clone = !local_path.join(".git").exists();
 
         if needs_clone {
-            self.clone_inner(&input.reference, input.branch.as_deref(), &local_path).await
+            self.clone_inner(&input.reference, input.branch.as_deref(), &local_path)
+                .await
         } else if input.refresh {
             self.fetch_inner(&input.reference, &local_path).await
         } else {
@@ -1741,7 +1746,10 @@ mod tests {
         let result = CacheLock::try_lock(&cache_path);
         assert!(result.is_err());
         match result.unwrap_err() {
-            RepositoryCacheError::LockFailed { local_path, message } => {
+            RepositoryCacheError::LockFailed {
+                local_path,
+                message,
+            } => {
                 assert!(local_path.contains("contended-repo"));
                 assert!(message.contains("locked"));
             }
@@ -1759,9 +1767,8 @@ mod tests {
         let _lock1 = CacheLock::try_lock(&cache_path).expect("main thread lock");
 
         // Spawn a thread that tries to acquire the same lock — it should fail quickly
-        let handle = std::thread::spawn(move || {
-            CacheLock::wait_lock_with_params(&cache_path_clone, 10, 3)
-        });
+        let handle =
+            std::thread::spawn(move || CacheLock::wait_lock_with_params(&cache_path_clone, 10, 3));
 
         let result = handle.join().expect("thread panicked");
         assert!(result.is_err(), "should fail to acquire contended lock");
@@ -1810,7 +1817,10 @@ mod tests {
     fn test_cache_lock_path_convention() {
         let cache_path = PathBuf::from("/tmp/cache/github.com/owner/repo");
         let lock_path = CacheLock::lock_path_for(&cache_path);
-        assert_eq!(lock_path, PathBuf::from("/tmp/cache/github.com/owner/repo.lock"));
+        assert_eq!(
+            lock_path,
+            PathBuf::from("/tmp/cache/github.com/owner/repo.lock")
+        );
     }
 
     // ── github_remote_url env var override ──────────────────────────
@@ -1823,7 +1833,10 @@ mod tests {
 
     #[test]
     fn test_github_remote_url_env_override() {
-        std::env::set_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL", "https://my-ghe.internal.com/github");
+        std::env::set_var(
+            "OPENCODE_REPO_CLONE_GITHUB_BASE_URL",
+            "https://my-ghe.internal.com/github",
+        );
         let url = github_remote_url("github.com", "owner/repo");
         assert_eq!(url, "https://my-ghe.internal.com/github/owner/repo.git");
         std::env::remove_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL");
@@ -1831,7 +1844,10 @@ mod tests {
 
     #[test]
     fn test_github_remote_url_env_trailing_slash() {
-        std::env::set_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL", "https://mirror.example.com/");
+        std::env::set_var(
+            "OPENCODE_REPO_CLONE_GITHUB_BASE_URL",
+            "https://mirror.example.com/",
+        );
         let url = github_remote_url("github.com", "org/project");
         assert_eq!(url, "https://mirror.example.com/org/project.git");
         std::env::remove_var("OPENCODE_REPO_CLONE_GITHUB_BASE_URL");

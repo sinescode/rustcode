@@ -4,12 +4,12 @@
 
 use axum::extract::{Query, State};
 use axum::response::IntoResponse;
-use axum::{Json, Router};
 use axum::routing::get;
+use axum::{Json, Router};
 use serde::Deserialize;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{error, info};
 
 use crate::server::AppState;
 
@@ -251,7 +251,9 @@ fn find_symbols_recursive(
         }
         if path.is_dir() {
             find_symbols_recursive(&path, query, patterns, results, limit)?;
-        } else if path.extension().map_or(false, |ext| ext == "rs" || ext == "py" || ext == "ts" || ext == "js") {
+        } else if path.extension().is_some_and(|ext| {
+            ext == "rs" || ext == "py" || ext == "ts" || ext == "js"
+        }) {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 let query_lower = query.to_lowercase();
                 for line in content.lines() {
@@ -304,8 +306,14 @@ async fn list_files(
                     }));
                 }
                 entries_json.sort_by_key(|e| {
-                    (if e["is_dir"].as_bool().unwrap_or(false) { 0 } else { 1 },
-                     e["name"].as_str().unwrap_or("").to_string())
+                    (
+                        if e["is_dir"].as_bool().unwrap_or(false) {
+                            0
+                        } else {
+                            1
+                        },
+                        e["name"].as_str().unwrap_or("").to_string(),
+                    )
                 });
             }
         } else {
@@ -355,10 +363,16 @@ async fn read_file(
                 "pdf" => "application/pdf",
                 _ => "application/octet-stream",
             };
-            let is_text = mime.starts_with("text/") || mime.starts_with("application/json") || mime.starts_with("application/javascript");
+            let is_text = mime.starts_with("text/")
+                || mime.starts_with("application/json")
+                || mime.starts_with("application/javascript");
             let lines = content.lines().count();
             let size = content.len();
-            info!("Read file {}: {} lines, {size} bytes", file_path.display(), lines);
+            info!(
+                "Read file {}: {} lines, {size} bytes",
+                file_path.display(),
+                lines
+            );
 
             Json(serde_json::json!({
                 "path": query.path,

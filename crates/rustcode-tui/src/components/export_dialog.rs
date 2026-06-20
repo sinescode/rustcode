@@ -22,14 +22,15 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 
 /// Export format options.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFormat {
     /// JSON with message tree structure.
+    #[default]
     Json,
     /// Human-readable Markdown.
     Markdown,
@@ -56,21 +57,30 @@ impl ExportFormat {
 
     pub fn description(&self) -> &'static str {
         match self {
-            ExportFormat::Json => "Full message tree with metadata, tool calls, and reasoning — machine-readable.",
-            ExportFormat::Markdown => "Conversation logs with code blocks — readable in any editor.",
+            ExportFormat::Json => {
+                "Full message tree with metadata, tool calls, and reasoning — machine-readable."
+            }
+            ExportFormat::Markdown => {
+                "Conversation logs with code blocks — readable in any editor."
+            }
             ExportFormat::Html => "Styled standalone HTML page with syntax highlighting.",
         }
     }
 
     pub fn all() -> [ExportFormat; 3] {
-        [ExportFormat::Json, ExportFormat::Markdown, ExportFormat::Html]
+        [
+            ExportFormat::Json,
+            ExportFormat::Markdown,
+            ExportFormat::Html,
+        ]
     }
 }
 
 /// Where the input focus is in the export dialog.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ExportFocus {
     /// Navigating format list.
+    #[default]
     FormatList,
     /// Editing the filename.
     Filename,
@@ -319,7 +329,8 @@ fn factorial(n: u64) -> u64 {{
             }
 
             KeyEvent {
-                code: KeyCode::Down, ..
+                code: KeyCode::Down,
+                ..
             } if self.focus == ExportFocus::FormatList => {
                 self.next_format();
                 Some(ExportAction::Navigate)
@@ -409,7 +420,12 @@ pub fn render_export_dialog(f: &mut Frame, area: Rect, state: &ExportState) {
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 4;
 
-    let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+    let dialog_area = Rect::new(
+        area.x + dialog_x,
+        area.y + dialog_y,
+        dialog_width,
+        dialog_height,
+    );
 
     f.render_widget(Clear, dialog_area);
 
@@ -431,10 +447,10 @@ pub fn render_export_dialog(f: &mut Frame, area: Rect, state: &ExportState) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(7),  // Format + filename
-            Constraint::Length(2),  // Sanitize + size
-            Constraint::Min(4),     // Preview
-            Constraint::Length(3),  // Confirm
+            Constraint::Length(7), // Format + filename
+            Constraint::Length(2), // Sanitize + size
+            Constraint::Min(4),    // Preview
+            Constraint::Length(3), // Confirm
         ])
         .split(inner);
 
@@ -447,13 +463,13 @@ pub fn render_export_dialog(f: &mut Frame, area: Rect, state: &ExportState) {
     // Left: format list
     let format_block = Block::default()
         .borders(Borders::NONE)
-        .style(Style::default().fg(
-            if state.focus == ExportFocus::FormatList {
+        .style(
+            Style::default().fg(if state.focus == ExportFocus::FormatList {
                 Color::Yellow
             } else {
                 Color::White
-            },
-        ));
+            }),
+        );
 
     let format_inner = format_block.inner(top_cols[0]);
     f.render_widget(format_block, top_cols[0]);
@@ -504,13 +520,13 @@ pub fn render_export_dialog(f: &mut Frame, area: Rect, state: &ExportState) {
 
     let filename_block = Block::default()
         .borders(Borders::BOTTOM)
-        .border_style(Style::default().fg(
-            if state.focus == ExportFocus::Filename {
+        .border_style(
+            Style::default().fg(if state.focus == ExportFocus::Filename {
                 Color::Yellow
             } else {
                 Color::DarkGray
-            },
-        ))
+            }),
+        )
         .title(filename_label);
 
     let filename_inner = filename_block.inner(right_cols[0]);
@@ -570,10 +586,7 @@ pub fn render_export_dialog(f: &mut Frame, area: Rect, state: &ExportState) {
     let row2_line = Line::from(vec![
         Span::styled(sanitize_marker, sanitize_style.add_modifier(Modifier::BOLD)),
         Span::raw("     "),
-        Span::styled(
-            size_text,
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(size_text, Style::default().fg(Color::DarkGray)),
     ]);
 
     f.render_widget(Paragraph::new(row2_line), rows[1]);

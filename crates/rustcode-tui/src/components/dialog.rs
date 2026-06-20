@@ -78,9 +78,7 @@ impl DialogType {
     /// Default dialog width as a fraction of terminal width (0.0–1.0).
     pub fn width_ratio(&self) -> f64 {
         match self {
-            DialogType::ModelSelector
-            | DialogType::AgentSelector
-            | DialogType::SessionList => 0.5,
+            DialogType::ModelSelector | DialogType::AgentSelector | DialogType::SessionList => 0.5,
             DialogType::ThemePicker => 0.4,
             DialogType::Status => 0.5,
             DialogType::Export => 0.6,
@@ -94,9 +92,7 @@ impl DialogType {
     /// Default dialog height as a fraction of terminal height (0.0–1.0).
     pub fn height_ratio(&self) -> f64 {
         match self {
-            DialogType::ModelSelector
-            | DialogType::AgentSelector
-            | DialogType::SessionList => 0.6,
+            DialogType::ModelSelector | DialogType::AgentSelector | DialogType::SessionList => 0.6,
             DialogType::ThemePicker => 0.5,
             DialogType::Status => 0.5,
             DialogType::Export => 0.4,
@@ -259,7 +255,12 @@ pub fn render_dialog_frame(
     let dialog_x = (area.width.saturating_sub(dialog_width)) / 2;
     let dialog_y = (area.height.saturating_sub(dialog_height)) / 3;
 
-    let dialog_area = Rect::new(area.x + dialog_x, area.y + dialog_y, dialog_width, dialog_height);
+    let dialog_area = Rect::new(
+        area.x + dialog_x,
+        area.y + dialog_y,
+        dialog_width,
+        dialog_height,
+    );
 
     // Clear the dialog area
     f.render_widget(Clear, dialog_area);
@@ -289,15 +290,24 @@ mod tests {
         state.push(DialogType::ModelSelector);
         assert!(state.is_active());
         assert_eq!(state.len(), 1);
-        assert_eq!(state.top().expect("should have top").dialog_type, DialogType::ModelSelector);
+        assert_eq!(
+            state.top().expect("should have top").dialog_type,
+            DialogType::ModelSelector
+        );
 
         state.push(DialogType::Status);
         assert_eq!(state.len(), 2);
-        assert_eq!(state.top().expect("should have top").dialog_type, DialogType::Status);
+        assert_eq!(
+            state.top().expect("should have top").dialog_type,
+            DialogType::Status
+        );
 
         let popped = state.pop();
         assert!(popped.is_some());
-        assert_eq!(popped.expect("popped dialog").dialog_type, DialogType::Status);
+        assert_eq!(
+            popped.expect("popped dialog").dialog_type,
+            DialogType::Status
+        );
         assert_eq!(state.len(), 1);
         assert!(state.is_active());
 
@@ -335,7 +345,10 @@ mod tests {
         state.push(DialogType::ThemePicker);
         assert!(state.is_active());
 
-        let consumed = state.handle_key(KeyEvent::new(KeyCode::Esc, crossterm::event::KeyModifiers::NONE));
+        let consumed = state.handle_key(KeyEvent::new(
+            KeyCode::Esc,
+            crossterm::event::KeyModifiers::NONE,
+        ));
         assert!(consumed);
         assert!(!state.is_active()); // Esc should pop the dialog
     }
@@ -346,7 +359,10 @@ mod tests {
         state.push(DialogType::Status);
 
         // Any key should be consumed when a dialog is active
-        let consumed = state.handle_key(KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE));
+        let consumed = state.handle_key(KeyEvent::new(
+            KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
         assert!(consumed);
         assert!(state.is_active()); // Dialog still active
     }
@@ -354,7 +370,10 @@ mod tests {
     #[test]
     fn test_dialog_no_key_consumption_when_inactive() {
         let mut state = DialogState::new();
-        let consumed = state.handle_key(KeyEvent::new(KeyCode::Char('x'), crossterm::event::KeyModifiers::NONE));
+        let consumed = state.handle_key(KeyEvent::new(
+            KeyCode::Char('x'),
+            crossterm::event::KeyModifiers::NONE,
+        ));
         assert!(!consumed);
     }
 

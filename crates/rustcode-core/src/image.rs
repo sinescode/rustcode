@@ -91,7 +91,9 @@ pub fn detect_mime(path: &Path) -> String {
         .map(|e| e.to_lowercase());
 
     match ext.as_deref() {
-        Some(e) => extension_mime(e).unwrap_or("application/octet-stream").to_string(),
+        Some(e) => extension_mime(e)
+            .unwrap_or("application/octet-stream")
+            .to_string(),
         None => "application/octet-stream".to_string(),
     }
 }
@@ -187,9 +189,7 @@ pub fn detect_mime_from_bytes(data: &[u8], fallback: &str) -> String {
 /// assert!(!is_image_mime("text/plain"));
 /// ```
 pub fn is_image_mime(mime: &str) -> bool {
-    mime.starts_with("image/")
-        && mime != "image/svg+xml"
-        && mime != "image/vnd.fastbidsheet"
+    mime.starts_with("image/") && mime != "image/svg+xml" && mime != "image/vnd.fastbidsheet"
 }
 
 /// Check whether a MIME type is displayable media (image or PDF).
@@ -239,11 +239,7 @@ pub fn is_pdf_mime(mime: &str) -> bool {
 /// assert!(image_size_ok(4096, 2160, 100_000).is_err()); // too wide
 /// assert!(image_size_ok(800, 600, 100_000_000).is_err()); // too many bytes
 /// ```
-pub fn image_size_ok(
-    width: u32,
-    height: u32,
-    base64_bytes: u64,
-) -> Result<(), ImageError> {
+pub fn image_size_ok(width: u32, height: u32, base64_bytes: u64) -> Result<(), ImageError> {
     if width > MAX_WIDTH || height > MAX_HEIGHT {
         return Err(ImageError::Size { width, height });
     }
@@ -301,19 +297,13 @@ mod tests {
 
     #[test]
     fn test_detect_mime_svg() {
-        assert_eq!(
-            detect_mime(Path::new("icon.svg")),
-            "image/svg+xml"
-        );
+        assert_eq!(detect_mime(Path::new("icon.svg")), "image/svg+xml");
     }
 
     #[test]
     fn test_detect_mime_hidden_file() {
         // Files starting with a dot but having an extension
-        assert_eq!(
-            detect_mime(Path::new(".hidden.png")),
-            "image/png"
-        );
+        assert_eq!(detect_mime(Path::new(".hidden.png")), "image/png");
     }
 
     // ── detect_mime_from_bytes (magic bytes) ───────────────────────
@@ -321,10 +311,7 @@ mod tests {
     #[test]
     fn test_sniff_png() {
         let png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        assert_eq!(
-            detect_mime_from_bytes(&png_header, "unknown"),
-            "image/png"
-        );
+        assert_eq!(detect_mime_from_bytes(&png_header, "unknown"), "image/png");
     }
 
     #[test]
@@ -339,28 +326,19 @@ mod tests {
     #[test]
     fn test_sniff_gif87a() {
         let gif_header = b"GIF87a";
-        assert_eq!(
-            detect_mime_from_bytes(gif_header, "unknown"),
-            "image/gif"
-        );
+        assert_eq!(detect_mime_from_bytes(gif_header, "unknown"), "image/gif");
     }
 
     #[test]
     fn test_sniff_gif89a() {
         let gif_header = b"GIF89a";
-        assert_eq!(
-            detect_mime_from_bytes(gif_header, "unknown"),
-            "image/gif"
-        );
+        assert_eq!(detect_mime_from_bytes(gif_header, "unknown"), "image/gif");
     }
 
     #[test]
     fn test_sniff_bmp() {
         let bmp_header = [0x42, 0x4D, 0x00, 0x00];
-        assert_eq!(
-            detect_mime_from_bytes(&bmp_header, "unknown"),
-            "image/bmp"
-        );
+        assert_eq!(detect_mime_from_bytes(&bmp_header, "unknown"), "image/bmp");
     }
 
     #[test]
@@ -388,14 +366,8 @@ mod tests {
     #[test]
     fn test_sniff_short_data() {
         // Too short for any signature
-        assert_eq!(
-            detect_mime_from_bytes(&[0x89], "fallback"),
-            "fallback"
-        );
-        assert_eq!(
-            detect_mime_from_bytes(&[], "fallback"),
-            "fallback"
-        );
+        assert_eq!(detect_mime_from_bytes(&[0x89], "fallback"), "fallback");
+        assert_eq!(detect_mime_from_bytes(&[], "fallback"), "fallback");
     }
 
     #[test]
@@ -412,10 +384,7 @@ mod tests {
         let mut header = vec![0x52, 0x49, 0x46, 0x46]; // "RIFF"
         header.extend_from_slice(&[0x0C, 0x00, 0x00, 0x00]); // size = 12
         header.extend_from_slice(&[0x57, 0x45, 0x42, 0x50]); // "WEBP"
-        assert_eq!(
-            detect_mime_from_bytes(&header, "unknown"),
-            "image/webp"
-        );
+        assert_eq!(detect_mime_from_bytes(&header, "unknown"), "image/webp");
     }
 
     // ── is_image_mime ──────────────────────────────────────────────
@@ -558,10 +527,7 @@ mod tests {
 
     #[test]
     fn test_detect_mime_pdf_uppercase() {
-        assert_eq!(
-            detect_mime(Path::new("DOCUMENT.PDF")),
-            "application/pdf"
-        );
+        assert_eq!(detect_mime(Path::new("DOCUMENT.PDF")), "application/pdf");
     }
 
     #[test]
@@ -569,10 +535,7 @@ mod tests {
         // PDF header followed by arbitrary binary data — should still detect
         let mut data = vec![0x25, 0x50, 0x44, 0x46, 0x2D]; // "%PDF-"
         data.extend_from_slice(&[0x00, 0xFF, 0xAB, 0xCD, 0xEF, 0x01, 0x02]);
-        assert_eq!(
-            detect_mime_from_bytes(&data, "unknown"),
-            "application/pdf"
-        );
+        assert_eq!(detect_mime_from_bytes(&data, "unknown"), "application/pdf");
     }
 
     // ── Magic byte edge cases ───────────────────────────────────────
@@ -580,20 +543,14 @@ mod tests {
     #[test]
     fn test_sniff_png_empty_fallback() {
         let png_header = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
-        assert_eq!(
-            detect_mime_from_bytes(&png_header, ""),
-            "image/png"
-        );
+        assert_eq!(detect_mime_from_bytes(&png_header, ""), "image/png");
     }
 
     #[test]
     fn test_sniff_jpeg_exif() {
         // EXIF JPEG: starts with 0xFF 0xD8 0xFF 0xE1
         let jpeg_exif = [0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x01, 0x02, 0x03];
-        assert_eq!(
-            detect_mime_from_bytes(&jpeg_exif, "unknown"),
-            "image/jpeg"
-        );
+        assert_eq!(detect_mime_from_bytes(&jpeg_exif, "unknown"), "image/jpeg");
     }
 
     #[test]
@@ -660,9 +617,6 @@ mod tests {
     #[test]
     fn test_detect_mime_dotfile_secret_png() {
         // Hidden dotfiles with a known extension should be detected correctly
-        assert_eq!(
-            detect_mime(Path::new(".secret.png")),
-            "image/png"
-        );
+        assert_eq!(detect_mime(Path::new(".secret.png")), "image/png");
     }
 }

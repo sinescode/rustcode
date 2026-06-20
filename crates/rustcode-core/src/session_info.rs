@@ -350,7 +350,8 @@ mod tests {
         };
 
         let json = serde_json::to_string(&info).expect("serialization should succeed");
-        let parsed: SessionInfoV2 = serde_json::from_str(&json).expect("deserialization should succeed");
+        let parsed: SessionInfoV2 =
+            serde_json::from_str(&json).expect("deserialization should succeed");
         assert_eq!(parsed.id, "ses_001");
         assert_eq!(parsed.title, "Test Session");
         assert_eq!(parsed.tokens.input, 5000);

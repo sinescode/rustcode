@@ -246,7 +246,7 @@ pub struct ExperimentalCost {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` line 998–1010.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Cost {
     #[serde(default)]
     pub input: f64,

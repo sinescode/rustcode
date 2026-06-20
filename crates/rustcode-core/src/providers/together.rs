@@ -14,7 +14,8 @@ use std::collections::{HashMap, VecDeque};
 
 use crate::error::Error;
 use crate::provider::{
-    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider, ToolDefinition, Usage,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
@@ -299,17 +300,15 @@ impl TogetherProvider {
                 }
                 ChatMessage::Tool { content } => {
                     for part in content {
-                        if let crate::provider::ToolResultPart::ToolResult {
+                        let crate::provider::ToolResultPart::ToolResult {
                             tool_call_id,
                             output,
                             ..
-                        } = part
-                        {
-                            result.push(TogetherChatMessage::Tool {
-                                tool_call_id: tool_call_id.clone(),
-                                content: output.to_string(),
-                            });
-                        }
+                        } = part;
+                        result.push(TogetherChatMessage::Tool {
+                            tool_call_id: tool_call_id.clone(),
+                            content: output.to_string(),
+                        });
                     }
                 }
             }
@@ -388,6 +387,7 @@ fn map_usage(u: &TogetherUsage) -> Usage {
         output_tokens: u.completion_tokens,
         non_cached_input_tokens: non_cached,
         cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
         reasoning_tokens: reasoning,
         total_tokens: u.total_tokens,
         provider_metadata: None,
@@ -431,9 +431,11 @@ fn events_from_chat(event: TogetherChatEvent, state: &mut ChatStreamState) -> Ve
         if let Some(tool_deltas) = &delta.tool_calls {
             for td in tool_deltas {
                 if let Some(ref name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
-                    state
-                        .tool_stream
-                        .set_identity(td.index, name.clone(), td.id.clone().unwrap_or_default());
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name.clone(),
+                        td.id.clone().unwrap_or_default(),
+                    );
                 }
                 if let Some(ref args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
                     if let Some(ev) = state.tool_stream.append(td.index, args) {
@@ -474,7 +476,7 @@ fn events_from_chat(event: TogetherChatEvent, state: &mut ChatStreamState) -> Ve
         });
         events.push(LlmEvent::Finish {
             reason,
-            usage,
+            usage: usage.clone(),
             provider_metadata: None,
         });
         state.finished = true;
@@ -525,8 +527,9 @@ impl Provider for TogetherProvider {
         model: &Model,
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
-    ) -> crate::error::Result<Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>>
-    {
+    ) -> crate::error::Result<
+        Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
+    > {
         let body = TogetherChatBody {
             model: model.api.id.clone(),
             messages: Self::build_chat_messages(messages),
@@ -586,39 +589,38 @@ impl Provider for TogetherProvider {
                 state,
                 VecDeque::new(),
             ),
-            |(mut sse, mut state, mut buffer)| async move {
-                loop {
-                    if let Some(ev) = buffer.pop_front() {
-                        return Some((ev, (sse, state, buffer)));
-                    }
-                    if state.finished {
-                        return None;
-                    }
-                    match sse.next().await {
-                        Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                            if let Ok(oe) =
-                                serde_json::from_str::<TogetherChatEvent>(&se.data)
-                            {
-                                for ev in events_from_chat(oe, &mut state) {
-                                    buffer.push_back(Ok(ev));
-                                }
-                                if let Some(ev) = buffer.pop_front() {
-                                    return Some((ev, (sse, state, buffer)));
+            |(mut sse, mut state, mut buffer)| {
+                Box::pin(async move {
+                    loop {
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
+                        }
+                        if state.finished {
+                            return None;
+                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(oe) = serde_json::from_str::<TogetherChatEvent>(&se.data)
+                                {
+                                    for ev in events_from_chat(oe, &mut state) {
+                                        buffer.push_back(Ok(ev));
+                                    }
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
+                            Some(Err(e)) => {
+                                return Some((
+                                    Err(Error::ResponseStream(format!("Together AI SSE: {e}"))),
+                                    (sse, state, buffer),
+                                ));
+                            }
+                            None => return None,
+                            _ => continue,
                         }
-                        Some(Err(e)) => {
-                            return Some((
-                                Err(Error::ResponseStream(format!(
-                                    "Together AI SSE: {e}"
-                                ))),
-                                (sse, state, buffer),
-                            ));
-                        }
-                        None => return None,
-                        _ => continue,
                     }
-                }
+                })
             },
         );
         Ok(Box::new(llm_stream))
@@ -648,8 +650,8 @@ impl Provider for TogetherProvider {
     }
 }
 
-use std::pin::Pin;
 use crate::error::LlmErrorReason;
+use std::pin::Pin;
 
 fn classify_error(status: u16, body: &str) -> LlmErrorReason {
     let msg = || body.to_string();
@@ -892,7 +894,10 @@ mod tests {
     #[test]
     fn test_provider_id() {
         let provider = TogetherProvider::new();
-        assert!(provider.is_ok(), "TOGETHER_API_KEY not set in CI; test with_mock instead");
+        assert!(
+            provider.is_ok(),
+            "TOGETHER_API_KEY not set in CI; test with_mock instead"
+        );
         if let Ok(p) = provider {
             assert_eq!(p.provider_id(), "together");
             assert_eq!(p.npm(), "@ai-sdk/togetherai");
@@ -903,35 +908,30 @@ mod tests {
     fn test_provider_id_static() {
         // Verify the provider_id and npm strings are correct
         // without needing an API key
-        let provider = TogetherProvider::with_base_url(
-            "test-key".into(),
-            DEFAULT_BASE_URL.into(),
-        )
-        .expect("should construct with test key");
-        assert_eq!(p.provider_id(), "together");
-        assert_eq!(p.npm(), "@ai-sdk/togetherai");
+        let provider = TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct with test key");
+        assert_eq!(provider.provider_id(), "together");
+        assert_eq!(provider.npm(), "@ai-sdk/togetherai");
     }
 
     // ── Model lookup ───────────────────────────────────────────────
 
-    #[test]
-    fn test_get_model_found() {
-        let provider =
-            TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let model = provider.get_model("deepseek-ai/DeepSeek-V3");
+    #[tokio::test]
+    async fn test_get_model_found() {
+        let provider = TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let model = provider.get_model("deepseek-ai/DeepSeek-V3").await;
         assert!(model.is_ok());
         let m = model.unwrap();
         assert_eq!(m.id, "deepseek-ai/DeepSeek-V3");
         assert_eq!(m.name, "DeepSeek V3");
     }
 
-    #[test]
-    fn test_get_model_not_found() {
-        let provider =
-            TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let result = provider.get_model("nonexistent-model");
+    #[tokio::test]
+    async fn test_get_model_not_found() {
+        let provider = TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let result = provider.get_model("nonexistent-model").await;
         assert!(result.is_err());
         match result {
             Err(Error::ModelNotFound {
@@ -945,12 +945,11 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_list_models_returns_all() {
-        let provider =
-            TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        let models = provider.list_models();
+    #[tokio::test]
+    async fn test_list_models_returns_all() {
+        let provider = TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        let models = provider.list_models().await;
         assert!(models.is_ok());
         assert_eq!(models.unwrap().len(), 6);
     }
@@ -971,10 +970,7 @@ mod tests {
     #[test]
     fn test_classify_error_auth_403() {
         let err = classify_error(403, r#"{"error":"Forbidden"}"#);
-        assert!(matches!(
-            err,
-            LlmErrorReason::Authentication { .. }
-        ));
+        assert!(matches!(err, LlmErrorReason::Authentication { .. }));
     }
 
     #[test]
@@ -985,14 +981,9 @@ mod tests {
 
     #[test]
     fn test_classify_error_context_overflow() {
-        let err = classify_error(
-            400,
-            "prompt is too long: input exceeds the context window",
-        );
+        let err = classify_error(400, "prompt is too long: input exceeds the context window");
         match err {
-            LlmErrorReason::InvalidRequest {
-                classification, ..
-            } => {
+            LlmErrorReason::InvalidRequest { classification, .. } => {
                 assert_eq!(classification, Some("context-overflow".into()));
             }
             other => panic!("expected InvalidRequest with context-overflow, got: {other:?}"),
@@ -1002,10 +993,7 @@ mod tests {
     #[test]
     fn test_classify_error_invalid_request() {
         let err = classify_error(400, r#"{"error":"bad request"}"#);
-        assert!(matches!(
-            err,
-            LlmErrorReason::InvalidRequest { .. }
-        ));
+        assert!(matches!(err, LlmErrorReason::InvalidRequest { .. }));
     }
 
     #[test]
@@ -1099,10 +1087,12 @@ mod tests {
 
     #[test]
     fn test_chat_url() {
-        let provider =
-            TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
-                .expect("should construct");
-        assert_eq!(provider.chat_url(), "https://api.together.xyz/v1/chat/completions");
+        let provider = TogetherProvider::with_base_url("test-key".into(), DEFAULT_BASE_URL.into())
+            .expect("should construct");
+        assert_eq!(
+            provider.chat_url(),
+            "https://api.together.xyz/v1/chat/completions"
+        );
     }
 
     #[test]
@@ -1112,7 +1102,10 @@ mod tests {
             "https://api.together.xyz/v1/".into(),
         )
         .expect("should construct");
-        assert_eq!(provider.chat_url(), "https://api.together.xyz/v1/chat/completions");
+        assert_eq!(
+            provider.chat_url(),
+            "https://api.together.xyz/v1/chat/completions"
+        );
     }
 
     // ── Capabilities ───────────────────────────────────────────────
@@ -1133,7 +1126,11 @@ mod tests {
     fn test_models_have_text_input_output() {
         let models = build_model_catalog();
         for m in &models {
-            assert!(m.capabilities.input.text, "model {} should support text input", m.id);
+            assert!(
+                m.capabilities.input.text,
+                "model {} should support text input",
+                m.id
+            );
             assert!(
                 m.capabilities.output.text,
                 "model {} should support text output",

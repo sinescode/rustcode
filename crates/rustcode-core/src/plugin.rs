@@ -167,9 +167,8 @@ impl Serialize for PluginHook {
 impl<'de> Deserialize<'de> for PluginHook {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let s = String::deserialize(deserializer)?;
-        PluginHook::from_str(&s).ok_or_else(|| {
-            serde::de::Error::unknown_variant(&s, PluginHook::all_strs())
-        })
+        PluginHook::from_str(&s)
+            .ok_or_else(|| serde::de::Error::unknown_variant(&s, PluginHook::all_strs()))
     }
 }
 
@@ -337,13 +336,16 @@ pub fn is_path_plugin_spec(spec: &str) -> bool {
     spec.starts_with("file://")
         || spec.starts_with('.')
         || spec.starts_with('/')
-        || (spec.len() >= 2 && spec.as_bytes().get(1) == Some(&b':') && spec.as_bytes()[0].is_ascii_alphabetic())
+        || (spec.len() >= 2
+            && spec.as_bytes().get(1) == Some(&b':')
+            && spec.as_bytes()[0].is_ascii_alphabetic())
 }
 
 /// Deprecated plugin package names that are now built-in.
 ///
 /// Ported from `packages/opencode/src/plugin/shared.ts` `DEPRECATED_PLUGIN_PACKAGES`.
-static DEPRECATED_PLUGIN_PACKAGES: &[&str] = &["opencode-openai-codex-auth", "opencode-copilot-auth"];
+static DEPRECATED_PLUGIN_PACKAGES: &[&str] =
+    &["opencode-openai-codex-auth", "opencode-copilot-auth"];
 
 /// Check if a plugin spec refers to a deprecated (now built-in) package.
 pub fn is_deprecated_plugin(spec: &str) -> bool {
@@ -391,10 +393,20 @@ pub struct PluginMetaEntry {
 /// Npm plugins: `target|requested|version`
 ///
 /// Ported from `packages/opencode/src/plugin/meta.ts` `fingerprint()`.
-pub fn compute_fingerprint(source: PluginSource, target: &str, requested: Option<&str>, version: Option<&str>, modified: Option<u64>) -> String {
+pub fn compute_fingerprint(
+    source: PluginSource,
+    target: &str,
+    requested: Option<&str>,
+    version: Option<&str>,
+    modified: Option<u64>,
+) -> String {
     match source {
         PluginSource::File => {
-            format!("{}|{}", target, modified.map(|m| m.to_string()).unwrap_or_default())
+            format!(
+                "{}|{}",
+                target,
+                modified.map(|m| m.to_string()).unwrap_or_default()
+            )
         }
         PluginSource::Npm => {
             format!(
@@ -437,7 +449,11 @@ impl PluginManager {
     /// If a plugin with the same id already exists, it is replaced.
     /// Returns the previous plugin if one existed.
     pub fn register(&mut self, plugin: Plugin) -> Option<Plugin> {
-        let prev = self.plugins.iter().position(|p| p.id == plugin.id).map(|i| self.plugins.remove(i));
+        let prev = self
+            .plugins
+            .iter()
+            .position(|p| p.id == plugin.id)
+            .map(|i| self.plugins.remove(i));
         self.plugins.push(plugin);
         prev
     }
@@ -587,9 +603,7 @@ impl PluginManager {
                 let path = spec.strip_prefix("file://").unwrap_or(&spec);
                 PathBuf::from(path)
             }
-            PluginSource::Npm => {
-                PathBuf::from(format!("/node_modules/{}", parsed.pkg))
-            }
+            PluginSource::Npm => PathBuf::from(format!("/node_modules/{}", parsed.pkg)),
         };
 
         let mut plugin = Plugin::new(parsed.pkg.as_str(), parsed.pkg.as_str(), source)
@@ -917,9 +931,18 @@ mod tests {
 
     #[test]
     fn test_plugin_hook_as_str_values() {
-        assert_eq!(PluginHook::ExperimentalTextComplete.as_str(), "experimental.text.complete");
-        assert_eq!(PluginHook::ExperimentalSessionCompacting.as_str(), "experimental.session.compacting");
-        assert_eq!(PluginHook::ExperimentalChatMessagesTransform.as_str(), "experimental.chat.messages.transform");
+        assert_eq!(
+            PluginHook::ExperimentalTextComplete.as_str(),
+            "experimental.text.complete"
+        );
+        assert_eq!(
+            PluginHook::ExperimentalSessionCompacting.as_str(),
+            "experimental.session.compacting"
+        );
+        assert_eq!(
+            PluginHook::ExperimentalChatMessagesTransform.as_str(),
+            "experimental.chat.messages.transform"
+        );
         assert_eq!(PluginHook::Event.as_str(), "event");
         assert_eq!(PluginHook::Config.as_str(), "config");
     }
@@ -953,13 +976,7 @@ mod tests {
 
     #[test]
     fn test_fingerprint_file_plugin_no_modified() {
-        let fp = compute_fingerprint(
-            PluginSource::File,
-            "/path/to/plugin",
-            None,
-            None,
-            None,
-        );
+        let fp = compute_fingerprint(PluginSource::File, "/path/to/plugin", None, None, None);
         assert_eq!(fp, "/path/to/plugin|");
     }
 
@@ -1070,7 +1087,10 @@ mod tests {
         // Deprecated spec
         let result = manager.install_validate("opencode-copilot-auth");
         assert!(result.is_err());
-        assert!(matches!(result, Err(PluginLoadError::DeprecatedPlugin { .. })));
+        assert!(matches!(
+            result,
+            Err(PluginLoadError::DeprecatedPlugin { .. })
+        ));
     }
 
     // ── Serde and Display round-trip tests ─────────────────────────
