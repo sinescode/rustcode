@@ -14,6 +14,424 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+
+// ── Provider plugin system ────────────────────────────────────────────
+
+/// Context passed to provider plugin hooks during catalog transformation.
+///
+/// Allows plugins to modify provider settings (headers, API keys, enabled state)
+/// before the provider is initialized.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin.ts` HookSpec `catalog.transform`.
+pub struct CatalogTransformContext<'a> {
+    /// The provider ID being transformed.
+    pub provider_id: &'a str,
+    /// Mutable reference to the provider's request headers.
+    pub headers: &'a mut HashMap<String, String>,
+    /// Whether the provider is enabled.
+    pub enabled: &'a mut bool,
+    /// Provider-specific options (API key, base URL, etc.).
+    pub options: &'a mut HashMap<String, serde_json::Value>,
+}
+
+/// Context for custom model discovery.
+///
+/// Plugins can return a custom model list that replaces or augments the
+/// default catalog for a provider.
+///
+/// # Source
+/// Ported from `packages/opencode/src/provider/provider.ts` model loaders.
+pub struct ModelDiscoverContext<'a> {
+    /// The provider ID.
+    pub provider_id: &'a str,
+    /// The provider's base URL.
+    pub base_url: &'a str,
+    /// The API key (if available).
+    pub api_key: Option<&'a str>,
+    /// Provider-specific options.
+    pub options: &'a HashMap<String, serde_json::Value>,
+}
+
+/// Context for custom auth credential loading.
+///
+/// Plugins can provide custom auth flows (OAuth, token refresh, etc.)
+/// that return provider options to be merged into the catalog.
+///
+/// # Source
+/// Ported from `packages/plugin/src/index.ts` `AuthHook`.
+pub struct AuthLoadContext<'a> {
+    /// The provider ID.
+    pub provider_id: &'a str,
+    /// The provider's environment variable names.
+    pub env_vars: &'a [String],
+}
+
+/// A plugin that customizes provider behavior.
+///
+/// Provider plugins can:
+/// - Transform provider catalog settings (headers, auth, enabled state)
+/// - Discover custom model lists
+/// - Load custom auth credentials
+///
+/// # Source
+/// Ported from `packages/core/src/plugin/provider/*.ts` (33 built-in plugins).
+#[async_trait::async_trait]
+pub trait ProviderPlugin: Send + Sync {
+    /// Unique identifier for this plugin.
+    fn id(&self) -> &str;
+
+    /// Human-readable name.
+    fn name(&self) -> &str;
+
+    /// Hook: Transform provider catalog settings before initialization.
+    ///
+    /// Called once per provider during catalog setup. Use this to inject
+    /// headers, modify options, or disable providers.
+    async fn transform_catalog(&self, _ctx: &mut CatalogTransformContext<'_>) {}
+
+    /// Hook: Discover models for a provider.
+    ///
+    /// Return `Some(models)` to replace the default catalog, or `None`
+    /// to use the built-in model list.
+    async fn discover_models(
+        &self,
+        _ctx: &ModelDiscoverContext<'_>,
+    ) -> Option<Vec<crate::provider::Model>> {
+        None
+    }
+
+    /// Hook: Load custom auth credentials.
+    ///
+    /// Return `Some(options)` to merge into the provider's options, or
+    /// `None` to use default env-var-based auth.
+    async fn load_auth(
+        &self,
+        _ctx: &AuthLoadContext<'_>,
+    ) -> Option<HashMap<String, serde_json::Value>> {
+        None
+    }
+}
+
+/// Registry that stores and triggers provider plugins.
+///
+/// Plugins are registered at startup and triggered during provider
+/// initialization to customize catalog, models, and auth.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin/provider.ts` `ProviderPlugins`.
+pub struct ProviderPluginRegistry {
+    plugins: Vec<Arc<dyn ProviderPlugin>>,
+}
+
+impl ProviderPluginRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self {
+            plugins: Vec::new(),
+        }
+    }
+
+    /// Register a provider plugin.
+    pub fn register(&mut self, plugin: Arc<dyn ProviderPlugin>) {
+        self.plugins.push(plugin);
+    }
+
+    /// Register multiple plugins.
+    pub fn register_all(&mut self, plugins: Vec<Arc<dyn ProviderPlugin>>) {
+        self.plugins.extend(plugins);
+    }
+
+    /// Trigger `transform_catalog` on all registered plugins for a provider.
+    pub async fn transform_catalog(&self, ctx: &mut CatalogTransformContext<'_>) {
+        for plugin in &self.plugins {
+            plugin.transform_catalog(ctx).await;
+        }
+    }
+
+    /// Trigger `discover_models` on plugins until one returns a result.
+    pub async fn discover_models(
+        &self,
+        ctx: &ModelDiscoverContext<'_>,
+    ) -> Option<Vec<crate::provider::Model>> {
+        for plugin in &self.plugins {
+            if let Some(models) = plugin.discover_models(ctx).await {
+                return Some(models);
+            }
+        }
+        None
+    }
+
+    /// Trigger `load_auth` on plugins until one returns a result.
+    pub async fn load_auth(
+        &self,
+        ctx: &AuthLoadContext<'_>,
+    ) -> Option<HashMap<String, serde_json::Value>> {
+        for plugin in &self.plugins {
+            if let Some(options) = plugin.load_auth(ctx).await {
+                return Some(options);
+            }
+        }
+        None
+    }
+
+    /// Number of registered plugins.
+    pub fn count(&self) -> usize {
+        self.plugins.len()
+    }
+
+    /// Find a plugin by id.
+    pub fn get(&self, id: &str) -> Option<Arc<dyn ProviderPlugin>> {
+        self.plugins.iter().find(|p| p.id() == id).cloned()
+    }
+}
+
+impl Default for ProviderPluginRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A simple provider plugin created from closures.
+///
+/// Allows quick ad-hoc plugins without defining a full struct:
+///
+/// ```ignore
+/// let plugin = ClosureProviderPlugin::new("my-plugin", "My Plugin")
+///     .with_transform(|ctx| {
+///         ctx.headers.insert("X-Custom".into(), "value".into());
+///     });
+/// registry.register(Arc::new(plugin));
+/// ```
+pub struct ClosureProviderPlugin {
+    id: String,
+    name: String,
+    transform_fn:
+        Option<Box<dyn Fn(&mut CatalogTransformContext<'_>) -> BoxFuture<()> + Send + Sync>>,
+    discover_fn: Option<
+        Box<
+            dyn Fn(&ModelDiscoverContext<'_>) -> BoxFuture<Option<Vec<crate::provider::Model>>>
+                + Send
+                + Sync,
+        >,
+    >,
+    auth_fn: Option<
+        Box<
+            dyn Fn(&AuthLoadContext<'_>) -> BoxFuture<Option<HashMap<String, serde_json::Value>>>
+                + Send
+                + Sync,
+        >,
+    ),
+}
+
+type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+impl ClosureProviderPlugin {
+    /// Create a new closure-based plugin with just an id and name.
+    pub fn new(id: impl Into<String>, name: impl Into<String>) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            transform_fn: None,
+            discover_fn: None,
+            auth_fn: None,
+        }
+    }
+
+    /// Set the catalog transform hook.
+    pub fn with_transform(
+        mut self,
+        f: impl Fn(&mut CatalogTransformContext<'_>) -> BoxFuture<()> + Send + Sync + 'static,
+    ) -> Self {
+        self.transform_fn = Some(Box::new(f));
+        self
+    }
+
+    /// Set the model discover hook.
+    pub fn with_discover(
+        mut self,
+        f: impl Fn(&ModelDiscoverContext<'_>) -> BoxFuture<Option<Vec<crate::provider::Model>>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.discover_fn = Some(Box::new(f));
+        self
+    }
+
+    /// Set the auth loader hook.
+    pub fn with_auth(
+        mut self,
+        f: impl Fn(&AuthLoadContext<'_>) -> BoxFuture<Option<HashMap<String, serde_json::Value>>>
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        self.auth_fn = Some(Box::new(f));
+        self
+    }
+}
+
+#[async_trait::async_trait]
+impl ProviderPlugin for ClosureProviderPlugin {
+    fn id(&self) -> &str {
+        &self.id
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    async fn transform_catalog(&self, ctx: &mut CatalogTransformContext<'_>) {
+        if let Some(ref f) = self.transform_fn {
+            f(ctx).await;
+        }
+    }
+    async fn discover_models(
+        &self,
+        ctx: &ModelDiscoverContext<'_>,
+    ) -> Option<Vec<crate::provider::Model>> {
+        if let Some(ref f) = self.discover_fn {
+            f(ctx).await
+        } else {
+            None
+        }
+    }
+    async fn load_auth(
+        &self,
+        ctx: &AuthLoadContext<'_>,
+    ) -> Option<HashMap<String, serde_json::Value>> {
+        if let Some(ref f) = self.auth_fn {
+            f(ctx).await
+        } else {
+            None
+        }
+    }
+}
+
+// ── Custom provider definition (from config) ──────────────────────────
+
+/// A custom provider defined in `opencode.json` configuration.
+///
+/// Users can add custom providers via config without writing a plugin:
+///
+/// ```json
+/// {
+///   "provider": {
+///     "my-provider": {
+///       "name": "My Provider",
+///       "env": ["MY_API_KEY"],
+///       "models": { ... }
+///     }
+///   }
+/// }
+/// ```
+///
+/// # Source
+/// Ported from `packages/opencode/src/provider/provider.ts` config providers.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomProviderConfig {
+    /// Display name.
+    pub name: String,
+    /// Environment variable names for API key lookup.
+    #[serde(default)]
+    pub env: Vec<String>,
+    /// Base URL for the provider's API.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_url: Option<String>,
+    /// Models offered by this provider.
+    #[serde(default)]
+    pub models: HashMap<String, CustomModelConfig>,
+    /// Extra HTTP headers to send with requests.
+    #[serde(default)]
+    pub headers: HashMap<String, String>,
+    /// Whether this provider is enabled.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+/// Configuration for a single model within a custom provider.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CustomModelConfig {
+    /// Display name.
+    pub name: String,
+    /// Context window size in tokens.
+    #[serde(default = "default_context")]
+    pub context: u64,
+    /// Max output tokens.
+    #[serde(default = "default_output")]
+    pub output: u64,
+    /// Whether this model supports reasoning.
+    #[serde(default)]
+    pub reasoning: bool,
+    /// Whether this model accepts image input.
+    #[serde(default)]
+    pub image_input: bool,
+    /// Model family (e.g. "claude", "gpt").
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+}
+
+fn default_context() -> u64 {
+    128_000
+}
+fn default_output() -> u64 {
+    16_384
+}
+
+impl CustomProviderConfig {
+    /// Convert this config into a list of [`Model`] entries.
+    pub fn build_models(
+        &self,
+        provider_id: &str,
+        base_url: &str,
+    ) -> Vec<crate::provider::Model> {
+        self.models
+            .iter()
+            .map(|(id, m)| crate::provider::Model {
+                id: id.into(),
+                provider_id: provider_id.into(),
+                name: m.name.clone(),
+                api: crate::provider::ApiInfo {
+                    id: id.into(),
+                    url: base_url.into(),
+                    npm: format!("@custom/{provider_id}"),
+                },
+                family: m.family.clone(),
+                capabilities: crate::provider::Capabilities {
+                    temperature: true,
+                    reasoning: m.reasoning,
+                    attachment: false,
+                    toolcall: true,
+                    input: crate::provider::Modality {
+                        text: true,
+                        image: m.image_input,
+                        ..Default::default()
+                    },
+                    output: crate::provider::Modality {
+                        text: true,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                cost: crate::provider::Cost::default(),
+                limit: crate::provider::TokenLimit {
+                    context: m.context,
+                    input: None,
+                    output: m.output,
+                },
+                status: crate::provider::ModelStatus::Active,
+                options: HashMap::new(),
+                headers: self.headers.clone(),
+                release_date: "2025".into(),
+                variants: None,
+            })
+            .collect()
+    }
+}
 
 // ── Plugin source ─────────────────────────────────────────────────────
 
@@ -1128,5 +1546,84 @@ mod tests {
         assert_eq!(format!("{}", PluginState::First), "first");
         assert_eq!(format!("{}", PluginState::Updated), "updated");
         assert_eq!(format!("{}", PluginState::Same), "same");
+    }
+
+    // ── Provider plugin tests ──────────────────────────────────────
+
+    #[test]
+    fn test_provider_plugin_registry_empty() {
+        let registry = ProviderPluginRegistry::new();
+        assert_eq!(registry.count(), 0);
+        assert!(registry.get("nonexistent").is_none());
+    }
+
+    #[test]
+    fn test_closure_provider_plugin() {
+        use std::sync::Arc;
+
+        let plugin = ClosureProviderPlugin::new("test", "Test Plugin");
+        assert_eq!(plugin.id(), "test");
+        assert_eq!(plugin.name(), "Test Plugin");
+
+        let mut registry = ProviderPluginRegistry::new();
+        registry.register(Arc::new(plugin));
+        assert_eq!(registry.count(), 1);
+        assert!(registry.get("test").is_some());
+    }
+
+    #[test]
+    fn test_custom_provider_config_build_models() {
+        let mut models = HashMap::new();
+        models.insert(
+            "my-model".to_string(),
+            CustomModelConfig {
+                name: "My Model".to_string(),
+                context: 64_000,
+                output: 4_096,
+                reasoning: true,
+                image_input: false,
+                family: Some("custom".to_string()),
+            },
+        );
+
+        let config = CustomProviderConfig {
+            name: "My Provider".to_string(),
+            env: vec!["MY_API_KEY".to_string()],
+            base_url: Some("https://api.example.com/v1".to_string()),
+            models,
+            headers: HashMap::new(),
+            enabled: true,
+        };
+
+        let models = config.build_models("my-provider", "https://api.example.com/v1");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "my-model");
+        assert_eq!(models[0].name, "My Model");
+        assert_eq!(models[0].limit.context, 64_000);
+        assert_eq!(models[0].limit.output, 4_096);
+        assert!(models[0].capabilities.reasoning);
+        assert!(!models[0].capabilities.input.image);
+    }
+
+    #[test]
+    fn test_custom_provider_config_defaults() {
+        let config: CustomProviderConfig = serde_json::from_value(serde_json::json!({
+            "name": "Minimal Provider",
+            "env": ["API_KEY"],
+            "models": {
+                "model-a": { "name": "Model A" }
+            }
+        }))
+        .unwrap();
+
+        assert!(config.enabled);
+        assert!(config.base_url.is_none());
+        assert!(config.headers.is_empty());
+
+        let models = config.build_models("minimal", "https://default.api");
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].limit.context, 128_000);
+        assert_eq!(models[0].limit.output, 16_384);
+        assert!(!models[0].capabilities.reasoning);
     }
 }
