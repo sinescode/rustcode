@@ -4,8 +4,7 @@
 //! completions endpoint, so this provider reuses the same body builder and
 //! SSE event parser patterns as the OpenAI provider, with Bedrock-specific:
 //! - Base URL: <https://bedrock-runtime.{region}.amazonaws.com>
-//! - Auth: Custom AWS headers (`x-aws-access-key`, `x-aws-secret-key`,
-//!   `x-aws-region`) providing simplified SigV4 credentials
+//! - Auth: AWS SigV4 request signing
 //! - Model catalog: Claude Sonnet/Opus/Haiku 4, Llama 4 Maverick, Titan Text
 //!
 //! Ported from:
@@ -14,8 +13,11 @@
 //! - `packages/llm/src/providers/openai-compatible-profile.ts` (21 lines)
 
 use async_trait::async_trait;
+use chrono::Utc;
 use futures::StreamExt;
+use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 
@@ -26,6 +28,85 @@ use crate::provider::{
 };
 use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
+
+// ── AWS SigV4 Signing ──────────────────────────────────────────────────
+
+type HmacSha256 = Hmac<Sha256>;
+
+/// AWS SigV4 signer for Bedrock requests.
+///
+/// # Source
+/// Implements the AWS Signature Version 4 signing algorithm per
+/// <https://docs.aws.amazon.com/general/latest/gr/sigv4-signing.html>.
+struct SigV4Signer {
+    access_key: String,
+    secret_key: String,
+    region: String,
+    service: &'static str,
+}
+
+impl SigV4Signer {
+    fn new(access_key: &str, secret_key: &str, region: &str) -> Self {
+        Self {
+            access_key: access_key.into(),
+            secret_key: secret_key.into(),
+            region: region.into(),
+            service: "bedrock",
+        }
+    }
+
+    /// Sign a request and return the Authorization header value plus the
+    /// x-amz-date header value.
+    fn sign(
+        &self,
+        method: &str,
+        host: &str,
+        path: &str,
+        body: &[u8],
+        date: &str,
+    ) -> Result<String, Error> {
+        // Step 1: Create canonical request per AWS SigV4 spec
+        let payload_hash = hex::encode(Sha256::digest(body));
+        let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+        let canonical_headers = format!(
+            "host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{date}\n"
+        );
+        let canonical_request = format!(
+            "{method}\n{path}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
+        );
+
+        // Step 2: Create string to sign
+        let credential_scope = format!("{date}/{}/{}/aws4_request", self.region, self.service);
+        let canonical_request_hash = hex::encode(Sha256::digest(canonical_request.as_bytes()));
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256\n{date}\n{credential_scope}\n{canonical_request_hash}"
+        );
+
+        // Step 3: Calculate signing key
+        let k_date = self.hmac_raw(format!("AWS4{}", self.secret_key).as_bytes(), date.as_bytes());
+        let k_region = self.hmac_raw(&k_date, self.region.as_bytes());
+        let k_service = self.hmac_raw(&k_region, self.service.as_bytes());
+        let k_signing = self.hmac_raw(&k_service, b"aws4_request");
+
+        // Step 4: Calculate signature
+        let signature = self.hmac_raw(&k_signing, string_to_sign.as_bytes());
+
+        // Step 5: Build authorization header
+        Ok(format!(
+            "AWS4-HMAC-SHA256 Credential={}/{}, SignedHeaders={signed_headers}, Signature={}",
+            self.access_key,
+            credential_scope,
+            hex::encode(signature),
+        ))
+    }
+
+    fn hmac_raw(&self, key: &[u8], data: &[u8]) -> Vec<u8> {
+        let mut mac =
+            HmacSha256::new_from_slice(key).expect("HMAC can take key of any size");
+        mac.update(data);
+        mac.finalize().into_bytes().to_vec()
+    }
+}
 
 const BASE_URL: &str = "https://bedrock-runtime.us-east-1.amazonaws.com";
 const CHAT_PATH: &str = "/chat/completions";
@@ -311,13 +392,14 @@ impl BedrockProvider {
                             ContentPart::ToolCallPart {
                                 tool_call_id,
                                 tool_name,
+                                arguments,
                             } => {
                                 tool_calls.push(BedrockAssistantToolCall {
                                     id: tool_call_id.clone(),
                                     call_type: "function".into(),
                                     function: BedrockToolCallFunction {
                                         name: tool_name.clone(),
-                                        arguments: "{}".into(),
+                                        arguments: arguments.to_string(),
                                     },
                                 });
                             }
@@ -716,9 +798,10 @@ impl Provider for BedrockProvider {
     ) -> crate::error::Result<
         Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
     > {
+        let messages = crate::provider::normalize_messages(messages, model);
         let body = BedrockChatBody {
             model: model.api.id.clone(),
-            messages: Self::build_chat_messages(messages),
+            messages: Self::build_chat_messages(&messages),
             tools: build_tools(tools),
             tool_choice: None,
             stream: true,
@@ -727,18 +810,32 @@ impl Provider for BedrockProvider {
                 model,
                 crate::provider::OUTPUT_TOKEN_MAX,
             )),
-            temperature: None,
-            top_p: None,
+            temperature: crate::provider::default_temperature(&model.api.id),
+            top_p: crate::provider::default_top_p(&model.api.id),
         };
+
+        let body_json = serde_json::to_vec(&body)
+            .map_err(|e| Error::Network(format!("Bedrock body serialization: {e}")))?;
+
+        let signer = SigV4Signer::new(&self.api_key, &self.secret_key, &self.region);
+        let now = Utc::now().format("%Y%m%dT%H%M%SZ").to_string();
+        let url = url::Url::parse(&self.chat_url())
+            .map_err(|e| Error::Network(format!("Bedrock URL parse: {e}")))?;
+        let host = url.host_str().unwrap_or("");
+        let path = url.path();
+
+        let authorization = signer
+            .sign("POST", host, path, &body_json, &now)
+            .map_err(|e| Error::Network(format!("Bedrock SigV4: {e}")))?;
 
         let response = self
             .http_client
             .post(self.chat_url())
             .header("Content-Type", "application/json")
-            .header("x-aws-access-key", &self.api_key)
-            .header("x-aws-secret-key", &self.secret_key)
-            .header("x-aws-region", &self.region)
-            .json(&body)
+            .header("Authorization", authorization)
+            .header("X-Amz-Date", &now)
+            .header("X-Amz-Content-Sha256", hex::encode(Sha256::digest(&body_json)))
+            .body(body_json)
             .send()
             .await
             .map_err(|e| Error::Network(format!("Bedrock request: {e}")))?;

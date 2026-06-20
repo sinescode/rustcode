@@ -301,13 +301,14 @@ impl AzureProvider {
                             ContentPart::ToolCallPart {
                                 tool_call_id,
                                 tool_name,
+                                arguments,
                             } => {
                                 tool_calls.push(AzureAssistantToolCall {
                                     id: tool_call_id.clone(),
                                     call_type: "function".into(),
                                     function: AzureToolCallFunction {
                                         name: tool_name.clone(),
-                                        arguments: "{}".into(),
+                                        arguments: arguments.to_string(),
                                     },
                                 });
                             }
@@ -678,9 +679,10 @@ impl Provider for AzureProvider {
     ) -> crate::error::Result<
         Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
     > {
+        let messages = crate::provider::normalize_messages(messages, model);
         let body = AzureChatBody {
             model: model.api.id.clone(),
-            messages: Self::build_chat_messages(messages),
+            messages: Self::build_chat_messages(&messages),
             tools: build_tools(tools),
             tool_choice: None,
             stream: true,
@@ -689,8 +691,8 @@ impl Provider for AzureProvider {
                 model,
                 crate::provider::OUTPUT_TOKEN_MAX,
             )),
-            temperature: None,
-            top_p: None,
+            temperature: crate::provider::default_temperature(&model.api.id),
+            top_p: crate::provider::default_top_p(&model.api.id),
         };
 
         let response = self

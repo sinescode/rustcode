@@ -298,6 +298,7 @@ impl SessionRunner {
                 assistant_parts.push(ContentPart::ToolCallPart {
                     tool_call_id: tc.call_id.clone(),
                     tool_name: tc.name.clone(),
+                    arguments: tc.input.clone(),
                 });
             }
             messages.push(ChatMessage::Assistant {

@@ -849,6 +849,7 @@ pub enum ContentPart {
         tool_call_id: String,
         #[serde(rename = "toolName")]
         tool_name: String,
+        arguments: serde_json::Value,
     },
     #[serde(rename = "tool-result")]
     ToolResultPart {
@@ -1039,6 +1040,240 @@ pub fn sanitize_surrogates(content: &str) -> String {
         i += 1;
     }
     result
+}
+
+/// Normalize messages before sending to the LLM provider.
+///
+/// Applies provider-specific transforms:
+/// - Surrogate sanitization on all text content
+/// - Tool call ID scrubbing for Claude and Mistral models
+/// - DeepSeek reasoning_content handling
+///
+/// # Source
+/// Ported from `packages/opencode/src/provider/transform.ts` line 65–321.
+#[must_use]
+pub fn normalize_messages(messages: &[ChatMessage], model: &Model) -> Vec<ChatMessage> {
+    let model_id_lower = model.api.id.to_lowercase();
+    let provider_lower = model.provider_id.to_lowercase();
+
+    let mut msgs: Vec<ChatMessage> = messages
+        .iter()
+        .map(|m| sanitize_message_surrogates(m))
+        .collect();
+
+    // Tool call ID scrubbing for Claude models
+    if provider_lower.contains("anthropic") || model_id_lower.contains("claude") {
+        let scrub = |id: &str| -> String {
+            id.chars()
+                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .collect()
+        };
+        msgs = msgs
+            .into_iter()
+            .map(|msg| scrub_tool_call_ids(msg, &scrub))
+            .collect();
+    }
+
+    // Tool call ID scrubbing for Mistral models
+    if provider_lower.contains("mistral")
+        || model_id_lower.contains("mistral")
+        || model_id_lower.contains("devstral")
+    {
+        let scrub = |id: &str| -> String {
+            let cleaned: String = id.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+            let truncated = &cleaned[..cleaned.len().min(9)];
+            let padded = format!("{:<9}", truncated);
+            padded.replace(' ', "0")
+        };
+        msgs = msgs
+            .into_iter()
+            .map(|msg| scrub_tool_call_ids(msg, &scrub))
+            .collect();
+    }
+
+    // DeepSeek: ensure assistant messages have a reasoning part
+    if model_id_lower.contains("deepseek") {
+        msgs = msgs
+            .into_iter()
+            .map(|msg| ensure_deepseek_reasoning(msg))
+            .collect();
+    }
+
+    msgs
+}
+
+/// Sanitize surrogates in all text content of a message.
+fn sanitize_message_surrogates(msg: &ChatMessage) -> ChatMessage {
+    match msg {
+        ChatMessage::System { content } => ChatMessage::System {
+            content: sanitize_content_surrogates(content),
+        },
+        ChatMessage::User { content } => ChatMessage::User {
+            content: sanitize_content_surrogates(content),
+        },
+        ChatMessage::Assistant { content } => ChatMessage::Assistant {
+            content: sanitize_content_surrogates(content),
+        },
+        ChatMessage::Tool { content } => ChatMessage::Tool {
+            content: content
+                .iter()
+                .map(|part| {
+                    let crate::provider::ToolResultPart::ToolResult {
+                        tool_call_id,
+                        tool_name,
+                        output,
+                        is_error,
+                    } = part;
+                    crate::provider::ToolResultPart::ToolResult {
+                        tool_call_id: tool_call_id.clone(),
+                        tool_name: tool_name.clone(),
+                        output: sanitize_json_value_surrogates(output),
+                        is_error: *is_error,
+                    }
+                })
+                .collect(),
+        },
+    }
+}
+
+/// Sanitize surrogates in message content.
+fn sanitize_content_surrogates(content: &MessageContent) -> MessageContent {
+    match content {
+        MessageContent::Text(s) => MessageContent::Text(sanitize_surrogates(s)),
+        MessageContent::Parts(parts) => MessageContent::Parts(
+            parts
+                .iter()
+                .map(|part| match part {
+                    ContentPart::Text { text } => ContentPart::Text {
+                        text: sanitize_surrogates(text),
+                    },
+                    ContentPart::Reasoning {
+                        text,
+                        provider_options,
+                    } => ContentPart::Reasoning {
+                        text: sanitize_surrogates(text),
+                        provider_options: provider_options.clone(),
+                    },
+                    ContentPart::ToolResultPart {
+                        tool_call_id,
+                        output,
+                    } => ContentPart::ToolResultPart {
+                        tool_call_id: tool_call_id.clone(),
+                        output: sanitize_json_value_surrogates(output),
+                    },
+                    other => other.clone(),
+                })
+                .collect(),
+        ),
+    }
+}
+
+/// Sanitize surrogates in a JSON value (recursively for strings).
+fn sanitize_json_value_surrogates(val: &serde_json::Value) -> serde_json::Value {
+    match val {
+        serde_json::Value::String(s) => serde_json::Value::String(sanitize_surrogates(s)),
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(sanitize_json_value_surrogates).collect())
+        }
+        serde_json::Value::Object(map) => serde_json::Value::Object(
+            map.iter()
+                .map(|(k, v)| (k.clone(), sanitize_json_value_surrogates(v)))
+                .collect(),
+        ),
+        other => other.clone(),
+    }
+}
+
+/// Apply a scrub function to all tool call IDs in a message.
+fn scrub_tool_call_ids<F: Fn(&str) -> String>(msg: ChatMessage, scrub: &F) -> ChatMessage {
+    match msg {
+        ChatMessage::Assistant { content } => match content {
+            MessageContent::Parts(parts) => ChatMessage::Assistant {
+                content: MessageContent::Parts(
+                    parts
+                        .into_iter()
+                        .map(|part| match part {
+                            ContentPart::ToolCallPart {
+                                tool_call_id,
+                                tool_name,
+                                arguments,
+                            } => ContentPart::ToolCallPart {
+                                tool_call_id: scrub(&tool_call_id),
+                                tool_name,
+                                arguments,
+                            },
+                            ContentPart::ToolResultPart {
+                                tool_call_id,
+                                output,
+                            } => ContentPart::ToolResultPart {
+                                tool_call_id: scrub(&tool_call_id),
+                                output,
+                            },
+                            other => other,
+                        })
+                        .collect(),
+                ),
+            },
+            other => ChatMessage::Assistant { content: other },
+        },
+        ChatMessage::Tool { content } => ChatMessage::Tool {
+            content: content
+                .into_iter()
+                .map(|part| {
+                    let crate::provider::ToolResultPart::ToolResult {
+                        tool_call_id,
+                        tool_name,
+                        output,
+                        is_error,
+                    } = part;
+                    crate::provider::ToolResultPart::ToolResult {
+                        tool_call_id: scrub(&tool_call_id),
+                        tool_name,
+                        output,
+                        is_error,
+                    }
+                })
+                .collect(),
+        },
+        other => other,
+    }
+}
+
+/// Ensure DeepSeek assistant messages contain a reasoning content part.
+fn ensure_deepseek_reasoning(msg: ChatMessage) -> ChatMessage {
+    match msg {
+        ChatMessage::Assistant { content } => match content {
+            MessageContent::Parts(parts) => {
+                let has_reasoning = parts.iter().any(|p| matches!(p, ContentPart::Reasoning { .. }));
+                if has_reasoning {
+                    msg
+                } else {
+                    let mut new_parts = parts;
+                    new_parts.push(ContentPart::Reasoning {
+                        text: String::new(),
+                        provider_options: None,
+                    });
+                    ChatMessage::Assistant {
+                        content: MessageContent::Parts(new_parts),
+                    }
+                }
+            }
+            MessageContent::Text(text) => {
+                let mut parts = Vec::new();
+                if !text.is_empty() {
+                    parts.push(ContentPart::Text { text });
+                }
+                parts.push(ContentPart::Reasoning {
+                    text: String::new(),
+                    provider_options: None,
+                });
+                ChatMessage::Assistant {
+                    content: MessageContent::Parts(parts),
+                }
+            }
+        },
+        other => other,
+    }
 }
 
 /// Default temperature for a model based on its ID.

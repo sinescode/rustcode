@@ -603,6 +603,7 @@ mod tests {
     fn test_env_interpolation_with_default_syntax() {
         // ${VAR:-default} syntax
         let env = Env::new();
+        env.remove("USER");
         let template = "User: ${USER:-guest}";
         let result = interpolate_env_vars(template, &env);
         assert_eq!(result, "User: guest");

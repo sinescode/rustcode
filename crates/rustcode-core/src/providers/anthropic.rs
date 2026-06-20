@@ -319,6 +319,31 @@ fn build_anthropic_messages(
         }
     }
 
+    // Apply cache control to first 2 system blocks and last 2 non-system messages.
+    // Ported from: `packages/opencode/src/provider/transform.ts` line 323–372.
+    let ephemeral = AnthropicCacheControl {
+        cache_type: "ephemeral".into(),
+        ttl: None,
+    };
+    for block in system_blocks.iter_mut().take(2) {
+        block.cache_control = Some(ephemeral.clone());
+    }
+    let msg_count = anthropic_messages.len();
+    let start = msg_count.saturating_sub(2);
+    for msg in &mut anthropic_messages[start..] {
+        if let AnthropicMessageContent::Blocks(blocks) = &mut msg.content {
+            if let Some(last) = blocks.last_mut() {
+                match last {
+                    AnthropicContentBlock::Text { cache_control, .. }
+                    | AnthropicContentBlock::Image { cache_control, .. } => {
+                        *cache_control = Some(ephemeral.clone());
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     // Build tool definitions
     let anthropic_tools: Option<Vec<AnthropicTool>> = if tools.is_empty() {
         None
@@ -440,10 +465,11 @@ fn convert_assistant_content_to_blocks(
                 ContentPart::ToolCallPart {
                     tool_call_id,
                     tool_name,
+                    arguments,
                 } => Some(AnthropicContentBlock::ToolUse {
                     id: tool_call_id.clone(),
                     name: tool_name.clone(),
-                    input: serde_json::json!({}),
+                    input: arguments.clone(),
                 }),
                 _ => None,
             })
@@ -917,8 +943,9 @@ impl Provider for AnthropicProvider {
     ) -> crate::error::Result<
         Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
     > {
+        let messages = crate::provider::normalize_messages(messages, model);
         // Build the request body
-        let (system, anthropic_messages) = build_anthropic_messages(messages, tools, model)?;
+        let (system, anthropic_messages) = build_anthropic_messages(&messages, tools, model)?;
 
         let thinking = get_thinking_config(model);
         let max_tokens =
@@ -945,9 +972,9 @@ impl Provider for AnthropicProvider {
             tool_choice: None,
             stream: true,
             max_tokens,
-            temperature: None,
-            top_p: None,
-            top_k: None,
+            temperature: crate::provider::default_temperature(&model.api.id),
+            top_p: crate::provider::default_top_p(&model.api.id),
+            top_k: crate::provider::default_top_k(&model.api.id),
             stop_sequences: None,
             thinking,
         };

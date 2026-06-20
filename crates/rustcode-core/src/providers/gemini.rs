@@ -297,10 +297,11 @@ impl GeminiProvider {
                                     ContentPart::ToolCallPart {
                                         tool_call_id,
                                         tool_name,
+                                        arguments,
                                     } => parts.push(GeminiPart::FunctionCall {
                                         function_call: GeminiFunctionCall {
                                             name: tool_name.clone(),
-                                            args: serde_json::json!({}),
+                                            args: arguments.clone(),
                                         },
                                         thought_signature: None,
                                     }),
@@ -569,8 +570,9 @@ impl Provider for GeminiProvider {
             })
             .collect::<Vec<_>>()
             .join("\n");
+        let messages = crate::provider::normalize_messages(messages, model);
         let body = GeminiBody {
-            contents: Self::build_contents(messages),
+            contents: Self::build_contents(&messages),
             system_instruction: if system_text.is_empty() {
                 None
             } else {
@@ -598,9 +600,9 @@ impl Provider for GeminiProvider {
                     model,
                     crate::provider::OUTPUT_TOKEN_MAX,
                 )),
-                temperature: None,
-                top_p: None,
-                top_k: None,
+                temperature: crate::provider::default_temperature(&model.api.id),
+                top_p: crate::provider::default_top_p(&model.api.id),
+                top_k: crate::provider::default_top_k(&model.api.id),
             }),
         };
 

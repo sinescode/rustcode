@@ -8,15 +8,16 @@
 //! - `packages/llm/src/providers/openai-compatible.ts` (66 lines)
 //! - `packages/llm/src/providers/openai-compatible-profile.ts` (21 lines)
 
+use crate::error::{Error, LlmErrorReason};
+use crate::provider::{
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, Usage,
+};
+use crate::tool_stream::ToolStreamAccumulator;
 use async_trait::async_trait;
 use futures::StreamExt;
 use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
-
-use crate::error::{Error, LlmErrorReason};
-use crate::provider::{
-    ChatMessage, FinishReason, LlmEvent, Model, Provider, ToolDefinition, Usage,
-};
 
 /// Pre-configured profiles for popular OpenAI-compatible providers.
 #[derive(Debug, Clone)]
@@ -231,14 +232,42 @@ impl OpenAICompatibleProvider {
         messages: &[ChatMessage],
         tools: &[ToolDefinition],
     ) -> serde_json::Value {
+        let messages = crate::provider::normalize_messages(messages, model);
         use crate::provider::MessageContent;
         let msgs: Vec<serde_json::Value> = messages.iter().map(|m| match m {
             ChatMessage::System { content } => serde_json::json!({"role":"system","content": msg_text(content)}),
             ChatMessage::User { content } => serde_json::json!({"role":"user","content": msg_text(content)}),
             ChatMessage::Assistant { content } => {
-                let text = msg_text(content);
+                let mut tool_calls_arr = Vec::new();
+                let mut text = String::new();
+                let mut reasoning = String::new();
+                match content {
+                    MessageContent::Text(t) => text = t.clone(),
+                    MessageContent::Parts(parts) => {
+                        for part in parts {
+                            match part {
+                                ContentPart::Text { text: t } => text.push_str(t),
+                                ContentPart::Reasoning { text: r, .. } => reasoning.push_str(r),
+                                ContentPart::ToolCallPart { tool_call_id, tool_name, arguments } => {
+                                    tool_calls_arr.push(serde_json::json!({
+                                        "id": tool_call_id,
+                                        "type": "function",
+                                        "function": {
+                                            "name": tool_name,
+                                            "arguments": arguments.to_string(),
+                                        }
+                                    }));
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    _ => {}
+                }
                 let mut obj = serde_json::json!({"role":"assistant"});
                 if !text.is_empty() { obj["content"] = serde_json::Value::String(text); } else { obj["content"] = serde_json::Value::Null; }
+                if !reasoning.is_empty() { obj["reasoning_content"] = serde_json::Value::String(reasoning); }
+                if !tool_calls_arr.is_empty() { obj["tool_calls"] = serde_json::Value::Array(tool_calls_arr); }
                 obj
             },
             ChatMessage::Tool { content } => {
@@ -261,6 +290,8 @@ impl OpenAICompatibleProvider {
             "stream": true,
             "stream_options": {"include_usage": true},
             "max_tokens": crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX),
+            "temperature": crate::provider::default_temperature(&model.api.id),
+            "top_p": crate::provider::default_top_p(&model.api.id),
         });
         if !tools_arr.is_empty() {
             body["tools"] = serde_json::Value::Array(tools_arr);
@@ -283,6 +314,180 @@ fn msg_text(content: &crate::provider::MessageContent) -> String {
             })
             .collect::<Vec<_>>()
             .join(""),
+    }
+}
+
+struct CompatStreamState {
+    tool_stream: ToolStreamAccumulator,
+    text_started: bool,
+    reasoning_started: bool,
+    step_started: bool,
+    usage: Option<Usage>,
+    finished: bool,
+}
+
+fn events_from_compat(event: &serde_json::Value, state: &mut CompatStreamState) -> Vec<LlmEvent> {
+    let mut events = Vec::new();
+
+    // Extract usage if present
+    if let Some(usage_val) = event.get("usage") {
+        if let Ok(u) = serde_json::from_value::<CompatUsage>(usage_val.clone()) {
+            state.usage = Some(map_usage(&u));
+        }
+    }
+
+    let choice = event
+        .get("choices")
+        .and_then(|c| c.as_array())
+        .and_then(|c| c.first());
+
+    if let Some(delta) = choice.and_then(|c| c.get("delta")) {
+        // Handle reasoning content
+        if let Some(rc) = delta.get("reasoning_content").and_then(|r| r.as_str()) {
+            if !rc.is_empty() {
+                if !state.reasoning_started {
+                    state.reasoning_started = true;
+                    events.push(LlmEvent::ReasoningStart {
+                        id: "reasoning-0".into(),
+                        provider_metadata: None,
+                    });
+                }
+                events.push(LlmEvent::ReasoningDelta {
+                    id: "reasoning-0".into(),
+                    text: rc.to_string(),
+                    provider_metadata: None,
+                });
+            }
+        }
+
+        // Handle text content
+        if let Some(content) = delta.get("content").and_then(|c| c.as_str()) {
+            if !state.text_started {
+                state.text_started = true;
+                events.push(LlmEvent::TextStart {
+                    id: "text-0".into(),
+                    provider_metadata: None,
+                });
+            }
+            events.push(LlmEvent::TextDelta {
+                id: "text-0".into(),
+                text: content.to_string(),
+                provider_metadata: None,
+            });
+        }
+
+        // Handle tool call deltas
+        if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
+            for td in tool_calls {
+                let index = td.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+                let name = td
+                    .get("function")
+                    .and_then(|f| f.get("name"))
+                    .and_then(|n| n.as_str())
+                    .map(|s| s.to_string());
+                let id = td
+                    .get("id")
+                    .and_then(|i| i.as_str())
+                    .map(|s| s.to_string());
+                let args = td
+                    .get("function")
+                    .and_then(|f| f.get("arguments"))
+                    .and_then(|a| a.as_str())
+                    .map(|s| s.to_string());
+
+                if let Some(name) = name {
+                    state.tool_stream.set_identity(index, name, id.unwrap_or_default());
+                }
+                if let Some(args) = args {
+                    if let Some(ev) = state.tool_stream.append(index, &args) {
+                        if !state.step_started {
+                            events.push(LlmEvent::StepStart { index: 0 });
+                            state.step_started = true;
+                        }
+                        events.push(ev);
+                    }
+                }
+            }
+        }
+    }
+
+    // Handle finish reason
+    if let Some(finish_reason) = choice
+        .and_then(|c| c.get("finish_reason"))
+        .and_then(|r| r.as_str())
+    {
+        // Finish any pending tool calls
+        for tool_ev in state.tool_stream.finish_all() {
+            events.push(tool_ev);
+        }
+
+        let reason = match finish_reason {
+            "stop" => FinishReason::Stop,
+            "length" => FinishReason::Length,
+            "tool_calls" | "function_call" => FinishReason::ToolCalls,
+            "content_filter" => FinishReason::ContentFilter,
+            _ => FinishReason::Unknown,
+        };
+
+        if state.text_started {
+            events.push(LlmEvent::TextEnd {
+                id: "text-0".into(),
+                provider_metadata: None,
+            });
+        }
+        if state.reasoning_started {
+            events.push(LlmEvent::ReasoningEnd {
+                id: "reasoning-0".into(),
+                provider_metadata: None,
+            });
+        }
+        events.push(LlmEvent::Finish {
+            reason,
+            usage: state.usage.clone(),
+            provider_metadata: None,
+        });
+        state.finished = true;
+    }
+
+    events
+}
+
+#[derive(serde::Deserialize)]
+struct CompatUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    prompt_tokens_details: Option<CompatUsageDetails>,
+    completion_tokens_details: Option<CompatUsageDetails>,
+}
+
+#[derive(serde::Deserialize)]
+struct CompatUsageDetails {
+    cached_tokens: Option<u64>,
+    reasoning_tokens: Option<u64>,
+}
+
+fn map_usage(u: &CompatUsage) -> Usage {
+    let cached = u
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cached_tokens);
+    let reasoning = u
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|d| d.reasoning_tokens);
+    let non_cached = u
+        .prompt_tokens
+        .map(|p| p.saturating_sub(cached.unwrap_or(0)));
+    Usage {
+        input_tokens: u.prompt_tokens,
+        output_tokens: u.completion_tokens,
+        non_cached_input_tokens: non_cached,
+        cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
+        reasoning_tokens: reasoning,
+        total_tokens: u.total_tokens,
+        provider_metadata: None,
     }
 }
 
@@ -395,6 +600,15 @@ impl Provider for OpenAICompatibleProvider {
 
         let sse_stream = crate::sse::parse_sse_stream(response);
         let provider_id = self.provider_id.clone();
+        let state = CompatStreamState {
+            tool_stream: ToolStreamAccumulator::new(),
+            text_started: false,
+            reasoning_started: false,
+            step_started: false,
+            usage: None,
+            finished: false,
+        };
+
         let llm_stream = futures::stream::unfold(
             (
                 Box::pin(sse_stream)
@@ -406,69 +620,32 @@ impl Provider for OpenAICompatibleProvider {
                                 + Unpin,
                         >,
                     >,
-                false,
-                String::new(),
+                state,
                 VecDeque::new(),
             ),
-            move |(mut sse, mut finished, mut text, mut buf)| {
+            move |(mut sse, mut state, mut buf)| {
                 let pid = provider_id.clone();
                 Box::pin(async move {
                     loop {
                         if let Some(ev) = buf.pop_front() {
-                            return Some((ev, (sse, finished, text, buf)));
+                            return Some((ev, (sse, state, buf)));
                         }
-                        if finished {
+                        if state.finished {
                             return None;
                         }
                         match sse.next().await {
                             Some(Ok(se)) if !se.is_done() && se.has_data() => {
                                 if let Ok(ce) = serde_json::from_str::<serde_json::Value>(&se.data)
                                 {
-                                    // Simple extraction: get delta content from first choice
-                                    if let Some(choices) = ce["choices"].as_array() {
-                                        if let Some(c) = choices.first() {
-                                            if let Some(delta_content) =
-                                                c["delta"]["content"].as_str()
-                                            {
-                                                text.push_str(delta_content);
-                                                buf.push_back(Ok(LlmEvent::TextDelta {
-                                                    id: "text-0".into(),
-                                                    text: delta_content.into(),
-                                                    provider_metadata: None,
-                                                }));
-                                            }
-                                            if let Some(fr) = c["finish_reason"].as_str() {
-                                                let reason = match fr {
-                                                    "stop" => FinishReason::Stop,
-                                                    "length" => FinishReason::Length,
-                                                    "tool_calls" | "function_call" => {
-                                                        FinishReason::ToolCalls
-                                                    }
-                                                    "content_filter" => FinishReason::ContentFilter,
-                                                    _ => FinishReason::Unknown,
-                                                };
-                                                buf.push_back(Ok(LlmEvent::TextEnd {
-                                                    id: "text-0".into(),
-                                                    provider_metadata: None,
-                                                }));
-                                                buf.push_back(Ok(LlmEvent::Finish {
-                                                    reason,
-                                                    usage: None,
-                                                    provider_metadata: None,
-                                                }));
-                                                finished = true;
-                                            }
-                                        }
+                                    for ev in events_from_compat(&ce, &mut state) {
+                                        buf.push_back(Ok(ev));
                                     }
-                                }
-                                if let Some(ev) = buf.pop_front() {
-                                    return Some((ev, (sse, finished, text, buf)));
                                 }
                             }
                             Some(Err(e)) => {
                                 return Some((
-                                    Err(Error::ResponseStream(format!("{} SSE: {e}", pid))),
-                                    (sse, finished, text, buf),
+                                    Err(Error::ResponseStream(format!("{pid} SSE: {e}"))),
+                                    (sse, state, buf),
                                 ))
                             }
                             None => return None,
@@ -489,14 +666,15 @@ impl Provider for OpenAICompatibleProvider {
     ) -> crate::error::Result<crate::provider::LlmResponse> {
         let mut stream = self.stream(model, messages, tools).await?;
         let mut events = Vec::new();
+        let mut usage = None;
         while let Some(r) = stream.next().await {
             if let Ok(ev) = r {
+                if let Some(u) = ev.usage() {
+                    usage = Some(u.clone());
+                }
                 events.push(ev);
             }
         }
-        Ok(crate::provider::LlmResponse {
-            events,
-            usage: None,
-        })
+        Ok(crate::provider::LlmResponse { events, usage })
     }
 }

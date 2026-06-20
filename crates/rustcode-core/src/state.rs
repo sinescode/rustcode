@@ -241,7 +241,7 @@ where
     ///
     /// # Source
     /// Ported from `packages/core/src/state.ts` lines 66–72 (`rebuild()`).
-    async fn rebuild(&self) {
+    pub(crate) async fn rebuild(&self) {
         let mut next = (self.options.initial)();
 
         let transforms = self.transforms.lock().await;
@@ -455,6 +455,8 @@ mod tests {
         }))
         .await;
 
+        state.rebuild().await;
+
         let doc = state.get().await;
         assert_eq!(doc.title, "V2");
     }
@@ -481,7 +483,7 @@ mod tests {
 
     #[tokio::test]
     async fn finalize_hook_runs_on_mutate() {
-        let finalized = Arc::new(Mutex::new(Vec::new()));
+        let finalized = Arc::new(std::sync::Mutex::new(Vec::new()));
         let finalized_clone = Arc::clone(&finalized);
 
         let options = StateOptions {
@@ -492,7 +494,7 @@ mod tests {
             }),
             finalize: Some(Arc::new(
                 move |_doc: &Document, reason: Option<&str>| {
-                    let mut log = finalized_clone.blocking_lock();
+                    let mut log = finalized_clone.lock().unwrap();
                     log.push(reason.unwrap_or("none").to_string());
                 },
             )),
@@ -506,13 +508,13 @@ mod tests {
             })
             .await;
 
-        let log = finalized.lock().await;
+        let log = finalized.lock().unwrap();
         assert!(log.contains(&"mutation-1".to_string()));
     }
 
     #[tokio::test]
     async fn finalize_hook_runs_on_rebuild() {
-        let finalized = Arc::new(Mutex::new(Vec::new()));
+        let finalized = Arc::new(std::sync::Mutex::new(Vec::new()));
         let finalized_clone = Arc::clone(&finalized);
 
         let options = StateOptions {
@@ -523,7 +525,7 @@ mod tests {
             }),
             finalize: Some(Arc::new(
                 move |_doc: &Document, _reason: Option<&str>| {
-                    let mut log = finalized_clone.blocking_lock();
+                    let mut log = finalized_clone.lock().unwrap();
                     log.push("finalized".to_string());
                 },
             )),
@@ -545,7 +547,7 @@ mod tests {
             }))
             .await;
 
-        let log = finalized.lock().await;
+        let log = finalized.lock().unwrap();
         // At least 2 finalize calls (one per rebuild)
         assert!(log.len() >= 2);
     }
@@ -629,7 +631,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_mutate_with_reason_propagates() {
-        let finalized_reasons = Arc::new(Mutex::new(Vec::new()));
+        let finalized_reasons = Arc::new(std::sync::Mutex::new(Vec::new()));
         let reasons_clone = Arc::clone(&finalized_reasons);
 
         let options = StateOptions {
@@ -640,7 +642,7 @@ mod tests {
             }),
             finalize: Some(Arc::new(
                 move |_doc: &Document, reason: Option<&str>| {
-                    let mut log = reasons_clone.blocking_lock();
+                    let mut log = reasons_clone.lock().unwrap();
                     log.push(reason.expect("reason").to_string());
                 },
             )),
@@ -660,7 +662,7 @@ mod tests {
             })
             .await;
 
-        let reasons = finalized_reasons.lock().await;
+        let reasons = finalized_reasons.lock().unwrap();
         assert_eq!(reasons.len(), 2);
         assert_eq!(reasons[0], "urgent-bugfix");
         assert_eq!(reasons[1], "routine-cleanup");
@@ -716,7 +718,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_finalize_on_empty_state() {
-        let finalize_called = Arc::new(Mutex::new(false));
+        let finalize_called = Arc::new(std::sync::Mutex::new(false));
         let called_clone = Arc::clone(&finalize_called);
 
         let options = StateOptions {
@@ -727,7 +729,7 @@ mod tests {
             }),
             finalize: Some(Arc::new(
                 move |_doc: &Document, _reason: Option<&str>| {
-                    let mut called = called_clone.blocking_lock();
+                    let mut called = called_clone.lock().unwrap();
                     *called = true;
                 },
             )),
@@ -744,7 +746,7 @@ mod tests {
             })
             .await;
 
-        let was_called = *finalize_called.lock().await;
+        let was_called = *finalize_called.lock().unwrap();
         assert!(
             was_called,
             "finalize hook should run on mutate even when no transforms are registered"
@@ -770,6 +772,8 @@ mod tests {
             doc.content.push_str("NewContent");
         }))
         .await;
+
+        state.rebuild().await;
 
         let doc = state.get().await;
         assert_eq!(doc.title, "Updated");

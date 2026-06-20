@@ -675,6 +675,7 @@ mod tests {
         let project = tmp.join("project");
         let nested = project.join("src");
         fs::create_dir_all(&nested).expect("create dirs");
+        fs::create_dir_all(&global_config).expect("create dirs");
 
         fs::write(global_config.join("AGENTS.md"), "global").expect("write global");
         fs::write(project.join("AGENTS.md"), "project").expect("write project");
@@ -699,6 +700,7 @@ mod tests {
         let global_config = tmp.join("global");
         let project = tmp.join("project");
         fs::create_dir_all(&project).expect("create dirs");
+        fs::create_dir_all(&global_config).expect("create dirs");
 
         fs::write(global_config.join("AGENTS.md"), "global").expect("write global");
         fs::write(project.join("AGENTS.md"), "project").expect("write project");

@@ -89,7 +89,7 @@ pub struct ConsoleState {
 #[serde(rename_all = "camelCase")]
 pub struct Info {
     /// JSON schema reference for editor completion
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", alias = "$schema")]
     pub schema: Option<String>,
 
     /// Default shell for terminal and bash tool
@@ -2196,11 +2196,11 @@ mod tests {
             "plugin": ["my-plugin"],
             "share": "manual",
             "autoupdate": "notify",
-            "disabled_providers": ["bedrock"],
-            "enabled_providers": ["anthropic"],
+            "disabledProviders": ["bedrock"],
+            "enabledProviders": ["anthropic"],
             "model": "anthropic/claude-sonnet-4-6",
-            "small_model": "anthropic/claude-haiku",
-            "default_agent": "build",
+            "smallModel": "anthropic/claude-haiku",
+            "defaultAgent": "build",
             "username": "test-user",
             "agent": {
                 "build": {
@@ -2234,23 +2234,23 @@ mod tests {
             },
             "attachment": {
                 "image": {
-                    "max_width": 1920,
-                    "max_height": 1080
+                    "maxWidth": 1920,
+                    "maxHeight": 1080
                 }
             },
             "enterprise": {
                 "url": "https://enterprise.example.com"
             },
-            "tool_output": {
-                "max_lines": 1000,
-                "max_bytes": 50000
+            "toolOutput": {
+                "maxLines": 1000,
+                "maxBytes": 50000
             },
             "compaction": {
                 "auto": true,
                 "prune": false
             },
             "experimental": {
-                "batch_tool": true
+                "batchTool": true
             }
         });
 
