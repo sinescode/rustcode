@@ -110,17 +110,8 @@ impl SessionRunner {
 
     /// Run a session prompt with the given provider and model.
     ///
-    /// This orchestrates the full **multi-turn tool-execution** pipeline:
-    ///
-    /// 1. Build the system prompt from instructions + tool descriptions
-    /// 2. Convert the prompt input → `ChatMessage[]`
-    /// 3. Loop:
-    ///     a. Stream from provider with tool definitions
-    ///     b. Accumulate text + collect tool calls
-    ///     c. Execute tool calls via `ToolRegistry`
-    ///     d. Append assistant message + tool results to messages
-    ///     e. If LLM produced tool calls, go to (a); otherwise break
-    /// 4. Return the final result
+    /// This orchestrates the full **multi-turn tool-execution** pipeline.
+    /// Builds messages from the input, then runs the streaming tool loop.
     pub async fn run(
         &self,
         provider: &dyn Provider,
@@ -128,29 +119,67 @@ impl SessionRunner {
         input: &SessionPromptInput,
         instructions: &[String],
     ) -> Result<SessionRunResult, Error> {
-        // ── 1. Build system prompt ─────────────────────────────────
+        let system_prompt = self.build_system_prompt(instructions);
+        let tool_defs = self.tool_registry.to_definitions();
+        let mut messages = build_chat_messages(input, &system_prompt).await?;
+        let input_clone = input.clone();
+        self.run_loop(provider, model, &mut messages, &tool_defs, &input_clone).await
+    }
+
+    /// Run the tool loop starting from pre-built messages.
+    ///
+    /// Useful for interactive / conversational mode where the caller maintains
+    /// message history across multiple user inputs.  The system prompt and any
+    /// prior turns must already be in `messages`.
+    pub async fn run_with_messages(
+        &self,
+        provider: &dyn Provider,
+        model: &Model,
+        messages: &mut Vec<ChatMessage>,
+    ) -> Result<SessionRunResult, Error> {
+        let tool_defs = self.tool_registry.to_definitions();
+        let dummy_input = SessionPromptInput {
+            session_id: String::new(),
+            message_id: None,
+            model: None,
+            agent: None,
+            no_reply: false,
+            tools: None,
+            format: None,
+            system: None,
+            variant: None,
+            parts: vec![],
+        };
+        self.run_loop(provider, model, messages, &tool_defs, &dummy_input).await
+    }
+
+    /// Build the system prompt from instructions + tool descriptions.
+    pub fn build_system_prompt(&self, instructions: &[String]) -> String {
         let mut prompt_builder = SessionPromptBuilder::new();
         for instr in instructions {
             prompt_builder.add_instruction(instr);
         }
-
-        // Add tool descriptions in human-readable form
         let tool_info_briefs = self.tool_registry.list_tools_info();
         let tool_descriptions: HashMap<String, String> = tool_info_briefs
             .into_iter()
             .map(|t| (t.id, t.description))
             .collect();
         prompt_builder.assemble_tool_descriptions(&tool_descriptions);
+        prompt_builder.build_system_prompt()
+    }
 
-        let system_prompt = prompt_builder.build_system_prompt();
-
-        // ── 2. Build initial ChatMessage[] ──────────────────────────
-        let mut messages = build_chat_messages(input, &system_prompt).await?;
-
-        // ── 3. Resolve tool definitions for LLM ────────────────────
-        let tool_defs = self.tool_registry.to_definitions();
-
-        // ── 4. Multi-turn loop ─────────────────────────────────────
+    /// Core multi-turn streaming tool loop.
+    ///
+    /// Repeatedly: stream from provider → collect tool calls → execute tools →
+    /// feed results back → repeat until the LLM is done (or limits hit).
+    async fn run_loop(
+        &self,
+        provider: &dyn Provider,
+        model: &Model,
+        messages: &mut Vec<ChatMessage>,
+        tool_defs: &[ToolDefinition],
+        input: &SessionPromptInput,
+    ) -> Result<SessionRunResult, Error> {
         let mut final_text = String::new();
         let mut all_events: Vec<LlmEvent> = Vec::new();
         let mut tool_calls_made: Vec<ToolCallRecord> = Vec::new();
@@ -161,7 +190,6 @@ impl SessionRunner {
         loop {
             iterations += 1;
 
-            // ── Guard: max iterations ──────────────────────────────
             if iterations > self.max_iterations {
                 aborted = true;
                 abort_reason = Some(format!(
@@ -171,7 +199,6 @@ impl SessionRunner {
                 break;
             }
 
-            // ── Guard: doom-loop detection ─────────────────────────
             if let Some((tool, count)) = detect_doom_loop(&tool_calls_made) {
                 aborted = true;
                 abort_reason =
@@ -179,16 +206,13 @@ impl SessionRunner {
                 break;
             }
 
-            // ── Stream from provider ───────────────────────────────
             use futures::StreamExt;
-            let mut stream = match provider.stream(model, &messages, &tool_defs).await {
+            let mut stream = match provider.stream(model, messages, tool_defs).await {
                 Ok(s) => s,
                 Err(e) => {
-                    // Check if error looks like context overflow
                     let msg = e.to_string();
                     if is_context_overflow(&msg) {
-                        abort_reason =
-                            Some("context overflow during stream".to_string());
+                        abort_reason = Some("context overflow during stream".to_string());
                     }
                     return Err(e);
                 }
@@ -202,23 +226,11 @@ impl SessionRunner {
             while let Some(result) = stream.next().await {
                 match result {
                     Ok(event) => {
-                        // Accumulate text from TextDelta events
-                        if let LlmEvent::TextDelta {
-                            text: ref delta, ..
-                        } = &event
-                        {
+                        if let LlmEvent::TextDelta { text: ref delta, .. } = &event {
                             step_text.push_str(delta);
                             final_text.push_str(delta);
                         }
-
-                        // Collect completed tool calls
-                        if let LlmEvent::ToolCall {
-                            ref id,
-                            ref name,
-                            ref input,
-                            ..
-                        } = &event
-                        {
+                        if let LlmEvent::ToolCall { ref id, ref name, ref input, .. } = &event {
                             has_tool_calls = true;
                             pending_tool_calls.insert(
                                 id.clone(),
@@ -229,20 +241,15 @@ impl SessionRunner {
                                 },
                             );
                         }
-
-                        // Check StepFinish for context overflow
                         if let LlmEvent::StepFinish { ref reason, .. } = &event {
-                            // If LLM stopped because of length, may need compaction
                             let _ = reason;
                         }
-
                         all_events.push(event);
                     }
                     Err(e) => {
                         let msg = e.to_string();
                         if is_context_overflow(&msg) {
-                            abort_reason =
-                                Some("context overflow during stream".to_string());
+                            abort_reason = Some("context overflow during stream".to_string());
                             aborted = true;
                             stream_error = Some(msg);
                         } else {
@@ -256,7 +263,6 @@ impl SessionRunner {
                         }
                     }
                 }
-
                 if aborted {
                     break;
                 }
@@ -269,19 +275,13 @@ impl SessionRunner {
                 return Err(Error::Tool(err));
             }
 
-            // ── If no tool calls, LLM is done ─────────────────────
             if !has_tool_calls {
                 break;
             }
 
-            // ── 5. Execute tools ──────────────────────────────────
-
-            // Build assistant message parts (text + tool-call markers)
             let mut assistant_parts: Vec<ContentPart> = Vec::new();
             if !step_text.is_empty() {
-                assistant_parts.push(ContentPart::Text {
-                    text: step_text.clone(),
-                });
+                assistant_parts.push(ContentPart::Text { text: step_text.clone() });
             }
             for tc in pending_tool_calls.values() {
                 assistant_parts.push(ContentPart::ToolCallPart {
@@ -293,9 +293,7 @@ impl SessionRunner {
                 content: MessageContent::Parts(assistant_parts),
             });
 
-            // Execute each tool and build tool result message
             let mut tool_result_parts: Vec<ToolResultPart> = Vec::new();
-
             for (_key, tc) in &pending_tool_calls {
                 let ctx = ToolContext {
                     session_id: input.session_id.clone(),
@@ -306,12 +304,10 @@ impl SessionRunner {
                     extra: HashMap::new(),
                     messages: messages.clone(),
                 };
-
                 let result = self
                     .tool_registry
                     .execute_by_name(&tc.name, tc.input.clone(), &ctx)
                     .await;
-
                 match result {
                     Ok(exec_result) => {
                         tool_calls_made.push(ToolCallRecord {
@@ -345,21 +341,17 @@ impl SessionRunner {
                 }
             }
 
-            // Add tool results as a tool message
             if !tool_result_parts.is_empty() {
                 messages.push(ChatMessage::Tool {
                     content: tool_result_parts,
                 });
             }
 
-            // ── 6. Check context overflow ─────────────────────────
-            if check_context_overflow(&messages, model) {
+            if check_context_overflow(messages, model) {
                 aborted = true;
                 abort_reason = Some("context overflow after tool results".to_string());
                 break;
             }
-
-            // Loop back to LLM with tool results
         }
 
         Ok(SessionRunResult {

@@ -17,7 +17,7 @@ use clap::{Parser, Subcommand};
 use futures::StreamExt;
 use rustcode_core::config::Config;
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::io::{IsTerminal, Write as _};
 use std::path::PathBuf;
 use std::sync::Arc;
 
@@ -1543,7 +1543,7 @@ async fn cmd_run(args: &RunArgs) -> i32 {
         msg.clone()
     };
 
-    if user_content.is_empty() {
+    if user_content.is_empty() && !args.interactive {
         eprintln!("Error: No message content to send");
         return 1;
     }
@@ -1563,12 +1563,126 @@ async fn cmd_run(args: &RunArgs) -> i32 {
         ),
     ];
 
-    // Build the session prompt input
     use rustcode_core::session_prompt::{
         PromptPart, PromptTextPart, SessionPromptInput,
     };
+    use rustcode_core::provider::{ChatMessage, MessageContent};
 
     let session_id = format!("local-{}", std::process::id());
+    let runner = &ctx.runner;
+
+    // ── Interactive REPL mode ──────────────────────────────────────
+    if args.interactive {
+        if !std::io::stdin().is_terminal() {
+            eprintln!("Error: --interactive requires a TTY for input");
+            eprintln!("Tip: use `rustcode run \"message\"` for non-interactive mode");
+            return 1;
+        }
+
+        if args.format != "json" {
+            println!("> {agent} \u{b7} {provider_id}/{id}", id = model.id);
+            println!("Entering interactive mode. Type your messages, or /exit to quit.");
+            println!();
+        }
+
+        // Build initial message list: system prompt
+        let system_prompt = runner.build_system_prompt(&instructions);
+        let mut messages: Vec<ChatMessage> = Vec::new();
+        if !system_prompt.is_empty() {
+            messages.push(ChatMessage::System {
+                content: MessageContent::Text(system_prompt),
+            });
+        }
+
+        // If an initial message was provided, send it first
+        if !user_content.is_empty() {
+            messages.push(ChatMessage::User {
+                content: MessageContent::Text(user_content),
+            });
+            match runner.run_with_messages(provider.as_ref(), model, &mut messages).await {
+                Ok(result) => {
+                    if !result.text.is_empty() {
+                        print!("{}", result.text);
+                        let _ = std::io::stdout().flush();
+                        println!();
+                    }
+                    if let Some(ref err) = result.error {
+                        if !result.success {
+                            eprintln!("Session aborted: {err}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("LLM error: {e}");
+                }
+            }
+        }
+
+        // REPL loop
+        loop {
+            use std::io::{BufRead, Write};
+            print!("> ");
+            let _ = std::io::stdout().flush();
+
+            let mut line = String::new();
+            match std::io::stdin().lock().read_line(&mut line) {
+                Ok(0) => {
+                    // EOF
+                    println!();
+                    break;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    eprintln!("Error reading input: {e}");
+                    break;
+                }
+            }
+
+            let line = line.trim().to_string();
+            if line.is_empty() {
+                continue;
+            }
+            if line == "/exit" || line == "/quit" || line == "exit" || line == "quit" {
+                break;
+            }
+
+            messages.push(ChatMessage::User {
+                content: MessageContent::Text(line),
+            });
+
+            match runner.run_with_messages(provider.as_ref(), model, &mut messages).await {
+                Ok(result) => {
+                    if !result.text.is_empty() {
+                        print!("{}", result.text);
+                        let _ = std::io::stdout().flush();
+                        println!();
+                    }
+                    if !result.tool_calls.is_empty() {
+                        let ok = result.tool_calls.iter().filter(|t| t.success).count();
+                        let fail = result.tool_calls.len() - ok;
+                        println!(
+                            "\u{2500}\u{2500}\u{2500} {} tool call(s) ({} ok, {} failed) in {} iteration(s)",
+                            result.tool_calls.len(), ok, fail, result.iterations
+                        );
+                    }
+                    if let Some(ref err) = result.error {
+                        if !result.success {
+                            eprintln!("Session aborted: {err}");
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("LLM error: {e}");
+                }
+            }
+        }
+
+        return 0;
+    }
+
+    // ── Non-interactive mode ──────────────────────────────────────
+
+    // Build the session prompt input
     let input = SessionPromptInput {
         session_id: session_id.clone(),
         message_id: None,
@@ -1589,9 +1703,6 @@ async fn cmd_run(args: &RunArgs) -> i32 {
             synthetic: false,
         })],
     };
-
-    // ── use shared runner from runtime ─────────────────────────────
-    let runner = &ctx.runner;
 
     // ── print header ────────────────────────────────────────────────
     if args.format == "json" {
@@ -1618,7 +1729,6 @@ async fn cmd_run(args: &RunArgs) -> i32 {
                 }
             }
 
-            // Print tool call summary in non-json mode
             if !result.tool_calls.is_empty() && args.format != "json" {
                 let success_count = result.tool_calls.iter().filter(|t| t.success).count();
                 let fail_count = result.tool_calls.len() - success_count;
