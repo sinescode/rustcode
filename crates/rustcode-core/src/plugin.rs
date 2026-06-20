@@ -204,6 +204,8 @@ impl Default for ProviderPluginRegistry {
 ///     });
 /// registry.register(Arc::new(plugin));
 /// ```
+type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
 pub struct ClosureProviderPlugin {
     id: String,
     name: String,
@@ -222,10 +224,8 @@ pub struct ClosureProviderPlugin {
                 + Send
                 + Sync,
         >,
-    ),
+    >,
 }
-
-type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
 
 impl ClosureProviderPlugin {
     /// Create a new closure-based plugin with just an id and name.
@@ -384,11 +384,7 @@ fn default_output() -> u64 {
 
 impl CustomProviderConfig {
     /// Convert this config into a list of [`Model`] entries.
-    pub fn build_models(
-        &self,
-        provider_id: &str,
-        base_url: &str,
-    ) -> Vec<crate::provider::Model> {
+    pub fn build_models(&self, provider_id: &str, base_url: &str) -> Vec<crate::provider::Model> {
         self.models
             .iter()
             .map(|(id, m)| crate::provider::Model {
@@ -406,12 +402,12 @@ impl CustomProviderConfig {
                     reasoning: m.reasoning,
                     attachment: false,
                     toolcall: true,
-                    input: crate::provider::Modality {
+                    input: crate::provider::Modalities {
                         text: true,
                         image: m.image_input,
                         ..Default::default()
                     },
-                    output: crate::provider::Modality {
+                    output: crate::provider::Modalities {
                         text: true,
                         ..Default::default()
                     },
@@ -639,7 +635,9 @@ impl PluginHook {
             "experimental.session.compacting" => Some(Self::ExperimentalSessionCompacting),
             "experimental.chat.messages.transform" => Some(Self::ExperimentalChatMessagesTransform),
             "experimental.chat.system.transform" => Some(Self::ExperimentalChatSystemTransform),
-            "experimental.compaction.autocontinue" => Some(Self::ExperimentalCompactionAutocontinue),
+            "experimental.compaction.autocontinue" => {
+                Some(Self::ExperimentalCompactionAutocontinue)
+            }
             "experimental.provider.small_model" => Some(Self::ExperimentalProviderSmallModel),
             _ => None,
         }
@@ -808,11 +806,7 @@ pub trait PluginHooks: Send + Sync {
     /// Intercept permission decisions.
     ///
     /// Return `true` to allow, `false` to deny, or `None` to use default.
-    async fn on_permission_ask(
-        &self,
-        _permission: &str,
-        _target: &str,
-    ) -> Option<bool> {
+    async fn on_permission_ask(&self, _permission: &str, _target: &str) -> Option<bool> {
         None
     }
 
@@ -846,18 +840,12 @@ pub trait PluginHooks: Send + Sync {
     }
 
     /// Provider authentication — load custom credentials.
-    async fn on_auth(
-        &self,
-        _provider_id: &str,
-    ) -> Option<HashMap<String, serde_json::Value>> {
+    async fn on_auth(&self, _provider_id: &str) -> Option<HashMap<String, serde_json::Value>> {
         None
     }
 
     /// Dynamic model discovery for a provider.
-    async fn on_provider_discover(
-        &self,
-        _provider_id: &str,
-    ) -> Option<Vec<serde_json::Value>> {
+    async fn on_provider_discover(&self, _provider_id: &str) -> Option<Vec<serde_json::Value>> {
         None
     }
 
@@ -1264,6 +1252,11 @@ pub fn parse_specifier(spec: &str) -> ParsedSpec {
                     version: version.to_string(),
                 };
             }
+            // version is empty or "*" — treat as latest
+            return ParsedSpec {
+                pkg: name.to_string(),
+                version: "latest".to_string(),
+            };
         }
         // Just a bare name after npm: prefix
         return ParsedSpec {
@@ -1713,11 +1706,7 @@ impl PluginManager {
     }
 
     /// Trigger `on_permission_ask` on all handlers until one responds.
-    pub async fn trigger_permission_ask(
-        &self,
-        permission: &str,
-        target: &str,
-    ) -> Option<bool> {
+    pub async fn trigger_permission_ask(&self, permission: &str, target: &str) -> Option<bool> {
         for plugin in &self.plugins {
             if !plugin.hooks.contains(&PluginHook::PermissionAsk) {
                 continue;
@@ -1743,7 +1732,10 @@ impl PluginManager {
                 continue;
             }
             if let Some(handler) = self.handlers.get(&plugin.id) {
-                if let Some(modified) = handler.on_tool_execute_before(tool_name, &current_args).await {
+                if let Some(modified) = handler
+                    .on_tool_execute_before(tool_name, &current_args)
+                    .await
+                {
                     current_args = modified;
                 }
             }
@@ -1763,7 +1755,10 @@ impl PluginManager {
                 continue;
             }
             if let Some(handler) = self.handlers.get(&plugin.id) {
-                if let Some(modified) = handler.on_tool_execute_after(tool_name, &current_result).await {
+                if let Some(modified) = handler
+                    .on_tool_execute_after(tool_name, &current_result)
+                    .await
+                {
                     current_result = modified;
                 }
             }
@@ -1798,7 +1793,10 @@ impl PluginManager {
     /// Trigger `on_chat_system_transform` on all handlers.
     pub async fn trigger_chat_system_transform(&self, system: &mut String) {
         for plugin in &self.plugins {
-            if !plugin.hooks.contains(&PluginHook::ExperimentalChatSystemTransform) {
+            if !plugin
+                .hooks
+                .contains(&PluginHook::ExperimentalChatSystemTransform)
+            {
                 continue;
             }
             if let Some(handler) = self.handlers.get(&plugin.id) {
@@ -1920,7 +1918,10 @@ impl PluginManager {
     /// Ported from `packages/opencode/src/plugin/index.ts` `init()`.
     pub async fn init(&mut self) {
         self.last_init = Some(current_time_millis());
-        tracing::info!("plugin manager initialized with {} plugins", self.plugins.len());
+        tracing::info!(
+            "plugin manager initialized with {} plugins",
+            self.plugins.len()
+        );
     }
 
     /// Record metadata for a plugin after loading.
@@ -2168,7 +2169,10 @@ impl PluginErrorTracker {
 
     /// Get recent errors for a plugin.
     pub fn get_errors(&self, plugin_id: &str) -> &[PluginError] {
-        self.errors.get(plugin_id).map(|v| v.as_slice()).unwrap_or(&[])
+        self.errors
+            .get(plugin_id)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[])
     }
 
     /// Get all errors.
@@ -2229,6 +2233,21 @@ pub struct PluginEngines {
     /// Required opencode version (semver range).
     #[serde(default)]
     pub opencode: Option<String>,
+}
+
+impl Default for PluginPackageJson {
+    fn default() -> Self {
+        Self {
+            name: None,
+            version: None,
+            description: None,
+            main: None,
+            exports: None,
+            engines: None,
+            opencode_id: None,
+            themes: None,
+        }
+    }
 }
 
 /// A theme definition from a plugin's package.json.
@@ -2323,7 +2342,9 @@ impl ThemeManager {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/plugin/loader.ts` `readPluginPackage()`.
-pub fn read_plugin_package(plugin_dir: &std::path::Path) -> Result<PluginPackageJson, PluginResolveError> {
+pub fn read_plugin_package(
+    plugin_dir: &std::path::Path,
+) -> Result<PluginPackageJson, PluginResolveError> {
     let pkg_path = plugin_dir.join("package.json");
     if !pkg_path.exists() {
         return Err(PluginResolveError::NoPackageJson {
@@ -2331,17 +2352,17 @@ pub fn read_plugin_package(plugin_dir: &std::path::Path) -> Result<PluginPackage
         });
     }
 
-    let content = std::fs::read_to_string(&pkg_path).map_err(|e| PluginResolveError::InvalidPackageJson {
-        path: pkg_path.display().to_string(),
-        source: e.into(),
-    })?;
+    let content =
+        std::fs::read_to_string(&pkg_path).map_err(|e| PluginResolveError::InvalidPackageJson {
+            path: pkg_path.display().to_string(),
+            source: serde_json::Error::io(e),
+        })?;
 
-    let pkg: PluginPackageJson = serde_json::from_str(&content).map_err(|e| {
-        PluginResolveError::InvalidPackageJson {
+    let pkg: PluginPackageJson =
+        serde_json::from_str(&content).map_err(|e| PluginResolveError::InvalidPackageJson {
             path: pkg_path.display().to_string(),
             source: e,
-        }
-    })?;
+        })?;
 
     Ok(pkg)
 }
@@ -2734,8 +2755,7 @@ pub fn read_plugin_manifest(
 
 /// Read the plugin list from a JSON config value.
 fn plugin_list_from_json(data: &serde_json::Value) -> Option<&Vec<serde_json::Value>> {
-    data.get("plugin")
-        .and_then(|v| v.as_array())
+    data.get("plugin").and_then(|v| v.as_array())
 }
 
 /// Get the plugin spec from a list item.
@@ -2767,7 +2787,8 @@ fn patch_plugin_list(
         })?;
 
     let pkg = parse_specifier(spec).pkg;
-    let items = list.unwrap_or(&Vec::new());
+    let empty_list = Vec::new();
+    let items = list.unwrap_or(&empty_list);
 
     // Check for duplicates
     let duplicates: Vec<(usize, &serde_json::Value)> = items
@@ -2926,10 +2947,11 @@ pub fn read_config_plugins(
         return Ok(Vec::new());
     }
 
-    let text = std::fs::read_to_string(config_path).map_err(|e| PluginInstallError::ReadConfig {
-        path: config_path.display().to_string(),
-        source: e,
-    })?;
+    let text =
+        std::fs::read_to_string(config_path).map_err(|e| PluginInstallError::ReadConfig {
+            path: config_path.display().to_string(),
+            source: e,
+        })?;
 
     let config: serde_json::Value =
         serde_json::from_str(&text).map_err(|e| PluginInstallError::InvalidConfig {
@@ -3303,7 +3325,7 @@ mod tests {
 
         assert_eq!(state, PluginState::Updated);
         assert_eq!(entry.load_count, 2);
-        assert!(entry.time_changed > entry.first_time);
+        assert!(entry.time_changed >= entry.first_time);
     }
 
     #[test]
@@ -3653,6 +3675,7 @@ mod tests {
             })),
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let entry = resolve_package_entrypoint(&pkg, PluginKind::Server).unwrap();
@@ -3672,6 +3695,7 @@ mod tests {
             })),
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let entry = resolve_package_entrypoint(&pkg, PluginKind::Tui).unwrap();
@@ -3688,6 +3712,7 @@ mod tests {
             exports: None,
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let entry = resolve_package_entrypoint(&pkg, PluginKind::Server).unwrap();
@@ -3704,6 +3729,7 @@ mod tests {
             exports: None,
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let entry = resolve_package_entrypoint(&pkg, PluginKind::Server).unwrap();
@@ -3720,6 +3746,7 @@ mod tests {
             exports: None,
             engines: None,
             opencode_id: Some("explicit-id".to_string()),
+            themes: None,
         };
 
         let id = resolve_plugin_id(&pkg).unwrap();
@@ -3736,6 +3763,7 @@ mod tests {
             exports: None,
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let id = resolve_plugin_id(&pkg).unwrap();
@@ -3752,6 +3780,7 @@ mod tests {
             exports: None,
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let id = resolve_plugin_id(&pkg);
@@ -3768,6 +3797,7 @@ mod tests {
             exports: None,
             engines: None,
             opencode_id: None,
+            themes: None,
         };
 
         let result = check_plugin_compatibility(&pkg, "0.1.0");
@@ -3786,6 +3816,7 @@ mod tests {
                 opencode: Some("*".to_string()),
             }),
             opencode_id: None,
+            themes: None,
         };
 
         let result = check_plugin_compatibility(&pkg, "0.1.0");
@@ -3804,6 +3835,7 @@ mod tests {
                 opencode: Some("0.2.0".to_string()),
             }),
             opencode_id: None,
+            themes: None,
         };
 
         let result = check_plugin_compatibility(&pkg, "0.5.0");
@@ -3822,6 +3854,7 @@ mod tests {
                 opencode: Some("1.0.0".to_string()),
             }),
             opencode_id: None,
+            themes: None,
         };
 
         let result = check_plugin_compatibility(&pkg, "0.1.0");

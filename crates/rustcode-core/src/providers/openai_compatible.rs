@@ -75,12 +75,12 @@ fn build_model(spec: &ModelSpec, cfg: &CompatConfig, base_url: &str) -> Model {
             reasoning: spec.reasoning,
             attachment: false,
             toolcall: true,
-            input: provider::Modality {
+            input: provider::Modalities {
                 text: true,
                 image: spec.image_input,
                 ..Default::default()
             },
-            output: provider::Modality {
+            output: provider::Modalities {
                 text: true,
                 ..Default::default()
             },
@@ -562,7 +562,6 @@ impl OpenAICompatibleProvider {
                                 }
                             }
                         }
-                        _ => {}
                     }
                     let mut obj = serde_json::json!({"role":"assistant"});
                     if !text.is_empty() {
@@ -592,9 +591,9 @@ impl OpenAICompatibleProvider {
                             "content": output.to_string()
                         }));
                     }
-                    arr.first()
-                        .cloned()
-                        .unwrap_or(serde_json::json!({"role":"tool","tool_call_id":"","content":""}))
+                    arr.first().cloned().unwrap_or(
+                        serde_json::json!({"role":"tool","tool_call_id":"","content":""}),
+                    )
                 }
             })
             .collect();
@@ -706,16 +705,13 @@ fn events_from_chat(event: &serde_json::Value, state: &mut CompatStreamState) ->
 
         if let Some(tool_calls) = delta.get("tool_calls").and_then(|t| t.as_array()) {
             for td in tool_calls {
-                let index = td.get("index").and_then(|i| i.as_u64()).unwrap_or(0) as u32;
+                let index = td.get("index").and_then(|i| i.as_u64()).unwrap_or(0);
                 let name = td
                     .get("function")
                     .and_then(|f| f.get("name"))
                     .and_then(|n| n.as_str())
                     .map(|s| s.to_string());
-                let id = td
-                    .get("id")
-                    .and_then(|i| i.as_str())
-                    .map(|s| s.to_string());
+                let id = td.get("id").and_then(|i| i.as_str()).map(|s| s.to_string());
                 let args = td
                     .get("function")
                     .and_then(|f| f.get("arguments"))
@@ -916,8 +912,7 @@ impl Provider for OpenAICompatibleProvider {
                         }
                         match sse.next().await {
                             Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                                if let Ok(ce) =
-                                    serde_json::from_str::<serde_json::Value>(&se.data)
+                                if let Ok(ce) = serde_json::from_str::<serde_json::Value>(&se.data)
                                 {
                                     for ev in events_from_chat(&ce, &mut state) {
                                         buf.push_back(Ok(ev));

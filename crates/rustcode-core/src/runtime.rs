@@ -63,7 +63,7 @@ pub struct RuntimeContext {
     pub providers: HashMap<String, Arc<dyn Provider>>,
 
     /// Provider catalog from the initialization pipeline.
-    pub provider_catalog: crate::provider_service::ProviderCatalog,
+    pub provider_catalog: Arc<crate::provider_service::ProviderCatalog>,
 }
 
 // ── Default database path ─────────────────────────────────────────────────────
@@ -95,7 +95,10 @@ pub fn initialize_runtime(config: &Config) -> anyhow::Result<RuntimeContext> {
 ///
 /// Pass `Path::new(":memory:")` for an in-memory database (useful for tests
 /// or one-shot runs that don't need persistence).
-pub fn initialize_runtime_with_path(db_path: &Path, config: &Config) -> anyhow::Result<RuntimeContext> {
+pub fn initialize_runtime_with_path(
+    db_path: &Path,
+    config: &Config,
+) -> anyhow::Result<RuntimeContext> {
     let is_memory = db_path == Path::new(":memory:");
 
     // Ensure parent directory exists for file-backed databases.
@@ -128,7 +131,8 @@ pub fn initialize_runtime_with_path(db_path: &Path, config: &Config) -> anyhow::
     let runner = Arc::new(SessionRunner::new(tools.clone()));
 
     // Use the provider initialization pipeline (plugin-aware).
-    let provider_catalog = crate::provider_service::init_providers(config)
+    let provider_catalog = tokio::runtime::Handle::current()
+        .block_on(crate::provider_service::init_providers(config))
         .map_err(|e| anyhow::anyhow!("Provider initialization failed: {e}"))?;
 
     // Convert to the Arc-based map for backward compatibility.
@@ -178,7 +182,7 @@ pub fn initialize_runtime_with_path(db_path: &Path, config: &Config) -> anyhow::
         questions,
         runner,
         providers,
-        provider_catalog,
+        provider_catalog: Arc::new(provider_catalog),
     })
 }
 
@@ -252,7 +256,8 @@ mod tests {
 
     #[test]
     fn test_memory_runtime() {
-        let ctx = initialize_runtime_with_path(Path::new(":memory:")).unwrap();
+        let config = Config::new(PathBuf::new(), None);
+        let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         assert!(!ctx.is_persistent());
         assert!(ctx.db_path == PathBuf::from(":memory:"));
     }
@@ -272,7 +277,8 @@ mod tests {
 
     #[test]
     fn test_default_model_known() {
-        let ctx = initialize_runtime_with_path(Path::new(":memory:")).unwrap();
+        let config = Config::new(PathBuf::new(), None);
+        let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         assert_eq!(
             ctx.default_model_for("anthropic"),
             Some("claude-sonnet-4-20250514")
@@ -282,7 +288,8 @@ mod tests {
 
     #[test]
     fn test_has_providers_empty() {
-        let ctx = initialize_runtime_with_path(Path::new(":memory:")).unwrap();
+        let config = Config::new(PathBuf::new(), None);
+        let ctx = initialize_runtime_with_path(Path::new(":memory:"), &config).unwrap();
         let expected =
             std::env::var("ANTHROPIC_API_KEY").is_ok() || std::env::var("OPENAI_API_KEY").is_ok();
         assert_eq!(ctx.has_providers(), expected);

@@ -425,14 +425,15 @@ impl TuiApp {
         tokio::task::spawn_blocking(move || loop {
             if let Ok(true) = event::poll(Duration::from_millis(10)) {
                 match event::read() {
-                    Ok(Event::Key(key)) if key.kind == KeyEventKind::Press
-                        && event_tx.send(Event::Key(key)).is_err() => {
-                            break;
-                        }
-                    Ok(Event::Resize(w, h))
-                        if event_tx.send(Event::Resize(w, h)).is_err() => {
-                            break;
-                        }
+                    Ok(Event::Key(key))
+                        if key.kind == KeyEventKind::Press
+                            && event_tx.send(Event::Key(key)).is_err() =>
+                    {
+                        break;
+                    }
+                    Ok(Event::Resize(w, h)) if event_tx.send(Event::Resize(w, h)).is_err() => {
+                        break;
+                    }
                     Ok(Event::Mouse(mouse)) => {
                         let _ = event_tx.send(Event::Mouse(mouse));
                     }
@@ -677,10 +678,12 @@ impl TuiApp {
 
         // Build chat messages from the conversation state plus new user prompt.
         // We always include a system instruction and the user's message.
-        let instructions = ["You are a helpful coding assistant running in a terminal (rustcode).".to_string(),
+        let instructions = [
+            "You are a helpful coding assistant running in a terminal (rustcode).".to_string(),
             "You have tools for reading, writing, editing, and searching code.".to_string(),
             "Use tools when you need to interact with the filesystem.".to_string(),
-            "Keep responses concise. Prefer showing code over describing it.".to_string()];
+            "Keep responses concise. Prefer showing code over describing it.".to_string(),
+        ];
         let system_prompt = instructions.join("\n");
 
         let mut chat_messages: Vec<ChatMessage> = vec![ChatMessage::System {
@@ -973,7 +976,10 @@ impl TuiApp {
             }
 
             LlmEvent::ToolError {
-                id, name: _, message, ..
+                id,
+                name: _,
+                message,
+                ..
             } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 if let Some(msg) = self
@@ -1987,16 +1993,14 @@ impl TuiApp {
         }
 
         // Diff viewer overlay (handles its own keys)
-        if self.diff.visible
-            && self.diff.handle_key(key) {
-                return;
-            }
+        if self.diff.visible && self.diff.handle_key(key) {
+            return;
+        }
 
         // Dialog stack overlay (blocks most keys)
-        if self.dialog.is_active()
-            && self.dialog.handle_key(key) {
-                return;
-            }
+        if self.dialog.is_active() && self.dialog.handle_key(key) {
+            return;
+        }
 
         // Session list dialog (handles its own keys)
         if self.session_list_state.visible {

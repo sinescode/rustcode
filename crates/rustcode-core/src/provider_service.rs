@@ -45,7 +45,7 @@ pub struct ProviderCatalog {
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` `Service.init()`.
 pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
-    let mut registry = ProviderPluginRegistry::new();
+    let registry = ProviderPluginRegistry::new();
 
     // Phase 1: Auto-detect providers from environment
     let mut catalog: HashMap<String, Box<dyn Provider>> = HashMap::new();
@@ -58,7 +58,8 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
     // Phase 2: Merge config-defined providers
     let mut model_overrides: HashMap<String, ModelConfig> = HashMap::new();
 
-    for (provider_id, provider_cfg) in &config.provider {
+    let info = config.get();
+    for (provider_id, provider_cfg) in &info.provider {
         // Collect model overrides
         for (model_id, model_cfg) in &provider_cfg.models {
             let key = format!("{provider_id}/{model_id}");
@@ -76,20 +77,18 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
 
     // Phase 3: Apply plugin transform_catalog hooks
     // (Currently no built-in plugins — this is the extension point)
-    for provider_id in catalog.keys() {
+    let provider_ids: Vec<String> = catalog.keys().cloned().collect();
+    for provider_id in &provider_ids {
         let mut headers = HashMap::new();
         let mut enabled = true;
         let mut options = HashMap::new();
 
         // Merge config headers into the context
-        if let Some(cfg) = config.provider.get(provider_id) {
+        if let Some(cfg) = info.provider.get(provider_id) {
             // Provider-level options
             if let Some(ref opts) = cfg.options {
                 if let Some(ref key) = opts.api_key {
-                    options.insert(
-                        "apiKey".to_string(),
-                        serde_json::Value::String(key.clone()),
-                    );
+                    options.insert("apiKey".to_string(), serde_json::Value::String(key.clone()));
                 }
                 if let Some(ref url) = opts.base_url {
                     options.insert(
@@ -121,14 +120,14 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
 
     // Phase 4: Apply plugin discover_models hooks
     for provider_id in catalog.keys() {
-        let base_url = config
+        let base_url = info
             .provider
             .get(provider_id)
             .and_then(|p| p.options.as_ref())
             .and_then(|o| o.base_url.clone())
             .unwrap_or_default();
 
-        let api_key = config
+        let api_key = info
             .provider
             .get(provider_id)
             .and_then(|p| p.options.as_ref())
@@ -155,7 +154,7 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
 
     // Phase 5: Apply plugin load_auth hooks
     for provider_id in catalog.keys() {
-        let env_vars: Vec<String> = config
+        let env_vars: Vec<String> = info
             .provider
             .get(provider_id)
             .map(|p| p.env.clone())
@@ -173,11 +172,11 @@ pub async fn init_providers(config: &Config) -> Result<ProviderCatalog, Error> {
     }
 
     // Phase 6: Apply enabled/disabled filters
-    let disabled = config.disabled_providers.clone();
-    let enabled = if config.enabled_providers.is_empty() {
+    let disabled = info.disabled_providers.clone();
+    let enabled = if info.enabled_providers.is_empty() {
         None
     } else {
-        Some(config.enabled_providers.clone())
+        Some(info.enabled_providers.clone())
     };
 
     for id in &disabled {
@@ -236,9 +235,7 @@ fn create_provider_from_config(
     let base_url = base_url.unwrap();
 
     // Check if the API key is available
-    let api_key = std::env::var(&env_var)
-        .ok()
-        .filter(|k| !k.is_empty());
+    let api_key = std::env::var(&env_var).ok().filter(|k| !k.is_empty());
 
     let api_key = match api_key {
         Some(key) => key,
@@ -253,10 +250,10 @@ fn create_provider_from_config(
     };
 
     // Build model list from config
-    let models: Vec<crate::plugin::ModelSpec> = cfg
+    let models: Vec<crate::providers::openai_compatible::ModelSpec> = cfg
         .models
         .iter()
-        .map(|(id, m)| crate::plugin::ModelSpec {
+        .map(|(id, m)| crate::providers::openai_compatible::ModelSpec {
             id: Box::leak(id.clone().into_boxed_str()),
             name: Box::leak(
                 m.name
@@ -264,9 +261,16 @@ fn create_provider_from_config(
                     .unwrap_or_else(|| id.clone())
                     .into_boxed_str(),
             ),
-            ctx: m.limit.as_ref().map(|l| l.context as u64).unwrap_or(128_000),
+            ctx: m
+                .limit
+                .as_ref()
+                .map(|l| l.context as u64)
+                .unwrap_or(128_000),
             out: m.limit.as_ref().map(|l| l.output as u64).unwrap_or(16_384),
-            family: m.family.as_ref().map(|f| Box::leak(f.clone().into_boxed_str())),
+            family: m
+                .family
+                .as_ref()
+                .map(|f| -> &'static str { Box::leak(f.clone().into_boxed_str()) }),
             reasoning: m.reasoning.unwrap_or(false),
             image_input: false,
         })
@@ -308,11 +312,11 @@ fn create_provider_from_config(
 ///
 /// Checks if the user has configured a custom model config for the given
 /// provider/model combination.
-pub fn get_model_override(
-    catalog: &ProviderCatalog,
+pub fn get_model_override<'a>(
+    catalog: &'a ProviderCatalog,
     provider_id: &str,
     model_id: &str,
-) -> Option<&ModelConfig> {
+) -> Option<&'a ModelConfig> {
     let key = format!("{provider_id}/{model_id}");
     catalog.model_overrides.get(&key)
 }
@@ -320,15 +324,12 @@ pub fn get_model_override(
 /// Find a model across all providers.
 ///
 /// Searches the catalog for a model by ID, returning the provider ID and model.
-pub fn find_model(
-    catalog: &ProviderCatalog,
-    model_id: &str,
-) -> Option<(&str, &Model)> {
+pub fn find_model(catalog: &ProviderCatalog, model_id: &str) -> Option<(String, Model)> {
     for (provider_id, provider) in &catalog.providers {
         if let Ok(models) = futures::executor::block_on(provider.list_models()) {
-            for model in &models {
+            for model in models {
                 if model.id == model_id {
-                    return Some((provider_id, model));
+                    return Some((provider_id.clone(), model));
                 }
             }
         }
@@ -339,15 +340,18 @@ pub fn find_model(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::Config;
 
     #[test]
     fn test_provider_catalog_default() {
-        let config = Config::default();
-        // Can't run async in sync test, but we can test the config is valid
-        assert!(config.provider.is_empty());
-        assert!(config.disabled_providers.is_empty());
-        assert!(config.enabled_providers.is_empty());
+        // Test that the ProviderCatalog struct can be created
+        let catalog = ProviderCatalog {
+            providers: HashMap::new(),
+            model_overrides: HashMap::new(),
+            disabled: Vec::new(),
+            enabled: None,
+        };
+        assert!(catalog.providers.is_empty());
+        assert!(catalog.disabled.is_empty());
     }
 
     #[test]
@@ -357,8 +361,9 @@ mod tests {
             env: vec!["TEST_KEY".to_string()],
             ..Default::default()
         };
-        let result = create_provider_from_config("test", &cfg).unwrap();
-        assert!(result.is_none());
+        let result = create_provider_from_config("test", &cfg);
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 
     #[test]

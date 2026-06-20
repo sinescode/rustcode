@@ -32,8 +32,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use rustcode_core::lsp::{
-    LspClientInfo, LspConnectionStatus, LspDiagnostic,
-    LspDocumentSymbol, LspServerInfo, LspStatus, LspSymbol,
+    LspClientInfo, LspConnectionStatus, LspDiagnostic, LspDocumentSymbol, LspServerInfo, LspStatus,
+    LspSymbol,
 };
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -1647,12 +1647,18 @@ mod tests {
 
     #[test]
     fn language_id_for_typescript() {
-        assert_eq!(rustcode_core::lsp::language_id_for_extension(".ts"), "typescript");
+        assert_eq!(
+            rustcode_core::lsp::language_id_for_extension(".ts"),
+            "typescript"
+        );
     }
 
     #[test]
     fn language_id_fallback_plaintext() {
-        assert_eq!(rustcode_core::lsp::language_id_for_extension(".zzz"), "plaintext");
+        assert_eq!(
+            rustcode_core::lsp::language_id_for_extension(".zzz"),
+            "plaintext"
+        );
     }
 
     // ------------------------------------------------------------------

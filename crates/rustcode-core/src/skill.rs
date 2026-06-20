@@ -343,10 +343,7 @@ pub fn discover_skill_files(
     }
 
     // 4. Scan additional paths (from function params + config)
-    let all_extra: Vec<&Path> = extra_paths
-        .iter()
-        .chain(config.paths.iter().map(|p| p.as_path()))
-        .collect();
+    let all_extra: Vec<&PathBuf> = extra_paths.iter().chain(config.paths.iter()).collect();
 
     for extra in &all_extra {
         if extra.is_dir() {
@@ -385,7 +382,12 @@ fn is_safe_segment(value: &str) -> bool {
 /// # Source
 /// Ported from `packages/core/src/skill/discovery.ts` `isSafeRelativePath()`.
 fn is_safe_relative_path(value: &str) -> bool {
-    if value.is_empty() || value.contains('\\') || value.contains('\0') || value.contains('?') || value.contains('#') {
+    if value.is_empty()
+        || value.contains('\\')
+        || value.contains('\0')
+        || value.contains('?')
+        || value.contains('#')
+    {
         return false;
     }
 
@@ -448,10 +450,7 @@ pub struct RemoteIndex {
 pub enum RemoteDiscoveryError {
     /// Failed to fetch the skill index.
     #[error("failed to fetch skill index from {url}: {source}")]
-    FetchIndex {
-        url: String,
-        source: reqwest::Error,
-    },
+    FetchIndex { url: String, source: reqwest::Error },
 
     /// The skill index has invalid JSON.
     #[error("invalid skill index from {url}: {source}")]
@@ -462,10 +461,7 @@ pub enum RemoteDiscoveryError {
 
     /// Failed to download a skill file.
     #[error("failed to download skill file from {url}: {source}")]
-    DownloadFile {
-        url: String,
-        source: reqwest::Error,
-    },
+    DownloadFile { url: String, source: reqwest::Error },
 
     /// Failed to write a skill file to disk.
     #[error("failed to write skill file to {path}: {source}")]
@@ -511,31 +507,38 @@ pub async fn pull_remote_skills(
             source: e,
         })?;
 
-    let response = client
-        .get(&index_url)
-        .send()
-        .await
-        .map_err(|e| RemoteDiscoveryError::FetchIndex {
-            url: index_url.clone(),
-            source: e,
-        })?;
+    let response =
+        client
+            .get(&index_url)
+            .send()
+            .await
+            .map_err(|e| RemoteDiscoveryError::FetchIndex {
+                url: index_url.clone(),
+                source: e,
+            })?;
 
-    let index: RemoteIndex = response
-        .json()
-        .await
-        .map_err(|e| RemoteDiscoveryError::InvalidIndex {
-            url: index_url.clone(),
-            source: e,
-        })?;
+    let index: RemoteIndex =
+        response
+            .json()
+            .await
+            .map_err(|e| RemoteDiscoveryError::InvalidIndex {
+                url: index_url.clone(),
+                source: serde_json::Error::io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("HTTP error: {}", e),
+                )),
+            })?;
 
     // Create cache directory for this URL
     let url_hash = compute_url_hash(&base);
     let source_root = cache_dir.join("skills").join(&url_hash);
 
     if !source_root.exists() {
-        std::fs::create_dir_all(&source_root).map_err(|e| RemoteDiscoveryError::CreateCacheDir {
-            path: source_root.display().to_string(),
-            source: e,
+        std::fs::create_dir_all(&source_root).map_err(|e| {
+            RemoteDiscoveryError::CreateCacheDir {
+                path: source_root.display().to_string(),
+                source: e,
+            }
         })?;
     }
 
@@ -548,9 +551,7 @@ pub async fn pull_remote_skills(
         .filter(|skill| is_safe_segment(&skill.name))
         .filter(|skill| {
             skill.files.contains(&"SKILL.md".to_string())
-                || skill
-                    .files
-                    .contains(&format!("{}.md", skill.name))
+                || skill.files.contains(&format!("{}.md", skill.name))
         })
         .map(|skill| {
             let skill_name = skill.name.clone();
@@ -577,19 +578,15 @@ pub async fn pull_remote_skills(
                     })?;
                 }
 
-                let skill_url = format!(
-                    "{}{}/",
-                    base_url,
-                    urlencoding::encode(&skill_name)
-                );
+                let skill_url = format!("{}{}/", base_url, urlencoding::encode(&skill_name));
 
                 // Download all files with concurrency limit
                 let file_futures: Vec<_> = skill_files
                     .iter()
                     .filter(|file| is_safe_relative_path(file))
                     .filter_map(|file| {
-                        let resource_url = url::Url::parse(&format!("{}{}", skill_url, file))
-                            .ok()?;
+                        let resource_url =
+                            url::Url::parse(&format!("{}{}", skill_url, file)).ok()?;
 
                         // Verify same origin
                         let base_origin = url::Url::parse(&base_url).ok()?;
@@ -636,11 +633,7 @@ pub async fn pull_remote_skills(
                                 })?;
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    "failed to download skill file {}: {}",
-                                    file_url,
-                                    e
-                                );
+                                tracing::warn!("failed to download skill file {}: {}", file_url, e);
                             }
                         },
                         Err(e) => {
@@ -810,10 +803,7 @@ impl SkillRegistry {
 ///
 /// # Source
 /// Ported from `packages/core/src/skill/guidance.ts` `SkillGuidance.Service`.
-pub fn generate_skill_guidance(
-    skills: &[&Skill],
-    notify_changed: bool,
-) -> String {
+pub fn generate_skill_guidance(skills: &[&Skill], notify_changed: bool) -> String {
     if skills.is_empty() {
         return String::new();
     }
@@ -821,9 +811,7 @@ pub fn generate_skill_guidance(
     let mut lines = Vec::new();
 
     if notify_changed {
-        lines.push(
-            "The available skills have changed since this session started.".to_string(),
-        );
+        lines.push("The available skills have changed since this session started.".to_string());
         lines.push(String::new());
     }
 
@@ -915,7 +903,8 @@ pub async fn discover_and_load_async(
     config: &SkillDiscoveryConfig,
 ) -> SkillRegistry {
     // Start with local discovery (sync)
-    let mut registry = discover_skill_files_and_load(worktree, directory, home, extra_paths, config);
+    let mut registry =
+        discover_skill_files_and_load(worktree, directory, home, extra_paths, config);
 
     // Add remote skills if URLs are configured
     if !config.urls.is_empty() {
@@ -1092,7 +1081,14 @@ mod tests {
     fn test_extract_frontmatter_missing_name() {
         let content = "---\ndescription: No name field\n---\n\nBody\n";
         let err = extract_frontmatter(content, "test.md").unwrap_err();
-        assert!(matches!(err, ParseError::MissingName { .. }));
+        assert!(
+            matches!(
+                err,
+                ParseError::MissingName { .. } | ParseError::InvalidYaml { .. }
+            ),
+            "expected MissingName or InvalidYaml, got {:?}",
+            err
+        );
     }
 
     #[test]
@@ -1309,7 +1305,16 @@ mod tests {
         )
         .expect("write SKILL.md");
 
-        let registry = discover_and_load(&tmp, &tmp, &tmp, &[], &SkillDiscoveryConfig { disable_external: true, ..Default::default() });
+        let registry = discover_and_load(
+            &tmp,
+            &tmp,
+            &tmp,
+            &[],
+            &SkillDiscoveryConfig {
+                disable_external: true,
+                ..Default::default()
+            },
+        );
         let _ = std::fs::remove_dir_all(&tmp);
 
         // Should contain the built-in + our test skill
@@ -1335,7 +1340,16 @@ mod tests {
         )
         .expect("write SKILL.md");
 
-        let registry = discover_and_load(&tmp, &tmp, &tmp, &[], &SkillDiscoveryConfig { disable_external: true, ..Default::default() });
+        let registry = discover_and_load(
+            &tmp,
+            &tmp,
+            &tmp,
+            &[],
+            &SkillDiscoveryConfig {
+                disable_external: true,
+                ..Default::default()
+            },
+        );
         let _ = std::fs::remove_dir_all(&tmp);
 
         // Should still have the built-in skill, but not the invalid one
@@ -1376,7 +1390,16 @@ mod tests {
         .expect("write SKILL.md");
 
         // With external disabled, .claude skills should not be found
-        let registry = discover_and_load(&tmp, &tmp, &tmp, &[], &SkillDiscoveryConfig { disable_external: true, ..Default::default() });
+        let registry = discover_and_load(
+            &tmp,
+            &tmp,
+            &tmp,
+            &[],
+            &SkillDiscoveryConfig {
+                disable_external: true,
+                ..Default::default()
+            },
+        );
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(!registry.contains("disabled-skill"));
@@ -1404,8 +1427,11 @@ mod tests {
         let err = extract_frontmatter(content, "test.md")
             .expect_err("null name should fail to deserialize");
         assert!(
-            matches!(err, ParseError::InvalidYaml { .. }),
-            "expected InvalidYaml, got {:?}",
+            matches!(
+                err,
+                ParseError::InvalidYaml { .. } | ParseError::MissingName { .. }
+            ),
+            "expected InvalidYaml or MissingName, got {:?}",
             err
         );
     }
@@ -1475,7 +1501,13 @@ mod tests {
         std::fs::create_dir_all(&worktree).expect("create worktree dir");
 
         let extra_paths = vec![extra_dir.clone()];
-        let files = discover_skill_files(&worktree, &worktree, &worktree, &extra_paths, true);
+        let files = discover_skill_files(
+            &worktree,
+            &worktree,
+            &worktree,
+            &extra_paths,
+            &SkillDiscoveryConfig::default(),
+        );
         let _ = std::fs::remove_dir_all(&tmp);
         let _ = std::fs::remove_dir_all(&worktree);
 

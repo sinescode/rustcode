@@ -1065,7 +1065,13 @@ pub fn normalize_messages(messages: &[ChatMessage], model: &Model) -> Vec<ChatMe
     if provider_lower.contains("anthropic") || model_id_lower.contains("claude") {
         let scrub = |id: &str| -> String {
             id.chars()
-                .map(|c| if c.is_ascii_alphanumeric() || c == '_' || c == '-' { c } else { '_' })
+                .map(|c| {
+                    if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+                        c
+                    } else {
+                        '_'
+                    }
+                })
                 .collect()
         };
         msgs = msgs
@@ -1244,9 +1250,13 @@ fn ensure_deepseek_reasoning(msg: ChatMessage) -> ChatMessage {
     match msg {
         ChatMessage::Assistant { content } => match content {
             MessageContent::Parts(parts) => {
-                let has_reasoning = parts.iter().any(|p| matches!(p, ContentPart::Reasoning { .. }));
+                let has_reasoning = parts
+                    .iter()
+                    .any(|p| matches!(p, ContentPart::Reasoning { .. }));
                 if has_reasoning {
-                    msg
+                    ChatMessage::Assistant {
+                        content: MessageContent::Parts(parts),
+                    }
                 } else {
                     let mut new_parts = parts;
                     new_parts.push(ContentPart::Reasoning {

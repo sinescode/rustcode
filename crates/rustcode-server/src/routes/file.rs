@@ -251,9 +251,10 @@ fn find_symbols_recursive(
         }
         if path.is_dir() {
             find_symbols_recursive(&path, query, patterns, results, limit)?;
-        } else if path.extension().is_some_and(|ext| {
-            ext == "rs" || ext == "py" || ext == "ts" || ext == "js"
-        }) {
+        } else if path
+            .extension()
+            .is_some_and(|ext| ext == "rs" || ext == "py" || ext == "ts" || ext == "js")
+        {
             if let Ok(content) = std::fs::read_to_string(&path) {
                 let query_lower = query.to_lowercase();
                 for line in content.lines() {
