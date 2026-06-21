@@ -476,7 +476,9 @@ impl SystemContextRegistry {
         let key = source.key().clone();
         for existing in &self.sources {
             if existing.key() == &key {
-                panic!("duplicate system context key: `{key}`");
+                tracing::warn!("duplicate system context key: `{key}` — replacing");
+                self.sources.retain(|s| s.key() != &key);
+                break;
             }
         }
         self.sources.push(source);
