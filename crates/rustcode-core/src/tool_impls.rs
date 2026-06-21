@@ -245,8 +245,11 @@ impl Replacer for BlockAnchorReplacer {
 struct WhitespaceNormalizedReplacer;
 impl Replacer for WhitespaceNormalizedReplacer {
     fn search(&self, content: &str, find: &str) -> Vec<String> {
+        static WHITESPACE_RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
         let normalize = |text: &str| -> String {
-            let re = regex::Regex::new(r"\s+").expect("hardcoded regex is valid");
+            let re = WHITESPACE_RE.get_or_init(|| {
+                regex::Regex::new(r"\s+").expect("hardcoded regex is valid")
+            });
             re.replace_all(text, " ").trim().to_string()
         };
         let normalized_find = normalize(find);

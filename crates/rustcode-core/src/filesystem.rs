@@ -317,45 +317,15 @@ pub fn is_ignored(filepath: &str, opts: Option<&IgnoreMatchOptions>) -> bool {
 /// path segment), and literal matching. This is a minimal implementation
 /// suitable for ignore checks; for production use the `glob` or `ignore` crate.
 fn glob_matches(pattern: &str, filepath: &str) -> bool {
-    // Normalize slashes.
+    // Normalize slashes (glob crate expects forward slashes)
     let filepath = filepath.replace('\\', "/");
-
-    // "**/" patterns match anywhere in the path.
-    if let Some(suffix) = pattern.strip_prefix("**/") {
-        // **/X/** — match any path that contains X/ as a directory component.
-        if let Some(inner) = suffix.strip_suffix("/**") {
-            return filepath.contains(&format!("/{inner}/"))
-                || filepath.starts_with(&format!("{inner}/"))
-                || filepath == inner;
+    match glob::Pattern::new(pattern) {
+        Ok(p) => p.matches(&filepath),
+        Err(_) => {
+            tracing::warn!(%pattern, "invalid glob pattern, falling back to exact match");
+            filepath == pattern
         }
-        // **/*.ext — match by file extension.
-        if let Some(ext) = suffix.strip_prefix("*.") {
-            if let Some(dot) = filepath.rfind('.') {
-                return &filepath[dot + 1..] == ext;
-            }
-            return false;
-        }
-        // **/*suffix — match the final path component ending.
-        if let Some(file_suffix) = suffix.strip_prefix('*') {
-            if let Some(file_name) = filepath.rsplit('/').next() {
-                return file_name.ends_with(file_suffix);
-            }
-            return filepath.ends_with(file_suffix);
-        }
-        // **/literal — match path ending with suffix, or containing /suffix.
-        return filepath.ends_with(suffix) || filepath.contains(&format!("/{suffix}"));
     }
-
-    // Literal match (with possible single-level wildcards, no **).
-    if let Some((prefix, suffix)) = pattern.split_once('*') {
-        if let Some(file_stem) = filepath.rsplit('/').next() {
-            return file_stem.starts_with(prefix) && file_stem.ends_with(suffix);
-        }
-        return filepath.starts_with(prefix) && filepath.ends_with(suffix);
-    }
-
-    // Exact match.
-    filepath == pattern
 }
 
 /// Return the combined set of ignore patterns (folders + files + extras).
