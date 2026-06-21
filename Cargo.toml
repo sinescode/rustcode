@@ -94,3 +94,10 @@ dialoguer.workspace = true
 indicatif.workspace = true
 clap_complete = "4"
 rustcode-tui.workspace = true
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "benchmarks"
+harness = false
