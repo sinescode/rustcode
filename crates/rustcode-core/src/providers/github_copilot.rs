@@ -262,7 +262,7 @@ impl GitHubCopilotProvider {
                 )
             })?;
 
-        let base_url = DEFAULT_BASE_URL.into();
+        let base_url = DEFAULT_BASE_URL.to_string();
         let models = build_model_catalog(&base_url);
 
         Ok(Self {
@@ -284,7 +284,7 @@ impl GitHubCopilotProvider {
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
 
         let copilot_token = resolve_copilot_token(&http_client).await?;
-        let base_url = DEFAULT_BASE_URL.into();
+        let base_url = DEFAULT_BASE_URL.to_string();
         let models = build_model_catalog(&base_url);
 
         Ok(Self {
@@ -303,7 +303,7 @@ impl GitHubCopilotProvider {
             .build()
             .map_err(|e| Error::Network(format!("HTTP client: {e}")))?;
 
-        let base_url = DEFAULT_BASE_URL.into();
+        let base_url = DEFAULT_BASE_URL.to_string();
         let models = build_model_catalog(&base_url);
 
         Ok(Self {

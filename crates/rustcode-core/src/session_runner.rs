@@ -315,6 +315,8 @@ impl SessionRunner {
                     call_id: Some(tc.call_id.clone()),
                     extra: HashMap::new(),
                     messages: messages.clone(),
+                    ask_fn: None,
+                    permission_source: None,
                 };
                 let result = self
                     .tool_registry

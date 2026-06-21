@@ -1,16 +1,23 @@
 # CLI/TUI Parity Report: opencode (TypeScript) vs rustcode (Rust)
 
-**Date:** 2024-01-15  
-**Scope:** CLI commands, flags, options, TUI rendering, key bindings, configuration loading  
+**Date:** 2026-06-21  
+**Scope:** CLI commands, flags, options, TUI rendering, key bindings, dialog system, prompt system  
 **Status:** All tests pass, build succeeds
 
 ---
 
 ## Executive Summary
 
-The rustcode implementation achieves **full parity** with opencode's CLI structure. All 23 commands, all global flags, and all command-specific flags are ported. The TUI implementation uses ratatui (Rust) instead of React/Ink (TypeScript), providing equivalent functionality with native terminal rendering.
+The rustcode CLI achieves **full structural parity** with opencode's CLI — all 23 commands, all global flags, and all command-specific flags are ported. The TUI implementation uses ratatui (Rust) vs React/Ink (TypeScript) and covers the core interactive experience. The main gaps are:
 
-**Overall Parity: 100% PORTED**
+1. **18 missing TUI dialogs** (workspace, provider, variant, tag, skill, MCP standalone, session rename dialog, console org, retry-action, delete-failed)
+2. **Missing input editing features** (word-level cursor movement, select operations, undo/redo, multi-line cursor)
+3. **Missing keybindings** (~20 unbound actions including f2/f2 for model cycle, ctrl+alt+k for which-key, input editing shortcuts)
+4. **No workspace subsystem** (create, list, file-changes, unavailable)
+5. **No prompt subsystem** (history persistence, stash, frecency autocomplete, prompt traits)
+
+**Overall CLI Parity: 100% PORTED**
+**Overall TUI Parity: ~75% PORTED** (core experience complete, advanced dialogs/features missing)
 
 ---
 
@@ -115,424 +122,305 @@ The rustcode implementation achieves **full parity** with opencode's CLI structu
 
 ---
 
-## 6. Attach Command Flags
+## 6. TUI Feature Comparison
 
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `<url>` | ✅ string (required) | ✅ String (required) | PORTED | |
-| `--dir` | ✅ string | ✅ Option<String> | PORTED | |
-| `--continue` / `-c` | ✅ boolean | ✅ bool | PORTED | |
-| `--session` / `-s` | ✅ string | ✅ Option<String> | PORTED | |
-| `--fork` | ✅ boolean | ✅ bool | PORTED | |
-| `--password` / `-p` | ✅ string | ✅ Option<String> | PORTED | |
-| `--username` / `-u` | ✅ string | ✅ Option<String> | PORTED | |
+### 6a. Core TUI Components
 
----
+| Component | opencode Source | rustcode Source | Status |
+|-----------|----------------|-----------------|--------|
+| Chat/conversation view | `routes/session/index.tsx` | `conversation.rs` | PORTED |
+| Input area | `component/prompt/index.tsx` | `input.rs` | PARTIAL — missing word navigation, select, undo/redo |
+| Status line/footer | `routes/session/footer.tsx` | `status.rs` | PORTED |
+| Permission dialog | `routes/session/permission.tsx` | `permission.rs` | PORTED |
+| Question dialog | `routes/session/question.tsx` | `question.rs` | PORTED |
+| Toast notifications | `ui/toast.tsx` | `toast.rs` | PORTED |
+| Dialog stack system | `ui/dialog.tsx` | `dialog.rs` | PORTED |
+| Session sidebar | `routes/session/sidebar.tsx` + feature-plugins | `sidebar.rs` | PORTED — 5 panels (Context, Todo, Files, LSP, MCP) |
+| Diff viewer | `feature-plugins/system/diff-viewer.tsx` | `diff.rs` | PORTED |
+| Session list | `component/dialog-session-list.tsx` | `session_list.rs` | PORTED |
+| Model selector | `component/dialog-model-selector.tsx` | `model_selector.rs` | PORTED |
+| Export dialog | `component/dialog-session-export.tsx` | `export_dialog.rs` | PORTED |
+| Timeline view | `component/dialog-session-timeline.tsx` | `timeline.rs` | PORTED |
+| Subagent dialog | `component/dialog-subagent.tsx` | `subagent.rs` | PORTED |
+| Tool-specific rendering | `routes/session/index.tsx` | `tool_render.rs` | PORTED — 11 tool renderers |
+| Theme system (8 themes) | `theme/index.tsx` | `theme.rs` | PORTED — dark, light, dracula, monokai, nord, solarized, github, tokyonight |
+| Clipboard support | `util/clipboard.ts` | `clipboard.rs` | PORTED — wl-copy, xclip, xsel, pbcopy |
+| External editor | `util/editor.ts` | `editor.rs` | PORTED — $EDITOR, $VISUAL, vim, nvim, nano |
+| SSE event streaming | `context/sync.ts` | `sse_client.rs` | PORTED — with auto-reconnect + backoff |
+| Command palette | `component/command-palette.tsx` | `app.rs:1603` | PORTED |
+| Help overlay | `ui/dialog-help.tsx` | `app.rs:1716` | PORTED |
+| Status dialog | `component/dialog-status.tsx` | `app.rs:1814` | PORTED |
 
-## 7. Session Command Flags
+### 6b. Missing TUI Dialogs (18 gaps)
 
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `list --max-count` / `-n` | ✅ number | ✅ Option<usize> | PORTED | |
-| `list --format` | ✅ choices: table, json | ✅ choices: table, json | PORTED | Default: "table" |
-| `delete <sessionID>` | ✅ string (required) | ✅ String (required) | PORTED | |
+| opencode Component | Purpose | Severity |
+|---|---|---|
+| `dialog-workspace-create.tsx` | Create workspace with adapter selection | HIGH — workspace not ported |
+| `dialog-workspace-list.tsx` | Browse/switch workspaces | HIGH — workspace not ported |
+| `dialog-workspace-file-changes.tsx` | Confirm workspace file changes | HIGH — workspace not ported |
+| `dialog-workspace-unavailable.tsx` | Handle unavailable workspace | MEDIUM — workspace not ported |
+| `dialog-provider.tsx` | Provider auth management | MEDIUM — onboarding flow |
+| `dialog-variant.tsx` | Model variant selector | MEDIUM — sub-dialog of model |
+| `dialog-mcp.tsx` | MCP server list with toggle | MEDIUM — sidebar covers status |
+| `dialog-theme-list.tsx` | Color theme picker dialog | MEDIUM — currently cycle-only |
+| `dialog-session-rename.tsx` | Session rename prompt | LOW — input mode works |
+| `dialog-tag.tsx` | Tag selector for sessions | LOW — feature-flag dependent |
+| `dialog-stash.tsx` | View/restore stashed prompts | LOW — stash not ported |
+| `dialog-skill.tsx` | Skill/preset selector | LOW — advanced feature |
+| `dialog-status.tsx` | Detailed system status | LOW — status.rs covers basics |
+| `dialog-console-org.tsx` | Console org/account selector | LOW — cloud-specific |
+| `dialog-move-session.tsx` | Move session between projects | LOW — project system not ported |
+| `dialog-retry-action.tsx` | Post-error retry prompt with URL | LOW — error recovery |
+| `dialog-session-delete-failed.tsx` | Handle failed session deletion | LOW — edge case |
 
----
+### 6c. Missing UI Primitives (7 gaps)
 
-## 8. Models Command Flags
+| opencode Component | Purpose | Severity |
+|---|---|---|
+| `ui/dialog-alert.tsx` | Simple alert dialog | MEDIUM — reusable primitive |
+| `ui/dialog-confirm.tsx` | Confirmation dialog | MEDIUM — reusable primitive |
+| `ui/dialog-prompt.tsx` | Text input dialog | MEDIUM — reusable primitive |
+| `ui/dialog-select.tsx` | Searchable select list | HIGH — used by many dialogs |
+| `ui/link.tsx` | Clickable hyperlink | LOW |
+| `ui/spinner.ts` | Animated spinner | LOW |
+| `ui/border.ts` | Border character definitions | LOW |
 
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `[provider]` | ✅ string | ✅ Option<String> | PORTED | |
-| `--verbose` | ✅ boolean | ✅ bool | PORTED | |
-| `--refresh` | ✅ boolean | ✅ bool | PORTED | |
+### 6d. Missing Prompt Subsystem (6 gaps)
 
----
+| opencode Component | Purpose | Severity |
+|---|---|---|
+| `prompt/history.tsx` | Prompt history persistence | MEDIUM — basic history in-memory exists |
+| `prompt/stash.tsx` | Stashed prompt storage | LOW |
+| `prompt/frecency.tsx` | Frecency scoring for autocomplete | LOW |
+| `prompt/display.ts` | Grapheme-aware width calculation | LOW |
+| `prompt/part.ts` | Prompt part utilities | LOW |
+| `prompt/traits.ts` | Prompt mode traits (normal vs shell) | LOW |
 
-## 9. Stats Command Flags
+### 6e. Missing Feature Plugins (7 gaps)
 
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `--days` | ✅ number | ✅ Option<u32> | PORTED | |
-| `--tools` | ✅ number | ✅ Option<usize> | PORTED | |
-| `--models` | ✅ boolean or number | ✅ Option<usize> | PORTED | |
-| `--project` | ✅ string | ✅ Option<String> | PORTED | |
+| opencode Component | Purpose | Severity |
+|---|---|---|
+| `home/footer.tsx` | Home screen project directory footer | LOW — home screen not ported |
+| `home/tips.tsx` + `tips-view.tsx` | Home screen tips/shortcuts display | LOW — home screen not ported |
+| `system/which-key.tsx` | Vim-style keybinding popup | MEDIUM — power user feature |
+| `system/notifications.ts` | Alert sound notifications | LOW — audio toggle exists |
+| `system/plugins.tsx` | Plugin manager dialog | LOW — plugin system not ported |
+| `system/diff-viewer-file-tree.tsx` | File tree sidebar for diff viewer | LOW — may be in diff.rs |
+| `system/diff-viewer-ui.tsx` | Diff viewer layout primitives | LOW — may be in diff.rs |
 
----
+### 6f. Missing Non-Dialog Components (7 gaps)
 
-## 10. Export/Import Command Flags
-
-| Command | Flag | opencode | rustcode | Status |
-|---------|------|----------|----------|--------|
-| export | `[sessionID]` | ✅ string | ✅ Option<String> | PORTED |
-| export | `--sanitize` | ✅ boolean | ✅ bool | PORTED |
-| import | `<file>` | ✅ string (required) | ✅ String (required) | PORTED |
-
----
-
-## 11. Plugin Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `<module>` | ✅ string | ✅ String | PORTED | npm module name |
-| `--global` / `-g` | ✅ boolean (default: false) | ✅ bool (default: false) | PORTED | |
-| `--force` / `-f` | ✅ boolean (default: false) | ✅ bool (default: false) | PORTED | |
-
----
-
-## 12. DB Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `[query]` | ✅ string | ✅ Option<String> | PORTED | Opens interactive sqlite3 shell if omitted |
-| `--format` | ✅ choices: json, tsv | ✅ choices: json, tsv | PORTED | Default: "tsv" |
-
----
-
-## 13. Agent Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `create --path` | ✅ string | ✅ Option<String> | PORTED | |
-| `create --description` | ✅ string | ✅ Option<String> | PORTED | |
-| `create --mode` | ✅ choices: all, primary, subagent | ✅ choices: all, primary, subagent | PORTED | |
-| `create --permissions` / `--tools` | ✅ string | ✅ Option<String> | PORTED | |
-| `create --model` / `-m` | ✅ string | ✅ Option<String> | PORTED | |
-
----
-
-## 14. GitHub Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `install` | ✅ (no args) | ✅ (no args) | PORTED | |
-| `run --event` | ✅ string | ✅ Option<String> | PORTED | |
-| `run --event-payload` | ✅ string | ✅ Option<String> | PORTED | CLI arg: `--event-payload` |
-| `run --token` | ✅ string | ✅ Option<String> | PORTED | Falls back to GITHUB_TOKEN env |
-
----
-
-## 15. Providers Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `list` | ✅ (no args) | ✅ (no args) | PORTED | Alias: `ls` |
-| `login [url]` | ✅ string | ✅ Option<String> | PORTED | |
-| `login --provider` / `-p` | ✅ string | ✅ Option<String> | PORTED | |
-| `login --method` / `-m` | ✅ string | ✅ Option<String> | PORTED | |
-| `logout [provider]` | ✅ string | ✅ Option<String> | PORTED | |
+| opencode Component | Purpose | Severity |
+|---|---|---|
+| `bg-pulse.tsx` + `bg-pulse-render.ts` | Pulsing background animation | LOW — cosmetic |
+| `logo.tsx` | Application logo rendering | LOW |
+| `startup-loading.tsx` | Startup splash/loading screen | LOW |
+| `error-component.tsx` | Error display component | LOW |
+| `todo-item.tsx` | Todo item renderer | LOW — may be in sidebar |
+| `workspace-label.tsx` | Current workspace label | LOW — workspace not ported |
+| `use-connected.tsx` | Hook for connection status | LOW — status.rs covers |
 
 ---
 
-## 16. Console Command Flags
+## 7. Input Editing Feature Comparison
 
-| Subcommand | opencode | rustcode | Status |
-|------------|----------|----------|--------|
-| `login [url]` | ✅ string | ✅ Option<String> | PORTED |
-| `logout [email]` | ✅ string | ✅ Option<String> | PORTED |
-| `switch` | ✅ (no args) | ✅ (no args) | PORTED |
-| `orgs` | ✅ (no args) | ✅ (no args) | PORTED |
-| `open` | ✅ (no args) | ✅ (no args) | PORTED |
+| Feature | opencode (keybind.ts) | rustcode (input.rs) | Status |
+|---------|----------------------|---------------------|--------|
+| Basic typing | ✅ | ✅ | PORTED |
+| Backspace | ✅ | ✅ | PORTED |
+| Delete char | ✅ | ✅ | PORTED |
+| Cursor left/right | ✅ | ✅ | PORTED |
+| Home/End | ✅ | ✅ | PORTED |
+| Delete to line end (Ctrl+K) | ✅ | ✅ | PORTED |
+| Delete to line start (Ctrl+U) | ✅ | ✅ | PORTED |
+| Delete word backward (Ctrl+W) | ✅ | ✅ | PORTED |
+| Newline (Shift/Ctrl+Enter, Ctrl+J) | ✅ | ✅ | PORTED |
+| History prev/next (Up/Down) | ✅ | ✅ | PORTED |
+| Paste (Ctrl+V) | ✅ | ✅ | PORTED |
+| Word forward (Alt+F, Alt+Right, Ctrl+Right) | ✅ | ❌ | MISSING |
+| Word backward (Alt+B, Alt+Left, Ctrl+Left) | ✅ | ❌ | MISSING |
+| Delete word forward (Alt+D, Alt+Delete, Ctrl+Delete) | ✅ | ❌ | MISSING |
+| Select left/right/up/down (Shift+arrows) | ✅ | ❌ | MISSING |
+| Select word forward/backward | ✅ | ❌ | MISSING |
+| Select line home/end | ✅ | ❌ | MISSING |
+| Select buffer home/end | ✅ | ❌ | MISSING |
+| Select all (Super+A) | ✅ | ❌ | MISSING |
+| Visual line home/end (Alt+A/E) | ✅ | ❌ | MISSING |
+| Undo (Ctrl+-, Super+Z) | ✅ | ❌ | MISSING |
+| Redo (Ctrl+., Super+Shift+Z) | ✅ | ❌ | MISSING |
+| Delete line (Ctrl+Shift+D) | ✅ | ❌ | MISSING |
+| Buffer home/end (Home/End) | ✅ | ✅ (Home/End) | PORTED |
 
----
-
-## 17. MCP Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `add [name]` | ✅ string | ✅ Option<String> | PORTED | |
-| `add --url` | ✅ string | ✅ Option<String> | PORTED | Remote MCP server |
-| `add --env` | ✅ string array | ✅ Vec<String> | PORTED | KEY=VALUE format |
-| `add --header` | ✅ string array | ✅ Vec<String> | PORTED | KEY=VALUE format |
-| `list` | ✅ (no args) | ✅ (no args) | PORTED | Alias: `ls` |
-| `auth [name]` | ✅ string | ✅ Option<String> | PORTED | |
-| `logout [name]` | ✅ string | ✅ Option<String> | PORTED | |
-| `debug <name>` | ✅ string (required) | ✅ String (required) | PORTED | |
-
----
-
-## 18. Debug Command Flags
-
-| Subcommand | opencode | rustcode | Status |
-|------------|----------|----------|--------|
-| `config` | ✅ (no args) | ✅ (no args) | PORTED |
-| `lsp diagnostics <file>` | ✅ string | ✅ String | PORTED |
-| `lsp symbols <query>` | ✅ string | ✅ String | PORTED |
-| `lsp document-symbols <uri>` | ✅ string | ✅ String | PORTED |
-| `rg files` | ✅ (with options) | ✅ (with options) | PORTED |
-| `rg search <pattern>` | ✅ string | ✅ String | PORTED |
-| `file search <query>` | ✅ string | ✅ String | PORTED |
-| `file read <path>` | ✅ string | ✅ String | PORTED |
-| `file list <path>` | ✅ string | ✅ String | PORTED |
-| `scrap` | ✅ (no args) | ✅ (no args) | PORTED |
-| `skill` | ✅ (no args) | ✅ (no args) | PORTED |
-| `snapshot track` | ✅ (no args) | ✅ (no args) | PORTED |
-| `snapshot patch <hash>` | ✅ string | ✅ String | PORTED |
-| `snapshot diff <hash>` | ✅ string | ✅ String | PORTED |
-| `startup` | ✅ (no args) | ✅ (no args) | PORTED |
-| `agent <name>` | ✅ string | ✅ String | PORTED |
-| `v2` | ✅ (no args) | ✅ (no args) | PORTED |
-| `info` | ✅ (no args) | ✅ (no args) | PORTED |
-| `paths` | ✅ (no args) | ✅ (no args) | PORTED |
-| `wait` | ✅ (no args) | ✅ (no args) | PORTED |
+**Input editing parity: ~50%** — basic editing complete, advanced editing (word navigation, selection, undo/redo) missing.
 
 ---
 
-## 19. Upgrade Command Flags
+## 8. Keybinding Comparison
 
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `[target]` | ✅ string | ✅ Option<String> | PORTED | Version to upgrade to |
-| `--method` / `-m` | ✅ choices: curl, npm, pnpm, bun, brew, choco, scoop | ✅ choices: curl, npm, pnpm, bun, brew, choco, scoop | PORTED | |
-
----
-
-## 20. Uninstall Command Flags
-
-| Flag | opencode | rustcode | Status | Notes |
-|------|----------|----------|--------|-------|
-| `--keep-config` / `-c` | ✅ boolean (default: false) | ✅ bool (default: false) | PORTED | |
-| `--keep-data` / `-d` | ✅ boolean (default: false) | ✅ bool (default: false) | PORTED | |
-| `--dry-run` | ✅ boolean (default: false) | ✅ bool (default: false) | PORTED | |
-| `--force` / `-f` | ✅ boolean (default: false) | ✅ bool (default: false) | PORTED | |
-
----
-
-## 21. TUI Implementation Comparison
-
-| Feature | opencode | rustcode | Status |
-|---------|----------|----------|--------|
-| TUI Framework | React/Ink (TypeScript) | ratatui + crossterm (Rust) | PORTED |
-| Chat View | ✅ | ✅ | PORTED |
-| Session List | ✅ | ✅ | PORTED |
-| Input Area | ✅ | ✅ | PORTED |
-| Permission Dialog | ✅ | ✅ | PORTED |
-| Question Dialog | ✅ | ✅ | PORTED |
-| Status Line | ✅ | ✅ | PORTED |
-| Sidebar | ✅ | ✅ | PORTED |
-| Diff Viewer | ✅ | ✅ | PORTED |
-| Model Selector | ✅ | ✅ | PORTED |
-| Export Dialog | ✅ | ✅ | PORTED |
-| Timeline View | ✅ | ✅ | PORTED |
-| Subagent Dialog | ✅ | ✅ | PORTED |
-| Toast Notifications | ✅ | ✅ | PORTED |
-| Command Palette | ✅ | ✅ | PORTED |
-| Help Overlay | ✅ | ✅ | PORTED |
-| Theme System | ✅ | ✅ | PORTED |
-| Clipboard Support | ✅ | ✅ | PORTED |
-| Editor Integration | ✅ | ✅ | PORTED |
-| Audio Notifications | ✅ | ✅ | PORTED |
-| SSE Event Streaming | ✅ | ✅ | PORTED |
-| Local/Remote Modes | ✅ | ✅ | PORTED |
-
----
-
-## 22. Key Bindings Comparison
-
-### opencode Keybindings (from keybind.ts)
-| Action | Default Binding |
-|--------|-----------------|
-| app_exit | ctrl+c, ctrl+d, \<leader\>q |
-| command_list | ctrl+p |
-| help_show | none (accessed via leader) |
-| session_new | \<leader\>n |
-| session_list | \<leader\>l |
-| session_timeline | \<leader\>g |
-| session_fork | none |
-| session_rename | ctrl+r |
-| session_delete | ctrl+d |
-| session_interrupt | escape |
-| session_background | ctrl+b |
-| session_compact | \<leader\>c |
-| session_export | \<leader\>x |
-| session_pin_toggle | ctrl+f |
-| agent_cycle | tab |
-| agent_cycle_reverse | shift+tab |
-| variant_cycle | ctrl+t |
-| model_list | \<leader\>m |
-| model_cycle_recent | f2 |
-| model_cycle_recent_reverse | shift+f2 |
-| messages_page_up | pageup, ctrl+alt+b |
-| messages_page_down | pagedown, ctrl+alt+f |
-| messages_half_page_up | ctrl+alt+u |
-| messages_half_page_down | ctrl+alt+d |
-| messages_first | ctrl+g, home |
-| messages_last | ctrl+alt+g, end |
-| messages_copy | \<leader\>y |
-| messages_undo | \<leader\>u |
-| messages_redo | \<leader\>r |
-| messages_toggle_conceal | \<leader\>h |
-| input_submit | return |
-| input_newline | shift+return, ctrl+return, alt+return, ctrl+j |
-| input_clear | ctrl+c |
-| terminal_suspend | ctrl+z |
-| sidebar_toggle | \<leader\>b |
-| status_view | \<leader\>s |
-| editor_open | \<leader\>e |
-| theme_list | \<leader\>t |
-| scroll_up | up |
-| scroll_down | down |
-| scroll_page_up | pageup |
-| scroll_page_down | pagedown |
-| scroll_first | home |
-| scroll_last | end |
-| scroll_half_page_up | ctrl+u |
-| session_quick_switch_1-9 | \<leader\>1-9 |
-| session_child_first | \<leader\>down |
-| session_child_cycle | right |
-| session_child_cycle_reverse | left |
-| session_parent | up |
-
-### rustcode Keybindings (from keymap.rs)
-| Action | Binding | Status |
-|--------|---------|--------|
-| Quit | ctrl+c, ctrl+d | PORTED |
-| Command Palette | ctrl+p | PORTED |
-| Help | F1, leader+? | PORTED |
-| Session New | leader+n | PORTED |
-| Session List | leader+l | PORTED |
-| Session Timeline | leader+g | PORTED |
-| Session Fork | ctrl+f, leader+f | PORTED |
-| Session Rename | ctrl+r | PORTED |
-| Session Delete | delete, leader+d | PORTED |
-| Session Interrupt | escape | PORTED |
-| Session Background | ctrl+b | PORTED |
-| Session Compact | leader+c | PORTED |
-| Session Export | leader+e, leader+x | PORTED |
-| Session Undo | leader+u | PORTED |
-| Session Redo | leader+r | PORTED |
-| Agent Cycle | tab | PORTED |
-| Agent Cycle Reverse | shift+tab | PORTED |
-| Agent List | leader+a | PORTED |
-| Model List | leader+m | PORTED |
-| Model Cycle Recent | N/A | PARTIAL |
-| Model Cycle Recent Reverse | N/A | PARTIAL |
-| Variant Cycle | ctrl+t | PORTED |
-| Scroll Up | up | PORTED |
-| Scroll Down | down | PORTED |
-| Scroll Page Up | pageup | PORTED |
-| Scroll Page Down | pagedown | PORTED |
-| Scroll First | home, ctrl+g | PORTED |
-| Scroll Last | end | PORTED |
-| Scroll Half Page Up | ctrl+u | PORTED |
-| Scroll Next Message | ctrl+n | PORTED |
-| Toggle Sidebar | alt+b, leader+b | PORTED |
-| Toggle Timestamps | ctrl+s, leader+i | PORTED |
-| Toggle Thinking | ctrl+y, leader+k | PORTED |
-| Toggle Tool Details | leader+w | PORTED |
-| Toggle Conceal | leader+h | PORTED |
-| Toggle Scrollbar | leader+v | PORTED |
-| Toggle Animations | leader+j | PORTED |
-| Toggle File Context | leader+o | PORTED |
-| Toggle Diff Wrap | leader+z | PORTED |
-| Toggle Audio | leader+A | PORTED |
-| Diff View | ctrl+o | PORTED |
-| Session List Dialog | ctrl+l | PORTED |
-| Copy Message | leader+y | PORTED |
-| Open in Editor | leader+E | PORTED |
-| Suspend Terminal | ctrl+z | PORTED |
-| Quick Switch 1-9 | leader+1-9 | PORTED |
-| Child First | leader+down | PORTED |
-| Child Next | leader+right | PORTED |
-| Child Prev | leader+left | PORTED |
-| Parent | leader+up | PORTED |
-
-### Keybinding Gaps
+### 8a. Bindings Present in Both (48 bindings)
 
 | Action | opencode | rustcode | Status |
 |--------|----------|----------|--------|
-| Model Cycle Recent | f2 | N/A | PARTIAL |
-| Model Cycle Recent Reverse | shift+f2 | N/A | PARTIAL |
-| Theme Switch Mode | none | leader+t | PORTED |
-| Theme List | leader+t | leader+t | PORTED |
-| MCP List | none | N/A | PARTIAL |
-| Provider Connect | none | N/A | PARTIAL |
-| Console Org Switch | none | N/A | PARTIAL |
-| Session Share | none | N/A | PARTIAL |
-| Session Unshare | none | N/A | PARTIAL |
-| Session Queued Prompts | leader+q | N/A | PARTIAL |
-| Stash Delete | ctrl+d | N/A | PARTIAL |
-| Prompt Skills | none | N/A | PARTIAL |
-| Prompt Stash | none | N/A | PARTIAL |
-| Workspace Set | none | N/A | PARTIAL |
-| Which Key Toggle | ctrl+alt+k | N/A | PARTIAL |
-| Plugin Manager | none | N/A | PARTIAL |
+| app_exit | ctrl+c, ctrl+d, `<leader>q` | ctrl+c, ctrl+d, leader+q | PORTED |
+| command_list | ctrl+p | ctrl+p | PORTED |
+| help_show | leader+/ | F1, leader+? | PORTED |
+| session_new | leader+n | leader+n | PORTED |
+| session_list | leader+l | leader+l | PORTED |
+| session_timeline | leader+g | leader+g | PORTED |
+| session_fork | ctrl+f (configurable) | ctrl+f, leader+f | PORTED |
+| session_rename | ctrl+r | ctrl+r | PORTED |
+| session_delete | ctrl+d | delete, leader+d | PORTED |
+| session_interrupt | escape | escape | PORTED |
+| session_background | ctrl+b | ctrl+b | PORTED |
+| session_compact | leader+c | leader+c | PORTED |
+| session_export | leader+x | leader+e, leader+x | PORTED |
+| session_undo | leader+u | leader+u | PORTED |
+| session_redo | leader+r | leader+r | PORTED |
+| agent_cycle | tab | tab | PORTED |
+| agent_cycle_reverse | shift+tab | shift+tab | PORTED |
+| agent_list | leader+a | leader+a | PORTED |
+| model_list | leader+m | leader+m | PORTED |
+| variant_cycle | ctrl+t | ctrl+t | PORTED |
+| scroll_up | up | up | PORTED |
+| scroll_down | down | down | PORTED |
+| scroll_page_up | pageup | pageup | PORTED |
+| scroll_page_down | pagedown | pagedown | PORTED |
+| scroll_first | ctrl+g, home | home, ctrl+g | PORTED |
+| scroll_last | end | end | PORTED |
+| scroll_half_page_up | ctrl+alt+u | ctrl+u | PORTED |
+| toggle_sidebar | leader+b | alt+b, leader+b | PORTED |
+| toggle_timestamps | ctrl+s (session_toggle_timestamps) | ctrl+s, leader+i | PORTED |
+| toggle_thinking | display_thinking | ctrl+y, leader+k | PORTED |
+| toggle_tool_details | tool_details | leader+w | PORTED |
+| toggle_conceal | messages_toggle_conceal | leader+h | PORTED |
+| toggle_scrollbar | scrollbar_toggle | leader+v | PORTED |
+| toggle_animations | app_toggle_animations | leader+j | PORTED |
+| toggle_file_context | app_toggle_file_context | leader+o | PORTED |
+| toggle_diffwrap | app_toggle_diffwrap | leader+z | PORTED |
+| diff_toggle | ctrl+o | ctrl+o | PORTED |
+| session_list_dialog | ctrl+l | ctrl+l | PORTED |
+| messages_copy | leader+y | leader+y | PORTED |
+| editor_open | leader+e | leader+E | PORTED |
+| terminal_suspend | ctrl+z | ctrl+z | PORTED |
+| session_quick_switch_1-9 | leader+1-9 | leader+1-9 | PORTED |
+| session_child_first | leader+down | leader+down | PORTED |
+| session_child_cycle | right | leader+right | PORTED |
+| session_child_cycle_reverse | left | leader+left | PORTED |
+| session_parent | up | leader+up | PORTED |
+| theme_switch | leader+t | leader+t | PORTED |
+| audio_toggle | leader+A | leader+A | PORTED |
+
+### 8b. Bindings Missing from rustcode (16 gaps)
+
+| Action | opencode Default | Severity |
+|--------|-----------------|----------|
+| model_cycle_recent | f2 | MEDIUM |
+| model_cycle_recent_reverse | shift+f2 | MEDIUM |
+| input_newline | shift+return, ctrl+return, alt+return, ctrl+j | HIGH — handled by input.rs but NOT in keymap.rs |
+| session_pin_toggle | ctrl+f | MEDIUM |
+| session_share | none (configurable) | LOW |
+| session_unshare | none (configurable) | LOW |
+| session_queued_prompts | leader+q | LOW |
+| session_toggle_generic_tool_output | none (configurable) | LOW |
+| theme_switch_mode | none (configurable) | LOW |
+| stash_delete | ctrl+d (when stash focused) | LOW |
+| which_key_toggle | ctrl+alt+k | MEDIUM |
+| model_favorite_toggle | ctrl+f (in model dialog) | LOW |
+| model_provider_list | ctrl+a (in model dialog) | LOW |
+| input_move_up | up (when in input) | LOW — history uses Up |
+| input_move_down | down (when in input) | LOW — history uses Down |
+| input_delete_word_forward | alt+d, alt+delete, ctrl+delete | MEDIUM |
+
+### 8c. Bindings Present in rustcode but Different from opencode
+
+| Action | opencode Default | rustcode Binding | Difference |
+|--------|-----------------|------------------|------------|
+| session_delete | ctrl+d | delete, leader+d | Different default key |
+| session_fork | none (configurable) | ctrl+f, leader+f | Different default key |
+| session_list_dialog | none | ctrl+l | Extra in rustcode |
+| diff_toggle | enter, space (in diff viewer) | ctrl+o (global) | Different scope |
 
 ---
 
-## 23. Configuration Loading
-
-| Feature | opencode | rustcode | Status |
-|---------|----------|----------|--------|
-| Config file loading | ✅ | ✅ | PORTED |
-| Environment variables | ✅ | ✅ | PORTED |
-| CLI args override config | ✅ | ✅ | PORTED |
-| Provider detection | ✅ | ✅ | PORTED |
-| Agent configuration | ✅ | ✅ | PORTED |
-| MCP server configuration | ✅ | ✅ | PORTED |
-| Session persistence | ✅ | ✅ | PORTED |
-| Theme persistence | ✅ | ✅ | PORTED |
-| Keybinding overrides | ✅ | N/A | PARTIAL |
-
----
-
-## 24. Summary Statistics
+## 9. Summary Statistics
 
 | Category | Total | PORTED | PARTIAL | MISSING | DIVERGENT |
 |----------|-------|--------|---------|---------|-----------|
-| CLI Commands | 24 | 24 | 0 | 0 | 0 |
+| CLI Commands | 25 | 25 | 0 | 0 | 0 |
 | Global Flags | 5 | 5 | 0 | 0 | 0 |
-| Run Command Flags | 22 | 22 | 0 | 0 | 0 |
+| Run Command Flags | 23 | 23 | 0 | 0 | 0 |
 | TUI Command Flags | 8 | 7 | 0 | 0 | 1 (extra --json) |
 | Network Options | 5 | 5 | 0 | 0 | 0 |
 | Session Command Flags | 3 | 3 | 0 | 0 | 0 |
 | Attach Command Flags | 7 | 7 | 0 | 0 | 0 |
-| Upgrade Command Flags | 2 | 2 | 0 | 0 | 0 |
-| Uninstall Command Flags | 4 | 4 | 0 | 0 | 0 |
-| Models Command Flags | 3 | 3 | 0 | 0 | 0 |
-| Stats Command Flags | 4 | 4 | 0 | 0 | 0 |
-| Export/Import Flags | 3 | 3 | 0 | 0 | 0 |
-| Plugin Command Flags | 3 | 3 | 0 | 0 | 0 |
-| DB Command Flags | 2 | 2 | 0 | 0 | 0 |
-| Agent Command Flags | 5 | 5 | 0 | 0 | 0 |
-| GitHub Command Flags | 3 | 3 | 0 | 0 | 0 |
-| Providers Command Flags | 4 | 4 | 0 | 0 | 0 |
-| Console Command Subcommands | 5 | 5 | 0 | 0 | 0 |
-| MCP Command Flags | 6 | 6 | 0 | 0 | 0 |
-| Debug Command Subcommands | 14 | 14 | 0 | 0 | 0 |
-| TUI Features | 22 | 22 | 0 | 0 | 0 |
-| Key Bindings | 60 | 50 | 10 | 0 | 0 |
-| **TOTAL** | **210** | **200** | **10** | **0** | **1** |
+| Upgrade/Uninstall Flags | 6 | 6 | 0 | 0 | 0 |
+| Models/Stats/Export Flags | 7 | 7 | 0 | 0 | 0 |
+| Plugin/DB/Agent Flags | 10 | 10 | 0 | 0 | 0 |
+| GitHub/Providers/Console | 12 | 12 | 0 | 0 | 0 |
+| MCP/Debug Subcommands | 20 | 20 | 0 | 0 | 0 |
+| TUI Core Components | 20 | 18 | 2 | 0 | 0 |
+| TUI Dialogs | 35 | 17 | 0 | 18 | 0 |
+| TUI UI Primitives | 7 | 0 | 0 | 7 | 0 |
+| TUI Prompt Subsystem | 6 | 1 | 1 | 4 | 0 |
+| TUI Feature Plugins | 7 | 0 | 0 | 7 | 0 |
+| Input Editing | 24 | 12 | 0 | 12 | 0 |
+| Key Bindings | 64 | 48 | 0 | 16 | 0 |
+| **TOTAL** | **294** | **237** | **3** | **64** | **1** |
 
 ---
 
-## 25. Recommendations
+## 10. Recommendations (Priority Order)
 
-### 1. Model Cycle Recent Keybindings (Priority: Low)
-The `model_cycle_recent` (f2) and `model_cycle_recent_reverse` (shift+f2) bindings from opencode are not yet ported to rustcode. These are used for quickly switching between recently used models.
+### HIGH Priority
 
-**Action:** Add `ModelCycleRecent` and `ModelCycleRecentReverse` actions to `TuiAction` enum and map f2/shift+f2 keys.
+1. **Add word-level cursor navigation to input** — Alt+F/B (word forward/backward), Alt+D (delete word forward). These are fundamental editing shortcuts.
+   - `input.rs:241` — add Alt+F, Alt+B, Alt+Right/Left, Alt+Delete handlers
+   - `keymap.rs` — add `InputWordForward`, `InputWordBackward`, `InputDeleteWordForward` actions
 
-### 2. Optional TUI Flags (Priority: Low)
-Some TUI-specific features like prompt stash, workspace set, and MCP list are not yet implemented in rustcode. These are advanced features that can be added incrementally.
+2. **Add missing keybindings for input editing** — wire up Shift+arrows for selection, Ctrl+A/E for line home/end (already handled in input.rs but not in keymap).
 
-**Action:** Implement these features as the TUI matures.
+3. **Add select operations to input** — Shift+Left/Right for character selection, Shift+Home/End for line selection. Requires selection state in `InputState`.
 
-### 3. Keybinding Override System (Priority: Low)
-opencode allows users to customize keybindings via config. rustcode currently uses hardcoded bindings. This is a nice-to-have feature for power users.
+### MEDIUM Priority
 
-**Action:** Add a `keybind` section to the config file that allows overriding default bindings.
+4. **Add model_cycle_recent bindings** — f2 / shift+f2 for quickly switching between recently used models. Add `ModelCycleRecent`/`ModelCycleRecentReverse` to `TuiAction` enum and handle in app.rs.
+
+5. **Add session_pin_toggle binding** — ctrl+f for pinning sessions in the session list.
+
+6. **Add which-key toggle binding** — ctrl+alt+k for vim-style keybinding help popup.
+
+7. **Add undo/redo to input** — Ctrl+-/Ctrl+. for undo/redo. Requires a simple edit history buffer.
+
+8. **Add dialog-select reusable component** — `ui/dialog-select.tsx` is used by many dialogs. Create a reusable `DialogSelect` component in rustcode.
+
+9. **Add dialog-alert and dialog-confirm primitives** — simple reusable dialogs for alerts and confirmations.
+
+10. **Add theme list dialog** — currently themes can only be cycled; a picker dialog would improve UX.
+
+### LOW Priority
+
+11. **Add workspace subsystem** — create/list/file-changes/unavailable dialogs. This is a larger feature that depends on the workspace concept being ported to rustcode-core.
+
+12. **Add prompt stash** — stash/pop/list functionality for saving prompts for later.
+
+13. **Add prompt history persistence** — currently history is in-memory only; persisting to disk would survive restarts.
+
+14. **Add MCP standalone dialog** — list MCP servers with toggle (currently only sidebar shows MCP status).
+
+15. **Add provider auth dialog** — provider configuration and authentication management.
+
+16. **Add which-key overlay** — vim-style keybinding popup (ctrl+alt+k).
+
+17. **Add startup loading screen** — splash screen while TUI initializes.
+
+18. **Add session share/unshare** — cloud feature, low priority for local-only usage.
 
 ---
 
-## 26. Conclusion
+## 11. Conclusion
 
-The rustcode implementation achieves **100% parity** with opencode's CLI structure and **~95% parity** with TUI keybindings. The only differences are:
+The rustcode implementation achieves **100% CLI parity** — all commands, flags, and options match opencode exactly. The TUI covers the core interactive experience (~75% parity) with all essential components ported: conversation view, input area, permission/question dialogs, status line, sidebar, diff viewer, model selector, session list, timeline, subagent dialog, toast notifications, command palette, help overlay, and theme system.
 
-1. **Extra `--json` flag** in rustcode's TUI command (divergent but additive)
-2. **10 missing advanced keybindings** (model cycle recent, prompt stash, workspace set, etc.)
-3. **No keybinding override system** (opencode allows config-based customization)
+The main gaps are in advanced editing features (word navigation, selection, undo/redo), missing advanced dialogs (18 total), and missing keybindings (~16). These are incremental improvements that don't block core usage. The workspace subsystem is entirely absent but is a newer opencode feature that requires core library support.
 
-All core functionality is fully ported and working. The test suite passes (69 tests) and the build succeeds without errors.
-
-**Overall Assessment: PRODUCTION READY**
+**Overall Assessment: PRODUCTION READY for core CLI + TUI usage**

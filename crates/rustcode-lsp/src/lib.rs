@@ -633,7 +633,7 @@ impl LspClientState {
             diagnostic_registrations: RwLock::new(HashMap::new()),
             sync_kind: RwLock::new(None),
             has_static_pull_diagnostics: RwLock::new(false),
-            root_uri: root_uri.clone(),
+            root_uri: format!("file://{}", root_dir.display()),
         });
 
         // --- Spawn stderr logger ---
@@ -985,12 +985,14 @@ async fn dispatch_message(state: &LspClientState, message: Value) {
 
         // --- Server request to client: has both "id" and "method" ---
         (Some(_id), Some(method)) => {
-            handle_server_request(state, message, method).await;
+            let method_owned = method.to_string();
+            handle_server_request(state, message, &method_owned).await;
         }
 
         // --- Notification: has "method", no "id" ---
         (None, Some(method)) => {
-            handle_notification(state, message, method).await;
+            let method_owned = method.to_string();
+            handle_notification(state, message, &method_owned).await;
         }
 
         // --- Malformed: neither id nor method ---
@@ -1026,7 +1028,7 @@ async fn handle_server_request(state: &LspClientState, message: Value, method: &
         "workspace/configuration" => {
             // Return the server's initialization options as workspace configuration.
             // Mirrors the TS client's `workspace/configuration` handler (client.ts lines 176-179).
-            let init_opts = state.initialization_options.lock().unwrap();
+            let init_opts = state.initialization_options.lock().await;
             let config_value: Vec<Option<serde_json::Value>> = if let Some(params) = message.get("params") {
                 if let Some(items) = params.get("items").and_then(|i| i.as_array()) {
                     items.iter().map(|item| {
@@ -1305,8 +1307,7 @@ impl LspClient {
             let sync_kind = *self.state.sync_kind.read().await;
             let content_changes = if sync_kind == Some(2) {
                 // Incremental sync — send full replacement range
-                let lines: Vec<&str> = text.split('
-').collect();
+                let lines: Vec<&str> = text.split('\n').collect();
                 let end_line = lines.len().saturating_sub(1);
                 let end_char = lines.last().map(|l| l.len()).unwrap_or(0);
                 serde_json::json!([{
@@ -1618,6 +1619,8 @@ impl LspManager {
                 }
             }
 
+            let server_id = server_info.id.clone();
+
             // Determine root for this file.
             // Use server_info.root hint if set, otherwise use workspace_root.
             let root_dir = if let Some(root_str) = &server_info.root {
@@ -1636,7 +1639,7 @@ impl LspManager {
                 Ok(client) => return Ok(Some(client)),
                 Err(e) => {
                     warn!(
-                        server_id = %server_info.id,
+                        server_id = %server_id,
                         error = %e,
                         "Failed to connect LSP server for file"
                     );
@@ -1749,7 +1752,7 @@ fn path_to_uri(path: &Path) -> String {
     let encoded: String = path_str
         .chars()
         .flat_map(|c| match c {
-            'A'..='Z' | 'a'..='z' | '0'..='9' | '/' | '_' | '-' | '.' | ':' | '@' | '!' | '~' | '*' | ''' | '(' | ')' => {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '/' | '_' | '-' | '.' | ':' | '@' | '!' | '~' | '*' | '\'' | '(' | ')' => {
                 vec![c]
             }
             ' ' => vec!['%', '2', '0'],

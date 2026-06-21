@@ -189,6 +189,79 @@ pub fn output_path(session_id: &str, tool_call_id: &str) -> String {
     format!("{TOOL_OUTPUT_DIRECTORY}/{session_id}/{tool_call_id}")
 }
 
+/// Preview text with head/tail truncation based on line and byte limits.
+///
+/// Ported from: `tool-output-store.ts` — `preview()`
+pub fn preview(text: &str, max_lines: usize, max_bytes: usize) -> (String, String) {
+    let lines: Vec<&str> = text.split('\n').collect();
+    let head_lines = (max_lines + 1) / 2; // ceil
+    let tail_lines = max_lines / 2; // floor
+
+    let sampled = if lines.len() <= max_lines {
+        text.to_string()
+    } else {
+        let head = lines[..head_lines].join("\n");
+        let tail = if tail_lines > 0 {
+            lines[lines.len() - tail_lines..].join("\n")
+        } else {
+            String::new()
+        };
+        if tail.is_empty() {
+            head
+        } else {
+            format!("{head}\n{tail}")
+        }
+    };
+
+    if sampled.len() <= max_bytes {
+        if lines.len() <= max_lines {
+            (sampled, String::new())
+        } else {
+            let head = lines[..head_lines].join("\n");
+            let tail = if tail_lines > 0 {
+                lines[lines.len() - tail_lines..].join("\n")
+            } else {
+                String::new()
+            };
+            (head, tail)
+        }
+    } else {
+        let head_bytes = (max_bytes + 1) / 2;
+        let tail_bytes = max_bytes / 2;
+        (take_prefix(&sampled, head_bytes), take_suffix(&sampled, tail_bytes))
+    }
+}
+
+/// Preview with a truncation marker inserted between head and tail.
+///
+/// Ported from: `tool-output-store.ts` — `boundedPreview()`
+pub fn bounded_preview(text: &str, marker: &str, max_lines: usize, max_bytes: usize) -> String {
+    let marker_only = take_prefix(marker, max_bytes)
+        .split('\n')
+        .take(max_lines)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let marker_bytes = marker.len();
+
+    if max_lines <= 4 || max_bytes <= marker_bytes + 4 {
+        return marker_only;
+    }
+
+    let (head, tail) = preview(text, max_lines - 4, max_bytes - marker_bytes - 4);
+    if tail.is_empty() {
+        format!("{head}\n\n{marker}")
+    } else {
+        format!("{head}\n\n{marker}\n\n{tail}")
+    }
+}
+
+/// Count the number of lines in text (minimum 1).
+///
+/// Ported from: `tool-output-store.ts` — `lineCount()`
+pub fn line_count(text: &str) -> usize {
+    text.bytes().filter(|&b| b == b'\n').count() + 1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +365,52 @@ mod tests {
         };
         assert!(err.to_string().contains("write"));
         assert!(err.to_string().contains("disk full"));
+    }
+
+    #[test]
+    fn test_line_count_empty() {
+        assert_eq!(line_count(""), 1);
+    }
+
+    #[test]
+    fn test_line_count_single_line() {
+        assert_eq!(line_count("hello"), 1);
+    }
+
+    #[test]
+    fn test_line_count_multi_line() {
+        assert_eq!(line_count("a\nb\nc"), 3);
+    }
+
+    #[test]
+    fn test_preview_within_limits() {
+        let text = "line1\nline2\nline3";
+        let (head, tail) = preview(text, 10, 1000);
+        assert_eq!(head, text);
+        assert!(tail.is_empty());
+    }
+
+    #[test]
+    fn test_preview_truncates_lines() {
+        let text = (0..100).map(|i| format!("line{i}")).collect::<Vec<_>>().join("\n");
+        let (head, tail) = preview(&text, 10, 1_000_000);
+        assert!(!head.is_empty());
+        assert!(!tail.is_empty());
+    }
+
+    #[test]
+    fn test_bounded_preview_within_limits() {
+        let text = "hello world";
+        let result = bounded_preview(text, "... truncated ...", 100, 1000);
+        assert!(result.contains("hello world"));
+        assert!(result.contains("... truncated ..."));
+    }
+
+    #[test]
+    fn test_bounded_preview_small_limits() {
+        let text = "hello world";
+        let result = bounded_preview(text, "... marker ...", 2, 20);
+        // When max_lines <= 4, should return marker only
+        assert!(result.contains("marker"));
     }
 }

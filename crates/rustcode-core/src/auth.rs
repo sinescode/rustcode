@@ -41,9 +41,6 @@ pub const OAUTH_DUMMY_KEY: &str = "opencode-oauth-dummy-key";
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AuthOauth {
-    /// Discriminant — always "oauth".
-    #[serde(rename = "type")]
-    pub variant: AuthVariant,
     /// Refresh token (long-lived).
     pub refresh: String,
     /// Access token (short-lived bearer token).
@@ -63,7 +60,6 @@ impl AuthOauth {
     #[must_use]
     pub fn new(refresh: String, access: String, expires: i64) -> Self {
         Self {
-            variant: AuthVariant::Oauth,
             refresh,
             access,
             expires,
@@ -79,9 +75,6 @@ impl AuthOauth {
 /// `packages/opencode/src/auth/index.ts` — `Api` class.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuthApi {
-    /// Discriminant — always "api".
-    #[serde(rename = "type")]
-    pub variant: AuthVariant,
     /// The API key value.
     pub key: String,
     /// Optional provider-specific metadata.
@@ -94,7 +87,6 @@ impl AuthApi {
     #[must_use]
     pub fn new(key: String) -> Self {
         Self {
-            variant: AuthVariant::Api,
             key,
             metadata: None,
         }
@@ -107,9 +99,6 @@ impl AuthApi {
 /// `packages/opencode/src/auth/index.ts` — `WellKnown` class.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AuthWellKnown {
-    /// Discriminant — always "wellknown".
-    #[serde(rename = "type")]
-    pub variant: AuthVariant,
     /// The well-known key identifier.
     pub key: String,
     /// The well-known token value.
@@ -121,7 +110,6 @@ impl AuthWellKnown {
     #[must_use]
     pub fn new(key: String, token: String) -> Self {
         Self {
-            variant: AuthVariant::Wellknown,
             key,
             token,
         }
@@ -319,7 +307,6 @@ mod tests {
 
     fn sample_oauth() -> AuthInfo {
         AuthInfo::Oauth(AuthOauth {
-            variant: AuthVariant::Oauth,
             refresh: "rt_secret".into(),
             access: "at_secret".into(),
             expires: 1_700_000_000_000,
@@ -330,7 +317,6 @@ mod tests {
 
     fn sample_api() -> AuthInfo {
         AuthInfo::Api(AuthApi {
-            variant: AuthVariant::Api,
             key: "sk-1234567890abcdef".into(),
             metadata: None,
         })
@@ -338,7 +324,6 @@ mod tests {
 
     fn sample_wellknown() -> AuthInfo {
         AuthInfo::Wellknown(AuthWellKnown {
-            variant: AuthVariant::Wellknown,
             key: "my-service".into(),
             token: "my-token".into(),
         })
@@ -361,7 +346,6 @@ mod tests {
     #[test]
     fn construct_oauth() {
         let oauth = AuthOauth::new("rt".into(), "at".into(), 1000);
-        assert_eq!(oauth.variant, AuthVariant::Oauth);
         assert_eq!(oauth.refresh, "rt");
         assert_eq!(oauth.access, "at");
         assert_eq!(oauth.expires, 1000);
@@ -372,7 +356,6 @@ mod tests {
     #[test]
     fn construct_api() {
         let api = AuthApi::new("sk-key".into());
-        assert_eq!(api.variant, AuthVariant::Api);
         assert_eq!(api.key, "sk-key");
         assert!(api.metadata.is_none());
     }
@@ -380,7 +363,6 @@ mod tests {
     #[test]
     fn construct_wellknown() {
         let wk = AuthWellKnown::new("svc".into(), "tok".into());
-        assert_eq!(wk.variant, AuthVariant::Wellknown);
         assert_eq!(wk.key, "svc");
         assert_eq!(wk.token, "tok");
     }
@@ -390,7 +372,6 @@ mod tests {
     #[test]
     fn oauth_serialize_contains_expected_fields() {
         let oauth = AuthOauth {
-            variant: AuthVariant::Oauth,
             refresh: "rt_abc".into(),
             access: "at_xyz".into(),
             expires: 9_999_999,
@@ -398,7 +379,6 @@ mod tests {
             enterprise_url: Some("https://enterprise.example.com".into()),
         };
         let json = serde_json::to_value(&oauth).expect("serialize AuthOauth");
-        assert_eq!(json["type"], "oauth");
         assert_eq!(json["refresh"], "rt_abc");
         assert_eq!(json["access"], "at_xyz");
         assert_eq!(json["expires"], 9_999_999);
@@ -409,7 +389,6 @@ mod tests {
     #[test]
     fn oauth_deserialize_roundtrip() {
         let original = AuthOauth {
-            variant: AuthVariant::Oauth,
             refresh: "rt_r".into(),
             access: "at_r".into(),
             expires: 42,
@@ -426,12 +405,10 @@ mod tests {
     #[test]
     fn api_serialize_contains_expected_fields() {
         let api = AuthApi {
-            variant: AuthVariant::Api,
             key: "secret-token".into(),
             metadata: None,
         };
         let json = serde_json::to_value(&api).expect("serialize AuthApi");
-        assert_eq!(json["type"], "api");
         assert_eq!(json["key"], "secret-token");
         assert!(json.get("metadata").is_none());
     }
@@ -439,7 +416,6 @@ mod tests {
     #[test]
     fn api_deserialize_roundtrip() {
         let original = AuthApi {
-            variant: AuthVariant::Api,
             key: "sk-test-123".into(),
             metadata: Some({
                 let mut m = HashMap::new();
@@ -457,12 +433,10 @@ mod tests {
     #[test]
     fn wellknown_serialize_contains_expected_fields() {
         let wk = AuthWellKnown {
-            variant: AuthVariant::Wellknown,
             key: "my-service".into(),
             token: "my-token".into(),
         };
         let json = serde_json::to_value(&wk).expect("serialize AuthWellKnown");
-        assert_eq!(json["type"], "wellknown");
         assert_eq!(json["key"], "my-service");
         assert_eq!(json["token"], "my-token");
     }
@@ -470,7 +444,6 @@ mod tests {
     #[test]
     fn wellknown_deserialize_roundtrip() {
         let original = AuthWellKnown {
-            variant: AuthVariant::Wellknown,
             key: "github-app".into(),
             token: "ghs_abc123".into(),
         };
@@ -601,7 +574,7 @@ mod tests {
     fn auth_set_normalizes_trailing_slash() {
         let (auth, dir) = temp_auth();
         auth.set("provider/", &sample_oauth()).expect("set with slash");
-        let retrieved = auth.get("provider").expect("get without slash");
+        let retrieved = auth.get("provider");
         assert!(retrieved.is_some());
         // The key with slash should no longer exist
         let with_slash = auth.get("provider/");

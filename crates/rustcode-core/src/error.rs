@@ -204,6 +204,15 @@ pub enum Error {
         message_id: String,
     },
 
+    /// Context snapshot decode error.
+    ///
+    /// Ported from `packages/core/src/session/error.ts` `ContextSnapshotDecodeError`.
+    #[error("failed to decode context snapshot for session `{session_id}`: {details}")]
+    ContextSnapshotDecode {
+        session_id: String,
+        details: String,
+    },
+
     // -- Permission --
     /// Permission error.
     #[error("{0}")]

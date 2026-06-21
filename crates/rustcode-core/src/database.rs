@@ -1304,7 +1304,7 @@ impl DatabaseService {
             query = query.bind(c);
         }
         if let Some(s) = search {
-            query = query.bind(format!("%{{}}%", s));
+            query = query.bind(format!("%{s}%"));
         }
 
         let rows = query
@@ -1738,6 +1738,179 @@ impl DatabaseService {
         if rows.rows_affected() == 0 {
             return Err(DatabaseServiceError::NotFound(format!("session {id}")));
         }
+        Ok(())
+    }
+
+    // ── Context Epoch CRUD ──────────────────────────────────────────────
+
+    /// Upsert a context epoch row for a session.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/context-epoch.ts`
+    pub async fn upsert_context_epoch(
+        &self,
+        session_id: &str,
+        baseline: &str,
+        agent: &str,
+        snapshot: &str,
+        baseline_seq: i64,
+        replacement_seq: Option<i64>,
+        revision: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO session_context_epoch (session_id, baseline, agent, snapshot, baseline_seq, replacement_seq, revision)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(session_id) DO UPDATE SET
+                baseline = excluded.baseline,
+                agent = excluded.agent,
+                snapshot = excluded.snapshot,
+                baseline_seq = excluded.baseline_seq,
+                replacement_seq = excluded.replacement_seq,
+                revision = excluded.revision",
+        )
+        .bind(session_id)
+        .bind(baseline)
+        .bind(agent)
+        .bind(snapshot)
+        .bind(baseline_seq)
+        .bind(replacement_seq)
+        .bind(revision)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("upsert context epoch: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Get the context epoch for a session.
+    pub async fn get_context_epoch(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<ContextEpochRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, ContextEpochRowRaw>(
+            "SELECT session_id, baseline, agent, snapshot, baseline_seq, replacement_seq, revision
+             FROM session_context_epoch WHERE session_id = ?1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get context epoch: {e}")))?;
+
+        Ok(row.map(ContextEpochRowRaw::into_row))
+    }
+
+    /// Delete the context epoch for a session.
+    pub async fn delete_context_epoch(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query("DELETE FROM session_context_epoch WHERE session_id = ?1")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete context epoch: {e}")))?;
+
+        Ok(())
+    }
+
+    // ── Session Input Inbox CRUD ────────────────────────────────────────
+
+    /// Get the next admitted sequence number for a session.
+    ///
+    /// Returns the current max admitted_seq + 1, or 1 if no inputs exist.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/input.ts`
+    pub async fn get_next_admitted_seq(
+        &self,
+        session_id: &str,
+    ) -> Result<i64, DatabaseServiceError> {
+        let row: Option<(Option<i64>,)> = sqlx::query_as(
+            "SELECT MAX(admitted_seq) FROM session_input WHERE session_id = ?1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get next admitted seq: {e}")))?;
+
+        let max_seq = row.and_then(|r| r.0).unwrap_or(0);
+        Ok(max_seq + 1)
+    }
+
+    /// Insert a session input record.
+    pub async fn insert_session_input(
+        &self,
+        id: &str,
+        session_id: &str,
+        prompt: &str,
+        delivery: &str,
+        admitted_seq: i64,
+        time_created: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO session_input (id, session_id, prompt, delivery, admitted_seq, time_created)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(id)
+        .bind(session_id)
+        .bind(prompt)
+        .bind(delivery)
+        .bind(admitted_seq)
+        .bind(time_created)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert session input: {e}")))?;
+
+        Ok(())
+    }
+
+    /// List all session inputs for a session, ordered by admitted_seq.
+    pub async fn list_session_inputs(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionInputRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, SessionInputRowRaw>(
+            "SELECT id, session_id, prompt, delivery, admitted_seq, promoted_seq, time_created
+             FROM session_input WHERE session_id = ?1 ORDER BY admitted_seq ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list session inputs: {e}")))?;
+
+        Ok(rows.into_iter().map(SessionInputRowRaw::into_row).collect())
+    }
+
+    /// List pending (non-promoted) inputs for a session.
+    pub async fn list_pending_inputs(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<SessionInputRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, SessionInputRowRaw>(
+            "SELECT id, session_id, prompt, delivery, admitted_seq, promoted_seq, time_created
+             FROM session_input WHERE session_id = ?1 AND promoted_seq IS NULL ORDER BY admitted_seq ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list pending inputs: {e}")))?;
+
+        Ok(rows.into_iter().map(SessionInputRowRaw::into_row).collect())
+    }
+
+    /// Promote an input by setting its promoted_seq.
+    pub async fn promote_input(
+        &self,
+        id: &str,
+        promoted_seq: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query("UPDATE session_input SET promoted_seq = ?2 WHERE id = ?1")
+            .bind(id)
+            .bind(promoted_seq)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("promote input: {e}")))?;
+
         Ok(())
     }
 }
@@ -2893,5 +3066,140 @@ mod tests {
 
         let sessions = svc.list_sessions("proj-1", Some(3)).await.unwrap();
         assert_eq!(sessions.len(), 3);
+    }
+}
+
+// ── Event row types ──────────────────────────────────────────────────────
+
+/// A row from the event table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventRow {
+    pub id: String,
+    pub aggregate_id: String,
+    pub seq: i64,
+    pub event_type: String,
+    pub data: String,
+}
+
+/// A row from the event_sequence table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventSequenceRow {
+    pub aggregate_id: String,
+    pub seq: i64,
+    pub owner_id: Option<String>,
+}
+
+/// A row from the session_input table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionInputRow {
+    pub id: String,
+    pub session_id: String,
+    pub prompt: String,
+    pub delivery: String,
+    pub admitted_seq: i64,
+    pub promoted_seq: Option<i64>,
+    pub time_created: i64,
+}
+
+/// A row from the session_context_epoch table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextEpochRow {
+    pub session_id: String,
+    pub baseline: String,
+    pub agent: String,
+    pub snapshot: String,
+    pub baseline_seq: i64,
+    pub replacement_seq: Option<i64>,
+    pub revision: i64,
+}
+
+// ── sqlx::FromRow compatible raw types for event tables ─────────────────
+
+#[derive(sqlx::FromRow)]
+struct EventRowRaw {
+    id: String,
+    aggregate_id: String,
+    seq: i64,
+    #[sqlx(rename = "type")]
+    event_type: String,
+    data: String,
+}
+
+impl EventRowRaw {
+    fn into_row(self) -> EventRow {
+        EventRow {
+            id: self.id,
+            aggregate_id: self.aggregate_id,
+            seq: self.seq,
+            event_type: self.event_type,
+            data: self.data,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct EventSequenceRowRaw {
+    aggregate_id: String,
+    seq: i64,
+    owner_id: Option<String>,
+}
+
+impl EventSequenceRowRaw {
+    fn into_row(self) -> EventSequenceRow {
+        EventSequenceRow {
+            aggregate_id: self.aggregate_id,
+            seq: self.seq,
+            owner_id: self.owner_id,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionInputRowRaw {
+    id: String,
+    session_id: String,
+    prompt: String,
+    delivery: String,
+    admitted_seq: i64,
+    promoted_seq: Option<i64>,
+    time_created: i64,
+}
+
+impl SessionInputRowRaw {
+    fn into_row(self) -> SessionInputRow {
+        SessionInputRow {
+            id: self.id,
+            session_id: self.session_id,
+            prompt: self.prompt,
+            delivery: self.delivery,
+            admitted_seq: self.admitted_seq,
+            promoted_seq: self.promoted_seq,
+            time_created: self.time_created,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ContextEpochRowRaw {
+    session_id: String,
+    baseline: String,
+    agent: String,
+    snapshot: String,
+    baseline_seq: i64,
+    replacement_seq: Option<i64>,
+    revision: i64,
+}
+
+impl ContextEpochRowRaw {
+    fn into_row(self) -> ContextEpochRow {
+        ContextEpochRow {
+            session_id: self.session_id,
+            baseline: self.baseline,
+            agent: self.agent,
+            snapshot: self.snapshot,
+            baseline_seq: self.baseline_seq,
+            replacement_seq: self.replacement_seq,
+            revision: self.revision,
+        }
     }
 }

@@ -471,6 +471,39 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
                             Style::default().fg(Color::DarkGray),
                         ))));
                     }
+
+                    Part::Snapshot(_) => {
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            " ── Snapshot ──",
+                            Style::default().fg(Color::DarkGray),
+                        ))));
+                    }
+
+                    Part::Agent(_) => {
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            " ── Agent ──",
+                            Style::default().fg(Color::DarkGray),
+                        ))));
+                    }
+
+                    Part::Retry(_) => {
+                        items.push(ListItem::new(Line::from(Span::styled(
+                            " ── Retry ──",
+                            Style::default().fg(Color::DarkGray),
+                        ))));
+                    }
+
+                    Part::SourceUrl(su) => {
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::styled(" 🔗 ", Style::default().fg(Color::Cyan)),
+                            Span::styled(
+                                su.url.clone(),
+                                Style::default()
+                                    .fg(Color::Cyan)
+                                    .add_modifier(Modifier::UNDERLINED),
+                            ),
+                        ])));
+                    }
                 }
             }
 

@@ -82,8 +82,8 @@ impl Credentials {
             for pair in query.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
                     if key == "auth_token" && !value.is_empty() {
-                        let decoded = url_decode(value).unwrap_or("");
-                        return Self::from_basic(decoded);
+                        let decoded = url_decode(value).unwrap_or_default();
+                        return Self::from_basic(&decoded);
                     }
                 }
             }

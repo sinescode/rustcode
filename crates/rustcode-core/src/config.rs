@@ -86,7 +86,6 @@ pub struct ConsoleState {
 /// Ported from `packages/core/src/v1/config/config.ts` lines 32–189
 /// (`ConfigV1.Info` schema).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-#[serde(rename_all = "camelCase")]
 pub struct Info {
     /// JSON schema reference for editor completion
     #[serde(skip_serializing_if = "Option::is_none", alias = "$schema")]
@@ -97,7 +96,7 @@ pub struct Info {
     pub shell: Option<String>,
 
     /// Log level: DEBUG, INFO, WARN, ERROR
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none", rename = "logLevel")]
     pub log_level: Option<LogLevel>,
 
     /// HTTP server configuration
@@ -1027,17 +1026,22 @@ impl Config {
                         }
                     }
                 }
+                // OPENCODE_CONFIG_DIR — treated like an additional .opencode directory
+                if let Ok(config_dir) = std::env::var("OPENCODE_CONFIG_DIR") {
+                    let config_dir_path = std::path::PathBuf::from(&config_dir);
+                    for name in &["opencode.json", "opencode.jsonc"] {
+                        let path = config_dir_path.join(name);
+                        if let Ok(loaded) = Self::load_from_file(&path) {
+                            merge_info(&mut info, &loaded);
+                        }
+                    }
+                }
             }
         }
 
-        // Managed config
+        // Managed config (system-wide + macOS MDM)
         if let Ok(managed) = Self::load_managed() {
             merge_info(&mut info, &managed);
-        }
-
-        // OPENCODE_CONFIG_DIR env var
-        if let Ok(config_dir_info) = Self::load_from_config_dir() {
-            merge_info(&mut info, &config_dir_info);
         }
 
         // OPENCODE_CONFIG_CONTENT env var
@@ -1373,6 +1377,177 @@ impl Config {
         let providers: HashMap<String, serde_json::Value> = serde_json::from_str(&content)?;
         Ok(providers)
     }
+
+    /// Update the project config by merging `config` into the existing project config.
+    ///
+    /// Reads the current `config.json` from `project_dir`, deep-merges the incoming
+    /// config (stripping derived state via [`writable`]), and writes back.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` lines 623–630
+    /// (`Config.update`).
+    pub fn update(&self, config: &Info) -> crate::error::Result<()> {
+        let file = self.project_dir.join("config.json");
+        let existing = Self::load_from_file(&file).unwrap_or_default();
+        let merged = merge_writable(&existing, &writable(config));
+        Self::save_to_file(&file, &merged)
+    }
+
+    /// Update the global config file with the given patch.
+    ///
+    /// Reads the global config file, deep-merges the patch (stripping derived
+    /// state), writes back, and invalidates the in-memory cache.
+    ///
+    /// For `.jsonc` files, uses [`patch_jsonc`] to preserve comments.
+    /// For `.json` files, full re-serialization.
+    ///
+    /// Returns the merged config and whether anything actually changed.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` lines 636–659
+    /// (`Config.updateGlobal`).
+    pub fn update_global(config: &Info) -> crate::error::Result<UpdateResult> {
+        let file = global_config_file()?;
+        let before = std::fs::read_to_string(&file).unwrap_or_else(|_| "{}".to_owned());
+        let patch = writable_global(config);
+
+        let (next, changed) = if file.extension().is_some_and(|ext| ext == "jsonc") {
+            let updated = patch_jsonc(&before, &serde_json::to_value(&patch)?);
+            let parsed = parse_jsonc(&updated, &file)
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            let info = validate_info(parsed, &file).unwrap_or_default();
+            (info, updated != before)
+        } else {
+            let existing = parse_jsonc(&before, &file)
+                .and_then(|v| validate_info(v, &file))
+                .unwrap_or_default();
+            let merged = merge_writable(&writable(&existing), &patch);
+            let serialized = serde_json::to_string_pretty(&merged)?;
+            let changed = serialized != before;
+            if changed {
+                std::fs::write(&file, serialized)?;
+            }
+            (merged, changed)
+        };
+
+        Ok(UpdateResult { info: next, changed })
+    }
+
+    /// Ensure a `.gitignore` file exists in the given directory.
+    ///
+    /// Creates a default `.gitignore` with common entries if none exists.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` lines 295–311
+    /// (`ensureGitignore`).
+    pub fn ensure_gitignore(dir: &std::path::Path) -> crate::error::Result<()> {
+        let gitignore = dir.join(".gitignore");
+        if !gitignore.exists() {
+            let content = [
+                "node_modules",
+                "package.json",
+                "package-lock.json",
+                "bun.lock",
+                ".gitignore",
+            ]
+            .join("\n");
+            let _ = std::fs::write(&gitignore, content);
+        }
+        Ok(())
+    }
+}
+
+// ── Config writable helpers ──────────────────────────────────────────────
+
+/// Strip derived/non-persistable state from an `Info` before writing to disk.
+///
+/// Removes `plugin_origins` (which is derived, not a user config field).
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 163–166
+/// (`writable`).
+pub fn writable(config: &Info) -> Info {
+    let mut out = config.clone();
+    out.plugin_origins.clear();
+    out
+}
+
+/// Strip derived state and clean up empty values for global config writes.
+///
+/// Extends [`writable`] by also clearing empty `shell` (avoids persisting
+/// `""` back to the global config).
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 168–173
+/// (`writableGlobal`).
+pub fn writable_global(config: &Info) -> Info {
+    let mut out = writable(config);
+    if out.shell.as_deref() == Some("") {
+        out.shell = None;
+    }
+    out
+}
+
+/// Merge two configs using writable-strip semantics.
+///
+/// Deep-merges `patch` into `source`, both stripped via [`writable`].
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` line 628
+/// (`mergeDeep(writable(existing), writable(config))`).
+pub fn merge_writable(source: &Info, patch: &Info) -> Info {
+    let mut target = writable(source);
+    merge_info(&mut target, patch);
+    target
+}
+
+// ── JSONC patching ──────────────────────────────────────────────────────
+
+/// Patch a JSONC string with a JSON value, preserving comments.
+///
+/// This is a simplified port that serializes the patch, deep-merges it into
+/// the existing parsed JSON, and re-serializes with the existing key ordering
+/// where possible. For complex cases, falls back to full re-serialization.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 149–161
+/// (`patchJsonc`).
+pub fn patch_jsonc(existing: &str, patch: &serde_json::Value) -> String {
+    // If the patch is not an object, just serialize it
+    let patch_obj = match patch.as_object() {
+        Some(o) => o,
+        None => return serde_json::to_string_pretty(patch).unwrap_or_default(),
+    };
+
+    // Parse the existing JSONC (strip comments first)
+    let cleaned = strip_jsonc_comments(existing);
+    let existing_value: serde_json::Value =
+        serde_json::from_str(&cleaned).unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+
+    // Deep merge: patch into existing
+    let merged = deep_merge_json(existing_value, patch);
+
+    // Re-serialize with pretty formatting
+    serde_json::to_string_pretty(&merged).unwrap_or_else(|_| merged.to_string())
+}
+
+/// Deep-merge a JSON patch into a base value.
+///
+/// Objects are merged recursively. Arrays and scalars from `patch` replace `base`.
+fn deep_merge_json(base: serde_json::Value, patch: &serde_json::Value) -> serde_json::Value {
+    match (base, patch) {
+        (serde_json::Value::Object(mut base_map), serde_json::Value::Object(patch_map)) => {
+            for (key, patch_val) in patch_map {
+                let entry = base_map
+                    .entry(key.clone())
+                    .or_insert(serde_json::Value::Null);
+                *entry = deep_merge_json(entry.take(), patch_val);
+            }
+            serde_json::Value::Object(base_map)
+        }
+        (_, patch @ serde_json::Value::Object(_)) => patch.clone(),
+        (_, patch) => patch.clone(),
+    }
 }
 
 // ── Config file discovery ────────────────────────────────────────────────
@@ -1570,6 +1745,8 @@ fn strip_jsonc_comments(text: &str) -> String {
 /// Known top-level keys in ConfigV1.Info.
 ///
 /// Used to detect unrecognised keys during validation.
+/// Keys must match the opencode ConfigV1.Info schema exactly:
+/// <https://github.com/sst/opencode/blob/dev/packages/core/src/v1/config/config.ts>
 const KNOWN_INFO_KEYS: &[&str] = &[
     "$schema",
     "shell",
@@ -1616,9 +1793,12 @@ const KNOWN_INFO_KEYS: &[&str] = &[
 /// Ported from `packages/opencode/src/config/parse.ts` lines 35–79
 /// (`ConfigParse.schema`).
 pub fn validate_info(
-    value: serde_json::Value,
+    mut value: serde_json::Value,
     source: &std::path::Path,
 ) -> crate::error::Result<Info> {
+    // Strip legacy TUI keys (theme, keybinds, tui) before validation
+    normalize_loaded_config(&mut value);
+
     // Check for unrecognised keys
     if let Some(obj) = value.as_object() {
         let known: std::collections::HashSet<&str> = KNOWN_INFO_KEYS.iter().copied().collect();
@@ -2019,6 +2199,26 @@ pub fn seed_global_config_schema() -> crate::error::Result<()> {
 
 // ── Config post-processing / normalization ───────────────────────────────
 
+/// Strip legacy TUI keys from parsed config data before deserialization.
+///
+/// When a user has `theme`, `keybinds`, or `tui` keys in their `opencode.json`
+/// (left over from the TUI migration), these must be removed before the data is
+/// deserialized into `Info`, because `Info` no longer has those fields.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 53–62
+/// (`normalizeLoadedConfig`).
+pub fn normalize_loaded_config(value: &mut serde_json::Value) {
+    if let Some(obj) = value.as_object_mut() {
+        let had_legacy = obj.contains_key("theme") || obj.contains_key("keybinds") || obj.contains_key("tui");
+        if had_legacy {
+            obj.remove("theme");
+            obj.remove("keybinds");
+            obj.remove("tui");
+        }
+    }
+}
+
 /// Normalize a fully-merged `Info` by applying post-processing rules.
 ///
 /// This mimics the logic in `packages/opencode/src/config/config.ts`:
@@ -2226,6 +2426,18 @@ pub fn plugin_specifier(spec: &PluginSpec) -> String {
     match spec {
         PluginSpec::Simple(s) => s.clone(),
         PluginSpec::WithOptions(s, _) => s.clone(),
+    }
+}
+
+/// Extract the options from a `PluginSpec`, if any.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` lines 36–38
+/// (`pluginOptions`).
+pub fn plugin_options(spec: &PluginSpec) -> Option<&HashMap<String, serde_json::Value>> {
+    match spec {
+        PluginSpec::Simple(_) => None,
+        PluginSpec::WithOptions(_, opts) => Some(opts),
     }
 }
 
@@ -2438,7 +2650,6 @@ pub fn read_managed_preferences() -> Option<(String, String)> {
     }
     #[cfg(not(target_os = "macos"))]
     {
-        let _ = domain;
         None
     }
 }
@@ -3279,5 +3490,101 @@ mod tests {
         let result = Config::load_from_env();
         assert!(result.is_ok());
         assert!(result.unwrap().is_none());
+    }
+
+    // ── Writable helpers tests ─────────────────────────────────────────
+
+    #[test]
+    fn test_writable_strips_plugin_origins() {
+        let info = Info {
+            schema: Some("test".into()),
+            plugin_origins: vec![PluginOrigin {
+                spec: PluginSpec::Simple("p".into()),
+                source: "src".into(),
+                scope: PluginScope::Global,
+            }],
+            ..Default::default()
+        };
+        let w = writable(&info);
+        assert!(w.plugin_origins.is_empty());
+        assert_eq!(w.schema.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn test_writable_global_clears_empty_shell() {
+        let info = Info {
+            shell: Some("".into()),
+            ..Default::default()
+        };
+        let w = writable_global(&info);
+        assert!(w.shell.is_none());
+    }
+
+    #[test]
+    fn test_writable_global_keeps_nonempty_shell() {
+        let info = Info {
+            shell: Some("/bin/zsh".into()),
+            ..Default::default()
+        };
+        let w = writable_global(&info);
+        assert_eq!(w.shell.as_deref(), Some("/bin/zsh"));
+    }
+
+    // ── JSONC patching tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_patch_jsonc_adds_key() {
+        let existing = r#"{
+            // existing config
+            "model": "anthropic/claude"
+        }"#;
+        let patch = serde_json::json!({"shell": "/bin/bash"});
+        let result = patch_jsonc(existing, &patch);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["model"], "anthropic/claude");
+        assert_eq!(parsed["shell"], "/bin/bash");
+    }
+
+    #[test]
+    fn test_patch_jsonc_deep_merge() {
+        let existing = r#"{"server": {"port": 3000}}"#;
+        let patch = serde_json::json!({"server": {"hostname": "localhost"}});
+        let result = patch_jsonc(existing, &patch);
+        let parsed: serde_json::Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(parsed["server"]["port"], 3000);
+        assert_eq!(parsed["server"]["hostname"], "localhost");
+    }
+
+    #[test]
+    fn test_deep_merge_json_objects() {
+        let base = serde_json::json!({"a": 1, "b": {"c": 2}});
+        let patch = serde_json::json!({"b": {"d": 3}, "e": 4});
+        let merged = deep_merge_json(base, &patch);
+        assert_eq!(merged["a"], 1);
+        assert_eq!(merged["b"]["c"], 2);
+        assert_eq!(merged["b"]["d"], 3);
+        assert_eq!(merged["e"], 4);
+    }
+
+    // ── merge_writable tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_merge_writable_strips_and_merges() {
+        let source = Info {
+            model: Some("old/model".into()),
+            plugin_origins: vec![PluginOrigin {
+                spec: PluginSpec::Simple("p".into()),
+                source: "s".into(),
+                scope: PluginScope::Global,
+            }],
+            ..Default::default()
+        };
+        let patch = Info {
+            model: Some("new/model".into()),
+            ..Default::default()
+        };
+        let result = merge_writable(&source, &patch);
+        assert_eq!(result.model.as_deref(), Some("new/model"));
+        assert!(result.plugin_origins.is_empty());
     }
 }

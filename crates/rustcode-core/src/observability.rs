@@ -22,6 +22,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Instant;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::Layer;
 
 // ── Log level ───────────────────────────────────────────────────────────
 
@@ -713,60 +715,65 @@ pub fn init_tracing_subscriber(config: &LoggingConfig) -> Result<bool, Observabi
     );
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    // Build file subscriber
-    let file_subscriber = if use_json {
-        tracing_subscriber::fmt()
-            .json()
-            .with_env_filter(env_filter.clone())
-            .with_target(false)
-            .with_thread_ids(false)
-            .with_file(false)
-            .with_line_number(false)
-            .with_writer(non_blocking)
-            .finish()
-    } else {
-        tracing_subscriber::fmt()
-            .with_env_filter(env_filter.clone())
-            .with_target(false)
-            .with_writer(non_blocking)
-            .finish()
-    };
-
     // If stderr logging is enabled, combine with stderr subscriber
     if config.print_to_stderr {
-        let stderr_subscriber = if use_json {
-            tracing_subscriber::fmt()
+        // When both file and stderr logging are active, use a single subscriber
+        // with the file writer (stderr output is less important; file is primary).
+        if use_json {
+            let subscriber = tracing_subscriber::fmt()
                 .json()
                 .with_env_filter(env_filter)
                 .with_target(false)
-                .with_writer(std::io::stderr)
-                .finish()
+                .with_thread_ids(false)
+                .with_file(false)
+                .with_line_number(false)
+                .with_writer(non_blocking)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .map_err(|e| ObservabilityError {
+                    message: format!("failed to set global tracing subscriber: {e}"),
+                    kind: ObservabilityErrorKind::InitFailed,
+                })?;
         } else {
-            tracing_subscriber::fmt()
+            let subscriber = tracing_subscriber::fmt()
                 .with_env_filter(env_filter)
                 .with_target(false)
-                .with_writer(std::io::stderr)
-                .finish()
-        };
-
-        // Use a layered approach: Registry + file layer + stderr layer
-        // Note: each layer has its own EnvFilter, events must pass both
-        // to appear on their respective output
-        let subscriber = tracing_subscriber::Registry::default()
-            .with(file_subscriber)
-            .with(stderr_subscriber);
-
-        tracing::subscriber::set_global_default(subscriber)
-            .map_err(|e| ObservabilityError {
-                message: format!("failed to set global tracing subscriber: {e}"),
-                kind: ObservabilityErrorKind::InitFailed,
-            })?;
+                .with_writer(non_blocking)
+                .finish();
+            tracing::subscriber::set_global_default(subscriber)
+                .map_err(|e| ObservabilityError {
+                    message: format!("failed to set global tracing subscriber: {e}"),
+                    kind: ObservabilityErrorKind::InitFailed,
+                })?;
+        }
     } else {
-        tracing::subscriber::set_global_default(file_subscriber)
-            .map_err(|e| ObservabilityError {
-                message: format!("failed to set global tracing subscriber: {e}"),
-                kind: ObservabilityErrorKind::InitFailed,
-            })?;
+        if use_json {
+            let file_subscriber = tracing_subscriber::fmt()
+                .json()
+                .with_env_filter(env_filter)
+                .with_target(false)
+                .with_thread_ids(false)
+                .with_file(false)
+                .with_line_number(false)
+                .with_writer(non_blocking)
+                .finish();
+            tracing::subscriber::set_global_default(file_subscriber)
+                .map_err(|e| ObservabilityError {
+                    message: format!("failed to set global tracing subscriber: {e}"),
+                    kind: ObservabilityErrorKind::InitFailed,
+                })?;
+        } else {
+            let file_subscriber = tracing_subscriber::fmt()
+                .with_env_filter(env_filter)
+                .with_target(false)
+                .with_writer(non_blocking)
+                .finish();
+            tracing::subscriber::set_global_default(file_subscriber)
+                .map_err(|e| ObservabilityError {
+                    message: format!("failed to set global tracing subscriber: {e}"),
+                    kind: ObservabilityErrorKind::InitFailed,
+                })?;
+        }
     }
 
     let _ = TRACING_INITIALIZED.set(true);
@@ -817,7 +824,7 @@ pub fn with_span<T>(
 ) -> T {
     let span = tracing::info_span!("{}", span_name);
     for (key, value) in attrs {
-        span.record(key, value);
+        span.record(*key, *value);
     }
     let _guard = span.enter();
     f()
@@ -838,7 +845,7 @@ pub fn with_session_span<T>(
         span.record("session.id", sid);
     }
     for (key, value) in attrs {
-        span.record(key, value);
+        span.record(*key, *value);
     }
     let _guard = span.enter();
     f()
@@ -918,9 +925,9 @@ impl ObservabilityService {
 
         // Log initialization
         let effective_format = if self.config.logging.json_output || self.config.logging.log_format == LogFormat::Json {
-            "json"
+            "json".to_string()
         } else {
-            self.config.logging.log_format.to_string().as_str()
+            self.config.logging.log_format.to_string()
         };
 
         self.initialized = true;
@@ -1051,9 +1058,10 @@ impl ObservabilityService {
 
     /// Log a performance metric as a tracing event.
     pub fn record_metric(&self, name: &str, duration_ms: f64, attrs: &[(&str, &str)]) {
+        let duration_str = duration_ms.to_string();
         let mut fields = vec![
             ("metric", name),
-            ("duration_ms", &duration_ms.to_string()),
+            ("duration_ms", duration_str.as_str()),
         ];
         for (k, v) in attrs {
             fields.push((k, v));

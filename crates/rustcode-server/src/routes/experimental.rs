@@ -257,6 +257,9 @@ async fn global_session_list(
         search: query.search,
         limit: query.limit,
         project_id: None,
+        start: None,
+        cursor: None,
+        scope: None,
     };
     match state.sessions.list(Some(input)).await {
         Ok(sessions) => {

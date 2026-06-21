@@ -923,8 +923,6 @@ enum McpClientState {
     /// Client opens an SSE stream for server→client messages and sends
     /// JSON-RPC requests via HTTP POST to the message endpoint.
     RemoteSse {
-    /// Initial state before connection completes.
-    Disconnected,
         /// Reusable HTTP client for sending JSON-RPC requests.
         http_client: reqwest::Client,
         /// The POST endpoint for sending JSON-RPC messages (extracted from
@@ -937,6 +935,7 @@ enum McpClientState {
         sse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>,
     },
     /// Client is not connected.
+    Disconnected,
 }
 
 /// An active connection to an MCP (Model Context Protocol) server.
@@ -965,7 +964,7 @@ pub struct McpClient {
     /// Registered notification handlers.
     notification_handlers: McpNotificationHandlers,
     /// Callbacks to fire when the connection closes.
-    onclose_callbacks: Arc<std::sync::Mutex<Vec<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>>>>,
+    onclose_callbacks: Arc<std::sync::Mutex<Vec<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>>>,
 }
 
 impl McpClient {
@@ -991,7 +990,7 @@ impl McpClient {
         server_name: String,
     ) -> crate::error::Result<Self> {
         let client = Self {
-            config,
+            config: config.clone(),
             server_name: server_name.clone(),
             tools: tokio::sync::RwLock::new(Vec::new()),
             connected: Arc::new(AtomicBool::new(false)),
@@ -1022,7 +1021,6 @@ impl McpClient {
                         exit_code: None,
                     })?;
 
-                // Send the initialize request over stdin
                 let init_req = build_jsonrpc_request(
                     "initialize",
                     serde_json::json!({
@@ -1045,7 +1043,6 @@ impl McpClient {
                     stdin.flush().await?;
                 }
 
-                // Read the initialize response from stdout
                 {
                     let stdout = child.stdout.as_mut().ok_or_else(|| {
                         crate::error::Error::Internal("MCP child stdout not available".into())
@@ -1072,7 +1069,6 @@ impl McpClient {
                             "invalid MCP initialize response: {e}"
                         ))
                     })?;
-                    // Capture server capabilities from initialize response
                     if let Some(caps) = init_value
                         .get("result")
                         .and_then(|r| r.get("capabilities"))
@@ -1085,7 +1081,6 @@ impl McpClient {
                     }
                 }
 
-                // Send the "initialized" notification per MCP spec.
                 {
                     let stdin = child.stdin.as_mut().ok_or_else(|| {
                         crate::error::Error::Internal(
@@ -1104,7 +1099,6 @@ impl McpClient {
                 client.connected.store(true, std::sync::atomic::Ordering::SeqCst);
                 *client.state.lock().await = McpClientState::Local { child };
 
-                // Discover tools immediately on connect
                 match client.list_tools().await {
                     Ok(discovered) => {
                         let mut tools = client.tools.write().await;
@@ -1123,7 +1117,6 @@ impl McpClient {
                     crate::error::Error::Config("MCP remote server has no URL".into())
                 })?;
 
-                // Try StreamableHTTP first, then fall back to SSE
                 let caps_lock = tokio::sync::RwLock::new(std::collections::HashMap::new());
                 let state = Self::connect_with_fallback(
                     url,
@@ -1132,7 +1125,6 @@ impl McpClient {
                     &caps_lock,
                 ).await?;
 
-                // Merge capabilities from caps_lock into client
                 {
                     let remote_caps = caps_lock.read().await;
                     let mut store = client.capabilities.write().await;
@@ -1144,7 +1136,6 @@ impl McpClient {
                 client.connected.store(true, std::sync::atomic::Ordering::SeqCst);
                 *client.state.lock().await = state;
 
-                // Discover tools
                 match client.list_tools().await {
                     Ok(discovered) => {
                         let mut tools = client.tools.write().await;
@@ -1161,7 +1152,7 @@ impl McpClient {
         };
 
         Ok(client)
-
+    }
 
     /// List all tools available on the connected MCP server.
     ///
@@ -1485,14 +1476,14 @@ impl McpClient {
 
         let body: serde_json::Value = response.json().await?;
         // Capture server capabilities from initialize response
+        let mut capabilities = std::collections::HashMap::new();
         if let Some(caps) = body
             .get("result")
             .and_then(|r| r.get("capabilities"))
             .and_then(|c| c.as_object())
         {
-            let mut store = self.capabilities.write().await;
             for (k, v) in caps {
-                store.insert(k.clone(), v.clone());
+                capabilities.insert(k.clone(), v.clone());
             }
         }
 
@@ -1519,7 +1510,7 @@ impl McpClient {
             tools: tokio::sync::RwLock::new(Vec::new()),
             connected: Arc::new(AtomicBool::new(true)),
             next_id: AtomicU64::new(1),
-            capabilities: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            capabilities: tokio::sync::RwLock::new(capabilities),
             state: tokio::sync::Mutex::new(state),
             notification_handlers: McpNotificationHandlers::default(),
             onclose_callbacks: Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -1539,6 +1530,7 @@ impl McpClient {
             }
         }
 
+        Ok(client)
     }
 
     /// Disconnect from the MCP server.
@@ -1718,6 +1710,8 @@ impl McpServerRegistry {
         let client = Arc::new(McpClient::connect(config, name.to_string()).await?);
 
         self.clients.insert(name.to_string(), client.clone());
+
+        Ok(client)
     }
 
     /// Disconnect a server by name.
@@ -2313,6 +2307,11 @@ impl McpAuthStore {
         Self::new(config_dir.join("mcp-auth.json"))
     }
 
+    /// Create a global (default path) auth store.
+    pub fn global() -> Self {
+        Self::default_path()
+    }
+
     /// Load auth data from disk, replacing in-memory cache.
     pub async fn load(&self) -> crate::error::Result<()> {
         let contents = match tokio::fs::read_to_string(&self.path).await {
@@ -2712,14 +2711,14 @@ impl McpClient {
     where
         F: Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
     {
-        let mut callbacks = self.onclose_callbacks.lock();
+        let mut callbacks = self.onclose_callbacks.lock().expect("lock onclose callbacks");
         callbacks.push(Arc::new(handler));
     }
 
     /// Fire all registered `on_close` callbacks.
     pub(crate) async fn fire_onclose(&self) {
         let callbacks = {
-            let mut cb = self.onclose_callbacks.lock();
+            let mut cb = self.onclose_callbacks.lock().unwrap();
             std::mem::take(&mut *cb)
         };
         for callback in callbacks {
@@ -2739,10 +2738,9 @@ impl McpServerRegistry {
     /// Checks whether the server config has an `auth` section with a `provider`
     /// equal to `"oauth2"`.
     pub fn supports_oauth(&self, name: &str) -> bool {
-        let data = self.data.blocking_read();
-        data.get(name)
-            .and_then(|s| s.config.auth.as_ref())
-            .map(|a| a.provider.as_deref() == Some("oauth2"))
+        let configs = self.configs.blocking_read();
+        configs.get(name)
+            .map(|c| c.oauth.is_some())
             .unwrap_or(false)
     }
 
@@ -2779,7 +2777,7 @@ impl McpServerRegistry {
                             .as_ref()
                             .and_then(|t| t.expires_at)
                             .map(|exp| {
-                                let now = chrono::Utc::now();
+                                let now = chrono::Utc::now().timestamp() as f64;
                                 now >= exp
                             })
                             .unwrap_or(false);

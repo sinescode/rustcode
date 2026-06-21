@@ -507,17 +507,34 @@ impl ProcessService {
                     }
                     StdinInput::Stream(rx) => {
                         // Stream stdin: forward chunks from the receiver to stdin
-                        let mut rx = rx.lock().unwrap();
-                        while let Ok(chunk) = rx.try_recv() {
-                            let _ = stdin.write_all(&chunk);
+                        {
+                            let mut guard = rx.lock().unwrap();
+                            while let Ok(chunk) = guard.try_recv() {
+                                let _ = stdin.write_all(&chunk);
+                            }
                         }
                         // Spawn a task to forward remaining chunks
                         let mut stdin_clone = child.stdin.take();
                         if let Some(mut s) = stdin_clone {
+                            let rx = std::sync::Arc::clone(rx);
                             tokio::spawn(async move {
                                 use tokio::io::AsyncWriteExt;
-                                while let Some(chunk) = rx.recv().await {
-                                    let _ = s.write_all(&chunk).await;
+                                loop {
+                                    let chunk = {
+                                        let mut guard = rx.lock().unwrap();
+                                        guard.try_recv()
+                                    };
+                                    match chunk {
+                                        Ok(chunk) => {
+                                            let _ = s.write_all(&chunk).await;
+                                        }
+                                        Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                                            tokio::task::yield_now().await;
+                                        }
+                                        Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                                            break;
+                                        }
+                                    }
                                 }
                                 let _ = s.shutdown().await;
                             });

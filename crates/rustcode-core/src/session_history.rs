@@ -573,8 +573,10 @@ impl SessionHistory {
                             "tool" => {
                                 if let Some(state) = part.get("state") {
                                     if let Some(status) = state.get("status").and_then(|s| s.as_str()) {
+                                        let tool_name = part.get("tool").and_then(|t| t.as_str()).unwrap_or("unknown");
+                                        let tool_type = format!("tool-{}", tool_name);
                                         let tool_part = serde_json::json!({
-                                            "type": "tool-" + part.get("tool").and_then(|t| t.as_str()).unwrap_or("unknown"),
+                                            "type": tool_type,
                                             "toolCallId": part.get("call_id"),
                                             "input": state.get("input"),
                                         });

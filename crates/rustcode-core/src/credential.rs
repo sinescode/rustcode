@@ -547,7 +547,6 @@ mod tests {
             "unknown variant should fail deserialization"
         );
     }
-}
 
     // ── CredentialWellKnown ─────────────────────────────────────────────
 
@@ -616,91 +615,6 @@ mod tests {
                 m.insert("env".into(), "staging".into());
                 Some(m)
             },
-        });
-        let json = serde_json::to_string(&original).expect("serialize");
-        let restored: CredentialInfo = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn stored_serialize_wellknown_credential() {
-        let stored = CredentialStored::new(
-            "int_wk".into(),
-            "wellknown-label".into(),
-            CredentialInfo::WellKnown(CredentialWellKnown {
-                key: "wk-key".into(),
-                token: "wk-token".into(),
-                metadata: None,
-            }),
-        );
-        let json = serde_json::to_value(&stored).expect("serialize CredentialStored with WellKnown");
-        assert_eq!(json["integrationID"], "int_wk");
-        assert_eq!(json["label"], "wellknown-label");
-        assert_eq!(json["value"]["type"], "wellknown");
-        assert_eq!(json["value"]["key"], "wk-key");
-    }
-
-    // ── CredentialWellKnown ─────────────────────────────────────────────
-
-    #[test]
-    fn wellknown_serialize_contains_expected_fields() {
-        let wk = CredentialWellKnown {
-            key: "my-service".into(),
-            token: "secret-token".into(),
-            metadata: None,
-        };
-        let json = serde_json::to_value(&wk).expect("serialize CredentialWellKnown");
-        assert_eq!(json["key"], "my-service");
-        assert_eq!(json["token"], "secret-token");
-        assert!(json.get("metadata").is_none());
-    }
-
-    #[test]
-    fn wellknown_deserialize_roundtrip() {
-        let original = CredentialWellKnown {
-            key: "github-app".into(),
-            token: "ghs_abc123".into(),
-            metadata: None,
-        };
-        let json = serde_json::to_string(&original).expect("serialize");
-        let restored: CredentialWellKnown = serde_json::from_str(&json).expect("deserialize");
-        assert_eq!(restored, original);
-    }
-
-    #[test]
-    fn info_serialize_wellknown_includes_type_tag() {
-        let info = CredentialInfo::WellKnown(CredentialWellKnown {
-            key: "my-key".into(),
-            token: "my-token".into(),
-            metadata: None,
-        });
-        let json = serde_json::to_value(&info).expect("serialize CredentialInfo::WellKnown");
-        assert_eq!(json["type"], "wellknown");
-        assert_eq!(json["key"], "my-key");
-        assert_eq!(json["token"], "my-token");
-    }
-
-    #[test]
-    fn info_deserialize_wellknown_from_json() {
-        let json = serde_json::json!({"type": "wellknown", "key": "wk-key", "token": "wk-token"});
-        let info: CredentialInfo = serde_json::from_value(json).expect("deserialize wellknown");
-        match info {
-            CredentialInfo::WellKnown(wk) => {
-                assert_eq!(wk.key, "wk-key");
-                assert_eq!(wk.token, "wk-token");
-            }
-            other => panic!("expected WellKnown variant, got: {other:?}"),
-        }
-    }
-
-    #[test]
-    fn info_roundtrip_wellknown_via_json() {
-        let mut meta = std::collections::HashMap::new();
-        meta.insert("env".into(), "staging".into());
-        let original = CredentialInfo::WellKnown(CredentialWellKnown {
-            key: "roundtrip-key".into(),
-            token: "roundtrip-token".into(),
-            metadata: Some(meta),
         });
         let json = serde_json::to_string(&original).expect("serialize");
         let restored: CredentialInfo = serde_json::from_str(&json).expect("deserialize");

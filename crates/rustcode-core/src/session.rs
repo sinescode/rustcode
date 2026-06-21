@@ -314,6 +314,8 @@ pub enum Part {
     Reasoning(ReasoningPart),
     #[serde(rename = "file")]
     File(FilePart),
+    #[serde(rename = "source-url")]
+    SourceUrl(SourceUrlPart),
     #[serde(rename = "step-start")]
     StepStart(StepStartPart),
     #[serde(rename = "step-finish")]
@@ -430,6 +432,21 @@ pub struct FilePart {
     pub mime: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub filename: Option<String>,
+}
+
+/// Source URL part — a reference link.
+///
+/// # Source
+/// `packages/opencode/src/session/message.ts` lines 64–71 `SourceUrlPart`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SourceUrlPart {
+    pub id: PartId,
+    pub message_id: MessageId,
+    pub session_id: SessionId,
+    pub url: String,
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<PartSource>,
 }
 
 /// Step start marker.
@@ -627,14 +644,19 @@ impl SessionManager {
                 &session_id,
                 &input.project_id,
                 input.workspace_id.as_deref(),
+                input.parent_id.as_deref(),
                 &slug,
                 &input.directory,
+                input.path.as_deref(),
                 &title,
                 env!("CARGO_PKG_VERSION"),
                 now,
                 now,
                 agent.as_deref(),
                 model_json.as_deref(),
+                None,
+                None,
+                None,
             )
             .await?;
 
@@ -748,7 +770,8 @@ impl SessionManager {
         let tokens_output = patch.tokens.as_ref().map(|t| t.output as i64);
 
         self.db
-            .update_session(id, now, title_ref, patch.cost, tokens_input, tokens_output)
+            .update_session(id, now, title_ref, patch.cost, tokens_input, tokens_output,
+                None, None, None, None, None, None, None, None, None, None, None, None, None)
             .await?;
 
         // Re-read to return updated info
@@ -815,14 +838,19 @@ impl SessionManager {
                 &new_session_id,
                 &original.project_id,
                 original.workspace_id.as_deref(),
+                None,
                 &new_slug,
                 &original.directory,
+                original.path.as_deref(),
                 &new_title,
                 env!("CARGO_PKG_VERSION"),
                 now,
                 now,
                 original.agent.as_deref(),
                 model_json.as_deref(),
+                None,
+                None,
+                None,
             )
             .await?;
 
@@ -1067,7 +1095,8 @@ impl SessionManager {
             .map_err(|e| SessionError::Other(format!("serialize part: {e}")))?;
 
         self.db.update_part(part_id, &data).await?;
-
+        Ok(())
+    }
 
     // ── Convenience setters ──────────────────────────────────────────────
 
@@ -1121,7 +1150,7 @@ impl SessionManager {
     pub async fn set_metadata(&self, id: &str, metadata: Option<&serde_json::Value>) -> Result<(), SessionError> {
         let now = Utc::now().timestamp_millis();
         let meta_str = metadata.and_then(|m| serde_json::to_string(m).ok());
-        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, meta_str.as_deref(), None, None, None, None)
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, meta_str.as_deref(), None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -1136,7 +1165,7 @@ impl SessionManager {
     pub async fn set_permission(&self, id: &str, permission: Option<&serde_json::Value>) -> Result<(), SessionError> {
         let now = Utc::now().timestamp_millis();
         let perm_str = permission.and_then(|p| serde_json::to_string(p).ok());
-        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, perm_str.as_deref(), None, None)
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, perm_str.as_deref(), None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -1157,7 +1186,7 @@ impl SessionManager {
         } else {
             (None, None, None, None)
         };
-        self.db.update_session(id, now, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, revert_str.as_deref(), None, None, None)
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, revert_str.as_deref(), None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -1172,7 +1201,7 @@ impl SessionManager {
     pub async fn clear_revert(&self, id: &str) -> Result<(), SessionError> {
         let now = Utc::now().timestamp_millis();
         // To clear revert, we set it to an empty string which will be serialized
-        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, Some("null"), None, None, None)
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, Some("null"), None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -1193,7 +1222,7 @@ impl SessionManager {
             // Set all summary fields to null to clear
             (None, None, None, None)
         };
-        self.db.update_session(id, now, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, None, None, None, None)
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -1207,7 +1236,7 @@ impl SessionManager {
     /// `packages/opencode/src/session/session.ts` lines 839–841.
     pub async fn set_share(&self, id: &str, share_url: Option<&str>) -> Result<(), SessionError> {
         let now = Utc::now().timestamp_millis();
-        self.db.update_session(id, now, None, None, None, None, None, None, share_url, None, None, None, None, None, None, None, None, None)
+        self.db.update_session(id, now, None, None, None, None, None, None, None, share_url, None, None, None, None, None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -1348,9 +1377,6 @@ impl SessionManager {
         Ok(())
     }
 }
-        Ok(())
-    }
-}
 
 /// Convert a [`SessionRow`] from the database into a [`SessionInfo`].
 ///
@@ -1416,6 +1442,7 @@ fn part_id(part: &Part) -> &str {
         Part::Tool(p) => &p.id,
         Part::Reasoning(p) => &p.id,
         Part::File(p) => &p.id,
+        Part::SourceUrl(p) => &p.id,
         Part::StepStart(p) => &p.id,
         Part::StepFinish(p) => &p.id,
         Part::Snapshot(p) => &p.id,
@@ -1447,7 +1474,6 @@ pub struct CreateSessionInput {
 /// Filters for listing sessions.
 #[derive(Debug, Clone, Default)]
 pub struct ListSessionsInput {
-    /// Required for DB-backed listing — filters sessions by project.
     pub project_id: Option<String>,
     pub directory: Option<String>,
     pub path: Option<String>,
@@ -1455,6 +1481,9 @@ pub struct ListSessionsInput {
     pub roots: Option<bool>,
     pub search: Option<String>,
     pub limit: Option<usize>,
+    pub start: Option<u64>,
+    pub cursor: Option<u64>,
+    pub scope: Option<String>,
 }
 
 /// Patch for updating a session.
@@ -1467,6 +1496,11 @@ pub struct SessionPatch {
     pub tokens: Option<TokenUsage>,
     pub summary: Option<Option<SessionSummary>>,
     pub revert: Option<Option<RevertInfo>>,
+    pub metadata: Option<Option<serde_json::Value>>,
+    pub permission: Option<Option<Vec<crate::permission::PermissionRule>>>,
+    pub share_url: Option<Option<String>>,
+    pub time_archived: Option<Option<u64>>,
+    pub workspace_id: Option<Option<String>>,
 }
 
 /// Patch for updating a message.
@@ -1569,6 +1603,7 @@ impl Part {
             Part::Tool(p) => &mut p.message_id,
             Part::Reasoning(p) => &mut p.message_id,
             Part::File(p) => &mut p.message_id,
+            Part::SourceUrl(p) => &mut p.message_id,
             Part::StepStart(p) => &mut p.message_id,
             Part::StepFinish(p) => &mut p.message_id,
             Part::Snapshot(p) => &mut p.message_id,
@@ -1588,6 +1623,7 @@ impl Part {
             Part::Tool(p) => &mut p.session_id,
             Part::Reasoning(p) => &mut p.session_id,
             Part::File(p) => &mut p.session_id,
+            Part::SourceUrl(p) => &mut p.session_id,
             Part::StepStart(p) => &mut p.session_id,
             Part::StepFinish(p) => &mut p.session_id,
             Part::Snapshot(p) => &mut p.session_id,
@@ -1607,6 +1643,7 @@ impl Part {
             Part::Tool(p) => &mut p.id,
             Part::Reasoning(p) => &mut p.id,
             Part::File(p) => &mut p.id,
+            Part::SourceUrl(p) => &mut p.id,
             Part::StepStart(p) => &mut p.id,
             Part::StepFinish(p) => &mut p.id,
             Part::Snapshot(p) => &mut p.id,
@@ -2208,6 +2245,8 @@ impl SessionProcessor {
             call_id: Some(tool_call_id.to_string()),
             extra: std::collections::HashMap::new(),
             messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
 
         self.tool_registry
@@ -2393,6 +2432,29 @@ fn usage_to_token_usage(usage: &Usage) -> TokenUsage {
 /// `packages/opencode/src/session/overflow.ts` line 8.
 const COMPACTION_BUFFER: u64 = 20_000;
 
+/// Calculate usable context tokens for a model.
+///
+/// Returns the number of tokens available for input after subtracting reserved
+/// output tokens and the compaction buffer.
+///
+/// # Source
+/// `packages/opencode/src/session/overflow.ts` lines 10–20.
+pub fn usable(model: &Model, output_token_max: Option<u64>) -> u64 {
+    let context = model.limit.context;
+    if context == 0 {
+        return 0;
+    }
+
+    let max_output = crate::provider::max_output_tokens(model, output_token_max.unwrap_or(0));
+    let reserved = COMPACTION_BUFFER.min(max_output);
+
+    if let Some(input_limit) = model.limit.input {
+        input_limit.saturating_sub(reserved)
+    } else {
+        context.saturating_sub(max_output)
+    }
+}
+
 /// Check if the current token usage overflows the context window.
 ///
 /// # Source
@@ -2440,14 +2502,115 @@ pub const RETRY_BACKOFF_FACTOR: u64 = 2;
 /// `packages/opencode/src/session/retry.ts` line 28.
 pub const RETRY_MAX_DELAY_NO_HEADERS_MS: u64 = 30_000;
 
-/// Compute retry delay for a given attempt.
+/// Maximum retry delay (max 32-bit signed integer for setTimeout).
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` line 29.
+pub const RETRY_MAX_DELAY_MS: u64 = 2_147_483_647;
+
+/// Free usage exceeded upsell message.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` line 10.
+pub const GO_UPSELL_MESSAGE: &str = "Free usage exceeded, subscribe to Go";
+
+/// Free usage exceeded upsell URL.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` line 11.
+pub const GO_UPSELL_URL: &str = "https://opencode.ai/go";
+
+/// Reasons a retry may be triggered.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` line 12.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetryReason {
+    FreeTierLimit,
+    AccountRateLimit,
+    Other(String),
+}
+
+/// Information about a retryable error.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 14–24.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Retryable {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub action: Option<RetryableAction>,
+}
+
+/// Action details for a retryable error.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 16–23.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryableAction {
+    pub reason: String,
+    pub provider: String,
+    pub title: String,
+    pub message: String,
+    pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+}
+
+/// Cap a delay value to [`RETRY_MAX_DELAY_MS`].
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 31–33.
+fn cap_delay(ms: u64) -> u64 {
+    ms.min(RETRY_MAX_DELAY_MS)
+}
+
+/// Compute retry delay for a given attempt, optionally using response headers.
 ///
 /// # Source
 /// `packages/opencode/src/session/retry.ts` lines 35–66.
 pub fn retry_delay(attempt: u32) -> u64 {
     let exp = attempt.saturating_sub(1);
-    let delay = RETRY_INITIAL_DELAY_MS.saturating_mul(RETRY_BACKOFF_FACTOR.saturating_pow(exp));
-    delay.min(RETRY_MAX_DELAY_NO_HEADERS_MS)
+    let base = RETRY_INITIAL_DELAY_MS.saturating_mul(RETRY_BACKOFF_FACTOR.saturating_pow(exp));
+    cap_delay(base.min(RETRY_MAX_DELAY_NO_HEADERS_MS))
+}
+
+/// Compute retry delay respecting `retry-after` headers from an API error.
+///
+/// Parses `retry-after-ms` and `retry-after` headers when available.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 35–66.
+pub fn retry_delay_with_headers(attempt: u32, response_headers: Option<&std::collections::HashMap<String, String>>) -> u64 {
+    if let Some(headers) = response_headers {
+        if let Some(retry_after_ms) = headers.get("retry-after-ms") {
+            if let Ok(parsed) = retry_after_ms.parse::<f64>() {
+                if parsed.is_finite() && parsed >= 0.0 {
+                    return cap_delay(parsed as u64);
+                }
+            }
+        }
+        if let Some(retry_after) = headers.get("retry-after") {
+            if let Ok(seconds) = retry_after.parse::<f64>() {
+                if seconds.is_finite() && seconds >= 0.0 {
+                    return cap_delay((seconds * 1000.0).ceil() as u64);
+                }
+            }
+            // Try parsing as HTTP date
+            if let Ok(date) = chrono::DateTime::parse_from_rfc2822(retry_after) {
+                let diff_ms = (date.signed_duration_since(chrono::Utc::now())).num_milliseconds();
+                if diff_ms > 0 {
+                    return cap_delay(diff_ms as u64);
+                }
+            }
+        }
+        // Headers present but no parseable retry-after — use exponential backoff without header cap
+        let exp = attempt.saturating_sub(1);
+        return cap_delay(RETRY_INITIAL_DELAY_MS.saturating_mul(RETRY_BACKOFF_FACTOR.saturating_pow(exp)));
+    }
+
+    retry_delay(attempt)
 }
 
 /// Determine if an error is retryable.
@@ -2459,10 +2622,97 @@ pub fn is_retryable(error: &str) -> bool {
     // 5xx errors are retryable
     lower.contains("overloaded")
         || lower.contains("rate limit")
+        || lower.contains("rate increased too quickly")
         || lower.contains("too many requests")
         || lower.contains("connection reset")
         || lower.contains("service unavailable")
         || lower.contains("internal server error")
+        || lower.contains("exhausted")
+        || lower.contains("unavailable")
+}
+
+/// Check if an error is a free-usage-limit error.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 76–88.
+pub fn is_free_usage_limit_error(error_body: &str) -> bool {
+    error_body.contains("FreeUsageLimitError")
+}
+
+/// Check if an error is a Go-usage-limit error.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 89–121.
+pub fn is_go_usage_limit_error(error_body: &str) -> bool {
+    error_body.contains("GoUsageLimitError")
+}
+
+/// Build a [`Retryable`] from a provider error body and provider name.
+///
+/// Returns `None` if the error is not retryable.
+///
+/// # Source
+/// `packages/opencode/src/session/retry.ts` lines 68–152.
+pub fn build_retryable(error_body: &str, provider: &str) -> Option<Retryable> {
+    if is_free_usage_limit_error(error_body) {
+        return Some(Retryable {
+            message: GO_UPSELL_MESSAGE.to_string(),
+            action: Some(RetryableAction {
+                reason: "free_tier_limit".to_string(),
+                provider: provider.to_string(),
+                title: "Free limit reached".to_string(),
+                message: "Subscribe to OpenCode Go for reliable access to the best open-source models, starting at $5/month.".to_string(),
+                label: "subscribe".to_string(),
+                link: Some(GO_UPSELL_URL.to_string()),
+            }),
+        });
+    }
+    if is_go_usage_limit_error(error_body) {
+        // Parse the body to extract workspace and limit info
+        if let Ok(body) = serde_json::from_str::<serde_json::Value>(error_body) {
+            let workspace = body.get("metadata")
+                .and_then(|m| m.get("workspace"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let limit_name = body.get("metadata")
+                .and_then(|m| m.get("limitName"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            let message = if limit_name.is_empty() {
+                "Usage limit reached. To continue using this model now, enable usage from your available balance".to_string()
+            } else {
+                format!("{} usage limit reached. To continue using this model now, enable usage from your available balance", limit_name)
+            };
+            let link = format!("https://opencode.ai/workspace/{}/go", workspace);
+            return Some(Retryable {
+                message: format!("{} - {}", message, link),
+                action: Some(RetryableAction {
+                    reason: "account_rate_limit".to_string(),
+                    provider: provider.to_string(),
+                    title: "Go limit reached".to_string(),
+                    message,
+                    label: "open settings".to_string(),
+                    link: Some(link),
+                }),
+            });
+        }
+    }
+
+    // Check for rate limit patterns
+    if is_retryable(error_body) {
+        let message = if error_body.to_lowercase().contains("overloaded") {
+            "Provider is overloaded".to_string()
+        } else {
+            error_body.to_string()
+        };
+        return Some(Retryable {
+            message,
+            action: None,
+        });
+    }
+
+    None
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

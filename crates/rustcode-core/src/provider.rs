@@ -1547,6 +1547,863 @@ pub fn default_reasoning_effort(model: &Model) -> Option<&str> {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// SSE stream error parsing
+// ═══════════════════════════════════════════════════════════════════
+
+/// Classification of a parsed SSE stream error.
+///
+/// Ported from `packages/opencode/src/provider/error.ts` `ParsedStreamError`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StreamError {
+    /// The input exceeds the model's context window.
+    ContextOverflow {
+        message: String,
+        response_body: String,
+    },
+    /// A retryable or non-retryable API error from the provider.
+    ApiError {
+        message: String,
+        is_retryable: bool,
+        response_body: String,
+    },
+}
+
+/// Attempt to parse an SSE `error` event body into a [`StreamError`].
+///
+/// Ported from `packages/opencode/src/provider/error.ts` `parseStreamError`.
+pub fn parse_stream_error(input: &str) -> Option<StreamError> {
+    let raw: serde_json::Value = serde_json::from_str(input).ok()?;
+    let body = raw
+        .get("message")
+        .and_then(|m| serde_json::from_str::<serde_json::Value>(m.as_str()?).ok())
+        .unwrap_or(raw);
+
+    if body.get("type").and_then(|t| t.as_str()) != Some("error") {
+        return None;
+    }
+
+    let error_code = body.get("error")?.get("code")?.as_str()?;
+    let error_message = body
+        .get("error")
+        .and_then(|e| e.get("message"))
+        .and_then(|m| m.as_str())
+        .unwrap_or("")
+        .to_string();
+    let response_body = serde_json::to_string(&body).unwrap_or_default();
+
+    match error_code {
+        "context_length_exceeded" => Some(StreamError::ContextOverflow {
+            message: "Input exceeds context window of this model".to_string(),
+            response_body,
+        }),
+        "insufficient_quota" => Some(StreamError::ApiError {
+            message: "Quota exceeded. Check your plan and billing details.".to_string(),
+            is_retryable: false,
+            response_body,
+        }),
+        "usage_not_included" => Some(StreamError::ApiError {
+            message: "To use Codex with your ChatGPT plan, upgrade to Plus: https://chatgpt.com/explore/plus."
+                .to_string(),
+            is_retryable: false,
+            response_body,
+        }),
+        "invalid_prompt" => Some(StreamError::ApiError {
+            message: if error_message.is_empty() {
+                "Invalid prompt.".to_string()
+            } else {
+                error_message
+            },
+            is_retryable: false,
+            response_body,
+        }),
+        "server_is_overloaded" | "server_error" => Some(StreamError::ApiError {
+            message: if error_message.is_empty() {
+                "Server error.".to_string()
+            } else {
+                error_message
+            },
+            is_retryable: true,
+            response_body,
+        }),
+        _ => None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// API call error parsing
+// ═══════════════════════════════════════════════════════════════════
+
+/// Parsed API call error with structured classification.
+///
+/// Ported from `packages/opencode/src/provider/error.ts` `ParsedAPICallError`.
+#[derive(Debug, Clone)]
+pub enum ApiCallError {
+    /// The input exceeds the model's context window.
+    ContextOverflow {
+        message: String,
+        response_body: Option<String>,
+    },
+    /// A classified provider API error.
+    ApiError {
+        message: String,
+        status_code: Option<u16>,
+        is_retryable: bool,
+        response_headers: Option<HashMap<String, String>>,
+        response_body: Option<String>,
+        metadata: Option<HashMap<String, String>>,
+    },
+}
+
+/// Classify a raw HTTP error into an [`ApiCallError`].
+///
+/// Ported from `packages/opencode/src/provider/error.ts` `parseAPICallError`.
+pub fn parse_api_call_error(
+    provider_id: &str,
+    status_code: Option<u16>,
+    message: &str,
+    response_body: Option<&str>,
+    is_retryable: bool,
+) -> ApiCallError {
+    let msg = message.to_string();
+    let body = response_body.map(|b| b.to_string());
+
+    if crate::error::is_context_overflow(&msg)
+        || status_code == Some(413)
+        || response_body
+            .as_deref()
+            .and_then(|b| serde_json::from_str::<serde_json::Value>(b).ok())
+            .and_then(|v| v.get("error")?.get("code")?.as_str()?.to_string().into())
+            .map(|c: String| c == "context_length_exceeded")
+            .unwrap_or(false)
+    {
+        return ApiCallError::ContextOverflow {
+            message: msg,
+            response_body: body,
+        };
+    }
+
+    let retryable = if provider_id.starts_with("openai") {
+        // OpenAI sometimes returns 404 for models that are actually available
+        status_code == Some(404) || is_retryable
+    } else {
+        is_retryable
+    };
+
+    ApiCallError::ApiError {
+        message: msg,
+        status_code,
+        is_retryable: retryable,
+        response_headers: None,
+        response_body: body,
+        metadata: None,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Cache control markers
+// ═══════════════════════════════════════════════════════════════════
+
+/// Provider-specific cache control markers for prompt caching.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `applyCaching`.
+#[derive(Debug, Clone)]
+pub struct CacheControlMarker {
+    pub provider_key: &'static str,
+    pub cache_control: serde_json::Value,
+}
+
+/// Get cache control markers for a model's provider.
+///
+/// Returns the provider-specific options needed to enable prompt caching
+/// on the first and last few messages.
+pub fn get_cache_control_markers(provider_id: &str, npm: &str) -> Vec<CacheControlMarker> {
+    let mut markers = Vec::new();
+
+    // Anthropic native
+    if provider_id == "anthropic"
+        || npm == "@ai-sdk/anthropic"
+        || npm == "@ai-sdk/google-vertex/anthropic"
+    {
+        markers.push(CacheControlMarker {
+            provider_key: "anthropic",
+            cache_control: serde_json::json!({ "type": "ephemeral" }),
+        });
+    }
+
+    // Bedrock
+    if provider_id.contains("bedrock") || npm == "@ai-sdk/amazon-bedrock" {
+        markers.push(CacheControlMarker {
+            provider_key: "bedrock",
+            cache_control: serde_json::json!({ "type": "default" }),
+        });
+    }
+
+    // OpenRouter
+    if provider_id == "openrouter" || npm == "@openrouter/ai-sdk-provider" {
+        markers.push(CacheControlMarker {
+            provider_key: "openrouter",
+            cache_control: serde_json::json!({ "type": "ephemeral" }),
+        });
+    }
+
+    // OpenAI-compatible (generic)
+    if npm == "@ai-sdk/openai-compatible" {
+        markers.push(CacheControlMarker {
+            provider_key: "openaiCompatible",
+            cache_control: serde_json::json!({ "type": "ephemeral" }),
+        });
+    }
+
+    // GitHub Copilot
+    if npm == "@ai-sdk/github-copilot" {
+        markers.push(CacheControlMarker {
+            provider_key: "copilot",
+            cache_control: serde_json::json!({ "type": "ephemeral" }),
+        });
+    }
+
+    // Alibaba
+    if npm == "@ai-sdk/alibaba" {
+        markers.push(CacheControlMarker {
+            provider_key: "alibaba",
+            cache_control: serde_json::json!({ "type": "ephemeral" }),
+        });
+    }
+
+    markers
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Unsupported parts handling
+// ═══════════════════════════════════════════════════════════════════
+
+/// Check if a MIME type represents an unsupported modality.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `unsupportedParts`.
+pub fn mime_to_modality(mime: &str) -> Option<&'static str> {
+    if mime.starts_with("image/") {
+        Some("image")
+    } else if mime.starts_with("video/") {
+        Some("video")
+    } else if mime.starts_with("audio/") {
+        Some("audio")
+    } else if mime == "application/pdf" {
+        Some("pdf")
+    } else {
+        None
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Reasoning effort variants
+// ═══════════════════════════════════════════════════════════════════
+
+/// Generate reasoning effort variants for a model.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `variants`.
+/// Returns a map of variant name → provider-specific options for reasoning/thinking.
+pub fn generate_variants(model: &Model) -> Variants {
+    if !model.capabilities.reasoning {
+        return Variants::new();
+    }
+
+    let id = model.id.to_lowercase();
+    let api_id = model.api.id.to_lowercase();
+    let npm = &model.api.npm;
+
+    // DeepSeek, MiniMax, GLM, Kimi, Qwen, big-pickle — handled differently
+    if id.contains("deepseek-chat")
+        || id.contains("deepseek-reasoner")
+        || id.contains("deepseek-r1")
+        || id.contains("deepseek-v3")
+        || id.contains("minimax")
+        || id.contains("glm")
+        || id.contains("kimi")
+        || id.contains("k2p")
+        || id.contains("qwen")
+        || id.contains("big-pickle")
+    {
+        return Variants::new();
+    }
+
+    // xAI Grok 3 mini
+    if id.contains("grok") && id.contains("grok-3-mini") {
+        if npm == "@openrouter/ai-sdk-provider" {
+            return Variants::from([
+                ("low".into(), serde_json::json!({ "reasoning": { "effort": "low" } })),
+                ("high".into(), serde_json::json!({ "reasoning": { "effort": "high" } })),
+            ]);
+        }
+        return Variants::from([
+            ("low".into(), serde_json::json!({ "reasoningEffort": "low" })),
+            ("high".into(), serde_json::json!({ "reasoningEffort": "high" })),
+        ]);
+    }
+    if id.contains("grok") {
+        return Variants::new();
+    }
+
+    // OpenRouter
+    if npm == "@openrouter/ai-sdk-provider" {
+        let efforts: Vec<&str> = if api_id.starts_with("openai/") || id.contains("gpt") {
+            openai_compatible_reasoning_efforts(&api_id)
+        } else {
+            WIDELY_SUPPORTED_EFFORTS.iter().copied().collect()
+        };
+        return Variants::from_iter(
+            efforts
+                .into_iter()
+                .map(|e| (e.to_string(), serde_json::json!({ "reasoning": { "effort": e } }))),
+        );
+    }
+
+    // Cloudflare AI Gateway
+    if npm == "ai-gateway-provider" {
+        if api_id.starts_with("openai/") {
+            let efforts = openai_reasoning_efforts(&api_id, &model.release_date);
+            return Variants::from_iter(
+                efforts
+                    .into_iter()
+                    .map(|e| (e.to_string(), serde_json::json!({ "reasoningEffort": e }))),
+            );
+        }
+        return Variants::from_iter(
+            WIDELY_SUPPORTED_EFFORTS
+                .iter()
+                .map(|e| (e.to_string(), serde_json::json!({ "reasoningEffort": e }))),
+        );
+    }
+
+    // OpenAI-compatible providers (cerebras, togetherai, xai, deepinfra, venice, generic)
+    if npm == "@ai-sdk/cerebras"
+        || npm == "@ai-sdk/togetherai"
+        || npm == "@ai-sdk/xai"
+        || npm == "@ai-sdk/deepinfra"
+        || npm == "venice-ai-sdk-provider"
+        || npm == "@ai-sdk/openai-compatible"
+    {
+        let mut efforts: Vec<&str> = WIDELY_SUPPORTED_EFFORTS.iter().copied().collect();
+        if api_id.contains("deepseek-v4") {
+            efforts.push("max");
+        }
+        return Variants::from_iter(
+            efforts
+                .into_iter()
+                .map(|e| (e.to_string(), serde_json::json!({ "reasoningEffort": e }))),
+        );
+    }
+
+    // Azure
+    if npm == "@ai-sdk/azure" {
+        if id == "o1-mini" {
+            return Variants::new();
+        }
+        let efforts = openai_reasoning_efforts(&id, &model.release_date);
+        return Variants::from_iter(efforts.into_iter().map(|e| {
+            (
+                e.to_string(),
+                serde_json::json!({
+                    "reasoningEffort": e,
+                    "reasoningSummary": "auto",
+                    "include": ["reasoning.encrypted_content"]
+                }),
+            )
+        }));
+    }
+
+    // OpenAI / Bedrock Mantle
+    if npm == "@ai-sdk/openai" || npm == "@ai-sdk/amazon-bedrock/mantle" {
+        let efforts = openai_reasoning_efforts(&api_id, &model.release_date);
+        return Variants::from_iter(efforts.into_iter().map(|e| {
+            (
+                e.to_string(),
+                serde_json::json!({
+                    "reasoningEffort": e,
+                    "reasoningSummary": "auto",
+                    "include": ["reasoning.encrypted_content"]
+                }),
+            )
+        }));
+    }
+
+    // Anthropic
+    if npm == "@ai-sdk/anthropic" || npm == "@ai-sdk/google-vertex/anthropic" {
+        // Adaptive efforts for newer Claude models
+        if let Some(efforts) = anthropic_adaptive_efforts(&api_id) {
+            return Variants::from_iter(efforts.into_iter().map(|e| {
+                (
+                    e.to_string(),
+                    serde_json::json!({
+                        "thinking": { "type": "adaptive" },
+                        "effort": e
+                    }),
+                )
+            }));
+        }
+        return Variants::from([
+            (
+                "high".into(),
+                serde_json::json!({
+                    "thinking": { "type": "enabled", "budgetTokens": 16000 }
+                }),
+            ),
+            (
+                "max".into(),
+                serde_json::json!({
+                    "thinking": { "type": "enabled", "budgetTokens": 31999 }
+                }),
+            ),
+        ]);
+    }
+
+    // Bedrock native
+    if npm == "@ai-sdk/amazon-bedrock" {
+        if let Some(efforts) = anthropic_adaptive_efforts(&api_id) {
+            return Variants::from_iter(efforts.into_iter().map(|e| {
+                (
+                    e.to_string(),
+                    serde_json::json!({
+                        "reasoningConfig": { "type": "adaptive", "maxReasoningEffort": e }
+                    }),
+                )
+            }));
+        }
+        if api_id.contains("anthropic") {
+            return Variants::from([
+                (
+                    "high".into(),
+                    serde_json::json!({
+                        "reasoningConfig": { "type": "enabled", "budgetTokens": 16000 }
+                    }),
+                ),
+                (
+                    "max".into(),
+                    serde_json::json!({
+                        "reasoningConfig": { "type": "enabled", "budgetTokens": 31999 }
+                    }),
+                ),
+            ]);
+        }
+        return Variants::from_iter(
+            WIDELY_SUPPORTED_EFFORTS
+                .iter()
+                .map(|e| {
+                    (
+                        e.to_string(),
+                        serde_json::json!({
+                            "reasoningConfig": { "type": "enabled", "maxReasoningEffort": e }
+                        }),
+                    )
+                }),
+        );
+    }
+
+    // Google / Google Vertex
+    if npm == "@ai-sdk/google" || npm == "@ai-sdk/google-vertex" {
+        return google_thinking_variants(&api_id);
+    }
+
+    // Groq
+    if npm == "@ai-sdk/groq" {
+        let efforts: Vec<&str> = ["none"]
+            .iter()
+            .chain(WIDELY_SUPPORTED_EFFORTS.iter())
+            .copied()
+            .collect();
+        return Variants::from_iter(
+            efforts
+                .into_iter()
+                .map(|e| (e.to_string(), serde_json::json!({ "reasoningEffort": e }))),
+        );
+    }
+
+    // GitHub Copilot
+    if npm == "@ai-sdk/github-copilot" {
+        if id.contains("gemini") {
+            return Variants::new();
+        }
+        if id.contains("claude") {
+            return Variants::from_iter(
+                WIDELY_SUPPORTED_EFFORTS
+                    .iter()
+                    .map(|e| (e.to_string(), serde_json::json!({ "reasoningEffort": e }))),
+            );
+        }
+        let mut efforts: Vec<&str> = WIDELY_SUPPORTED_EFFORTS.iter().copied().collect();
+        if id.contains("gpt-5") && model.release_date.as_str() >= "2025-11-13" {
+            efforts.insert(0, "none");
+        }
+        if id.contains("gpt-5") && model.release_date.as_str() >= "2025-12-04" {
+            efforts.push("xhigh");
+        }
+        return Variants::from_iter(efforts.into_iter().map(|e| {
+            (
+                e.to_string(),
+                serde_json::json!({
+                    "reasoningEffort": e,
+                    "reasoningSummary": "auto",
+                    "include": ["reasoning.encrypted_content"]
+                }),
+            )
+        }));
+    }
+
+    // Mistral
+    if npm == "@ai-sdk/mistral" {
+        let mistral_ids = [
+            "mistral-small-2603",
+            "mistral-small-latest",
+            "mistral-medium-3.5",
+            "mistral-medium-2604",
+        ];
+        if mistral_ids.iter().any(|mid| api_id.contains(mid)) {
+            return Variants::from([(
+                "high".into(),
+                serde_json::json!({ "reasoningEffort": "high" }),
+            )]);
+        }
+        return Variants::new();
+    }
+
+    Variants::new()
+}
+
+/// Compute OpenAI reasoning efforts based on model ID and release date.
+fn openai_reasoning_efforts(api_id: &str, release_date: &str) -> Vec<&'static str> {
+    let id = api_id.to_lowercase();
+    if id.contains("deep-research") {
+        return vec!["medium"];
+    }
+    let none_date = "2025-11-13";
+    let xhigh_date = "2025-12-04";
+
+    let mut efforts: Vec<&'static str> = WIDELY_SUPPORTED_EFFORTS.to_vec();
+    if id.contains("gpt-5") {
+        efforts.insert(0, "minimal");
+    }
+    if release_date >= none_date {
+        efforts.insert(0, "none");
+    }
+    if release_date >= xhigh_date {
+        efforts.push("xhigh");
+    }
+    efforts
+}
+
+/// Compute OpenAI-compatible reasoning efforts.
+fn openai_compatible_reasoning_efforts(api_id: &str) -> Vec<&'static str> {
+    WIDELY_SUPPORTED_EFFORTS.to_vec()
+}
+
+/// Compute Anthropic adaptive efforts for newer Claude models.
+fn anthropic_adaptive_efforts(api_id: &str) -> Option<Vec<&'static str>> {
+    let id = api_id.to_lowercase();
+    // Opus 4.7+ or fable-5
+    if id.contains("opus-4.7") || id.contains("opus-4_7") || id.contains("fable-5") {
+        return Some(vec!["low", "medium", "high", "xhigh", "max"]);
+    }
+    // Opus 4.6 / Sonnet 4.6
+    if id.contains("opus-4-6")
+        || id.contains("opus-4.6")
+        || id.contains("sonnet-4-6")
+        || id.contains("sonnet-4.6")
+    {
+        return Some(vec!["low", "medium", "high", "max"]);
+    }
+    None
+}
+
+/// Compute Google thinking variants.
+fn google_thinking_variants(api_id: &str) -> Variants {
+    let id = api_id.to_lowercase();
+    if id.contains("2.5") {
+        let budget_max = if id.contains("pro") && !id.contains("flash") {
+            32_768
+        } else {
+            24_576
+        };
+        return Variants::from([
+            (
+                "high".into(),
+                serde_json::json!({
+                    "thinkingConfig": { "includeThoughts": true, "thinkingBudget": 16000 }
+                }),
+            ),
+            (
+                "max".into(),
+                serde_json::json!({
+                    "thinkingConfig": { "includeThoughts": true, "thinkingBudget": budget_max }
+                }),
+            ),
+        ]);
+    }
+    // Gemini 3
+    let efforts = if id.contains("gemini-3") {
+        if id.contains("flash-image") {
+            vec!["minimal", "high"]
+        } else if id.contains("pro-image") {
+            vec!["high"]
+        } else if id.contains("flash") {
+            vec!["minimal", "low", "medium", "high"]
+        } else {
+            vec!["low", "medium", "high"]
+        }
+    } else {
+        vec!["low", "high"]
+    };
+    Variants::from_iter(
+        efforts
+            .into_iter()
+            .map(|e| {
+                (
+                    e.to_string(),
+                    serde_json::json!({
+                        "thinkingConfig": { "includeThoughts": true, "thinkingLevel": e }
+                    }),
+                )
+            }),
+    )
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Provider-specific default options
+// ═══════════════════════════════════════════════════════════════════
+
+/// Generate provider-specific default options for a model.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `options`.
+pub fn provider_default_options(model: &Model, session_id: &str) -> serde_json::Value {
+    let mut result = serde_json::Map::new();
+    let npm = &model.api.npm;
+    let id = model.id.to_lowercase();
+    let api_id = model.api.id.to_lowercase();
+
+    // OpenAI and providers using OpenAI package: store = false
+    if npm == "@ai-sdk/openai" || npm == "@ai-sdk/github-copilot" || npm == "@ai-sdk/amazon-bedrock/mantle" {
+        result.insert("store".into(), serde_json::json!(false));
+    }
+
+    // Azure: store = false + promptCacheKey
+    if npm == "@ai-sdk/azure" {
+        result.insert("store".into(), serde_json::json!(false));
+        result.insert(
+            "promptCacheKey".into(),
+            serde_json::json!(session_id),
+        );
+    }
+
+    // OpenAI promptCacheKey
+    if npm == "@ai-sdk/openai" || npm == "@ai-sdk/amazon-bedrock/mantle" {
+        result.insert(
+            "promptCacheKey".into(),
+            serde_json::json!(session_id),
+        );
+    }
+
+    // Google thinking
+    if (npm == "@ai-sdk/google" || npm == "@ai-sdk/google-vertex") && model.capabilities.reasoning {
+        let mut thinking = serde_json::Map::new();
+        thinking.insert("includeThoughts".into(), serde_json::json!(true));
+        if id.contains("gemini-3") {
+            thinking.insert("thinkingLevel".into(), serde_json::json!("high"));
+        }
+        result.insert("thinkingConfig".into(), serde_json::Value::Object(thinking));
+    }
+
+    // GPT-5 defaults
+    if api_id.contains("gpt-5") && !api_id.contains("gpt-5-chat") && !api_id.contains("gpt-5-pro") {
+        result.insert("reasoningEffort".into(), serde_json::json!("medium"));
+        if npm == "@ai-sdk/openai" || npm == "@ai-sdk/amazon-bedrock/mantle" {
+            result.insert("reasoningSummary".into(), serde_json::json!("auto"));
+            result.insert(
+                "include".into(),
+                serde_json::json!(["reasoning.encrypted_content"]),
+            );
+        }
+        // textVerbosity for non-chat GPT-5.x
+        if api_id.contains("gpt-5.")
+            && !api_id.contains("codex")
+            && !api_id.contains("-chat")
+            && model.provider_id != "azure"
+        {
+            result.insert("textVerbosity".into(), serde_json::json!("low"));
+        }
+    }
+
+    serde_json::Value::Object(result)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Provider options key mapping
+// ═══════════════════════════════════════════════════════════════════
+
+/// Map provider-specific options to the correct SDK key.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `providerOptions`.
+pub fn map_provider_options(model: &Model, options: serde_json::Value) -> serde_json::Value {
+    let npm = &model.api.npm;
+
+    // Azure: pass options under both "openai" and "azure" keys
+    if npm == "@ai-sdk/azure" {
+        return serde_json::json!({
+            "openai": options,
+            "azure": options
+        });
+    }
+
+    let key = sdk_key(npm).unwrap_or(&model.provider_id);
+    serde_json::json!({ key: options })
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// JSON schema sanitization
+// ═══════════════════════════════════════════════════════════════════
+
+/// Sanitize a JSON schema for OpenAI tool compatibility.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `sanitizeOpenAISchema`.
+pub fn sanitize_openai_schema(value: serde_json::Value) -> serde_json::Value {
+    let types = [
+        "string", "number", "boolean", "integer", "object", "array", "null",
+    ];
+
+    // Boolean form → string type
+    if let serde_json::Value::Bool(_) = &value {
+        return serde_json::json!({ "type": "string" });
+    }
+
+    if let serde_json::Value::Array(arr) = &value {
+        return serde_json::Value::Array(arr.iter().map(|v| sanitize_openai_schema(v.clone())).collect());
+    }
+
+    let obj = match value.as_object() {
+        Some(o) => o,
+        None => return value,
+    };
+
+    let mut result = serde_json::Map::new();
+
+    if let Some(ref_val) = obj.get("$ref") {
+        result.insert("$ref".into(), ref_val.clone());
+    }
+    if let Some(desc) = obj.get("description") {
+        result.insert("description".into(), desc.clone());
+    }
+    if let Some(const_val) = obj.get("const") {
+        result.insert("enum".into(), serde_json::json!([const_val]));
+    } else if let Some(enum_val) = obj.get("enum") {
+        result.insert("enum".into(), enum_val.clone());
+    }
+
+    if let Some(props) = obj.get("properties").and_then(|p| p.as_object()) {
+        let sanitized: serde_json::Map<String, serde_json::Value> = props
+            .iter()
+            .map(|(k, v)| (k.clone(), sanitize_openai_schema(v.clone())))
+            .collect();
+        result.insert("properties".into(), serde_json::Value::Object(sanitized));
+    }
+
+    if let Some(req) = obj.get("required").and_then(|r| r.as_array()) {
+        let filtered: Vec<&serde_json::Value> = req.iter().filter(|v| v.is_string()).collect();
+        result.insert("required".into(), serde_json::json!(filtered));
+    }
+
+    if let Some(items) = obj.get("items") {
+        result.insert("items".into(), sanitize_openai_schema(items.clone()));
+    }
+
+    if let Some(additional) = obj.get("additionalProperties") {
+        if additional.is_boolean() {
+            result.insert("additionalProperties".into(), additional.clone());
+        } else {
+            result.insert(
+                "additionalProperties".into(),
+                sanitize_openai_schema(additional.clone()),
+            );
+        }
+    }
+
+    for key in &["anyOf", "oneOf", "allOf"] {
+        if let Some(arr) = obj.get(*key).and_then(|v| v.as_array()) {
+            result.insert(
+                (*key).into(),
+                serde_json::Value::Array(arr.iter().map(|v| sanitize_openai_schema(v.clone())).collect()),
+            );
+        }
+    }
+
+    for key in &["$defs", "definitions"] {
+        if let Some(defs) = obj.get(*key).and_then(|d| d.as_object()) {
+            let sanitized: serde_json::Map<String, serde_json::Value> = defs
+                .iter()
+                .map(|(k, v)| (k.clone(), sanitize_openai_schema(v.clone())))
+                .collect();
+            result.insert((*key).into(), serde_json::Value::Object(sanitized));
+        }
+    }
+
+    // Determine schema type
+    let schema_types: Vec<&str> = match obj.get("type") {
+        Some(serde_json::Value::String(s)) => {
+            if types.contains(&s.as_str()) {
+                vec![s.as_str()]
+            } else {
+                vec![]
+            }
+        }
+        Some(serde_json::Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().filter(|s| types.contains(s)))
+            .collect(),
+        _ => vec![],
+    };
+
+    let has_ref = result.contains_key("$ref");
+    let has_composition = ["anyOf", "oneOf", "allOf"]
+        .iter()
+        .any(|k| result.contains_key(*k));
+
+    if schema_types.is_empty() && (has_ref || has_composition) {
+        return serde_json::Value::Object(result);
+    }
+
+    if schema_types.is_empty() {
+        return serde_json::Value::Object(result);
+    }
+
+    if schema_types.len() == 1 {
+        result.insert("type".into(), serde_json::json!(schema_types[0]));
+    } else {
+        result.insert("type".into(), serde_json::json!(schema_types));
+    }
+
+    if schema_types.contains(&"object") && !result.contains_key("properties") {
+        result.insert("properties".into(), serde_json::json!({}));
+    }
+    if schema_types.contains(&"array") && !result.contains_key("items") {
+        result.insert(
+            "items".into(),
+            serde_json::json!({ "type": "string" }),
+        );
+    }
+
+    serde_json::Value::Object(result)
+}
+
+/// Sanitize a JSON schema based on the model's provider.
+///
+/// Ported from `packages/opencode/src/provider/transform.ts` `schema`.
+pub fn sanitize_schema(model: &Model, schema: serde_json::Value) -> serde_json::Value {
+    let npm = &model.api.npm;
+
+    if npm == "@ai-sdk/openai" || npm == "@ai-sdk/azure" {
+        return sanitize_openai_schema(schema);
+    }
+
+    schema
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Tests
 // ═══════════════════════════════════════════════════════════════════
 

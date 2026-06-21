@@ -163,10 +163,10 @@ pub fn args(shell: &ShellItem, command: &str, cwd: &str) -> Vec<String> {
                 "-l".into(),
                 "-c".into(),
                 format!(
-                    "shopt -s expand_aliases
-[[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
-cd -- "$1"
-eval {}",
+                    "shopt -s expand_aliases\n\
+                     [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true\n\
+                     cd -- \"$1\"\n\
+                     eval {}",
                     quoted
                 ),
                 "opencode".into(),
@@ -181,10 +181,10 @@ eval {}",
                 "-l".into(),
                 "-c".into(),
                 format!(
-                    "[[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
-[[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
-cd -- "$1"
-eval {}",
+                    "[[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true\n\
+                     [[ -f \"${{ZDOTDIR:-$HOME}}/.zshrc\" ]] && source \"${{ZDOTDIR:-$HOME}}/.zshrc\" >/dev/null 2>&1 || true\n\
+                     cd -- \"$1\"\n\
+                     eval {}",
                     quoted
                 ),
                 "opencode".into(),
@@ -543,12 +543,14 @@ impl ShellService {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-                let stdout = if stdout.len() > MAX_CAPTURE_BYTES {
+                let stdout_truncated = stdout.len() > MAX_CAPTURE_BYTES;
+                let stdout = if stdout_truncated {
                     stdout.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
                 } else {
                     stdout
                 };
-                let stderr = if stderr.len() > MAX_CAPTURE_BYTES {
+                let stderr_truncated = stderr.len() > MAX_CAPTURE_BYTES;
+                let stderr = if stderr_truncated {
                     stderr.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
                 } else {
                     stderr
@@ -557,8 +559,8 @@ impl ShellService {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout,
                     stderr,
-                    stdout_truncated: stdout.len() > MAX_CAPTURE_BYTES,
-                    stderr_truncated: stderr.len() > MAX_CAPTURE_BYTES,
+                    stdout_truncated,
+                    stderr_truncated,
                     duration_ms,
                     killed: false,
                 })

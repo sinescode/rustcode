@@ -49,6 +49,7 @@ serde_yaml = "0.9"
 tempfile = "3"
 shlex = "1"
 urlencoding = "2"
+walkdir = "2"
 rustcode-core = { path = "crates/rustcode-core" }
 rustcode-server = { path = "crates/rustcode-server" }
 rustcode-tui = { path = "crates/rustcode-tui" }

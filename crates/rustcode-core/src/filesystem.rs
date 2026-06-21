@@ -1015,8 +1015,8 @@ pub fn write_file(root: &Path, path: &RelativePath, content: &str) -> Result<usi
     if let Some(parent) = absolute.parent() {
         std::fs::create_dir_all(parent).map_err(FileSystemError::Io)?;
     }
-    let bytes_written = std::fs::write(&absolute, content).map_err(FileSystemError::Io)?;
-    Ok(bytes_written)
+    std::fs::write(&absolute, content).map_err(FileSystemError::Io)?;
+    Ok(content.len())
 }
 
 /// Ensure a directory exists, creating it and all parent directories if needed.

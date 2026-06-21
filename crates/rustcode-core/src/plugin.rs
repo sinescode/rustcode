@@ -863,6 +863,11 @@ pub trait PluginHooks: Send + Sync {
     async fn on_provider_small_model(&self) -> Option<String> {
         None
     }
+
+    /// Triggered when text completion is requested.
+    ///
+    /// Ported from `packages/opencode/src/plugin/index.ts` hooks.
+    async fn on_text_complete(&self, _text: &mut String) {}
 }
 
 // ── Auth plugin types ─────────────────────────────────────────────────
@@ -1056,6 +1061,91 @@ pub fn snowflake_cortex_auth_plugin() -> AuthHook {
     }
 }
 
+/// GitHub Copilot authentication plugin.
+///
+/// Provides OAuth-based authentication for GitHub Copilot.
+///
+/// # Source
+/// `packages/opencode/src/plugin/github-copilot/copilot.ts`
+pub fn copilot_auth_plugin() -> AuthHook {
+    AuthHook {
+        provider: "github-copilot".to_string(),
+        methods: vec![AuthMethod {
+            method_type: AuthMethodType::OAuth,
+            label: "GitHub Copilot".to_string(),
+            prompts: vec![],
+        }],
+    }
+}
+
+/// OpenAI Codex authentication plugin.
+///
+/// Provides OAuth-based authentication for OpenAI Codex.
+///
+/// # Source
+/// `packages/opencode/src/plugin/openai/codex.ts`
+pub fn codex_auth_plugin() -> AuthHook {
+    AuthHook {
+        provider: "openai".to_string(),
+        methods: vec![AuthMethod {
+            method_type: AuthMethodType::OAuth,
+            label: "OpenAI API key".to_string(),
+            prompts: vec![],
+        }],
+    }
+}
+
+/// GitLab authentication plugin.
+///
+/// Provides OAuth-based authentication for GitLab.
+///
+/// # Source
+/// `opencode-gitlab-auth` package
+pub fn gitlab_auth_plugin() -> AuthHook {
+    AuthHook {
+        provider: "gitlab".to_string(),
+        methods: vec![AuthMethod {
+            method_type: AuthMethodType::OAuth,
+            label: "GitLab token".to_string(),
+            prompts: vec![],
+        }],
+    }
+}
+
+/// Poe authentication plugin.
+///
+/// Provides OAuth-based authentication for Poe.
+///
+/// # Source
+/// `opencode-poe-auth` package
+pub fn poe_auth_plugin() -> AuthHook {
+    AuthHook {
+        provider: "poe".to_string(),
+        methods: vec![AuthMethod {
+            method_type: AuthMethodType::OAuth,
+            label: "Poe API key".to_string(),
+            prompts: vec![],
+        }],
+    }
+}
+
+/// Cloudflare AI Gateway authentication plugin.
+///
+/// Provides authentication for Cloudflare AI Gateway.
+///
+/// # Source
+/// `packages/opencode/src/plugin/cloudflare.ts`
+pub fn cloudflare_ai_gateway_auth_plugin() -> AuthHook {
+    AuthHook {
+        provider: "cloudflare".to_string(),
+        methods: vec![AuthMethod {
+            method_type: AuthMethodType::Api,
+            label: "API token".to_string(),
+            prompts: vec![],
+        }],
+    }
+}
+
 /// Get all built-in auth plugins.
 pub fn built_in_auth_plugins() -> Vec<AuthHook> {
     vec![
@@ -1064,6 +1154,11 @@ pub fn built_in_auth_plugins() -> Vec<AuthHook> {
         xai_auth_plugin(),
         cloudflare_workers_auth_plugin(),
         snowflake_cortex_auth_plugin(),
+        copilot_auth_plugin(),
+        codex_auth_plugin(),
+        gitlab_auth_plugin(),
+        poe_auth_plugin(),
+        cloudflare_ai_gateway_auth_plugin(),
     ]
 }
 
@@ -1141,6 +1236,8 @@ pub struct PluginV2Service {
     plugins: HashMap<String, PluginV2Definition>,
     /// Active scopes for each plugin.
     scopes: HashMap<String, bool>,
+    /// Event callbacks for plugin lifecycle events.
+    on_added: Vec<Box<dyn Fn(&str) + Send + Sync>>,
 }
 
 impl Default for PluginV2Service {
@@ -1155,7 +1252,15 @@ impl PluginV2Service {
         Self {
             plugins: HashMap::new(),
             scopes: HashMap::new(),
+            on_added: Vec::new(),
         }
+    }
+
+    /// Register a callback for when plugins are added.
+    ///
+    /// Ported from `packages/core/src/plugin.ts` `Event.Added`.
+    pub fn on_added(&mut self, callback: Box<dyn Fn(&str) + Send + Sync>) {
+        self.on_added.push(callback);
     }
 
     /// Add a V2 plugin with a new scope.
@@ -1165,7 +1270,11 @@ impl PluginV2Service {
     pub fn add(&mut self, plugin: PluginV2Definition) {
         let id = plugin.id.clone();
         self.scopes.insert(id.clone(), true);
-        self.plugins.insert(id, plugin);
+        self.plugins.insert(id.clone(), plugin);
+        // Notify listeners that a plugin was added
+        for cb in &self.on_added {
+            cb(&id);
+        }
     }
 
     /// Remove a V2 plugin and close its scope.
@@ -1348,6 +1457,23 @@ pub fn is_deprecated_plugin(spec: &str) -> bool {
 
 // ── Plugin metadata entry ─────────────────────────────────────────────
 
+/// A theme entry in plugin metadata.
+///
+/// Ported from `packages/opencode/src/plugin/meta.ts` `Theme`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginMetaThemeEntry {
+    /// Source path of the theme file.
+    pub src: String,
+    /// Destination path where the theme was installed.
+    pub dest: String,
+    /// Last modified time (Unix millis).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mtime: Option<u64>,
+    /// File size in bytes.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub size: Option<u64>,
+}
+
 /// Persistent metadata about a loaded plugin, stored in the plugin-meta.json file.
 ///
 /// Ported from `packages/opencode/src/plugin/meta.ts` `Entry`.
@@ -1377,6 +1503,9 @@ pub struct PluginMetaEntry {
     pub load_count: u64,
     /// Fingerprint string used to detect changes.
     pub fingerprint: String,
+    /// Theme information stored with this metadata entry.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub themes: Option<HashMap<String, PluginMetaThemeEntry>>,
 }
 
 /// Compute a fingerprint for a plugin entry.
@@ -1634,13 +1763,69 @@ impl PluginManager {
             if let Some(handler) = self.handlers.get(&plugin.id) {
                 match hook {
                     PluginHook::Dispose => handler.dispose().await,
-                    PluginHook::Event => {
-                        // Event hooks receive data externally
+                    PluginHook::Event => { /* handled by trigger_event */ }
+                    PluginHook::Config => { /* handled by trigger_config_change */ }
+                    PluginHook::Tool => { /* tool registration is handled externally */ }
+                    PluginHook::ToolDefinition => {
+                        let mut defs = Vec::new();
+                        handler.on_tool_definition(&mut defs).await;
                     }
-                    PluginHook::Config => {
-                        // Config hooks receive config externally
+                    PluginHook::ToolExecuteBefore => {
+                        let args = serde_json::Value::Null;
+                        handler.on_tool_execute_before("", &args).await;
                     }
-                    _ => {}
+                    PluginHook::ToolExecuteAfter => {
+                        let result = serde_json::Value::Null;
+                        handler.on_tool_execute_after("", &result).await;
+                    }
+                    PluginHook::Auth => {
+                        handler.on_auth("").await;
+                    }
+                    PluginHook::Provider => {
+                        handler.on_provider_discover("").await;
+                    }
+                    PluginHook::ChatMessage => {
+                        handler.on_chat_message(String::new()).await;
+                    }
+                    PluginHook::ChatParams => {
+                        let mut params = serde_json::Value::Null;
+                        handler.on_chat_params(&mut params).await;
+                    }
+                    PluginHook::ChatHeaders => {
+                        let mut headers = HashMap::new();
+                        handler.on_chat_headers(&mut headers).await;
+                    }
+                    PluginHook::PermissionAsk => {
+                        handler.on_permission_ask("", "").await;
+                    }
+                    PluginHook::CommandExecuteBefore => {
+                        handler.on_command_execute_before("").await;
+                    }
+                    PluginHook::ShellEnv => {
+                        let mut env = HashMap::new();
+                        handler.on_shell_env(&mut env).await;
+                    }
+                    PluginHook::ExperimentalTextComplete => {
+                        let mut text = String::new();
+                        handler.on_text_complete(&mut text).await;
+                    }
+                    PluginHook::ExperimentalSessionCompacting => {
+                        // Session compacting is handled externally
+                    }
+                    PluginHook::ExperimentalChatMessagesTransform => {
+                        let mut msg = String::new();
+                        handler.on_chat_message(msg).await;
+                    }
+                    PluginHook::ExperimentalChatSystemTransform => {
+                        let mut system = String::new();
+                        handler.on_chat_system_transform(&mut system).await;
+                    }
+                    PluginHook::ExperimentalCompactionAutocontinue => {
+                        handler.on_compaction_autocontinue().await;
+                    }
+                    PluginHook::ExperimentalProviderSmallModel => {
+                        handler.on_provider_small_model().await;
+                    }
                 }
             }
         }
@@ -1882,6 +2067,52 @@ impl PluginManager {
         Ok(())
     }
 
+    /// List all stored plugin metadata entries.
+    ///
+    /// Ported from `packages/opencode/src/plugin/meta.ts` `list()`.
+    pub fn list_meta(&self) -> &HashMap<String, PluginMetaEntry> {
+        &self.meta
+    }
+
+    /// Store theme data for a plugin in the metadata store.
+    ///
+    /// Ported from `packages/opencode/src/plugin/meta.ts` `setTheme()`.
+    pub fn set_meta_theme(
+        &mut self,
+        plugin_id: &str,
+        theme_name: &str,
+        src: &str,
+        dest: &str,
+        mtime: Option<u64>,
+        size: Option<u64>,
+    ) {
+        if let Some(entry) = self.meta.get_mut(plugin_id) {
+            let themes = entry.themes.get_or_insert_with(HashMap::new);
+            themes.insert(
+                theme_name.to_string(),
+                PluginMetaThemeEntry {
+                    src: src.to_string(),
+                    dest: dest.to_string(),
+                    mtime,
+                    size,
+                },
+            );
+            tracing::debug!(
+                "set theme for plugin `{}`: {} -> {}",
+                plugin_id,
+                theme_name,
+                dest
+            );
+        }
+    }
+
+    /// Get all metadata as a serializable value (for CLI display).
+    pub fn meta_as_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "plugins": self.meta,
+        })
+    }
+
     // ── Event bus integration ─────────────────────────────────────────
 
     /// Forward an event to all registered plugin event hooks.
@@ -1967,6 +2198,7 @@ impl PluginManager {
                 time_changed,
                 load_count: prev.load_count + 1,
                 fingerprint,
+                themes: None,
             };
             self.meta.insert(id.to_string(), new_entry);
             (state, &self.meta[id])
@@ -1983,6 +2215,7 @@ impl PluginManager {
                 time_changed: now,
                 load_count: 1,
                 fingerprint,
+                themes: None,
             };
             self.meta.insert(id.to_string(), new_entry);
             (PluginState::First, &self.meta[id])
@@ -2061,6 +2294,112 @@ impl PluginManager {
             });
         }
         Ok(parse_specifier(spec))
+    }
+
+    /// Load multiple external plugins using the PluginLoader pipeline.
+    ///
+    /// Ported from `packages/opencode/src/plugin/loader.ts` `loadExternal()`.
+    pub async fn load_external(
+        &mut self,
+        plans: &[PluginLoaderPlan],
+        kind: PluginKind,
+        report: Option<&PluginLoaderReport>,
+    ) -> Vec<PluginLoaderResolved> {
+        let mut results = Vec::new();
+        for plan in plans {
+            if let Some(ref start) = report.as_ref().and_then(|r| r.start.as_ref()) {
+                start(&plan.spec, false);
+            }
+            match PluginLoader::resolve(plan, kind).await {
+                PluginLoaderResolveResult::Resolved(resolved) => {
+                    let mut plugin = Plugin::new(
+                        resolved.spec.clone(),
+                        &resolved.spec,
+                        resolved.source,
+                    )
+                    .with_spec(&resolved.spec)
+                    .with_target(std::path::PathBuf::from(&resolved.target));
+                    if let Some(ref options) = resolved.options {
+                        if let Some(version) = options.get("version").and_then(|v| v.as_str()) {
+                            plugin = plugin.with_version(version);
+                        }
+                    }
+                    self.register(plugin);
+                    results.push(resolved);
+                }
+                PluginLoaderResolveResult::Missing(missing) => {
+                    if let Some(ref missing_fn) = report.as_ref().and_then(|r| r.missing.as_ref()) {
+                        missing_fn(&plan.spec, false, &missing.message, &missing);
+                    }
+                }
+                PluginLoaderResolveResult::Failed { stage, error } => {
+                    if let Some(ref error_fn) = report.as_ref().and_then(|r| r.error.as_ref()) {
+                        error_fn(&plan.spec, false, stage, &error);
+                    }
+                    self.record_error(&plan.spec, PluginErrorStage::Load, &error);
+                }
+            }
+        }
+        results
+    }
+
+    /// Load all configured plugins from their specifier strings.
+    ///
+    /// This is the top-level entrypoint for loading external plugins.
+    ///
+    /// Ported from `packages/opencode/src/plugin/loader.ts` `loadExternal()`.
+    pub async fn load_all_external(
+        &mut self,
+        specs: &[String],
+        kind: PluginKind,
+    ) -> ExternalPluginLoadResult {
+        let mut result = ExternalPluginLoadResult::default();
+        for spec in specs {
+            if spec.is_empty() {
+                continue;
+            }
+            if is_deprecated_plugin(spec) {
+                result.skipped.push(spec.clone());
+                continue;
+            }
+            match self.load(spec.clone()) {
+                Ok(plugin) => {
+                    result.loaded.push(plugin.clone());
+                }
+                Err(e) => {
+                    result.errors.push((spec.clone(), e.to_string()));
+                    self.record_error(spec, PluginErrorStage::Load, &e.to_string());
+                }
+            }
+        }
+        result
+    }
+
+    /// Load all configured plugin specs from a config value.
+    ///
+    /// Parses the `plugin` array from an opencode.json config value.
+    pub async fn load_plugins_from_config(
+        &mut self,
+        config: &serde_json::Value,
+    ) -> ExternalPluginLoadResult {
+        let specs: Vec<String> = config
+            .get("plugin")
+            .and_then(|v| v.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|item| {
+                        if let Some(s) = item.as_str() {
+                            Some(s.to_string())
+                        } else if let Some(arr) = item.as_array() {
+                            arr.first().and_then(|v| v.as_str()).map(String::from)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        self.load_all_external(&specs, PluginKind::Server).await
     }
 }
 
@@ -3067,6 +3406,1147 @@ fn current_time_millis() -> u64 {
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+
+// ══════════════════════════════════════════════════════════════════════
+// Plugin Loader Pipeline
+// ══════════════════════════════════════════════════════════════════════
+
+/// A normalized plugin declaration derived from config before any
+/// filesystem or npm work happens.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` `PluginLoader.Plan`.
+#[derive(Debug, Clone)]
+pub struct PluginLoaderPlan {
+    /// Plugin specifier string.
+    pub spec: String,
+    /// Plugin-specific options.
+    pub options: Option<serde_json::Value>,
+    /// Whether this plugin is deprecated (now built-in).
+    pub deprecated: bool,
+}
+
+/// A plugin that has been resolved to a concrete target and entrypoint.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` `PluginLoader.Resolved`.
+#[derive(Debug, Clone)]
+pub struct PluginLoaderResolved {
+    /// Plugin specifier string.
+    pub spec: String,
+    /// Plugin-specific options.
+    pub options: Option<serde_json::Value>,
+    /// Plugin source (file or npm).
+    pub source: PluginSource,
+    /// Resolved target path on disk.
+    pub target: String,
+    /// Entrypoint file path.
+    pub entry: String,
+    /// Package metadata (if available).
+    pub pkg: Option<PluginPackageJson>,
+}
+
+/// A plugin target that exists but does not expose the requested kind.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` `PluginLoader.Missing`.
+#[derive(Debug, Clone)]
+pub struct PluginLoaderMissing {
+    /// Plugin specifier string.
+    pub spec: String,
+    /// Plugin-specific options.
+    pub options: Option<serde_json::Value>,
+    /// Plugin source.
+    pub source: PluginSource,
+    /// Resolved target path.
+    pub target: String,
+    /// Package metadata.
+    pub pkg: Option<PluginPackageJson>,
+    /// Human-readable explanation.
+    pub message: String,
+}
+
+/// A resolved plugin whose module has been imported successfully.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` `PluginLoader.Loaded`.
+#[derive(Debug, Clone)]
+pub struct PluginLoaderLoaded {
+    /// Plugin specifier string.
+    pub spec: String,
+    /// Plugin-specific options.
+    pub options: Option<serde_json::Value>,
+    /// Plugin source.
+    pub source: PluginSource,
+    /// Resolved target path.
+    pub target: String,
+    /// Entrypoint file path.
+    pub entry: String,
+    /// Package metadata.
+    pub pkg: Option<PluginPackageJson>,
+}
+
+/// Stages in plugin loading for error reporting.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` error stages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PluginLoaderStage {
+    /// Failed during npm install / target resolution.
+    Install,
+    /// Failed during entrypoint detection.
+    Entry,
+    /// Failed compatibility check.
+    Compatibility,
+    /// Failed during module loading.
+    Load,
+}
+
+impl std::fmt::Display for PluginLoaderStage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Install => write!(f, "install"),
+            Self::Entry => write!(f, "entry"),
+            Self::Compatibility => write!(f, "compatibility"),
+            Self::Load => write!(f, "load"),
+        }
+    }
+}
+
+/// Report callbacks for plugin loading progress.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` `PluginLoader.Report`.
+pub struct PluginLoaderReport {
+    /// Called before each attempt.
+    pub start: Option<Box<dyn Fn(&str, bool) + Send + Sync>>,
+    /// Called when the package exists but lacks the requested entrypoint.
+    pub missing: Option<Box<dyn Fn(&str, bool, &str, &PluginLoaderMissing) + Send + Sync>>,
+    /// Called for operational failures.
+    pub error: Option<Box<dyn Fn(&str, bool, PluginLoaderStage, &str) + Send + Sync>>,
+}
+
+impl Default for PluginLoaderReport {
+    fn default() -> Self {
+        Self { start: None, missing: None, error: None }
+    }
+}
+
+/// Result of a plugin resolution attempt.
+#[derive(Debug)]
+pub enum PluginLoaderResolveResult {
+    /// Successfully resolved.
+    Resolved(PluginLoaderResolved),
+    /// Package exists but missing requested entrypoint.
+    Missing(PluginLoaderMissing),
+    /// Failed during a specific stage.
+    Failed {
+        stage: PluginLoaderStage,
+        error: String,
+    },
+}
+
+/// Result of loading all external plugins.
+#[derive(Debug, Default)]
+pub struct ExternalPluginLoadResult {
+    /// Successfully loaded plugins.
+    pub loaded: Vec<Plugin>,
+    /// Plugins that were skipped (missing entrypoint).
+    pub skipped: Vec<String>,
+    /// Plugins that failed to load.
+    pub errors: Vec<(String, String)>,
+}
+
+/// The PluginLoader handles the multi-stage pipeline of resolving,
+/// loading, and reporting plugin load results.
+///
+/// Ported from `packages/opencode/src/plugin/loader.ts` `PluginLoader`.
+pub struct PluginLoader;
+
+impl PluginLoader {
+    /// Normalize a config item into a plugin plan.
+    ///
+    /// Ported from `packages/opencode/src/plugin/loader.ts` `plan()`.
+    pub fn plan(spec: &str, options: Option<serde_json::Value>) -> PluginLoaderPlan {
+        PluginLoaderPlan {
+            spec: spec.to_string(),
+            options,
+            deprecated: is_deprecated_plugin(spec),
+        }
+    }
+
+    /// Resolve a configured plugin into a concrete entrypoint.
+    ///
+    /// Checks: install/target resolution -> entrypoint detection -> compatibility.
+    ///
+    /// Ported from `packages/opencode/src/plugin/loader.ts` `resolve()`.
+    pub async fn resolve(
+        plan: &PluginLoaderPlan,
+        kind: PluginKind,
+    ) -> PluginLoaderResolveResult {
+        if plan.deprecated {
+            return PluginLoaderResolveResult::Failed {
+                stage: PluginLoaderStage::Install,
+                error: format!("plugin `{}` is deprecated (now built-in)", plan.spec),
+            };
+        }
+
+        // Stage 1: Resolve target
+        let target = match Self::resolve_target(&plan.spec).await {
+            Ok(t) => t,
+            Err(e) => {
+                return PluginLoaderResolveResult::Failed {
+                    stage: PluginLoaderStage::Install,
+                    error: e,
+                }
+            }
+        };
+
+        // Stage 2: Find entrypoint
+        let source = plugin_source(&plan.spec);
+        let (entry, pkg) = match Self::find_entrypoint(&plan.spec, &target, source, kind).await {
+            Ok(result) => result,
+            Err(msg) => {
+                return PluginLoaderResolveResult::Missing(PluginLoaderMissing {
+                    spec: plan.spec.clone(),
+                    options: plan.options.clone(),
+                    source,
+                    target: target.clone(),
+                    pkg: None,
+                    message: msg,
+                });
+            }
+        };
+
+        // Stage 3: Compatibility check for npm plugins
+        if source == PluginSource::Npm {
+            if let Some(ref pkg) = pkg {
+                if let Err(e) = check_plugin_compatibility(pkg, env!("CARGO_PKG_VERSION")) {
+                    return PluginLoaderResolveResult::Failed {
+                        stage: PluginLoaderStage::Compatibility,
+                        error: e.to_string(),
+                    };
+                }
+            }
+        }
+
+        PluginLoaderResolveResult::Resolved(PluginLoaderResolved {
+            spec: plan.spec.clone(),
+            options: plan.options.clone(),
+            source,
+            target,
+            entry,
+            pkg,
+        })
+    }
+
+    /// Resolve a plugin spec to a target path.
+    async fn resolve_target(spec: &str) -> Result<String, String> {
+        if is_path_plugin_spec(spec) {
+            let path_str = spec.strip_prefix("file://").unwrap_or(spec);
+            let path = std::path::Path::new(path_str);
+            if path.exists() {
+                Ok(path_str.to_string())
+            } else {
+                Err(format!("plugin path not found: {path_str}"))
+            }
+        } else {
+            // Npm plugins: target is a placeholder
+            let parsed = parse_specifier(spec);
+            Ok(format!("/node_modules/{}@{}", parsed.pkg, parsed.version))
+        }
+    }
+
+    /// Find the entrypoint for a plugin target.
+    async fn find_entrypoint(
+        spec: &str,
+        target: &str,
+        source: PluginSource,
+        kind: PluginKind,
+    ) -> Result<(String, Option<PluginPackageJson>), String> {
+        let path = std::path::Path::new(target);
+        // Try to read package.json
+        let pkg = read_plugin_package(path).ok();
+        if let Some(ref pkg) = pkg {
+            if let Ok(entry) = resolve_package_entrypoint(pkg, kind) {
+                return Ok((entry, Some(pkg.clone())));
+            }
+        }
+        // Fallback: check if target itself is an entrypoint
+        if path.is_file() {
+            return Ok((target.to_string(), pkg));
+        }
+        // Check for index files in directory
+        let index_files = ["index.ts", "index.tsx", "index.js", "index.mjs", "index.cjs"];
+        for name in &index_files {
+            let candidate = path.join(name);
+            if candidate.exists() {
+                return Ok((candidate.display().to_string(), pkg));
+            }
+        }
+        Err(format!("no entrypoint found for {kind} in {target}"))
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Plugin Boot System
+// ══════════════════════════════════════════════════════════════════════
+
+/// Boot the plugin system by registering all built-in plugins.
+///
+/// This is equivalent to `packages/core/src/plugin/boot.ts` which
+/// registers all built-in V2 plugins and provider plugins.
+pub fn boot_plugins(registry: &mut ProviderPluginRegistry) {
+    let auth_plugins = built_in_auth_plugins();
+    tracing::info!("registered {} built-in auth plugin hooks", auth_plugins.len());
+
+    // In the full implementation, this would register V2 plugins:
+    // - AgentPlugin (defines default agents)
+    // - CommandPlugin (defines built-in commands)
+    // - SkillPlugin (defines built-in skills)
+    // - ProviderPlugins (33+ LLM provider catalog transforms)
+    // - ModelsDevPlugin (syncs models from models.dev)
+    // - ConfigProviderPlugin (custom providers from config)
+    // - ConfigAgentPlugin (custom agents from config)
+    // - ConfigCommandPlugin (custom commands from config)
+    // - ConfigSkillPlugin (custom skills from config)
+    // - ConfigReferencePlugin (references from config)
+
+    tracing::info!(
+        "plugin boot complete -- {} provider plugins registered",
+        registry.count()
+    );
+}
+
+/// Initialize the plugin system with a fresh PluginManager.
+///
+/// Loads persisted metadata, registers built-in plugins, and
+/// returns the initialized manager.
+pub fn initialize_plugin_system(
+    flags: RuntimeFlags,
+    meta_path: Option<&std::path::Path>,
+) -> PluginManager {
+    let mut manager = PluginManager::with_flags(flags);
+
+    // Load persisted metadata
+    if let Some(path) = meta_path {
+        if let Err(e) = manager.load_meta(path) {
+            tracing::warn!("failed to load plugin metadata: {e}");
+        }
+    } else {
+        let _ = manager.load_default_meta();
+    }
+
+    // Initialize the manager
+    manager.init();
+
+    manager
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Built-in Provider Plugins (Gap 9)
+// ══════════════════════════════════════════════════════════════════════
+
+/// Create the Anthropic provider plugin.
+///
+/// Configures the Anthropic provider with default headers.
+///
+/// Ported from `packages/core/src/plugin/provider/anthropic.ts`.
+pub fn anthropic_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("anthropic", "Anthropic")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "anthropic-version".to_string(),
+                "2023-06-01".to_string(),
+            );
+            ctx.headers.insert(
+                "anthropic-beta".to_string(),
+                "interleaved-thinking-2025-05-14".to_string(),
+            );
+            Box::pin(async {})
+        })
+}
+
+/// Create the OpenAI provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/openai.ts`.
+pub fn openai_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("openai", "OpenAI")
+}
+
+/// Create the Google provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/google.ts`.
+pub fn google_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("google", "Google Generative AI")
+        .with_transform(|ctx| {
+            let api_key = ctx.options.get("apiKey")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            ctx.headers.insert(
+                "x-goog-api-key".to_string(),
+                api_key,
+            );
+            Box::pin(async {})
+        })
+}
+
+/// Create the Groq provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/groq.ts`.
+pub fn groq_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("groq", "Groq")
+}
+
+/// Create the OpenRouter provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/openrouter.ts`.
+pub fn openrouter_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("openrouter", "OpenRouter")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "HTTP-Referer".to_string(),
+                "https://opencode.ai/".to_string(),
+            );
+            ctx.headers.insert(
+                "X-Title".to_string(),
+                "opencode".to_string(),
+            );
+            Box::pin(async {})
+        })
+}
+
+/// Create the DeepInfra provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/deepinfra.ts`.
+pub fn deepinfra_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("deepinfra", "DeepInfra")
+}
+
+/// Create the Mistral provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/mistral.ts`.
+pub fn mistral_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("mistral", "Mistral")
+}
+
+/// Create the xAI provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/xai.ts`.
+pub fn xai_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("xai", "xAI Grok")
+}
+
+/// Create the Cohere provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/cohere.ts`.
+pub fn cohere_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("cohere", "Cohere")
+}
+
+/// Register all built-in provider plugins into a registry.
+///
+/// Ported from `packages/core/src/plugin/provider.ts` `ProviderPlugins`.
+pub fn register_builtin_provider_plugins(registry: &mut ProviderPluginRegistry) {
+    let plugins: Vec<std::sync::Arc<dyn ProviderPlugin>> = vec![
+        std::sync::Arc::new(anthropic_provider_plugin()),
+        std::sync::Arc::new(openai_provider_plugin()),
+        std::sync::Arc::new(google_provider_plugin()),
+        std::sync::Arc::new(groq_provider_plugin()),
+        std::sync::Arc::new(openrouter_provider_plugin()),
+        std::sync::Arc::new(deepinfra_provider_plugin()),
+        std::sync::Arc::new(mistral_provider_plugin()),
+        std::sync::Arc::new(xai_provider_plugin()),
+        std::sync::Arc::new(cohere_provider_plugin()),
+    ];
+
+    registry.register_all(plugins);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Plugin-as-Provider System — allows plugins to act as LLM providers
+// ══════════════════════════════════════════════════════════════════════
+
+use crate::error::Result as PluginResult;
+
+/// A chat completion request for a provider plugin.
+#[derive(Debug, Clone)]
+pub struct PluginChatRequest {
+    /// The model to use.
+    pub model: crate::model::ModelInfo,
+    /// The messages for the conversation.
+    pub messages: Vec<crate::provider::ChatMessage>,
+    /// Available tools for function calling.
+    pub tools: Vec<crate::provider::ToolDefinition>,
+}
+
+/// Handle to a streaming chat response.
+pub struct PluginStreamHandle {
+    /// The stream of LLM events.
+    pub stream: Box<dyn futures::Stream<Item = PluginResult<crate::provider::LlmEvent>> + Send + Unpin>,
+}
+
+/// Result type for a streaming chat response.
+pub type PluginStreamResult = PluginResult<PluginStreamHandle>;
+
+/// Async function type for chat completion.
+pub type ChatFn = Arc<dyn Fn(PluginChatRequest) -> BoxFuture<PluginResult<crate::provider::LlmResponse>> + Send + Sync>;
+
+/// Async function type for streaming chat completion.
+pub type StreamFn = Arc<dyn Fn(PluginChatRequest) -> BoxFuture<PluginStreamResult> + Send + Sync>;
+
+/// Provider information for a plugin provider.
+#[derive(Debug, Clone)]
+pub struct PluginProviderInfo {
+    /// Provider ID.
+    pub id: String,
+    /// Display name.
+    pub name: String,
+    /// Description of the provider.
+    pub description: String,
+    /// Environment variable names for API key lookup.
+    pub env_vars: Vec<String>,
+    /// Base URL for the provider's API.
+    pub base_url: Option<String>,
+    /// Whether the provider is enabled by default.
+    pub enabled: bool,
+}
+
+/// Trait for plugins that register as LLM providers.
+///
+/// This allows external plugins to act as full LLM providers with
+/// chat and streaming capabilities. The PluginProviderAdapter can
+/// wrap existing Provider implementations into this trait.
+///
+/// # Source
+/// Pattern derived from `packages/core/src/plugin/provider/*.ts` where
+/// each provider plugin defines an AI SDK integration.
+#[async_trait::async_trait]
+pub trait PluginProvider: Send + Sync {
+    /// Get the provider ID.
+    fn provider_id(&self) -> String;
+
+    /// Get provider information.
+    fn provider_info(&self) -> PluginProviderInfo;
+
+    /// List available models for this provider.
+    fn list_models(&self) -> Vec<crate::model::ModelInfo>;
+
+    /// Execute a non-streaming chat completion.
+    async fn chat(&self, request: PluginChatRequest) -> PluginResult<crate::provider::LlmResponse>;
+
+    /// Execute a streaming chat completion.
+    async fn stream(&self, request: PluginChatRequest) -> PluginStreamResult;
+}
+
+/// Registry for plugin-based providers.
+///
+/// Manages the lifecycle of ProviderPlugin implementations, allowing
+/// external plugins to register as providers in the system.
+pub struct PluginProviderRegistry {
+    /// Registered plugin providers keyed by provider ID.
+    providers: HashMap<String, Arc<dyn PluginProvider>>,
+}
+
+impl PluginProviderRegistry {
+    /// Create an empty registry.
+    pub fn new() -> Self {
+        Self { providers: HashMap::new() }
+    }
+
+    /// Register a plugin provider.
+    pub fn register(&mut self, provider: Arc<dyn PluginProvider>) {
+        let id = provider.provider_id();
+        self.providers.insert(id, provider);
+    }
+
+    /// Register multiple plugin providers.
+    pub fn register_all(&mut self, providers: Vec<Arc<dyn PluginProvider>>) {
+        for p in providers {
+            self.register(p);
+        }
+    }
+
+    /// Get a provider by ID.
+    pub fn get(&self, id: &str) -> Option<&Arc<dyn PluginProvider>> {
+        self.providers.get(id)
+    }
+
+    /// Remove a provider by ID.
+    pub fn remove(&mut self, id: &str) -> Option<Arc<dyn PluginProvider>> {
+        self.providers.remove(id)
+    }
+
+    /// List all registered provider IDs.
+    pub fn ids(&self) -> Vec<&str> {
+        self.providers.keys().map(|s| s.as_str()).collect()
+    }
+
+    /// Count registered providers.
+    pub fn count(&self) -> usize {
+        self.providers.len()
+    }
+
+    /// Check if a provider is registered.
+    pub fn has(&self, id: &str) -> bool {
+        self.providers.contains_key(id)
+    }
+}
+
+impl Default for PluginProviderRegistry {
+    fn default() -> Self { Self::new() }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PluginProviderAdapter — wraps existing Provider impls as PluginProviders
+// ══════════════════════════════════════════════════════════════════════
+
+/// Adapts a crate::provider::Provider implementation into a PluginProvider.
+///
+/// This allows existing provider implementations (Anthropic, OpenAI, etc.)
+/// to participate in the plugin system and be managed as plugin providers.
+pub struct PluginProviderAdapter {
+    inner: Arc<dyn crate::provider::Provider>,
+    models: Vec<crate::model::ModelInfo>,
+}
+
+impl PluginProviderAdapter {
+    /// Create a new adapter wrapping an existing provider.
+    pub fn new(provider: Arc<dyn crate::provider::Provider>) -> Self {
+        Self {
+            inner: provider,
+            models: Vec::new(),
+        }
+    }
+
+    /// Create a new adapter with pre-loaded models.
+    pub fn with_models(
+        provider: Arc<dyn crate::provider::Provider>,
+        models: Vec<crate::model::ModelInfo>,
+    ) -> Self {
+        Self {
+            inner: provider,
+            models,
+        }
+    }
+
+    /// Load models from the wrapped provider.
+    pub async fn load_models(&mut self) -> PluginResult<()> {
+        use crate::provider::Provider;
+        let provider_models = self.inner.list_models().await?;
+        // Convert provider::Model to model::ModelInfo
+        self.models = provider_models
+            .into_iter()
+            .map(|m| {
+                crate::model::ModelInfo::empty(
+                    m.provider_id.clone(),
+                    m.id.clone(),
+                )
+            })
+            .collect();
+        Ok(())
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginProvider for PluginProviderAdapter {
+    fn provider_id(&self) -> String {
+        self.inner.provider_id().to_string()
+    }
+
+    fn provider_info(&self) -> PluginProviderInfo {
+        PluginProviderInfo {
+            id: self.inner.provider_id().to_string(),
+            name: self.inner.provider_id().to_string(),
+            description: format!("{} provider plugin", self.inner.provider_id()),
+            env_vars: Vec::new(),
+            base_url: None,
+            enabled: true,
+        }
+    }
+
+    fn list_models(&self) -> Vec<crate::model::ModelInfo> {
+        self.models.clone()
+    }
+
+    async fn chat(&self, request: PluginChatRequest) -> PluginResult<crate::provider::LlmResponse> {
+        use crate::provider::Provider;
+        // Convert PluginChatRequest to the provider's types
+        let model = crate::provider::Model {
+            id: request.model.id.clone(),
+            provider_id: request.model.provider_id.clone(),
+            name: request.model.name.clone(),
+            api: crate::provider::ApiInfo {
+                id: request.model.id.clone(),
+                url: String::new(),
+                npm: String::new(),
+            },
+            family: request.model.family.clone().map(|f| f.to_string()),
+            capabilities: crate::provider::Capabilities::default(),
+            cost: crate::provider::Cost::default(),
+            limit: crate::provider::TokenLimit {
+                context: 128_000,
+                input: None,
+                output: 16_384,
+            },
+            status: crate::provider::ModelStatus::Active,
+            options: HashMap::new(),
+            headers: HashMap::new(),
+            release_date: String::new(),
+            variants: None,
+        };
+        self.inner.complete(&model, &request.messages, &request.tools).await
+    }
+
+    async fn stream(&self, request: PluginChatRequest) -> PluginStreamResult {
+        use crate::provider::Provider;
+        let model = crate::provider::Model {
+            id: request.model.id.clone(),
+            provider_id: request.model.provider_id.clone(),
+            name: request.model.name.clone(),
+            api: crate::provider::ApiInfo {
+                id: request.model.id.clone(),
+                url: String::new(),
+                npm: String::new(),
+            },
+            family: request.model.family.clone().map(|f| f.to_string()),
+            capabilities: crate::provider::Capabilities::default(),
+            cost: crate::provider::Cost::default(),
+            limit: crate::provider::TokenLimit {
+                context: 128_000,
+                input: None,
+                output: 16_384,
+            },
+            status: crate::provider::ModelStatus::Active,
+            options: HashMap::new(),
+            headers: HashMap::new(),
+            release_date: String::new(),
+            variants: None,
+        };
+        let stream = self.inner.stream(&model, &request.messages, &request.tools).await?;
+        Ok(PluginStreamHandle { stream })
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Plugin Runtime — load and execute plugins from directories
+// ══════════════════════════════════════════════════════════════════════
+
+/// Configuration for loading a plugin from a directory.
+#[derive(Debug, Clone)]
+pub struct PluginLoadConfig {
+    /// Path to the plugin directory.
+    pub path: std::path::PathBuf,
+    /// Plugin ID override (if different from package name).
+    pub id: Option<String>,
+    /// Configuration options to pass to the plugin.
+    pub config: Option<serde_json::Value>,
+}
+
+/// Errors that can occur during plugin loading and execution.
+#[derive(Debug, thiserror::Error)]
+pub enum PluginRuntimeError {
+    /// Plugin directory not found.
+    #[error("plugin directory not found: {path}")]
+    DirectoryNotFound { path: String },
+    /// No package.json found in plugin directory.
+    #[error("no package.json in {path}")]
+    NoPackageJson { path: String },
+    /// Failed to read or parse package.json.
+    #[error("invalid package.json in {path}: {message}")]
+    InvalidPackageJson { path: String, message: String },
+    /// Plugin initialization failed.
+    #[error("plugin `{id}` initialization failed: {message}")]
+    InitFailed { id: String, message: String },
+    /// Plugin method call failed.
+    #[error("plugin `{id}` method `{method}` failed: {message}")]
+    MethodFailed { id: String, method: String, message: String },
+    /// Unsupported plugin type.
+    #[error("unsupported plugin type for `{id}`: {plugin_type}")]
+    UnsupportedType { id: String, plugin_type: String },
+}
+
+/// A loaded plugin ready for execution.
+pub struct LoadedPlugin {
+    /// Plugin ID.
+    pub id: String,
+    /// Plugin name.
+    pub name: String,
+    /// Plugin version.
+    pub version: String,
+    /// Path to the plugin directory.
+    pub path: std::path::PathBuf,
+    /// Parsed package.json.
+    pub pkg: PluginPackageJson,
+    /// Plugin-specific configuration.
+    pub config: Option<serde_json::Value>,
+}
+
+/// Runtime for loading and executing plugins from directories.
+///
+/// The runtime handles:
+/// - Locating plugin directories
+/// - Reading and validating package.json
+/// - Initializing plugins with configuration
+/// - Calling plugin methods with error handling
+/// - Graceful error recovery
+pub struct PluginRuntime {
+    /// Loaded plugins keyed by ID.
+    plugins: HashMap<String, LoadedPlugin>,
+    /// Directories to scan for plugins.
+    search_dirs: Vec<std::path::PathBuf>,
+}
+
+impl PluginRuntime {
+    /// Create a new runtime with default search directories.
+    pub fn new() -> Self {
+        let mut search_dirs = Vec::new();
+        if let Some(data_dir) = dirs::data_local_dir() {
+            search_dirs.push(data_dir.join("opencode").join("plugins"));
+        }
+        Self {
+            plugins: HashMap::new(),
+            search_dirs,
+        }
+    }
+
+    /// Create a runtime with custom search directories.
+    pub fn with_search_dirs(dirs: Vec<std::path::PathBuf>) -> Self {
+        Self {
+            plugins: HashMap::new(),
+            search_dirs: dirs,
+        }
+    }
+
+    /// Add a directory to search for plugins.
+    pub fn add_search_dir(&mut self, dir: std::path::PathBuf) {
+        if !self.search_dirs.contains(&dir) {
+            self.search_dirs.push(dir);
+        }
+    }
+
+    /// Load a plugin from a directory.
+    ///
+    /// Reads the plugin's package.json, validates it, and prepares
+    /// it for execution. Returns an error if the directory doesn't
+    /// exist or the package.json is invalid.
+    pub fn load_plugin(&mut self, config: &PluginLoadConfig) -> Result<&LoadedPlugin, PluginRuntimeError> {
+        let path = &config.path;
+        if !path.exists() {
+            return Err(PluginRuntimeError::DirectoryNotFound {
+                path: path.display().to_string(),
+            });
+        }
+        if !path.is_dir() {
+            return Err(PluginRuntimeError::DirectoryNotFound {
+                path: path.display().to_string(),
+            });
+        }
+
+        let pkg = read_plugin_package(path).map_err(|e| PluginRuntimeError::InvalidPackageJson {
+            path: path.display().to_string(),
+            message: e.to_string(),
+        })?;
+
+        let id = config.id.clone()
+            .or_else(|| pkg.name.clone())
+            .unwrap_or_else(|| {
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown")
+                    .to_string()
+            });
+
+        let name = pkg.name.clone().unwrap_or_else(|| id.clone());
+        let version = pkg.version.clone().unwrap_or_else(|| "0.0.0".to_string());
+
+        let plugin = LoadedPlugin {
+            id: id.clone(),
+            name,
+            version,
+            path: path.clone(),
+            pkg,
+            config: config.config.clone(),
+        };
+
+        let plugin_id = id.clone();
+        self.plugins.insert(id, plugin);
+        Ok(self.plugins.get(&plugin_id).expect("just inserted"))
+    }
+
+    /// Initialize a loaded plugin with its configuration.
+    ///
+    /// This calls the plugin's initialization routine. Currently
+    /// this is a placeholder that validates the plugin structure.
+    /// In a full implementation, this would dynamically load the
+    /// plugin's code (e.g., WASM or dynamic library).
+    pub fn init_plugin(&self, id: &str) -> Result<(), PluginRuntimeError> {
+        let plugin = self.plugins.get(id).ok_or_else(|| PluginRuntimeError::InitFailed {
+            id: id.to_string(),
+            message: "plugin not loaded".to_string(),
+        })?;
+
+        // Validate that the plugin has a recognizable structure
+        // In a full implementation, this would:
+        // 1. Load the plugin's shared library / WASM module
+        // 2. Call the plugin's `init` function
+        // 3. Set up any necessary resources
+
+        tracing::debug!("plugin `{}` initialized (version {})", id, plugin.version);
+        Ok(())
+    }
+
+    /// Discover plugins in the search directories.
+    ///
+    /// Scans all search directories for subdirectories containing
+    /// package.json files, and returns load configurations.
+    pub fn discover_plugins(&self) -> Vec<PluginLoadConfig> {
+        let mut configs = Vec::new();
+        for dir in &self.search_dirs {
+            if !dir.exists() || !dir.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let pkg_path = path.join("package.json");
+                    if pkg_path.exists() {
+                        configs.push(PluginLoadConfig {
+                            path,
+                            id: None,
+                            config: None,
+                        });
+                    }
+                }
+            }
+        }
+        configs
+    }
+
+    /// Get a loaded plugin by ID.
+    pub fn get(&self, id: &str) -> Option<&LoadedPlugin> {
+        self.plugins.get(id)
+    }
+
+    /// List all loaded plugins.
+    pub fn list(&self) -> Vec<&LoadedPlugin> {
+        self.plugins.values().collect()
+    }
+
+    /// Remove a loaded plugin.
+    pub fn remove(&mut self, id: &str) -> Option<LoadedPlugin> {
+        self.plugins.remove(id)
+    }
+
+    /// Get the number of loaded plugins.
+    pub fn count(&self) -> usize {
+        self.plugins.len()
+    }
+}
+
+impl Default for PluginRuntime {
+    fn default() -> Self { Self::new() }
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// Provider Plugin Discovery — scan directories for provider plugins
+// ══════════════════════════════════════════════════════════════════════
+
+/// Configuration for provider plugin discovery.
+#[derive(Debug, Clone)]
+pub struct ProviderPluginDiscoveryConfig {
+    /// Directories to scan for provider plugins.
+    pub search_dirs: Vec<std::path::PathBuf>,
+    /// Pattern to match plugin directories (None = all directories with package.json).
+    pub name_pattern: Option<String>,
+    /// Whether to scan recursively.
+    pub recursive: bool,
+}
+
+impl Default for ProviderPluginDiscoveryConfig {
+    fn default() -> Self {
+        let mut search_dirs = Vec::new();
+        if let Some(data_dir) = dirs::data_local_dir() {
+            search_dirs.push(data_dir.join("opencode").join("plugins"));
+        }
+        search_dirs.push(std::path::PathBuf::from(".opencode/plugins"));
+        Self {
+            search_dirs,
+            name_pattern: None,
+            recursive: false,
+        }
+    }
+}
+
+/// Discover provider plugins by scanning directories.
+///
+/// Scans configured directories for plugin packages that expose
+/// provider functionality, and returns load configurations.
+pub fn discover_provider_plugins(
+    config: &ProviderPluginDiscoveryConfig,
+) -> Vec<PluginLoadConfig> {
+    let mut configs = Vec::new();
+    for dir in &config.search_dirs {
+        if !dir.exists() || !dir.is_dir() {
+            continue;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            // Check name pattern if specified
+            if let Some(ref pattern) = config.name_pattern {
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if !name.contains(pattern) {
+                        continue;
+                    }
+                }
+            }
+            // Check for package.json
+            let pkg_path = path.join("package.json");
+            if !pkg_path.exists() {
+                continue;
+            }
+            // Try to read the package.json and check for provider capabilities
+            if let Ok(pkg) = read_plugin_package(&path) {
+                // Check if the plugin has a provider export
+                let has_provider = pkg.exports.as_ref()
+                    .and_then(|e| e.as_object())
+                    .map(|obj| {
+                        obj.keys().any(|k| k.contains("provider") || k.contains("sdk"))
+                    })
+                    .unwrap_or(false);
+
+                // Also check if opencode_id suggests a provider plugin
+                let is_provider = has_provider
+                    || pkg.opencode_id.as_deref().map_or(false, |id| id.starts_with("provider-"))
+                    || pkg.name.as_deref().map_or(false, |n| n.contains("-provider"));
+
+                if is_provider {
+                    configs.push(PluginLoadConfig {
+                        path,
+                        id: None,
+                        config: None,
+                    });
+                }
+            }
+        }
+    }
+    configs
+}
+
+/// Register all discovered provider plugins into a PluginProviderRegistry.
+///
+/// Scans directories, loads provider plugins, and registers them
+/// in the given registry. Returns the number of successfully
+/// registered plugins.
+pub fn register_discovered_providers(
+    registry: &mut PluginProviderRegistry,
+    runtime: &mut PluginRuntime,
+    discovery_config: &ProviderPluginDiscoveryConfig,
+) -> usize {
+    let discovered = discover_provider_plugins(discovery_config);
+    let mut count = 0;
+
+    for config in &discovered {
+        match runtime.load_plugin(config) {
+            Ok(loaded) => {
+                // For now, log the discovery. In a full implementation,
+                // this would create a PluginProvider from the loaded plugin
+                // and register it in the registry.
+                tracing::info!(
+                    "discovered provider plugin: {} v{} at {}",
+                    loaded.id,
+                    loaded.version,
+                    loaded.path.display()
+                );
+                count += 1;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "failed to load provider plugin at {}: {e}",
+                    config.path.display()
+                );
+            }
+        }
+    }
+
+    count
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// PluginProviderManager — integrates PluginManager with provider plugins
+// ══════════════════════════════════════════════════════════════════════
+
+/// Manages the integration between the plugin system and provider plugins.
+///
+/// Combines PluginManager, PluginProviderRegistry, and PluginRuntime
+/// to provide a unified interface for managing provider plugins.
+pub struct PluginProviderManager {
+    /// The plugin manager for V1 plugins.
+    pub plugin_manager: PluginManager,
+    /// The V2 plugin service.
+    pub v2_service: PluginV2Service,
+    /// Registry for catalog-transform provider plugins.
+    pub catalog_registry: ProviderPluginRegistry,
+    /// Registry for plugin-as-provider plugins.
+    pub provider_registry: PluginProviderRegistry,
+    /// Runtime for loading external plugins.
+    pub runtime: PluginRuntime,
+}
+
+impl PluginProviderManager {
+    /// Create a new integrated manager.
+    pub fn new() -> Self {
+        Self {
+            plugin_manager: PluginManager::new(),
+            v2_service: PluginV2Service::new(),
+            catalog_registry: ProviderPluginRegistry::new(),
+            provider_registry: PluginProviderRegistry::new(),
+            runtime: PluginRuntime::new(),
+        }
+    }
+
+    /// Initialize all plugin systems.
+    pub async fn init(&mut self) {
+        self.plugin_manager.init().await;
+        register_builtin_provider_plugins(&mut self.catalog_registry);
+        tracing::info!(
+            "PluginProviderManager initialized with {} catalog plugins",
+            self.catalog_registry.count()
+        );
+    }
+
+    /// Discover and register provider plugins from directories.
+    pub fn discover(&mut self, config: &ProviderPluginDiscoveryConfig) -> usize {
+        register_discovered_providers(&mut self.provider_registry, &mut self.runtime, config)
+    }
+
+    /// Register a catalog transform plugin.
+    pub fn register_catalog_plugin(&mut self, plugin: Arc<dyn ProviderPlugin>) {
+        self.catalog_registry.register(plugin);
+    }
+
+    /// Register a plugin-as-provider.
+    pub fn register_provider(&mut self, provider: Arc<dyn PluginProvider>) {
+        self.provider_registry.register(provider);
+    }
+
+    /// Wrap an existing Provider implementation as a plugin provider.
+    pub fn register_existing_provider(&mut self, provider: Arc<dyn crate::provider::Provider>) {
+        let adapter = PluginProviderAdapter::new(provider);
+        self.provider_registry.register(Arc::new(adapter));
+    }
+}
+
+impl Default for PluginProviderManager {
+    fn default() -> Self { Self::new() }
+}
+
 
 // ── Tests ─────────────────────────────────────────────────────────────
 

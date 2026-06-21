@@ -41,7 +41,7 @@ use std::sync::Arc;
 
 use crate::error::{Error, Result, SkillError};
 use crate::tool::{
-    truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry, TruncateConfig,
+    truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry,
 };
 
 // ── Replacer trait and strategies ──────────────────────────────────────────────
@@ -441,7 +441,7 @@ pub fn edit_replace(
     old_string: &str,
     new_string: &str,
     replace_all: bool,
-) -> Result<String, String> {
+) -> std::result::Result<String, String> {
     if old_string == new_string {
         return Err("No changes to apply: oldString and newString are identical.".into());
     }
@@ -2771,7 +2771,7 @@ impl Tool for ApplyPatchTool {
             (file_path, patch)
         };
 
-        let path = std::path::Path::new(file_path);
+        let path = std::path::Path::new(&file_path);
         if !path.exists() {
             return Err(Error::Tool(format!("File not found: {}", file_path)));
         }
@@ -2785,9 +2785,9 @@ impl Tool for ApplyPatchTool {
 
         let file_content = std::fs::read_to_string(path).map_err(Error::Io)?;
 
-        let hunks = Self::parse_unified_diff(patch).map_err(Error::Tool)?;
+        let hunks = Self::parse_unified_diff(&patch).map_err(Error::Tool)?;
 
-        let patched = Self::apply_hunks(&file_content, &hunks, file_path).map_err(Error::Tool)?;
+        let patched = Self::apply_hunks(&file_content, &hunks, &file_path).map_err(Error::Tool)?;
 
         std::fs::write(path, &patched).map_err(|e| Error::FileSystem {
             path: file_path.to_string(),
@@ -4557,7 +4557,7 @@ impl Tool for LspTool {
             },
         })
     }
-}}
+}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 21. InvalidTool — sentinel for malformed tool calls
@@ -4677,6 +4677,8 @@ mod tests {
             call_id: None,
             extra: HashMap::new(),
             messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         }
     }
 

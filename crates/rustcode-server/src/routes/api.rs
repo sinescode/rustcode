@@ -319,7 +319,7 @@ async fn api_session_prompt(
     // Find any provider to handle the prompt
     if let Some((_pid, provider)) = state.providers.iter().next() {
         if let Ok(model) = provider.list_models().await.and_then(|models| {
-            models.into_iter().next().ok_or_else(|| "no models".to_string())
+            models.into_iter().next().ok_or_else(|| rustcode_core::error::Error::Internal("no models".to_string()))
         }) {
             match state.runner.run(provider.as_ref(), &model, &input, &instructions).await {
                 Ok(result) => {
@@ -626,7 +626,7 @@ async fn api_event(
     Query(query): Query<ApiEventQuery>,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     let directory = query.directory;
-    let bus_rx = state.bus.subscribe();
+    let mut bus_rx = state.bus.subscribe();
 
     // Bridge bus subscription to broadcast receiver
     let (tx, rx) = tokio::sync::broadcast::channel(256);

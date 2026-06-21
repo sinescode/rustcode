@@ -410,6 +410,11 @@ impl WorktreeManager {
 
         match entry.and_then(|e| e.path.as_deref()) {
             Some(worktree_path) => {
+                let branch = entry
+                    .as_ref()
+                    .and_then(|e| e.branch.as_ref())
+                    .map(|b| Self::strip_branch_prefix(b));
+
                 // Try git worktree remove
                 let result = if force {
                     self.git
@@ -422,6 +427,10 @@ impl WorktreeManager {
                     if r.exit_code == 0 {
                         // Clean up directory on disk
                         let _ = std::fs::remove_dir_all(worktree_path);
+                        // Delete the branch if it exists
+                        if let Some(ref b) = branch {
+                            let _ = self.git.run(&["branch", "-D", b]);
+                        }
                         return Ok(true);
                     }
                 }
@@ -448,6 +457,10 @@ impl WorktreeManager {
 
                 // Clean up directory
                 let _ = std::fs::remove_dir_all(worktree_path);
+                // Delete the branch if it exists
+                if let Some(ref b) = branch {
+                    let _ = self.git.run(&["branch", "-D", b]);
+                }
                 Ok(true)
             }
             None => {
@@ -558,8 +571,55 @@ impl WorktreeManager {
             .run(&["submodule", "update", "--init", "--recursive", "--force"]);
         if let Ok(r) = submodule {
             if r.exit_code != 0 {
-                return Err(WorktreeError::ResetFailed(r.stderr_text()).into());
+                return Err(WorktreeError::ResetFailed(format!(
+                    "Failed to update submodules: {}",
+                    r.stderr_text()
+                ))
+                .into());
             }
+        }
+
+        // Reset submodules
+        let submodule_reset = self
+            .git
+            .run(&["submodule", "foreach", "--recursive", "git", "reset", "--hard"]);
+        if let Ok(r) = submodule_reset {
+            if r.exit_code != 0 {
+                return Err(WorktreeError::ResetFailed(format!(
+                    "Failed to reset submodules: {}",
+                    r.stderr_text()
+                ))
+                .into());
+            }
+        }
+
+        // Clean submodules
+        let submodule_clean = self
+            .git
+            .run(&["submodule", "foreach", "--recursive", "git", "clean", "-fdx"]);
+        if let Ok(r) = submodule_clean {
+            if r.exit_code != 0 {
+                return Err(WorktreeError::ResetFailed(format!(
+                    "Failed to clean submodules: {}",
+                    r.stderr_text()
+                ))
+                .into());
+            }
+        }
+
+        // Verify clean state
+        let status = self.git.run(&[
+            "-c",
+            "core.fsmonitor=false",
+            "status",
+            "--porcelain=v1",
+        ]).map_err(|e| WorktreeError::ResetFailed(e.to_string()))?;
+        if !status.text().trim().is_empty() {
+            return Err(WorktreeError::ResetFailed(format!(
+                "Worktree reset left local changes:\n{}",
+                status.text().trim()
+            ))
+            .into());
         }
 
         Ok(true)

@@ -172,13 +172,14 @@
 
 ### 2.5 Tool Output Storage
 
-| Gap | Severity | Description |
-|-----|----------|-------------|
-| Missing `preview()` function | MEDIUM | TS head/tail splitting. |
-| Missing `boundedPreview()` function | MEDIUM | TS head/tail with marker. |
-| Missing `BoundInput` protocol integration | HIGH | TS integrates with LLM ToolOutput. |
-| Missing storage write function | HIGH | TS persists to managed directory. |
-| Missing storage cleanup | MEDIUM | TS 7-day retention. |
+| Gap | Severity | Status | Description |
+|-----|----------|--------|-------------|
+| Missing `preview()` function | MEDIUM | **FIXED** | TS head/tail splitting. Added `preview()` in tool_output_store.rs. |
+| Missing `boundedPreview()` function | MEDIUM | **FIXED** | TS head/tail with marker. Added `bounded_preview()` in tool_output_store.rs. |
+| Missing `lineCount()` function | LOW | **FIXED** | TS line counting. Added `line_count()` in tool_output_store.rs. |
+| Missing `BoundInput` protocol integration | HIGH | TODO | TS integrates with LLM ToolOutput. |
+| Missing storage write function | HIGH | TODO | TS persists to managed directory. |
+| Missing storage cleanup | MEDIUM | TODO | TS 7-day retention. |
 
 ### 2.6 Tool Streaming
 
@@ -338,7 +339,7 @@ Full execution lifecycle wrapper:
 | Tool interface types | 12 | 10 | 83% |
 | ToolRegistry methods | 15 | 13 | 87% |
 | Truncate service | 8 | 5 | 63% |
-| ToolOutputStore | 12 | 9 | 75% |
+| ToolOutputStore | 12 | 10 | 83% |
 | ToolStreamAccumulator | 5 | 5 | 100% |
 | Tool implementations (core) | 16 | 13 | 81% |
 | Tool quality (permission checks) | 21 | 0 | 0% |

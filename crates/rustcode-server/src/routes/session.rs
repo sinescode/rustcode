@@ -320,6 +320,9 @@ async fn list_sessions(
         search: query.search,
         limit: query.limit,
         project_id: None,
+        start: None,
+        cursor: None,
+        scope: None,
     };
     match state.sessions.list(Some(input)).await {
         Ok(sessions) => Json(serde_json::to_value(sessions).unwrap_or_default()).into_response(),
@@ -344,6 +347,9 @@ async fn session_status(
         search: query.search,
         limit: query.limit,
         project_id: None,
+        start: None,
+        cursor: None,
+        scope: None,
     });
     match state.sessions.list(input).await {
         Ok(sessions) => {
@@ -834,6 +840,10 @@ async fn delete_part(
                         Part::Patch(tp) => &tp.id,
                         Part::Compaction(tp) => &tp.id,
                         Part::Subtask(tp) => &tp.id,
+                        Part::Snapshot(tp) => &tp.id,
+                        Part::Agent(tp) => &tp.id,
+                        Part::Retry(tp) => &tp.id,
+                        Part::SourceUrl(tp) => &tp.id,
                     };
                     *pid != part_id
                 });
@@ -1232,6 +1242,8 @@ async fn post_command(
                 call_id: None,
                 extra: std::collections::HashMap::new(),
                 messages: vec![],
+                ask_fn: None,
+                permission_source: None,
             };
             let tool = tool_def.tool;
             match tool.execute(args, &ctx).await {

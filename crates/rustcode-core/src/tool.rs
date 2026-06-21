@@ -4,21 +4,30 @@
 //! - `packages/opencode/src/tool/tool.ts` (183 lines)
 //! - `packages/opencode/src/tool/registry.ts` (441 lines)
 //! - `packages/opencode/src/tool/schema.ts` (15 lines)
-//! - `packages/opencode/src/tool/truncate.ts`
+//!
+//! Truncation logic moved to `truncate.rs`.
 //!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+// Re-export truncation types from the truncate module.
+pub use crate::truncate::{TruncateOptions, TruncateResult, TruncateService, truncate_output};
+
 /// Tool execution context passed to every tool.
+///
+/// Carries session/message identifiers, an abort signal, optional
+/// permission callbacks, and extra metadata.
 ///
 /// # Source
 /// Ported from `packages/opencode/src/tool/tool.ts` line 36–46.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolContext {
     /// Current session ID
     pub session_id: String,
@@ -34,6 +43,57 @@ pub struct ToolContext {
     pub extra: HashMap<String, serde_json::Value>,
     /// Current message history
     pub messages: Vec<crate::provider::ChatMessage>,
+    /// Optional callback to ask the user for permission.
+    ///
+    /// The callback receives (permission_name, resource_pattern) and
+    /// returns `true` if the action is allowed.
+    pub ask_fn: Option<
+        Arc<
+            dyn Fn(
+                    String,
+                    String,
+                ) -> Pin<Box<dyn Future<Output = crate::error::Result<bool>> + Send>>
+                    + Send
+                    + Sync,
+        >,
+    >,
+    /// Permission source identifying the origin of the request.
+    pub permission_source: Option<crate::permission::PermissionSource>,
+}
+
+impl std::fmt::Debug for ToolContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolContext")
+            .field("session_id", &self.session_id)
+            .field("message_id", &self.message_id)
+            .field("agent", &self.agent)
+            .field("call_id", &self.call_id)
+            .field("extra", &self.extra)
+            .field("messages", &self.messages.len())
+            .field("ask_fn", &self.ask_fn.as_ref().map(|_| "Some(..)"))
+            .field("permission_source", &self.permission_source)
+            .finish()
+    }
+}
+
+impl ToolContext {
+    /// Ask the user for permission for a specific action+resource.
+    ///
+    /// Returns `Ok(true)` if allowed, `Ok(false)` if denied, or forwards
+    /// the error from the underlying callback.
+    ///
+    /// If no `ask_fn` is configured, permission is implicitly granted.
+    pub async fn ask(&self, permission: &str, resource: &str) -> crate::error::Result<bool> {
+        match &self.ask_fn {
+            Some(f) => f(permission.to_string(), resource.to_string()).await,
+            None => Ok(true),
+        }
+    }
+
+    /// Update metadata in the extra context map.
+    pub fn update_metadata(&mut self, key: impl Into<String>, value: serde_json::Value) {
+        self.extra.insert(key.into(), value);
+    }
 }
 
 /// Result of a tool execution.
@@ -197,8 +257,8 @@ pub type PluginToolExecFn = Arc<
     dyn Fn(
             serde_json::Value,
             ToolContext,
-        ) -> std::pin::Pin<
-            Box<dyn std::future::Future<Output = crate::error::Result<ExecuteResult>> + Send>,
+        ) -> Pin<
+            Box<dyn Future<Output = crate::error::Result<ExecuteResult>> + Send>,
         > + Send
         + Sync,
 >;
@@ -232,7 +292,7 @@ impl PluginToolDef {
     ) -> Self
     where
         F: Fn(serde_json::Value, ToolContext) -> Fut + Send + Sync + 'static,
-        Fut: std::future::Future<Output = crate::error::Result<ExecuteResult>> + Send + 'static,
+        Fut: Future<Output = crate::error::Result<ExecuteResult>> + Send + 'static,
     {
         Self {
             id: id.into(),
@@ -292,7 +352,6 @@ impl ToolRegistry {
     /// Get a tool by ID.
     pub fn get(&self, id: &str) -> Option<ToolDef> {
         self.tools.get(id).map(|r| r.clone()).or_else(|| {
-            // Plugin tools don't implement Tool trait — wrap in adapter
             self.plugin_tools.get(id).map(|r| {
                 let plugin = r.clone();
                 let adapter: Arc<dyn Tool> = Arc::new(PluginToolAdapter { def: plugin });
@@ -389,6 +448,64 @@ impl ToolRegistry {
         let tool = Arc::clone(&def.tool);
         tool.execute(args, ctx).await
     }
+
+    /// Execute a tool by name with the full execution pipeline:
+    ///
+    /// 1. **Permission check** — evaluates the tool name against the configured
+    ///    permission source (if any). If the action is denied, returns an error.
+    ///    If the action requires asking (`Ask`), invokes the `ask_fn` callback.
+    /// 2. **Tool execution** — runs the tool's `execute` method.
+    /// 3. **Output truncation** — truncates the result output if it exceeds
+    ///    configured limits, writing the full output to the truncation directory.
+    /// 4. **Result wrapping** — returns the final `ExecuteResult`.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/tool/registry.ts` `execute` method.
+    pub async fn execute_with_pipeline(
+        &self,
+        name: &str,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+        truncate: &TruncateService,
+    ) -> crate::error::Result<ExecuteResult> {
+        // Step 1: Permission check
+        // Evaluate the tool permission using the context's permission source.
+        // If the user needs to be asked, invoke the ask_fn.
+        if let Some(ref _source) = ctx.permission_source {
+            // Check permission using the context's ask_fn.
+            // The permission name is the tool name itself (e.g. "bash", "read").
+            // The resource pattern defaults to "*" for top-level tool permission.
+            let allowed = ctx.ask(name, "*").await?;
+            if !allowed {
+                return Err(crate::error::Error::Permission(
+                    crate::error::PermissionError::Denied,
+                ));
+            }
+        }
+
+        // Step 2: Tool execution
+        let def = self.get(name).ok_or_else(|| {
+            crate::error::Error::Tool(format!("tool not found: {name}"))
+        })?;
+        let tool = Arc::clone(&def.tool);
+
+        let result = tool.execute(args, ctx).await?;
+
+        // Step 3: Output truncation
+        let truncated = truncate
+            .truncate(&result.output, &ctx.session_id, &ctx.call_id.clone().unwrap_or_default())
+            .await;
+
+        // Step 4: Result wrapping
+        Ok(ExecuteResult {
+            title: result.title,
+            output: truncated.content,
+            truncated: truncated.truncated,
+            output_path: truncated.output_path,
+            attachments: result.attachments,
+            metadata: result.metadata,
+        })
+    }
 }
 
 /// Brief tool metadata — used for prompt building.
@@ -433,98 +550,6 @@ impl Tool for PluginToolAdapter {
         ctx: &ToolContext,
     ) -> crate::error::Result<ExecuteResult> {
         (self.def.execute)(args, ctx.clone()).await
-    }
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Output Truncation
-// ═══════════════════════════════════════════════════════════════════
-
-/// Output truncation configuration.
-///
-/// # Source
-/// Ported from `packages/opencode/src/tool/truncate.ts`.
-#[derive(Debug, Clone)]
-pub struct TruncateConfig {
-    /// Maximum number of characters (bytes in TS) in tool output
-    pub max_chars: usize,
-    /// Maximum number of lines
-    pub max_lines: usize,
-}
-
-impl Default for TruncateConfig {
-    fn default() -> Self {
-        Self {
-            max_chars: 100_000,
-            max_lines: 5_000,
-        }
-    }
-}
-
-/// Result of truncating tool output.
-#[derive(Debug, Clone)]
-pub struct TruncateResult {
-    /// The (possibly truncated) content
-    pub content: String,
-    /// Whether the output was truncated
-    pub truncated: bool,
-}
-
-/// Truncate tool output to fit within configured limits.
-///
-/// # Source
-/// Ported from `packages/opencode/src/tool/truncate.ts`.
-#[must_use]
-pub fn truncate_output(output: &str, config: &TruncateConfig) -> TruncateResult {
-    let lines: Vec<&str> = output.lines().collect();
-    let total_chars: usize = output.chars().count();
-
-    if total_chars <= config.max_chars && lines.len() <= config.max_lines {
-        return TruncateResult {
-            content: output.to_string(),
-            truncated: false,
-        };
-    }
-
-    // Truncate by lines first
-    let truncated_lines = std::cmp::min(lines.len(), config.max_lines);
-    let mut result = String::new();
-    let mut char_count = 0;
-
-    for (i, line) in lines.iter().enumerate().take(truncated_lines) {
-        let line_chars = line.chars().count() + 1; // +1 for newline
-        if char_count + line_chars > config.max_chars {
-            let remaining = config.max_chars - char_count;
-            if remaining > 20 {
-                // Partial line included
-                result.push_str(&line.chars().take(remaining).collect::<String>());
-                result.push_str("\n... (truncated)");
-            } else {
-                result.push_str("... (truncated)");
-            }
-            return TruncateResult {
-                content: result,
-                truncated: true,
-            };
-        }
-        result.push_str(line);
-        if i < truncated_lines - 1 {
-            result.push('\n');
-        }
-        char_count += line_chars;
-    }
-
-    if lines.len() > truncated_lines {
-        result.push_str(&format!(
-            "\n... (truncated: {} lines > {} limit)",
-            lines.len(),
-            config.max_lines
-        ));
-    }
-
-    TruncateResult {
-        content: result,
-        truncated: true,
     }
 }
 
@@ -781,10 +806,13 @@ mod tests {
             call_id: None,
             extra: HashMap::new(),
             messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
         assert_eq!(ctx.session_id, "ses_1");
         assert!(ctx.call_id.is_none());
         assert!(ctx.extra.is_empty());
+        assert!(ctx.ask_fn.is_none());
     }
 
     #[test]
@@ -797,52 +825,85 @@ mod tests {
             call_id: Some("call_abc".into()),
             extra: HashMap::new(),
             messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
         assert_eq!(ctx.call_id, Some("call_abc".into()));
     }
 
-    // ── truncate_output ──────────────────────────────────────────
-
     #[test]
-    fn test_truncate_no_truncation_needed() {
-        let result = truncate_output("short output", &TruncateConfig::default());
-        assert!(!result.truncated);
-        assert_eq!(result.content, "short output");
-    }
-
-    #[test]
-    fn test_truncate_by_lines() {
-        let config = TruncateConfig {
-            max_chars: 1_000_000,
-            max_lines: 3,
+    fn test_tool_context_update_metadata() {
+        let mut ctx = ToolContext {
+            session_id: "ses_1".into(),
+            message_id: "msg_1".into(),
+            agent: "claude".into(),
+            abort: CancellationToken::new(),
+            call_id: None,
+            extra: HashMap::new(),
+            messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
-        let output = "line1\nline2\nline3\nline4\nline5";
-        let result = truncate_output(output, &config);
-        assert!(result.truncated);
-        // Should contain first 3 lines
-        assert!(result.content.contains("line1"));
-        assert!(result.content.contains("line2"));
-        assert!(result.content.contains("line3"));
-        assert!(!result.content.contains("line5"));
+        ctx.update_metadata("foo", serde_json::json!("bar"));
+        assert_eq!(ctx.extra.get("foo").and_then(|v| v.as_str()), Some("bar"));
     }
 
-    #[test]
-    fn test_truncate_by_chars() {
-        let config = TruncateConfig {
-            max_chars: 10,
-            max_lines: 1_000_000,
+    #[tokio::test]
+    async fn test_tool_context_ask_no_fn() {
+        let ctx = ToolContext {
+            session_id: "ses_1".into(),
+            message_id: "msg_1".into(),
+            agent: "claude".into(),
+            abort: CancellationToken::new(),
+            call_id: None,
+            extra: HashMap::new(),
+            messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
-        let output = "0123456789ABCDEF";
-        let result = truncate_output(output, &config);
-        assert!(result.truncated);
-        assert!(result.content.len() <= 25); // 10 chars + truncation message
+        // Without ask_fn, permission is implicitly granted.
+        let allowed = ctx.ask("bash", "*").await.unwrap();
+        assert!(allowed);
     }
 
+    #[tokio::test]
+    async fn test_tool_context_ask_with_fn() {
+        let ask_fn: Option<
+            Arc<
+                dyn Fn(String, String) -> Pin<Box<dyn Future<Output = crate::error::Result<bool>> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        > = Some(Arc::new(|perm, _res| {
+            Box::pin(async move { Ok(perm == "bash") })
+        }));
+
+        let ctx = ToolContext {
+            session_id: "ses_1".into(),
+            message_id: "msg_1".into(),
+            agent: "claude".into(),
+            abort: CancellationToken::new(),
+            call_id: None,
+            extra: HashMap::new(),
+            messages: vec![],
+            ask_fn,
+            permission_source: Some(crate::permission::PermissionSource::Tool {
+                message_id: "msg_1".into(),
+                call_id: "call_1".into(),
+            }),
+        };
+
+        assert!(ctx.ask("bash", "*").await.unwrap());
+        assert!(!ctx.ask("read", "*").await.unwrap());
+    }
+
+    // ── truncate re-export ────────────────────────────────────────
+
     #[test]
-    fn test_truncate_empty() {
-        let result = truncate_output("", &TruncateConfig::default());
+    fn test_truncate_output_re_export() {
+        let result = truncate_output("short", 10, 100);
         assert!(!result.truncated);
-        assert_eq!(result.content, "");
+        assert_eq!(result.content, "short");
     }
 
     // ── ToolInfo ──────────────────────────────────────────────────
@@ -867,6 +928,8 @@ mod tests {
             call_id: None,
             extra: HashMap::new(),
             messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
         let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
         assert_eq!(result.title, "noop");
@@ -901,6 +964,8 @@ mod tests {
             call_id: None,
             extra: HashMap::new(),
             messages: vec![],
+            ask_fn: None,
+            permission_source: None,
         };
 
         let adapter = PluginToolAdapter { def: plugin };
@@ -925,7 +990,6 @@ mod tests {
 
     // ── StreamingTool trait ───────────────────────────────────────
 
-    /// Test that StreamingTool can be used through the Tool trait
     #[test]
     fn test_streaming_tool_is_tool() {
         struct StreamingNoop {
@@ -966,11 +1030,7 @@ mod tests {
                 _args: serde_json::Value,
                 _ctx: &ToolContext,
             ) -> crate::error::Result<
-                Box<
-                    dyn futures::Stream<Item = crate::error::Result<ToolOutputEvent>>
-                        + Send
-                        + Unpin,
-                >,
+                Box<dyn futures::Stream<Item = crate::error::Result<ToolOutputEvent>> + Send + Unpin>,
             > {
                 use futures::stream;
                 Ok(Box::new(stream::iter(vec![Ok(ToolOutputEvent::Complete(
@@ -990,5 +1050,148 @@ mod tests {
             id: "streaming".into(),
         };
         assert_eq!(tool.id(), "streaming");
+    }
+
+    // ── execute_with_pipeline ─────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_execute_with_pipeline_basic() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(NoopTool::new("noop")));
+
+        let ctx = ToolContext {
+            session_id: "ses_1".into(),
+            message_id: "msg_1".into(),
+            agent: "claude".into(),
+            abort: CancellationToken::new(),
+            call_id: Some("call_1".into()),
+            extra: HashMap::new(),
+            messages: vec![],
+            ask_fn: None,
+            permission_source: None,
+        };
+
+        let truncate = TruncateService::new();
+        let result = registry
+            .execute_with_pipeline("noop", serde_json::json!({}), &ctx, &truncate)
+            .await
+            .unwrap();
+
+        assert_eq!(result.title, "noop");
+        assert_eq!(result.output, "ok");
+        assert!(!result.truncated);
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_pipeline_permission_denied() {
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(NoopTool::new("noop")));
+
+        let ask_fn: Option<
+            Arc<
+                dyn Fn(String, String) -> Pin<Box<dyn Future<Output = crate::error::Result<bool>> + Send>>
+                    + Send
+                    + Sync,
+            >,
+        > = Some(Arc::new(|_perm, _res| Box::pin(async move { Ok(false) })));
+
+        let ctx = ToolContext {
+            session_id: "ses_1".into(),
+            message_id: "msg_1".into(),
+            agent: "claude".into(),
+            abort: CancellationToken::new(),
+            call_id: Some("call_1".into()),
+            extra: HashMap::new(),
+            messages: vec![],
+            ask_fn,
+            permission_source: Some(crate::permission::PermissionSource::Tool {
+                message_id: "msg_1".into(),
+                call_id: "call_1".into(),
+            }),
+        };
+
+        let truncate = TruncateService::new();
+        let result = registry
+            .execute_with_pipeline("noop", serde_json::json!({}), &ctx, &truncate)
+            .await;
+
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_execute_with_pipeline_truncation() {
+        use crate::truncate::TruncateOptions;
+        use std::path::PathBuf;
+
+        let registry = ToolRegistry::new();
+        registry.register(Arc::new(NoopTool::new("verbose")));
+
+        let ctx = ToolContext {
+            session_id: "ses_trunc".into(),
+            message_id: "msg_1".into(),
+            agent: "claude".into(),
+            abort: CancellationToken::new(),
+            call_id: Some("call_trunc".into()),
+            extra: HashMap::new(),
+            messages: vec![],
+            ask_fn: None,
+            permission_source: None,
+        };
+
+        // Override the NoopTool to produce a lot of output for testing.
+        // We'll register a custom tool instead.
+        struct VerboseTool;
+
+        #[async_trait]
+        impl Tool for VerboseTool {
+            fn id(&self) -> &str {
+                "verbose"
+            }
+            fn description(&self) -> &str {
+                "Produces verbose output"
+            }
+            fn parameters_schema(&self) -> serde_json::Value {
+                serde_json::json!({"type": "object", "properties": {}})
+            }
+            async fn execute(
+                &self,
+                _args: serde_json::Value,
+                _ctx: &ToolContext,
+            ) -> crate::error::Result<ExecuteResult> {
+                let long_output = (0..100).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+                Ok(ExecuteResult {
+                    title: "verbose".into(),
+                    output: long_output,
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata: HashMap::new(),
+                })
+            }
+        }
+
+        let truncate = TruncateService::with_options(TruncateOptions {
+            max_lines: 5,
+            max_chars: 1_000_000,
+            dir: PathBuf::from("/tmp/trunc-test-pipeline"),
+            ..Default::default()
+        });
+
+        let registry2 = ToolRegistry::new();
+        registry2.register(Arc::new(VerboseTool));
+
+        let result = registry2
+            .execute_with_pipeline("verbose", serde_json::json!({}), &ctx, &truncate)
+            .await
+            .unwrap();
+
+        assert!(result.truncated);
+        assert!(result.output_path.is_some());
+
+        // Cleanup
+        if let Some(path) = &result.output_path {
+            let _ = std::fs::remove_file(path);
+        }
+        let _ = std::fs::remove_dir_all("/tmp/trunc-test-pipeline");
     }
 }

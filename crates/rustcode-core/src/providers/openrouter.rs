@@ -10,8 +10,9 @@ use std::pin::Pin;
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
     ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
-    ToolDefinition,
+    ToolDefinition, Usage,
 };
+use crate::tool_stream::ToolStreamAccumulator;
 
 const DEFAULT_BASE_URL: &str = "https://openrouter.ai/api/v1";
 
@@ -140,6 +141,246 @@ fn mk(id: &str, name: &str, family: &str) -> Model {
     }
 }
 
+// ── SSE Event Types ─────────────────────────────────────────────────────
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterChatEvent {
+    choices: Vec<OpenRouterChoice>,
+    #[serde(default)]
+    usage: Option<OpenRouterUsage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterChoice {
+    delta: Option<OpenRouterDelta>,
+    finish_reason: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterDelta {
+    content: Option<String>,
+    reasoning_content: Option<String>,
+    tool_calls: Option<Vec<OpenRouterToolCallDelta>>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterToolCallDelta {
+    index: u64,
+    id: Option<String>,
+    function: Option<OpenRouterToolCallDeltaFn>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterToolCallDeltaFn {
+    name: Option<String>,
+    arguments: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterUsage {
+    prompt_tokens: Option<u64>,
+    completion_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+    prompt_tokens_details: Option<OpenRouterPromptTokenDetails>,
+    completion_tokens_details: Option<OpenRouterCompletionTokenDetails>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterPromptTokenDetails {
+    cached_tokens: Option<u64>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct OpenRouterCompletionTokenDetails {
+    reasoning_tokens: Option<u64>,
+}
+
+// ── Event Mapping ──────────────────────────────────────────────────────
+
+struct OpenRouterStreamState {
+    tool_stream: ToolStreamAccumulator,
+    text_started: bool,
+    reasoning_started: bool,
+    step_started: bool,
+    usage: Option<Usage>,
+    finished: bool,
+}
+
+fn events_from_chat(event: OpenRouterChatEvent, state: &mut OpenRouterStreamState) -> Vec<LlmEvent> {
+    let mut events = Vec::new();
+    let usage = event.usage.as_ref().map(map_usage).or(state.usage.clone());
+    let choice = event.choices.first();
+
+    if let Some(delta) = choice.and_then(|c| c.delta.as_ref()) {
+        if let Some(ref rc) = delta.reasoning_content {
+            if !rc.is_empty() {
+                if !state.reasoning_started {
+                    state.reasoning_started = true;
+                    events.push(LlmEvent::ReasoningStart {
+                        id: "reasoning-0".into(),
+                        provider_metadata: None,
+                    });
+                }
+                events.push(LlmEvent::ReasoningDelta {
+                    id: "reasoning-0".into(),
+                    text: rc.clone(),
+                    provider_metadata: None,
+                });
+            }
+        }
+
+        if let Some(ref content) = delta.content {
+            if !content.is_empty() {
+                if !state.text_started {
+                    state.text_started = true;
+                    events.push(LlmEvent::TextStart {
+                        id: "text-0".into(),
+                        provider_metadata: None,
+                    });
+                }
+                events.push(LlmEvent::TextDelta {
+                    id: "text-0".into(),
+                    text: content.clone(),
+                    provider_metadata: None,
+                });
+            }
+        }
+
+        if let Some(tool_deltas) = &delta.tool_calls {
+            for td in tool_deltas {
+                if let Some(name) = td.function.as_ref().and_then(|f| f.name.as_ref()) {
+                    state.tool_stream.set_identity(
+                        td.index,
+                        name,
+                        td.id.clone().unwrap_or_default(),
+                    );
+                }
+                if let Some(args) = td.function.as_ref().and_then(|f| f.arguments.as_ref()) {
+                    if let Some(ev) = state.tool_stream.append(td.index, args) {
+                        if !state.step_started {
+                            events.push(LlmEvent::StepStart { index: 0 });
+                            state.step_started = true;
+                        }
+                        events.push(ev);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(finish_reason) = choice.and_then(|c| c.finish_reason.as_ref()) {
+        for tool_ev in state.tool_stream.finish_all() {
+            events.push(tool_ev);
+        }
+
+        let reason = map_finish_reason(finish_reason);
+
+        if state.text_started {
+            events.push(LlmEvent::TextEnd {
+                id: "text-0".into(),
+                provider_metadata: None,
+            });
+        }
+        if state.reasoning_started {
+            events.push(LlmEvent::ReasoningEnd {
+                id: "reasoning-0".into(),
+                provider_metadata: None,
+            });
+        }
+
+        events.push(LlmEvent::StepFinish {
+            index: 0,
+            reason: reason.clone(),
+            usage: usage.clone(),
+            provider_metadata: None,
+        });
+        events.push(LlmEvent::Finish {
+            reason,
+            usage: usage.clone(),
+            provider_metadata: None,
+        });
+        state.finished = true;
+    }
+
+    state.usage = usage;
+    events
+}
+
+fn map_finish_reason(reason: &str) -> FinishReason {
+    match reason {
+        "stop" => FinishReason::Stop,
+        "length" => FinishReason::Length,
+        "content_filter" => FinishReason::ContentFilter,
+        "function_call" | "tool_calls" => FinishReason::ToolCalls,
+        _ => FinishReason::Unknown,
+    }
+}
+
+fn map_usage(u: &OpenRouterUsage) -> Usage {
+    let cached = u
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|d| d.cached_tokens);
+    let reasoning = u
+        .completion_tokens_details
+        .as_ref()
+        .and_then(|d| d.reasoning_tokens);
+    let non_cached = u
+        .prompt_tokens
+        .map(|p| p.saturating_sub(cached.unwrap_or(0)));
+
+    Usage {
+        input_tokens: u.prompt_tokens,
+        output_tokens: u.completion_tokens,
+        non_cached_input_tokens: non_cached,
+        cache_read_input_tokens: cached,
+        cache_write_input_tokens: None,
+        reasoning_tokens: reasoning,
+        total_tokens: u.total_tokens,
+        provider_metadata: None,
+    }
+}
+
+fn classify_error(status: u16, body: &str) -> LlmErrorReason {
+    let msg = || body.to_string();
+    match status {
+        401 | 403 => LlmErrorReason::Authentication {
+            message: msg(),
+            kind: crate::error::AuthErrorKind::Invalid,
+        },
+        429 => LlmErrorReason::RateLimit {
+            message: msg(),
+            retry_after_ms: None,
+        },
+        400 | 413 => {
+            if crate::error::is_context_overflow(body) {
+                LlmErrorReason::InvalidRequest {
+                    message: msg(),
+                    parameter: None,
+                    classification: Some("context-overflow".into()),
+                }
+            } else {
+                LlmErrorReason::InvalidRequest {
+                    message: msg(),
+                    parameter: None,
+                    classification: None,
+                }
+            }
+        }
+        500..=599 => LlmErrorReason::ProviderInternal {
+            message: msg(),
+            status,
+            retry_after_ms: None,
+        },
+        _ => LlmErrorReason::UnknownProvider {
+            message: msg(),
+            status: Some(status),
+        },
+    }
+}
+
+// ── Provider impl ──────────────────────────────────────────────────────
+
 #[async_trait]
 impl Provider for OpenRouterProvider {
     fn provider_id(&self) -> &str {
@@ -183,22 +424,28 @@ impl Provider for OpenRouterProvider {
             .map_err(|e| Error::Network(format!("OpenRouter: {e}")))?;
 
         if !resp.status().is_success() {
-            let s = resp.status().as_u16();
-            let t = resp.text().await.unwrap_or_default();
+            let status = resp.status().as_u16();
+            let text = resp.text().await.unwrap_or_default();
             return Err(Error::Llm {
                 module: "openrouter".into(),
                 method: "stream".into(),
-                reason: Box::new(LlmErrorReason::UnknownProvider {
-                    message: format!("HTTP {s}: {t}"),
-                    status: Some(s),
-                }),
+                reason: Box::new(classify_error(status, &text)),
             });
         }
 
-        let sse = crate::sse::parse_sse_stream(resp);
-        let llm = futures::stream::unfold(
+        let sse_stream = crate::sse::parse_sse_stream(resp);
+        let state = OpenRouterStreamState {
+            tool_stream: ToolStreamAccumulator::new(),
+            text_started: false,
+            reasoning_started: false,
+            step_started: false,
+            usage: None,
+            finished: false,
+        };
+
+        let llm_stream = futures::stream::unfold(
             (
-                Box::pin(sse)
+                Box::pin(sse_stream)
                     as Pin<
                         Box<
                             dyn futures::Stream<
@@ -207,56 +454,35 @@ impl Provider for OpenRouterProvider {
                                 + Unpin,
                         >,
                     >,
-                false,
+                state,
                 VecDeque::new(),
             ),
-            |(mut s, mut done, mut buf)| {
+            |(mut sse, mut state, mut buffer)| {
                 Box::pin(async move {
                     loop {
-                        if let Some(ev) = buf.pop_front() {
-                            return Some((ev, (s, done, buf)));
+                        if let Some(ev) = buffer.pop_front() {
+                            return Some((ev, (sse, state, buffer)));
                         }
-                        if done {
+                        if state.finished {
                             return None;
                         }
-                        match s.next().await {
-                            Some(Ok(e)) if !e.is_done() && e.has_data() => {
-                                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&e.data) {
-                                    if let Some(ch) = v["choices"][0].as_object() {
-                                        if let Some(dc) = ch["delta"]["content"].as_str() {
-                                            buf.push_back(Ok(LlmEvent::TextDelta {
-                                                id: "text-0".into(),
-                                                text: dc.into(),
-                                                provider_metadata: None,
-                                            }));
-                                        }
-                                        if let Some(fr) = ch["finish_reason"].as_str() {
-                                            let reason = match fr {
-                                                "stop" => FinishReason::Stop,
-                                                "length" => FinishReason::Length,
-                                                "tool_calls" | "function_call" => {
-                                                    FinishReason::ToolCalls
-                                                }
-                                                "content_filter" => FinishReason::ContentFilter,
-                                                _ => FinishReason::Unknown,
-                                            };
-                                            buf.push_back(Ok(LlmEvent::Finish {
-                                                reason,
-                                                usage: None,
-                                                provider_metadata: None,
-                                            }));
-                                            done = true;
-                                        }
+                        match sse.next().await {
+                            Some(Ok(se)) if !se.is_done() && se.has_data() => {
+                                if let Ok(event) =
+                                    serde_json::from_str::<OpenRouterChatEvent>(&se.data)
+                                {
+                                    for ev in events_from_chat(event, &mut state) {
+                                        buffer.push_back(Ok(ev));
                                     }
-                                }
-                                if let Some(ev) = buf.pop_front() {
-                                    return Some((ev, (s, done, buf)));
+                                    if let Some(ev) = buffer.pop_front() {
+                                        return Some((ev, (sse, state, buffer)));
+                                    }
                                 }
                             }
                             Some(Err(e)) => {
                                 return Some((
                                     Err(Error::ResponseStream(format!("OpenRouter SSE: {e}"))),
-                                    (s, done, buf),
+                                    (sse, state, buffer),
                                 ))
                             }
                             None => return None,
@@ -266,25 +492,125 @@ impl Provider for OpenRouterProvider {
                 })
             },
         );
-        Ok(Box::new(llm))
+        Ok(Box::new(llm_stream))
     }
 
     async fn complete(
         &self,
-        m: &Model,
-        msgs: &[ChatMessage],
-        t: &[ToolDefinition],
+        model: &Model,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
     ) -> crate::error::Result<crate::provider::LlmResponse> {
-        let mut s = self.stream(m, msgs, t).await?;
-        let mut evs = vec![];
-        while let Some(r) = s.next().await {
-            if let Ok(e) = r {
-                evs.push(e);
+        let mut stream = self.stream(model, messages, tools).await?;
+        let mut events = Vec::new();
+        let mut usage = None;
+        while let Some(r) = stream.next().await {
+            if let Ok(ev) = r {
+                if let Some(u) = ev.usage() {
+                    usage = Some(u.clone());
+                }
+                events.push(ev);
             }
         }
-        Ok(crate::provider::LlmResponse {
-            events: evs,
+        Ok(crate::provider::LlmResponse { events, usage })
+    }
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_map_finish_reason() {
+        assert_eq!(map_finish_reason("stop"), FinishReason::Stop);
+        assert_eq!(map_finish_reason("length"), FinishReason::Length);
+        assert_eq!(map_finish_reason("tool_calls"), FinishReason::ToolCalls);
+        assert_eq!(map_finish_reason("content_filter"), FinishReason::ContentFilter);
+        assert_eq!(map_finish_reason("unknown"), FinishReason::Unknown);
+    }
+
+    #[test]
+    fn test_classify_error() {
+        let reason = classify_error(401, "bad key");
+        assert!(matches!(reason, LlmErrorReason::Authentication { .. }));
+
+        let reason = classify_error(429, "rate limit");
+        assert!(matches!(reason, LlmErrorReason::RateLimit { .. }));
+
+        let reason = classify_error(500, "internal");
+        assert!(matches!(reason, LlmErrorReason::ProviderInternal { .. }));
+    }
+
+    #[test]
+    fn test_model_catalog() {
+        let models = OpenRouterProvider::with_key("test-key".into(), DEFAULT_BASE_URL.into())
+            .unwrap()
+            .models;
+        assert!(models.len() >= 4);
+        let gpt = models.iter().find(|m| m.id == "openai/gpt-5.2").unwrap();
+        assert_eq!(gpt.provider_id, "openrouter");
+        assert!(gpt.capabilities.toolcall);
+
+        let claude = models.iter().find(|m| m.id == "anthropic/claude-sonnet-4-6").unwrap();
+        assert_eq!(claude.family.as_deref(), Some("claude"));
+        assert_eq!(claude.limit.context, 200_000);
+    }
+
+    #[test]
+    fn test_map_usage() {
+        let u = OpenRouterUsage {
+            prompt_tokens: Some(100),
+            completion_tokens: Some(50),
+            total_tokens: Some(150),
+            prompt_tokens_details: Some(OpenRouterPromptTokenDetails {
+                cached_tokens: Some(20),
+            }),
+            completion_tokens_details: Some(OpenRouterCompletionTokenDetails {
+                reasoning_tokens: Some(10),
+            }),
+        };
+        let usage = map_usage(&u);
+        assert_eq!(usage.input_tokens, Some(100));
+        assert_eq!(usage.output_tokens, Some(50));
+        assert_eq!(usage.total_tokens, Some(150));
+        assert_eq!(usage.cache_read_input_tokens, Some(20));
+        assert_eq!(usage.non_cached_input_tokens, Some(80));
+        assert_eq!(usage.reasoning_tokens, Some(10));
+    }
+
+    #[test]
+    fn test_text_of() {
+        let content = MessageContent::Text("hello world".into());
+        assert_eq!(text_of(&content), "hello world");
+
+        let content = MessageContent::Parts(vec![
+            ContentPart::Text { text: "hello ".into() },
+            ContentPart::Text { text: "world".into() },
+        ]);
+        assert_eq!(text_of(&content), "hello world");
+    }
+
+    #[test]
+    fn test_events_finish() {
+        let mut state = OpenRouterStreamState {
+            tool_stream: ToolStreamAccumulator::new(),
+            text_started: false,
+            reasoning_started: false,
+            step_started: false,
             usage: None,
-        })
+            finished: false,
+        };
+        let event = OpenRouterChatEvent {
+            choices: vec![OpenRouterChoice {
+                delta: None,
+                finish_reason: Some("stop".into()),
+            }],
+            usage: None,
+        };
+        let events = events_from_chat(event, &mut state);
+        assert!(events.iter().any(|e| matches!(e, LlmEvent::Finish { reason, .. } if *reason == FinishReason::Stop)));
+        assert!(state.finished);
     }
 }
