@@ -2690,6 +2690,10 @@ pub fn validate_info(
 
 /// Substitute `{env:VAR}` and `{file:path}` placeholders in config text.
 ///
+/// This function performs synchronous I/O and should only be called during
+/// application initialization (Config::load). For async contexts, use
+/// [`substitute_variables_async`] instead.
+///
 /// # Source
 /// Ported from `packages/opencode/src/config/variable.ts` lines 34–91
 /// (`ConfigVariable.substitute`).
@@ -2800,6 +2804,27 @@ pub fn substitute_variables(
 
     out.push_str(&result[cursor..]);
     Ok(out)
+}
+
+/// Async version of [`substitute_variables`] — uses tokio::task::spawn_blocking
+/// to avoid blocking the async runtime on file I/O.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/variable.ts` lines 34–91
+/// (`ConfigVariable.substitute`).
+pub async fn substitute_variables_async(
+    text: &str,
+    dir: &std::path::Path,
+    env: Option<&HashMap<String, String>>,
+) -> crate::error::Result<String> {
+    let text = text.to_owned();
+    let dir = dir.to_owned();
+    let env = env.map(|e| e.clone());
+    tokio::task::spawn_blocking(move || {
+        substitute_variables(&text, &dir, env.as_ref())
+    })
+    .await
+    .map_err(|e| crate::error::Error::Internal(format!("spawn_blocking failed: {e}")))?
 }
 
 // ── Config merging ──────────────────────────────────────────────────────
