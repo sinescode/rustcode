@@ -13,6 +13,8 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  SCCACHE_GHA_ENABLED: "true"
+  RUSTC_WRAPPER: "sccache"
 
 jobs:
   fmt:
@@ -47,6 +49,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Sccache
+        uses: mozilla-actions/sccache-action@v0.0.3
       - name: Build (all targets)
         run: cargo build --all-targets --verbose
         env:
@@ -59,6 +63,34 @@ jobs:
           RUSTFLAGS: ${{ matrix.os == 'windows-latest' && '--cfg skip_unix_tests' || '' }}
         # Handle Windows path separator for file-based tests
         shell: ${{ matrix.os == 'windows-latest' && 'pwsh' || 'bash' }}
+
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin
+      - name: Generate coverage report
+        run: cargo tarpaulin --out Xml --all-features
+      - name: Upload to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          fail_ci_if_error: false
+
+  typecheck:
+    name: Type Check (all features)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Sccache
+        uses: mozilla-actions/sccache-action@v0.0.3
+      - run: cargo check --all-targets --all-features
+      - run: cargo check --no-default-features
 
   deny:
     name: Cargo Deny
