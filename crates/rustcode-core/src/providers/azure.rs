@@ -22,7 +22,7 @@ use std::collections::HashMap;
 use crate::error::Error;
 use crate::provider::{ChatMessage, LlmEvent, Model, Provider, ToolDefinition};
 
-use super::chat_completions::{self, BodyOptions};
+use super::chat_completions::{self, BodyOptions, build_chat_body, classify_error};
 
 const CHAT_PATH: &str = "/chat/completions?api-version=2025-01-01-preview";
 
@@ -289,20 +289,10 @@ impl Provider for AzureProvider {
         Box<dyn futures::Stream<Item = crate::error::Result<LlmEvent>> + Send + Unpin>,
     > {
         let messages = crate::provider::normalize_messages(messages, model);
-        let body = AzureChatBody {
-            model: model.api.id.clone(),
-            messages: Self::build_chat_messages(&messages),
-            tools: build_tools(tools),
-            tool_choice: None,
+        let body = build_chat_body(model, &messages, tools, &BodyOptions {
             stream: true,
-            stream_options: serde_json::json!({"include_usage": true}),
-            max_tokens: Some(crate::provider::max_output_tokens(
-                model,
-                crate::provider::OUTPUT_TOKEN_MAX,
-            )),
-            temperature: crate::provider::default_temperature(&model.api.id),
-            top_p: crate::provider::default_top_p(&model.api.id),
-        };
+            ..Default::default()
+        });
 
         let response = self
             .http_client
