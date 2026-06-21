@@ -1346,10 +1346,16 @@ impl EventV2 {
         &self.registry
     }
 
-    /// Replay a single serialized event.
+    /// Replay a single serialized event with idempotency checks.
+    ///
+    /// Checks:
+    /// 1. Event ID uniqueness (event already exists → error)
+    /// 2. Sequence divergence (stored event at seq differs)
+    /// 3. Owner mismatch (strict owner check)
     ///
     /// # Source
-    /// Ported from `packages/core/src/event.ts` lines 453–482.
+    /// Ported from `packages/core/src/event.ts` lines 453–482 (replay)
+    /// and lines 270–382 (commitSyncEvent).
     pub async fn replay(
         &self,
         event: SerializedEvent,
@@ -1373,6 +1379,127 @@ impl EventV2 {
         };
 
         let opts = options.unwrap_or_default();
+
+        // Persist to DB with idempotency checks when a pool is available
+        if let Some(ref pool) = self.pool {
+            let aggregate_id = &event.aggregate_id;
+            let seq = event.seq;
+
+            // Read current sequence for this aggregate
+            let current_seq: Option<(i64, Option<String>)> = sqlx::query_as(
+                "SELECT seq, owner_id FROM event_sequence WHERE aggregate_id = ?1",
+            )
+            .bind(aggregate_id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| EventError::Internal(format!("read seq for replay: {e}")))?;
+
+            if let Some((stored_seq, _)) = &current_seq {
+                let stored_seq = *stored_seq as u64;
+
+                // 1. Check sequence divergence — read the stored event at this seq
+                let stored: Option<(String, String)> = sqlx::query_as(
+                    "SELECT id, data FROM event WHERE aggregate_id = ?1 AND seq = ?2",
+                )
+                .bind(aggregate_id)
+                .bind(seq as i64)
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| EventError::Internal(format!("read stored event: {e}")))?;
+
+                if let Some((stored_id, _stored_data)) = &stored {
+                    if stored_id != payload.id.as_str() {
+                        return Err(EventError::ReplayDiverged {
+                            aggregate_id: aggregate_id.clone(),
+                            seq,
+                        });
+                    }
+                }
+
+                // 2. Check owner mismatch
+                if opts.strict_owner {
+                    let (_stored_seq, owner_id) = &current_seq.unwrap();
+                    if let Some(expected_owner) = &opts.owner_id {
+                        if let Some(actual_owner) = owner_id {
+                            if actual_owner != expected_owner {
+                                return Err(EventError::OwnerMismatch {
+                                    aggregate_id: aggregate_id.clone(),
+                                    expected: expected_owner.clone(),
+                                    actual: actual_owner.clone(),
+                                });
+                            }
+                        }
+                    }
+                }
+
+                // 3. Check event ID uniqueness
+                let existing: Option<(String,)> = sqlx::query_as(
+                    "SELECT id FROM event WHERE id = ?1",
+                )
+                .bind(payload.id.as_str())
+                .fetch_optional(pool)
+                .await
+                .map_err(|e| EventError::Internal(format!("check event id: {e}")))?;
+
+                if existing.is_some() {
+                    return Err(EventError::EventAlreadyExists {
+                        event_id: payload.id.clone(),
+                        aggregate_id: aggregate_id.clone(),
+                        seq,
+                    });
+                }
+
+                // 4. Validate sequence
+                if seq != stored_seq + 1 {
+                    return Err(EventError::SequenceMismatch {
+                        aggregate_id: aggregate_id.clone(),
+                        expected: stored_seq + 1,
+                        actual: seq,
+                    });
+                }
+            }
+
+            // Write the event to DB
+            let data_json = serde_json::to_string(&payload.data)
+                .map_err(|e| EventError::Internal(format!("serialize data: {e}")))?;
+
+            let versioned_type = definition.versioned_type().ok_or_else(|| {
+                EventError::Internal("sync event has no versioned type".into())
+            })?;
+
+            let mut tx = pool
+                .begin()
+                .await
+                .map_err(|e| EventError::Internal(format!("tx begin: {e}")))?;
+
+            sqlx::query(
+                "INSERT OR REPLACE INTO event_sequence (aggregate_id, seq, owner_id) VALUES (?1, ?2, ?3)",
+            )
+            .bind(aggregate_id)
+            .bind(seq as i64)
+            .bind(&opts.owner_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| EventError::Internal(format!("upsert seq for replay: {e}")))?;
+
+            sqlx::query(
+                "INSERT INTO event (id, aggregate_id, seq, type, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )
+            .bind(payload.id.as_str())
+            .bind(aggregate_id)
+            .bind(seq as i64)
+            .bind(&versioned_type)
+            .bind(&data_json)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| EventError::Internal(format!("insert event for replay: {e}")))?;
+
+            tx.commit()
+                .await
+                .map_err(|e| EventError::Internal(format!("tx commit for replay: {e}")))?;
+        }
+
+        // Publish if requested
         if opts.publish {
             self.notify(&payload, true).await;
         }
@@ -1381,6 +1508,10 @@ impl EventV2 {
     }
 
     /// Replay all events in a batch (must belong to the same aggregate).
+    ///
+    /// Checks aggregate consistency, sequence continuity, then delegates
+    /// to [`replay`] per-event for idempotency (existing event, divergence,
+    /// owner mismatch).
     ///
     /// # Source
     /// Ported from `packages/core/src/event.ts` lines 484–516.

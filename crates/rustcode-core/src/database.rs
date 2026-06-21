@@ -1073,6 +1073,67 @@ pub fn is_existing_install(tables: &[&str]) -> bool {
     tables.contains(&"session")
 }
 
+/// Detect a fresh install — no tables at all.
+///
+/// When the database has no tables, the migration system can skip the
+/// Drizzle journal import and go straight to creating the schema + journal.
+///
+/// # Source
+/// Ported from `packages/core/src/database/migration.ts` lines 25–26
+/// (`if (tables.length > 0) return Effect.die(...)`) inverted logic.
+pub fn is_fresh_install(tables: &[&str]) -> bool {
+    tables.is_empty()
+}
+
+/// Import existing Drizzle migration names into the `migration` journal.
+///
+/// Existing installs used Drizzle's migration journal (`__drizzle_migrations`).
+/// This function seeds the new `migration` table once so TypeScript migrations
+/// don't replay old SQL.
+///
+/// # Source
+/// Ported from `packages/core/src/database/migration.ts` lines 54–66.
+///
+/// Returns the set of completed migration IDs after the import.
+pub async fn import_drizzle_journal(
+    db: &sqlx::SqlitePool,
+) -> Result<std::collections::HashSet<String>, String> {
+    // Check if the drizzle journal table exists
+    let has_drizzle: bool = sqlx::query_scalar::<_, i64>(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = '__drizzle_migrations'",
+    )
+    .fetch_one(db)
+    .await
+    .map_err(|e| format!("check drizzle table: {e}"))? > 0;
+
+    if !has_drizzle {
+        // No drizzle journal — just return current migration set
+        let completed: Vec<(String,)> = sqlx::query_as("SELECT id FROM migration")
+            .fetch_all(db)
+            .await
+            .map_err(|e| format!("read migration journal: {e}"))?;
+        return Ok(completed.into_iter().map(|(id,)| id).collect());
+    }
+
+    // Import drizzle migration names into our journal
+    let now = chrono::Utc::now().timestamp_millis();
+    sqlx::query(
+        "INSERT OR IGNORE INTO migration (id, time_completed) \
+         SELECT name, ?1 FROM __drizzle_migrations WHERE name IS NOT NULL",
+    )
+    .bind(now)
+    .execute(db)
+    .await
+    .map_err(|e| format!("import drizzle migrations: {e}"))?;
+
+    // Re-read the completed set
+    let completed: Vec<(String,)> = sqlx::query_as("SELECT id FROM migration")
+        .fetch_all(db)
+        .await
+        .map_err(|e| format!("re-read migration journal: {e}"))?;
+    Ok(completed.into_iter().map(|(id,)| id).collect())
+}
+
 // ── Database service — session/message/part CRUD helpers ─────────────────
 
 use std::sync::Arc;
@@ -1858,6 +1919,68 @@ impl DatabaseService {
         Ok(())
     }
 
+    /// Update the snapshot on a context epoch with revision guard.
+    ///
+    /// Returns `true` if the update matched a row (revision matched).
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/context-epoch.ts` — `advance`.
+    pub async fn update_context_epoch_snapshot(
+        &self,
+        session_id: &str,
+        expected_revision: i64,
+        snapshot: &str,
+    ) -> Result<bool, DatabaseServiceError> {
+        let result = sqlx::query(
+            "UPDATE session_context_epoch SET snapshot = ?1, revision = ?2 \
+             WHERE session_id = ?3 AND revision = ?4 AND replacement_seq IS NULL",
+        )
+        .bind(snapshot)
+        .bind(expected_revision + 1)
+        .bind(session_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update epoch snapshot: {e}")))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
+    /// Replace a context epoch with a new generation (revision guard).
+    ///
+    /// Returns `true` if the update matched a row (revision matched).
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/context-epoch.ts` — `replace`.
+    pub async fn replace_context_epoch(
+        &self,
+        session_id: &str,
+        baseline: &str,
+        agent: &str,
+        snapshot: &str,
+        baseline_seq: i64,
+        expected_revision: i64,
+    ) -> Result<bool, DatabaseServiceError> {
+        let result = sqlx::query(
+            "UPDATE session_context_epoch SET \
+                baseline = ?1, agent = ?2, snapshot = ?3, \
+                baseline_seq = ?4, replacement_seq = NULL, revision = ?5 \
+             WHERE session_id = ?6 AND revision = ?7",
+        )
+        .bind(baseline)
+        .bind(agent)
+        .bind(snapshot)
+        .bind(baseline_seq)
+        .bind(expected_revision + 1)
+        .bind(session_id)
+        .bind(expected_revision)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("replace context epoch: {e}")))?;
+
+        Ok(result.rows_affected() > 0)
+    }
+
     // ── Session Input Inbox CRUD ────────────────────────────────────────
 
     /// Get the next admitted sequence number for a session.
@@ -1957,6 +2080,23 @@ impl DatabaseService {
             .map_err(|e| DatabaseServiceError::Database(format!("promote input: {e}")))?;
 
         Ok(())
+    }
+
+    /// Find a single session input by ID.
+    pub async fn find_session_input(
+        &self,
+        id: &str,
+    ) -> Result<Option<SessionInputRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, SessionInputRowRaw>(
+            "SELECT id, session_id, prompt, delivery, admitted_seq, promoted_seq, time_created \
+             FROM session_input WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("find session input: {e}")))?;
+
+        Ok(row.map(SessionInputRowRaw::into_row))
     }
 
     // ── Project CRUD ─────────────────────────────────────────────────

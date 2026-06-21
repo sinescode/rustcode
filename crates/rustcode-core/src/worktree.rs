@@ -17,8 +17,101 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::bus::{GlobalEvent, SharedBus};
 use crate::error::{Result, WorktreeError};
 use crate::git::{Git, Repo};
+use serde::{Deserialize, Serialize};
+
+// ══════════════════════════════════════════════════════════════════════════════
+// DB types for project command / sandbox lookups
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Project commands configuration (stored as JSON in the `commands` column).
+///
+/// # Source
+/// `packages/opencode/src/worktree/index.ts` line 508 (`project?.commands?.start`).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ProjectCommands {
+    /// Optional startup command to run after session init.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub start: Option<String>,
+}
+
+/// Lookup a project's commands from the database by project ID.
+///
+/// # Source
+/// `packages/opencode/src/worktree/index.ts` lines 501–508 (`runStartScripts`).
+pub async fn lookup_project_commands(
+    pool: &sqlx::SqlitePool,
+    project_id: &str,
+) -> Result<ProjectCommands> {
+    let row: Option<(Option<String>,)> = sqlx::query_as(
+        "SELECT commands FROM project WHERE id = ?1",
+    )
+    .bind(project_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| crate::error::Error::Database(format!("lookup project commands: {e}")))?;
+
+    match row {
+        Some((Some(commands_json),)) => {
+            if commands_json.is_empty() {
+                return Ok(ProjectCommands::default());
+            }
+            serde_json::from_str(&commands_json)
+                .map_err(|e| {
+                    crate::error::Error::Database(format!("parse project commands: {e}"))
+                })
+        }
+        _ => Ok(ProjectCommands::default()),
+    }
+}
+
+/// Add a sandbox directory to the project's sandboxes list.
+///
+/// Appends the directory to the JSON array stored in the `sandboxes` column.
+///
+/// # Source
+/// `packages/opencode/src/worktree/index.ts` line 244
+/// (`project.addSandbox(ctx.project.id, info.directory)`).
+pub async fn add_sandbox_directory(
+    pool: &sqlx::SqlitePool,
+    project_id: &str,
+    directory: &str,
+) -> Result<()> {
+    // Read current sandboxes
+    let row: Option<(String,)> = sqlx::query_as("SELECT sandboxes FROM project WHERE id = ?1")
+        .bind(project_id)
+        .fetch_optional(pool)
+        .await
+        .map_err(|e| crate::error::Error::Database(format!("read sandboxes: {e}")))?;
+
+    let sandboxes: Vec<String> = match row {
+        Some((json,)) if !json.is_empty() => {
+            serde_json::from_str(&json).unwrap_or_default()
+        }
+        _ => Vec::new(),
+    };
+
+    // Skip if already present
+    if sandboxes.iter().any(|s| s == directory) {
+        return Ok(());
+    }
+
+    let mut updated = sandboxes;
+    updated.push(directory.to_string());
+    let json = serde_json::to_string(&updated)
+        .map_err(|e| crate::error::Error::Database(format!("serialize sandboxes: {e}")))?;
+
+    sqlx::query("UPDATE project SET sandboxes = ?1 WHERE id = ?2")
+        .bind(&json)
+        .bind(project_id)
+        .execute(pool)
+        .await
+        .map_err(|e| crate::error::Error::Database(format!("update sandboxes: {e}")))?;
+
+    Ok(())
+}
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -75,6 +168,8 @@ pub struct WorktreeManager {
     git: Git,
     /// Repository metadata (directory + store path).
     repo: Repo,
+    /// Global event bus for publishing worktree lifecycle events.
+    bus: SharedBus,
 }
 
 impl WorktreeManager {
@@ -82,7 +177,16 @@ impl WorktreeManager {
     ///
     /// Usually obtained via `Git::find()` which returns a [`Repo`].
     pub fn new(git: Git, repo: Repo) -> Self {
-        Self { git, repo }
+        Self {
+            git,
+            repo,
+            bus: SharedBus::default(),
+        }
+    }
+
+    /// Create a new worktree manager with an explicit event bus.
+    pub fn with_bus(git: Git, repo: Repo, bus: SharedBus) -> Self {
+        Self { git, repo, bus }
     }
 
     /// Access the underlying [`Git`] instance.
@@ -293,12 +397,49 @@ impl WorktreeManager {
         Ok(info)
     }
 
+    /// Publish a `worktree.failed` event on the bus.
+    fn emit_failed(&self, message: &str) {
+        let _ = self.bus.publish(GlobalEvent::new(serde_json::json!({
+            "type": "worktree.failed",
+            "message": message,
+        })));
+    }
+
+    /// Publish a `worktree.ready` event on the bus.
+    fn emit_ready(&self, name: &str, branch: Option<&str>) {
+        let mut payload = serde_json::json!({
+            "type": "worktree.ready",
+            "name": name,
+        });
+        if let Some(b) = branch {
+            payload["branch"] = serde_json::Value::String(b.to_string());
+        }
+        let _ = self.bus.publish(GlobalEvent::new(payload));
+    }
+
+    /// Run a git command in a specific directory outside the primary worktree.
+    fn git_in_dir(&self, args: &[&str], cwd: &Path) -> Result<crate::git::GitResult> {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(args).current_dir(cwd);
+        let output = cmd
+            .output()
+            .map_err(|e| crate::error::Error::Io(e))?;
+        Ok(crate::git::GitResult {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+            truncated: false,
+        })
+    }
+
     /// Create a git worktree from pre-generated info.
     ///
     /// Runs `git worktree add` with either a branch or `--detach`.
+    /// Publishes `worktree.ready` on success, `worktree.failed` on error.
     ///
     /// # Source
-    /// `packages/opencode/src/worktree/index.ts` lines 230–245 (`setup`).
+    /// `packages/opencode/src/worktree/index.ts` lines 230–245 (`setup`)
+    /// and lines 247–295 (`boot`).
     pub fn create_from_info(&self, info: &WorktreeInfo) -> Result<()> {
         let dir_str = info.directory.to_string_lossy();
 
@@ -317,10 +458,34 @@ impl WorktreeManager {
         };
 
         match result {
-            Ok(r) if r.exit_code == 0 => Ok(()),
-            Ok(r) => Err(WorktreeError::CreateFailed(r.stderr_text()).into()),
+            Ok(r) if r.exit_code == 0 => {
+                // Bootstrap: populate worktree via reset --hard in the new directory
+                let populate = self.git_in_dir(&["reset", "--hard"], &info.directory);
+                match populate {
+                    Ok(ref p) if p.exit_code == 0 => {
+                        self.emit_ready(&info.name, info.branch.as_deref());
+                        Ok(())
+                    }
+                    Ok(p) => {
+                        let msg = p.stderr_text();
+                        self.emit_failed(&msg);
+                        Err(WorktreeError::StartCommandFailed(msg).into())
+                    }
+                    Err(e) => {
+                        let msg = e.to_string();
+                        self.emit_failed(&msg);
+                        Err(WorktreeError::StartCommandFailed(msg).into())
+                    }
+                }
+            }
+            Ok(r) => {
+                let msg = r.stderr_text();
+                self.emit_failed(&msg);
+                Err(WorktreeError::CreateFailed(msg).into())
+            }
             Err(e) => {
                 let msg = e.to_string();
+                self.emit_failed(&msg);
                 Err(WorktreeError::CreateFailed(msg).into())
             }
         }

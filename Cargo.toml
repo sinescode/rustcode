@@ -92,4 +92,5 @@ futures.workspace = true
 sqlx.workspace = true
 dialoguer.workspace = true
 indicatif.workspace = true
+clap_complete = "4"
 rustcode-tui.workspace = true

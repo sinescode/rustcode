@@ -5680,7 +5680,7 @@ impl Tool for InvalidTool {
     }
 
     fn description(&self) -> &str {
-        "Do not use"
+        "Do not use this tool"
     }
 
     fn parameters_schema(&self) -> serde_json::Value {

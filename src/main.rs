@@ -245,6 +245,23 @@ enum Commands {
     /// `.version("version", "show version number", InstallationVersion)`
     #[command(name = "version")]
     Version,
+
+    /// Generate shell completion scripts.
+    ///
+    /// Ported from: `packages/opencode/src/index.ts` — completion subcommand
+    /// (not in TS, but a common CLI convention).
+    #[command(name = "completion")]
+    Completion(CompletionArgs),
+}
+
+/// Arguments for shell completion generation.
+///
+/// Ported from: standard `clap_complete` convention.
+#[derive(clap::Args)]
+struct CompletionArgs {
+    /// Shell type (bash, fish, zsh, powershell).
+    #[arg(value_parser = clap::builder::PossibleValuesParser::new(["bash", "fish", "zsh", "powershell"]))]
+    shell: String,
 }
 
 // ── Shared network/flags ────────────────────────────────────────────────────
@@ -1350,6 +1367,7 @@ async fn dispatch_inner(
             cmd_version();
             0
         }
+        Commands::Completion(args) => cmd_completion(args),
     }
 }
 
@@ -1607,9 +1625,68 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
             return 1;
         }
 
+        let variant_display = args.variant.as_deref().unwrap_or("default");
+
+        // Print header with agent, provider/model info
         if args.format != "json" {
-            println!("> {agent} \u{b7} {provider_id}/{id}", id = model.id);
-            println!("Entering interactive mode. Type your messages, or /exit to quit.");
+            let variant_suffix = if args.variant.is_some() {
+                format!(" [variant: {}]", variant_display)
+            } else {
+                String::new()
+            };
+            println!(
+                "> {agent} \u{b7} {provider_id}/{id}{variant_suffix}",
+                id = model.id
+            );
+            if args.demo {
+                println!("Demo mode: /help for available slash commands.");
+            }
+            println!("Entering interactive mode. Type your messages, /exit to quit.");
+            println!();
+        }
+
+        // ── File resolution (--file) ──────────────────────────────
+        let attached_files: Vec<String> = if args.file.is_empty() {
+            Vec::new()
+        } else {
+            let mut files = Vec::new();
+            for f in &args.file {
+                let path = std::path::Path::new(f);
+                if path.exists() {
+                    match std::fs::read_to_string(path) {
+                        Ok(content) => {
+                            let filename = path.file_name()
+                                .map(|n| n.to_string_lossy())
+                                .unwrap_or_else(|| std::borrow::Cow::Borrowed("unknown"));
+                            files.push(format!("<file name=\"{filename}\">\n{content}\n</file>"));
+                            if args.format != "json" {
+                                println!("(attached: {filename})");
+                            }
+                        }
+                        Err(e) => {
+                            eprintln!("Warning: could not read {f}: {e}");
+                        }
+                    }
+                } else {
+                    eprintln!("Warning: file not found: {f}");
+                }
+            }
+            files
+        };
+
+        // ── Session management (continue / fork) ──────────────────
+        let session_id = if args.r#continue || args.session.is_some() {
+            args.session.clone().unwrap_or_else(|| "last-session".to_string())
+        } else {
+            format!("interactive-{}", std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos())
+        };
+        let session_label = if args.r#continue { "continued" } else if args.session.is_some() { "resumed" } else { "new" };
+
+        if args.format != "json" {
+            println!("Session {session_label}: {session_id}");
             println!();
         }
 
@@ -1622,10 +1699,45 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
             });
         }
 
+        // ── Demo Mode ─────────────────────────────────────────────
+        // Run a demo prompt on start if no user message was given
+        if args.demo && user_content.is_empty() {
+            let demo_prompt = format!(
+                "Welcome to rustcode interactive demo! I'm running in {} mode. \
+                 You are working in directory: {}. \
+                 Available slash commands: /exit, /help, /clear, /model, /tokens.",
+                agent, cwd
+            );
+            messages.push(ChatMessage::User {
+                content: MessageContent::Text(demo_prompt),
+            });
+            match runner
+                .run_with_messages(provider.as_ref(), model, &mut messages)
+                .await
+            {
+                Ok(result) => {
+                    if !result.text.is_empty() {
+                        print!("{}", result.text);
+                        let _ = std::io::stdout().flush();
+                        println!();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("LLM error: {e}");
+                }
+            }
+        }
+
         // If an initial message was provided, send it first
         if !user_content.is_empty() {
+            // Build the message with attached files
+            let final_content = if attached_files.is_empty() {
+                user_content.clone()
+            } else {
+                format!("{}\n\n{}", attached_files.join("\n\n"), user_content)
+            };
             messages.push(ChatMessage::User {
-                content: MessageContent::Text(user_content),
+                content: MessageContent::Text(final_content),
             });
             match runner
                 .run_with_messages(provider.as_ref(), model, &mut messages)
@@ -1647,6 +1759,27 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
                     eprintln!("LLM error: {e}");
                 }
             }
+        } else if !attached_files.is_empty() {
+            // If only files attached with no message, send them
+            let final_content = attached_files.join("\n\n");
+            messages.push(ChatMessage::User {
+                content: MessageContent::Text(final_content),
+            });
+            match runner
+                .run_with_messages(provider.as_ref(), model, &mut messages)
+                .await
+            {
+                Ok(result) => {
+                    if !result.text.is_empty() {
+                        print!("{}", result.text);
+                        let _ = std::io::stdout().flush();
+                        println!();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("LLM error: {e}");
+                }
+            }
         }
 
         // REPL loop
@@ -1658,7 +1791,6 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
             let mut line = String::new();
             match std::io::stdin().lock().read_line(&mut line) {
                 Ok(0) => {
-                    // EOF
                     println!();
                     break;
                 }
@@ -1673,8 +1805,14 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
             if line.is_empty() {
                 continue;
             }
-            if line == "/exit" || line == "/quit" || line == "exit" || line == "quit" {
+
+            // ── Slash commands ────────────────────────────────────
+            let (should_break, should_continue) = handle_slash_command(&line, &mut messages, args);
+            if should_break {
                 break;
+            }
+            if should_continue {
+                continue;
             }
 
             messages.push(ChatMessage::User {
@@ -1803,6 +1941,58 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     }
 
     0
+}
+
+/// Handle a slash command in interactive mode.
+///
+/// Returns (should_break, should_continue).
+/// Ported from: `packages/opencode/src/cli/cmd/run.ts` — interactive slash commands.
+fn handle_slash_command(
+    line: &str,
+    messages: &mut Vec<ChatMessage>,
+    _args: &RunArgs,
+) -> (bool, bool) {
+    use rustcode_core::provider::MessageContent;
+    let trimmed = line.trim().to_lowercase();
+    match trimmed.as_str() {
+        "/exit" | "/quit" | "exit" | "quit" | "/q" => return (true, false),
+        "/clear" | "/reset" => {
+            // Keep only the system prompt
+            messages.retain(|m| matches!(m, ChatMessage::System { .. }));
+            println!("(session context cleared)");
+            return (false, true);
+        }
+        "/help" | "/?" => {
+            println!("Available slash commands:");
+            println!("  /exit, /quit, /q  — Exit interactive mode");
+            println!("  /clear, /reset    — Clear conversation context");
+            println!("  /help, /?         — Show this help message");
+            println!("  /tokens           — Show approximate token count");
+            return (false, true);
+        }
+        "/tokens" | "/stats" => {
+            let total_chars: usize = messages
+                .iter()
+                .map(|m| match m {
+                    ChatMessage::System { content }
+                    | ChatMessage::User { content }
+                    | ChatMessage::Assistant { content } => match content {
+                        MessageContent::Text(t) => t.len(),
+                        MessageContent::Parts(parts) => {
+                            parts.iter().map(|p| serde_json::to_string(p).unwrap_or_default().len()).sum()
+                        }
+                    },
+                    ChatMessage::Tool { content } => {
+                        content.iter().map(|p| serde_json::to_string(p).unwrap_or_default().len()).sum()
+                    }
+                })
+                .sum();
+            println!("Messages: {} | Approx chars: {}", messages.len(), total_chars);
+            return (false, true);
+        }
+        _ => {}
+    }
+    (false, false)
 }
 
 /// Run a prompt against a remote rustcode server via SSE + HTTP POST.
@@ -5416,8 +5606,37 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                                 if let Some(details) = data.as_str() {
                                                     eprintln!();
                                                     eprintln!("  Error details: {details}");
-                                                }
-                                            }
+    }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// completion
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// `completion` — Generate shell completion scripts.
+///
+/// Ported from: standard `clap_complete` convention.
+/// Supports bash, fish, zsh, and powershell.
+async fn cmd_completion(args: &CompletionArgs) -> i32 {
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+    let shell = match args.shell.as_str() {
+        "bash" => Shell::Bash,
+        "fish" => Shell::Fish,
+        "zsh" => Shell::Zsh,
+        "powershell" => Shell::PowerShell,
+        other => {
+            eprintln!("Unsupported shell: {other}");
+            eprintln!("Supported shells: bash, fish, zsh, powershell");
+            return 1;
+        }
+    };
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    generate(shell, &mut cmd, name, &mut std::io::stdout());
+    0
+}
+
                                         }
                                     } else if let Some(result) = json_body.get("result") {
                                         eprintln!("  ✓ Initialize succeeded!");

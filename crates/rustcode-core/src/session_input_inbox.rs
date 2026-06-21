@@ -9,7 +9,10 @@
 //! - `packages/core/src/session/input.ts` (lines 1–354)
 
 use crate::database::{DatabaseService, DatabaseServiceError, SessionInputRow};
-use crate::event::EventError;
+use crate::event::{
+    EventDefinition, EventError, EventId, EventPayload, EventV2, SyncConfig,
+    PublishOptions,
+};
 use crate::id;
 use crate::session_history::{
     AdmitInputParams, AdmittedInput, InputDelivery, LegacyPromptedParams,
@@ -260,6 +263,216 @@ impl SessionInputInbox {
             time_created: params.time_created,
             promoted_seq: Some(params.promoted_seq),
         })
+    }
+
+    /// EventV2-driven admit — publishes a PromptLifecycle.Admitted event
+    /// and relies on the projector to persist the session_input row.
+    ///
+    /// Conflict detection: if an input with the same ID already exists,
+    /// returns the existing `AdmittedInput` instead of creating a new one.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/input.ts` lines 54–93 (`admit`).
+    pub async fn admit_through_events(
+        &self,
+        events: &EventV2,
+        params: AdmitInputParams,
+    ) -> Result<AdmittedInput, InputInboxError> {
+        // Check for existing input with this ID
+        let existing = self.find_input(&params.id).await?;
+        if let Some(existing) = existing {
+            return Ok(existing);
+        }
+
+        let timestamp = chrono::Utc::now().timestamp_millis() as u64;
+
+        // Define the admitted event
+        let definition = EventDefinition::new(
+            crate::event::session_event_types::PROMPT_ADMITTED,
+            Some(SyncConfig {
+                version: 1,
+                aggregate: "sessionID".to_string(),
+            }),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "messageID": {"type": "string"},
+                    "sessionID": {"type": "string"},
+                    "timestamp": {"type": "number"},
+                    "prompt": {"type": "object"},
+                    "delivery": {"type": "string"}
+                }
+            }),
+        );
+
+        let data = serde_json::json!({
+            "messageID": params.id,
+            "sessionID": params.session_id,
+            "timestamp": timestamp,
+            "prompt": params.prompt,
+            "delivery": match params.delivery {
+                InputDelivery::Steer => "steer",
+                InputDelivery::Queue => "queue",
+            },
+        });
+
+        // Publish the event — the projector will persist the session_input row
+        let event_result = events.publish(&definition, data, None).await.map_err(|e| {
+            InputInboxError::Other(format!("publish admitted event: {e}"))
+        })?;
+
+        let admitted_seq = event_result.seq.unwrap_or(0);
+
+        Ok(AdmittedInput {
+            admitted_seq,
+            id: params.id,
+            session_id: params.session_id,
+            prompt: params.prompt,
+            delivery: params.delivery,
+            time_created: timestamp,
+            promoted_seq: None,
+        })
+    }
+
+    /// EventV2-driven promote for steers — publishes PromptLifecycle.Promoted
+    /// events for all steer-mode inputs up to the cutoff.
+    ///
+    /// Returns the number of inputs promoted.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/input.ts` lines 300–321 (`promoteSteers`).
+    pub async fn promote_steers_through_events(
+        &self,
+        events: &EventV2,
+        params: PromoteSteersParams,
+    ) -> Result<usize, InputInboxError> {
+        let rows = self.db.list_pending_inputs(&params.session_id).await?;
+        let steer_pending: Vec<SessionInputRow> = rows
+            .into_iter()
+            .filter(|r| {
+                r.delivery == "steer" && (r.admitted_seq as u64) <= params.cutoff
+            })
+            .collect();
+
+        let definition = EventDefinition::new(
+            crate::event::session_event_types::PROMPT_PROMOTED,
+            Some(SyncConfig {
+                version: 1,
+                aggregate: "sessionID".to_string(),
+            }),
+            serde_json::json!({
+                "type": "object",
+                "properties": {
+                    "messageID": {"type": "string"},
+                    "sessionID": {"type": "string"},
+                    "timestamp": {"type": "number"},
+                    "prompt": {"type": "object"},
+                    "timeCreated": {"type": "number"}
+                }
+            }),
+        );
+
+        let mut count = 0usize;
+        for row in &steer_pending {
+            let prompt: Prompt = serde_json::from_str(&row.prompt)
+                .map_err(|e| InputInboxError::Other(format!("deserialize prompt: {e}")))?;
+            let timestamp = chrono::Utc::now().timestamp_millis();
+
+            let data = serde_json::json!({
+                "messageID": row.id,
+                "sessionID": row.session_id,
+                "timestamp": timestamp,
+                "prompt": prompt,
+                "timeCreated": row.time_created,
+            });
+
+            match events.publish(&definition, data, None).await {
+                Ok(_) => count += 1,
+                Err(e) => {
+                    tracing::warn!(
+                        "Failed to publish promote event for input {}: {e}",
+                        row.id
+                    );
+                }
+            }
+        }
+
+        Ok(count)
+    }
+
+    /// EventV2-driven promote for next queued input.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/session/input.ts` lines 323–343 (`promoteNextQueued`).
+    pub async fn promote_next_queued_through_events(
+        &self,
+        events: &EventV2,
+        session_id: &str,
+    ) -> Result<bool, InputInboxError> {
+        let rows = self.db.list_pending_inputs(session_id).await?;
+        let queued: Vec<SessionInputRow> = rows
+            .into_iter()
+            .filter(|r| r.delivery == "queue")
+            .collect();
+
+        let Some(row) = queued.into_iter().min_by_key(|r| r.admitted_seq) else {
+            return Ok(false);
+        };
+
+        let prompt: Prompt = serde_json::from_str(&row.prompt)
+            .map_err(|e| InputInboxError::Other(format!("deserialize prompt: {e}")))?;
+        let timestamp = chrono::Utc::now().timestamp_millis();
+
+        let definition = EventDefinition::new(
+            crate::event::session_event_types::PROMPT_PROMOTED,
+            Some(SyncConfig {
+                version: 1,
+                aggregate: "sessionID".to_string(),
+            }),
+            serde_json::json!({}),
+        );
+
+        let data = serde_json::json!({
+            "messageID": row.id,
+            "sessionID": row.session_id,
+            "timestamp": timestamp,
+            "prompt": prompt,
+            "timeCreated": row.time_created,
+        });
+
+        events.publish(&definition, data, None).await.map_err(|e| {
+            InputInboxError::Other(format!("publish promote event: {e}"))
+        })?;
+
+        Ok(true)
+    }
+
+    /// Find an admitted input by ID.
+    pub async fn find_input(
+        &self,
+        id: &str,
+    ) -> Result<Option<AdmittedInput>, InputInboxError> {
+        let row = self.db.find_session_input(id).await?;
+        match row {
+            Some(r) => {
+                let prompt: Prompt = serde_json::from_str(&r.prompt)
+                    .map_err(|e| InputInboxError::Other(format!("deserialize prompt: {e}")))?;
+                Ok(Some(AdmittedInput {
+                    admitted_seq: r.admitted_seq as u64,
+                    id: r.id,
+                    session_id: r.session_id,
+                    prompt,
+                    delivery: if r.delivery == "steer" {
+                        InputDelivery::Steer
+                    } else {
+                        InputDelivery::Queue
+                    },
+                    time_created: r.time_created as u64,
+                    promoted_seq: r.promoted_seq.map(|s| s as u64),
+                }))
+            }
+            None => Ok(None),
+        }
     }
 
     /// List all admitted inputs for a session.

@@ -578,6 +578,582 @@ impl Tool for PluginToolAdapter {
 }
 
 // ═══════════════════════════════════════════════════════════════════
+// Tool prompt templates — ported from packages/opencode/src/tool/*.txt
+// ═══════════════════════════════════════════════════════════════════
+
+/// Prompt template for the `edit` tool.
+pub const PROMPT_EDIT: &str = r"Performs exact string replacements in files. 
+
+Usage:
+- You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file. 
+- When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + colon + space (e.g., `1: `). Everything after that space is the actual file content to match. Never include any part of the line number prefix in the oldString or newString.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
+- The edit will FAIL if `oldString` is not found in the file with an error ""oldString not found in content"".
+- The edit will FAIL if `oldString` is found multiple times in the file with an error ""Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."" Either provide a larger string with more surrounding context to make it unique or use `replaceAll` to change every instance of `oldString`. 
+- Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.";
+
+/// Prompt template for the `read` tool.
+pub const PROMPT_READ: &str = r"Read a file or directory from the local filesystem. If the path does not exist, an error is returned.
+
+Usage:
+- The filePath parameter should be an absolute path.
+- By default, this tool returns up to 2000 lines from the start of the file.
+- The offset parameter is the line number to start from (1-indexed).
+- To read later sections, call this tool again with a larger offset.
+- Use the grep tool to find specific content in large files or files with long lines.
+- If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.
+- Contents are returned with each line prefixed by its line number as `<line>: <content>`. For example, if a file has contents ""foo\n"", you will receive ""1: foo\n"". For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
+- Any line longer than 2000 characters is truncated.
+- Call this tool in parallel when you know there are multiple files you want to read.
+- Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.
+- This tool can read image files and PDFs and return them as file attachments.";
+
+/// Prompt template for the `write` tool.
+pub const PROMPT_WRITE: &str = r"Writes a file to the local filesystem.
+
+Usage:
+- This tool will overwrite the existing file if there is one at the provided path.
+- If this is an existing file, you MUST use the Read tool first to read the file's contents. This tool will fail if you did not read the file first.
+- ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
+- NEVER proactively create documentation files (*.md) or README files. Only create documentation files if explicitly requested by the User.
+- Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.";
+
+/// Prompt template for the `glob` tool.
+pub const PROMPT_GLOB: &str = r"- Fast file pattern matching tool that works with any codebase size
+- Supports glob patterns like ""**/*.js"" or ""src/**/*.ts""
+- Returns matching file paths
+- Use this tool when you need to find files by name patterns
+- When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the Task tool instead
+- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.";
+
+/// Prompt template for the `grep` tool.
+pub const PROMPT_GREP: &str = r"- Fast content search tool that works with any codebase size
+- Searches file contents using regular expressions
+- Supports full regex syntax (eg. ""log.*Error"", ""function\s+\w+"", etc.)
+- Filter files by pattern with the include parameter (eg. ""*.js"", ""*.{ts,tsx}"")
+- Returns file paths and line numbers with matching lines
+- Use this tool when you need to find files containing specific patterns
+- If you need to identify/count the number of matches within files, use the Bash tool with `rg` (ripgrep) directly. Do NOT use `grep`.
+- When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the Task tool instead";
+
+/// Prompt template for the `webfetch` tool.
+pub const PROMPT_WEBFETCH: &str = r"- Fetches content from a specified URL
+- Takes a URL and optional format as input
+- Fetches the URL content, converts to requested format (markdown by default)
+- Returns the content in the specified format
+- Use this tool when you need to retrieve and analyze web content
+
+Usage notes:
+  - IMPORTANT: if another tool is present that offers better web fetching capabilities, is more targeted to the task, or has fewer restrictions, prefer using that tool instead of this one.
+  - The URL must be a fully-formed valid URL
+  - HTTP URLs will be automatically upgraded to HTTPS
+  - Format options: ""markdown"" (default), ""text"", or ""html""
+  - This tool is read-only and does not modify any files
+  - Results may be summarized if the content is very large";
+
+/// Prompt template for the `websearch` tool.
+pub const PROMPT_WEBSEARCH: &str = r"- Search the web using the session's web search provider - performs real-time web searches and can scrape content from specific URLs
+- Provides up-to-date information for current events and recent data
+- Supports configurable result counts and returns the content from the most relevant websites
+- Use this tool for accessing information beyond knowledge cutoff
+- Searches are performed automatically within a single API call
+
+Usage notes:
+  - Supports live crawling modes when available: 'fallback' (backup if cached unavailable) or 'preferred' (prioritize live crawling)
+  - Search types when available: 'auto' (balanced), 'fast' (quick results), 'deep' (comprehensive search)
+  - Configurable context length for optimal LLM integration
+  - Domain filtering and advanced search options available
+
+The current year is {{year}}. You MUST use this year when searching for recent information or current events
+- Example: If the current year is 2026 and the user asks for ""latest AI news"", search for ""AI news 2026"", NOT ""AI news 2025""";
+
+/// Prompt template for the `question` tool.
+pub const PROMPT_QUESTION: &str = r"Use this tool when you need to ask the user questions during execution. This allows you to:
+1. Gather user preferences or requirements
+2. Clarify ambiguous instructions
+3. Get decisions on implementation choices as you work
+4. Offer choices to the user about what direction to take.
+
+Usage notes:
+- When `custom` is enabled (default), a ""Type your own answer"" option is added automatically; don't include ""Other"" or catch-all options
+- Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
+- If you recommend a specific option, make that the first option in the list and add ""(Recommended)"" at the end of the label";
+
+/// Prompt template for the `skill` tool.
+pub const PROMPT_SKILL: &str = r"Load a specialized skill when the task at hand matches one of the skills listed in the system prompt.
+
+Use this tool to inject the skill's instructions and resources into current conversation. The output may contain detailed workflow guidance as well as references to scripts, files, etc in the same directory as the skill.
+
+The skill name must match one of the skills listed in your system prompt.";
+
+/// Prompt template for the `task` tool.
+pub const PROMPT_TASK: &str = r"Launch a new agent to handle complex, multistep tasks autonomously.
+
+When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
+
+When NOT to use the Task tool:
+- If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly
+- If you are searching for a specific class definition like ""class Foo"", use the Grep tool instead, to find the match more quickly
+- If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
+- If no available agent is a good fit for the task, use other tools directly
+
+
+Usage notes:
+1. Launch multiple agents concurrently whenever possible, to maximize performance; to do that, use a single message with multiple tool uses
+2. Once you have delegated work to an agent, do not duplicate that work yourself. Continue with non-overlapping tasks, or wait for the result. For background tasks, you will be notified automatically when the result is ready.
+3. When the agent is done, it will return a single message back to you. The result returned by the agent is not visible to the user. To show the user the result, you should send a text message back to the user with a concise summary of the result. The output includes a task_id you can reuse later to continue the same subagent session.
+4. Each agent invocation starts with a fresh context unless you provide task_id to resume the same subagent session (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
+5. The agent's outputs should generally be trusted
+6. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
+7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.";
+
+/// Prompt template for the `todowrite` tool.
+pub const PROMPT_TODOWRITE: &str = r"Create and maintain a structured task list for the current coding session. Tracks progress, organizes multi-step work, and surfaces status to the user.
+
+## When to use
+Use proactively when:
+- The task requires 3+ distinct steps or actions (not just 3 tool calls for a single conceptual step)
+- The work is non-trivial and benefits from planning
+- The user provides multiple tasks (numbered or comma-separated) or explicitly asks for a todo list
+- New instructions arrive - capture them as todos
+- You start a task - mark it `in_progress` (only one at a time) before working
+- You finish a task - mark it `completed` and add any follow-ups discovered during the work
+
+## When NOT to use
+Skip when:
+- The work is a single, straightforward task (or <3 trivial steps)
+- The request is purely informational or conversational
+- Tracking adds no organizational value
+
+## States
+- `pending` - not started
+- `in_progress` - actively working (exactly ONE at a time)
+- `completed` - finished successfully
+- `cancelled` - no longer needed
+
+## Rules
+- Update status in real time; don't batch completions
+- Mark `completed` only after the required work is actually done, including any required verification. Never based on intent.
+- Keep exactly one `in_progress` while work remains
+- If blocked or partial, keep it `in_progress` and add a follow-up todo describing the blocker
+- Preserve user-provided commands verbatim (flags, args, order)
+- Items should be specific and actionable; break large work into smaller steps
+
+## Examples
+
+Use it:
+- ""Add a dark mode toggle and run the tests"" -> multi-step feature + explicit verification
+- ""Rename getCwd -> getCurrentWorkingDirectory across the repo"" -> grep reveals 15 occurrences in 8 files
+- ""Implement registration, catalog, cart, checkout"" -> multiple complex features
+
+Skip it:
+- ""How do I print Hello World in Python?"" -> informational
+- ""Add a comment to calculateTotal"" -> single edit
+- ""Run npm install and tell me what happened"" -> one command
+
+When in doubt, use it.";
+
+/// Prompt template for the `apply_patch` tool.
+pub const PROMPT_APPLY_PATCH: &str = r"Use the `apply_patch` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
+
+*** Begin Patch
+[ one or more file sections ]
+*** End Patch
+
+Within that envelope, you get a sequence of file operations.
+You MUST include a header to specify the action you are taking.
+Each operation starts with one of three headers:
+
+*** Add File: <path> - create a new file. Every following line is a + line (the initial contents).
+*** Delete File: <path> - remove an existing file. Nothing follows.
+*** Update File: <path> - patch an existing file in place (optionally with a rename).
+
+Example patch:
+
+```
+*** Begin Patch
+*** Add File: hello.txt
++Hello world
+*** Update File: src/app.py
+*** Move to: src/main.py
+@@ def greet():
+-print(""Hi"")
++print(""Hello, world!"")
+*** Delete File: obsolete.txt
+*** End Patch
+```
+
+It is important to remember:
+
+- You must include a header with your intended action (Add/Delete/Update)
+- You must prefix new lines with `+` even when creating a new file";
+
+/// Prompt template for the `lsp` tool.
+pub const PROMPT_LSP: &str = r"Interact with Language Server Protocol (LSP) servers to get code intelligence features.
+
+Supported operations:
+- goToDefinition: Find where a symbol is defined
+- findReferences: Find all references to a symbol
+- hover: Get hover information (documentation, type info) for a symbol
+- documentSymbol: Get all symbols (functions, classes, variables) in a document
+- workspaceSymbol: List project-wide symbols matching a query string
+- goToImplementation: Find implementations of an interface or abstract method
+- prepareCallHierarchy: Get call hierarchy item at a position (functions/methods)
+- incomingCalls: Find all functions/methods that call the function at a position
+- outgoingCalls: Find all functions/methods called by the function at a position
+
+All operations require:
+- filePath: The file to operate on
+- line: The line number (1-based, as shown in editors)
+- character: The character offset (1-based, as shown in editors)
+
+workspaceSymbol also accepts:
+- query: A query string to filter symbols by. Empty string requests all symbols.
+
+For workspaceSymbol, filePath is not sent in the LSP workspace/symbol request. It is used by opencode to select and start the matching LSP server.
+
+Note: LSP servers must be configured for the file type. If no server is available, an error will be returned.";
+
+/// Prompt template for the `shell` tool.
+pub const PROMPT_SHELL: &str = r"${intro}
+
+Be aware: OS: ${os}, Shell: ${shell}
+
+${workdirSection}
+
+Use `${tmp}` for temporary work outside the workspace. This directory has already been created, already exists, and is pre-approved for external directory access.
+
+IMPORTANT: This tool is for terminal operations like git, npm, docker, etc. DO NOT use it for file operations (reading, writing, editing, searching, finding files) - use the specialized tools for this instead.
+
+${commandSection}
+
+# Git and GitHub
+- Only commit, amend, push, or create PRs when explicitly requested.
+- Before committing, inspect `git status`, `git diff`, and `git log --oneline -10`; stage only intended files and never commit secrets.
+- Write a concise commit message that matches the repo style.
+- Do not update git config, skip hooks, use interactive `-i`, force-push, or create empty commits unless explicitly requested.
+- If a commit fails or hooks reject it, fix the issue and create a new commit; do not amend the failed commit.
+- Before creating a PR, inspect status, diff, remote tracking, recent commits, and the diff from the base branch.
+- Review all commits included in the PR, not just the latest commit.
+- Use `gh` for GitHub tasks, including PRs, issues, checks, and releases; return the PR URL when done.";
+
+/// All tool prompt templates keyed by tool ID.
+pub const TOOL_PROMPTS: &[(&str, &str)] = &[
+    ("edit", PROMPT_EDIT),
+    ("read", PROMPT_READ),
+    ("write", PROMPT_WRITE),
+    ("glob", PROMPT_GLOB),
+    ("grep", PROMPT_GREP),
+    ("webfetch", PROMPT_WEBFETCH),
+    ("websearch", PROMPT_WEBSEARCH),
+    ("question", PROMPT_QUESTION),
+    ("skill", PROMPT_SKILL),
+    ("task", PROMPT_TASK),
+    ("todowrite", PROMPT_TODOWRITE),
+    ("apply_patch", PROMPT_APPLY_PATCH),
+    ("lsp", PROMPT_LSP),
+    ("shell", PROMPT_SHELL),
+];
+
+/// Get the prompt template for a tool by its ID.
+pub fn get_tool_prompt(id: &str) -> Option<&'static str> {
+    TOOL_PROMPTS.iter().find(|(key, _)| *key == id).map(|(_, val)| *val)
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// JSON Schema helpers — ported from packages/opencode/src/tool/json-schema.ts
+// ═══════════════════════════════════════════════════════════════════
+
+/// Normalize a JSON Schema value — strips null from anyOf, unwraps single-element
+/// anyOf, flattens allOf, and adds safe bounds for integer type.
+///
+/// Ported from `packages/opencode/src/tool/json-schema.ts` lines 28–88.
+pub fn normalize_json_schema(value: &serde_json::Value) -> serde_json::Value {
+    normalize_json(value, &NormalizeOptions { strip_null: false })
+}
+
+#[derive(Clone, Copy)]
+struct NormalizeOptions {
+    strip_null: bool,
+}
+
+fn normalize_json(value: &serde_json::Value, options: &NormalizeOptions) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(|v| normalize_json(v, options)).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let is_record = true;
+            let required: Option<Vec<String>> = obj.get("required").and_then(|r| {
+                r.as_array().map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                })
+            });
+
+            let mut schema: serde_json::Map<String, serde_json::Value> = obj
+                .iter()
+                .map(|(key, val)| {
+                    let new_val = if key == "properties" && val.is_object() {
+                        serde_json::Value::Object(
+                            val.as_object()
+                                .unwrap()
+                                .iter()
+                                .map(|(name, prop)| {
+                                    let opts = NormalizeOptions {
+                                        strip_null: required
+                                            .as_ref()
+                                            .map(|r| !r.contains(name))
+                                            .unwrap_or(false),
+                                    };
+                                    (name.clone(), normalize_json(prop, &opts))
+                                })
+                                .collect(),
+                        )
+                    } else {
+                        normalize_json(val, &NormalizeOptions { strip_null: false })
+                    };
+                    (key.clone(), new_val)
+                })
+                .collect();
+
+            // Strip `additionalProperties: true`
+            if schema.get("additionalProperties") == Some(&serde_json::Value::Bool(true)) {
+                schema.remove("additionalProperties");
+            }
+
+            // Handle stripNull
+            if options.strip_null {
+                if let Some(any_of) = schema.get("any_of").and_then(|v| v.as_array()) {
+                    let filtered: Vec<&serde_json::Value> = any_of
+                        .iter()
+                        .filter(|item| match item {
+                            serde_json::Value::Object(m) if m.get("type") == Some(&serde_json::Value::String("null".into())) => false,
+                            _ => true,
+                        })
+                        .collect();
+                    if filtered.len() != any_of.len() {
+                        let mut rest = schema.clone();
+                        rest.remove("any_of");
+                        rest.insert("any_of".into(), serde_json::Value::Array(filtered.into_iter().cloned().collect()));
+                        return normalize_json(&serde_json::Value::Object(rest), &NormalizeOptions { strip_null: false });
+                    }
+                }
+            }
+
+            // Handle anyOf unwrapping
+            if let Some(any_of) = schema.get("any_of").and_then(|v| v.as_array()) {
+                // Number + non-finite enum -> replace with number
+                let number_item = any_of.iter().find(|item| {
+                    item.as_object()
+                        .and_then(|m| m.get("type"))
+                        .and_then(|t| t.as_str())
+                        == Some("number")
+                });
+                let non_finite_items: Vec<&serde_json::Value> = any_of
+                    .iter()
+                    .filter(|item| {
+                        item.as_object()
+                            .map(|m| m.get("enum").and_then(|e| e.as_array()))
+                            .flatten()
+                            .map(|arr| {
+                                arr.iter().all(|entry| {
+                                    entry.as_str().map(|s| s == "NaN" || s == "Infinity" || s == "-Infinity").unwrap_or(false)
+                                })
+                            })
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                if number_item.is_some() && non_finite_items.len() == any_of.len() - 1 {
+                    if let Some(num) = number_item {
+                        let mut rest = schema.clone();
+                        rest.remove("any_of");
+                        if let serde_json::Value::Object(num_obj) = num {
+                            for (k, v) in num_obj {
+                                rest.insert(k.clone(), v.clone());
+                            }
+                        }
+                        return normalize_json(&serde_json::Value::Object(rest), &NormalizeOptions { strip_null: false });
+                    }
+                }
+
+                // Empty struct union -> { type: "object", properties: {} }
+                let empties: Vec<&serde_json::Value> = any_of
+                    .iter()
+                    .filter(|item| {
+                        matches!(item, serde_json::Value::Object(m) if m.get("type") == Some(&serde_json::Value::String("object".into())) && !m.contains_key("properties"))
+                    })
+                    .collect();
+                if empties.len() == 2 && any_of.len() == 2 {
+                    let mut rest = schema.clone();
+                    rest.remove("any_of");
+                    rest.insert("type".into(), serde_json::Value::String("object".into()));
+                    rest.insert("properties".into(), serde_json::Value::Object(serde_json::Map::new()));
+                    return normalize_json(&serde_json::Value::Object(rest), &NormalizeOptions { strip_null: false });
+                }
+
+                // Single-element anyOf
+                if any_of.len() == 1 {
+                    if let Some(single) = any_of.first() {
+                        let mut rest = schema.clone();
+                        rest.remove("any_of");
+                        if let serde_json::Value::Object(single_obj) = single {
+                            for (k, v) in single_obj {
+                                rest.insert(k.clone(), v.clone());
+                            }
+                        }
+                        return normalize_json(&serde_json::Value::Object(rest), &NormalizeOptions { strip_null: false });
+                    }
+                }
+            }
+
+            // Flatten allOf
+            if let Some(all_of) = schema.get("all_of").and_then(|v| v.as_array()) {
+                let all_objs: Vec<&serde_json::Map<String, serde_json::Value>> = all_of
+                    .iter()
+                    .filter_map(|v| v.as_object())
+                    .collect();
+                if all_objs.len() == all_of.len() && can_flatten_all_of_json(&all_objs, &schema) {
+                    schema.remove("all_of");
+                    for item_obj in all_objs {
+                        for (k, v) in item_obj {
+                            schema.insert(k.clone(), v.clone());
+                        }
+                    }
+                    return normalize_json(&serde_json::Value::Object(schema), &NormalizeOptions { strip_null: false });
+                }
+            }
+
+            // Integer bounds
+            if schema.get("type") == Some(&serde_json::Value::String("integer".into())) && !schema.contains_key("maximum") {
+                schema.insert("minimum".into(), serde_json::Value::Number(serde_json::Number::MIN));
+                schema.insert("maximum".into(), serde_json::Value::Number(serde_json::Number::MAX));
+            }
+
+            serde_json::Value::Object(schema)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Check whether allOf items can be safely flattened into the parent.
+fn can_flatten_all_of_json(
+    all_of: &[&serde_json::Map<String, serde_json::Value>],
+    parent: &serde_json::Map<String, serde_json::Value>,
+) -> bool {
+    let mut keys: std::collections::HashSet<&str> = parent
+        .keys()
+        .filter(|k| *k != "all_of")
+        .map(|k| k.as_str())
+        .collect();
+    all_of.iter().all(|item| {
+        item.keys().all(|k| {
+            if keys.contains(k.as_str()) {
+                return false;
+            }
+            keys.insert(k.as_str());
+            true
+        })
+    })
+}
+
+/// Inline local `$ref` references (`#/$defs/name`) into the schema.
+///
+/// Ported from `packages/opencode/src/tool/json-schema.ts` lines 121–144.
+pub fn inline_local_refs(value: &serde_json::Value) -> serde_json::Value {
+    inline_local_refs_inner(value, true, &mut std::collections::HashSet::new())
+}
+
+fn inline_local_refs_inner(
+    value: &serde_json::Value,
+    top_level: bool,
+    seen: &mut std::collections::HashSet<String>,
+) -> serde_json::Value {
+    match value {
+        serde_json::Value::Array(arr) => {
+            serde_json::Value::Array(arr.iter().map(|v| inline_local_refs_inner(v, false, seen)).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            // Extract $defs from top-level
+            let defs: Option<serde_json::Map<String, serde_json::Value>> = if top_level {
+                obj.get("$defs").and_then(|v| v.as_object().cloned())
+            } else {
+                None
+            };
+
+            // Handle $ref
+            if let Some(ref_str) = obj.get("$ref").and_then(|v| v.as_str()) {
+                let name = ref_str
+                    .strip_prefix("#/$defs/")
+                    .or_else(|| ref_str.strip_prefix("#/definitions/"));
+                if let Some(name) = name {
+                    if let Some(ref defs_map) = defs {
+                        if let Some(target) = defs_map.get(name) {
+                            if !seen.contains(name) {
+                                seen.insert(name.to_string());
+                                let mut rest: serde_json::Map<String, serde_json::Value> = obj
+                                    .iter()
+                                    .filter(|(k, _)| *k != "$ref")
+                                    .map(|(k, v)| (k.clone(), v.clone()))
+                                    .collect();
+                                if let serde_json::Value::Object(target_obj) = target {
+                                    for (k, v) in target_obj {
+                                        rest.entry(k.clone()).or_insert_with(|| v.clone());
+                                    }
+                                }
+                                return inline_local_refs_inner(&serde_json::Value::Object(rest), false, seen);
+                            }
+                        }
+                    }
+                }
+            }
+
+            let mut new_obj = serde_json::Map::new();
+            for (key, val) in obj {
+                new_obj.insert(key.clone(), inline_local_refs_inner(val, false, seen));
+            }
+            serde_json::Value::Object(new_obj)
+        }
+        other => other.clone(),
+    }
+}
+
+/// Drop `$defs` / `definitions` if all references have been resolved.
+///
+/// Ported from `packages/opencode/src/tool/json-schema.ts` lines 146–150.
+pub fn drop_defs_if_resolved(value: &serde_json::Value) -> serde_json::Value {
+    if has_local_ref(value) {
+        return value.clone();
+    }
+    match value {
+        serde_json::Value::Object(obj) => {
+            let mut new_obj = obj.clone();
+            new_obj.remove("$defs");
+            new_obj.remove("definitions");
+            serde_json::Value::Object(new_obj)
+        }
+        other => other.clone(),
+    }
+}
+
+fn has_local_ref(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Array(arr) => arr.iter().any(has_local_ref),
+        serde_json::Value::Object(obj) => {
+            if let Some(ref_str) = obj.get("$ref").and_then(|v| v.as_str()) {
+                if ref_str.starts_with("#/$defs/") || ref_str.starts_with("#/definitions/") {
+                    return true;
+                }
+            }
+            obj.values().any(has_local_ref)
+        }
+        _ => false,
+    }
+}
+
+// ═══════════════════════════════════════════════════════════════════
 // Streaming tool output
 // ═══════════════════════════════════════════════════════════════════
 

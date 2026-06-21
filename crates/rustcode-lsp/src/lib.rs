@@ -301,6 +301,132 @@ fn extract_messages(buf: &[u8]) -> (Vec<Value>, usize) {
 }
 
 // =============================================================================
+// Dynamic Root Detection (walk-up directory search)
+// =============================================================================
+
+/// A root-finding function — given a file path and a workspace root, finds
+/// the project root directory for an LSP server.
+///
+/// Ported from: `packages/opencode/src/lsp/server.ts` `RootFunction` (line 30).
+pub type RootFn = Arc<dyn Fn(&str, &str) -> Option<String> + Send + Sync>;
+
+/// Build a NearestRoot function that walks up from `file` toward `stop_dir`
+/// looking for one of the `include_patterns`. Returns the directory containing
+/// the first match, or `stop_dir` if nothing found.
+///
+/// Ported from: `packages/opencode/src/lsp/server.ts` `NearestRoot` (lines 32–54).
+pub fn nearest_root(include_patterns: &[&str], exclude_patterns: Option<&[&str]>) -> RootFn {
+    let includes: Vec<String> = include_patterns.iter().map(|s| s.to_string()).collect();
+    let excludes: Vec<String> = exclude_patterns
+        .map(|v| v.iter().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+    Arc::new(move |file: &str, stop_dir: &str| {
+        let start = std::path::Path::new(file).parent()?;
+        let stop = std::path::Path::new(stop_dir);
+        let mut current = start.to_path_buf();
+        loop {
+            // Check exclude patterns first
+            if !excludes.is_empty() {
+                for ex in &excludes {
+                    let ex_path = current.join(ex);
+                    if ex_path.exists() {
+                        return None;
+                    }
+                }
+            }
+            // Check include patterns
+            for inc in &includes {
+                let inc_path = current.join(inc);
+                if inc_path.exists() {
+                    return Some(current.to_string_lossy().to_string());
+                }
+            }
+            if current == stop || current.parent().is_none() {
+                return Some(stop_dir.to_string());
+            }
+            if let Some(parent) = current.parent() {
+                current = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+        Some(stop_dir.to_string())
+    })
+}
+
+/// Build a StrictNearestRoot function that only returns a root if an include
+/// pattern is found (never falls back to stop_dir).
+///
+/// Ported from: `packages/opencode/src/lsp/server.ts` `StrictNearestRoot` (lines 56–78).
+pub fn strict_nearest_root(include_patterns: &[&str], exclude_patterns: Option<&[&str]>) -> RootFn {
+    let includes: Vec<String> = include_patterns.iter().map(|s| s.to_string()).collect();
+    let excludes: Vec<String> = exclude_patterns
+        .map(|v| v.iter().map(|s| s.to_string()).collect())
+        .unwrap_or_default();
+    Arc::new(move |file: &str, stop_dir: &str| {
+        let start = std::path::Path::new(file).parent()?;
+        let stop = std::path::Path::new(stop_dir);
+        let mut current = start.to_path_buf();
+        loop {
+            if !excludes.is_empty() {
+                for ex in &excludes {
+                    let ex_path = current.join(ex);
+                    if ex_path.exists() {
+                        return None;
+                    }
+                }
+            }
+            for inc in &includes {
+                let inc_path = current.join(inc);
+                if inc_path.exists() {
+                    return Some(current.to_string_lossy().to_string());
+                }
+            }
+            if current == stop || current.parent().is_none() {
+                return None;
+            }
+            if let Some(parent) = current.parent() {
+                current = parent.to_path_buf();
+            } else {
+                break;
+            }
+        }
+        None
+    })
+}
+
+// =============================================================================
+// LspExtendedInfo — server with dynamic root detection
+// =============================================================================
+
+/// Extended LSP server info with dynamic root detection function.
+/// Ported from: `packages/opencode/src/lsp/server.ts` `Info` (lines 80–86).
+pub struct LspExtendedInfo {
+    pub id: String,
+    pub extensions: Vec<String>,
+    pub global: bool,
+    pub root: RootFn,
+    pub spawn_fn: Option<Arc<dyn Fn(&str) -> Option<LspServerInfo> + Send + Sync>>,
+}
+
+impl LspExtendedInfo {
+    pub fn to_server_info(&self, file: &str, workspace_root: &str) -> Option<LspServerInfo> {
+        let root = (self.root)(file, workspace_root)?;
+        Some(LspServerInfo {
+            id: self.id.clone(),
+            extensions: self.extensions.clone(),
+            command: match &self.spawn_fn {
+                Some(f) => f(&root).and_then(|s| s.command),
+                None => None,
+            },
+            env: None,
+            initialization: None,
+            root: Some(root),
+        })
+    }
+}
+
+// =============================================================================
 // Known LSP server catalog
 // =============================================================================
 
@@ -321,6 +447,8 @@ pub fn known_servers() -> Vec<LspServerInfo> {
             &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"],
             &["typescript-language-server", "--stdio"],
         ),
+        // --- Deno ---
+        server("deno", &[".ts", ".tsx", ".js", ".jsx", ".mjs"], &["deno", "lsp"]),
         // --- Python ---
         server(
             "pyright",
@@ -429,6 +557,18 @@ pub fn known_servers() -> Vec<LspServerInfo> {
             &[".html", ".htm"],
             &["vscode-html-language-server", "--stdio"],
         ),
+        // --- Biome ---
+        server(
+            "biome",
+            &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".json", ".jsonc", ".vue", ".astro", ".svelte", ".css", ".graphql", ".gql", ".html"],
+            &["biome", "lsp-proxy", "--stdio"],
+        ),
+        // --- ESLint ---
+        server(
+            "eslint",
+            &[".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts", ".vue"],
+            &["node", "eslint-server", "--stdio"],
+        ),
     ]
 }
 
@@ -442,6 +582,144 @@ fn server(id: &str, extensions: &[&str], command: &[&str]) -> LspServerInfo {
         initialization: None,
         root: None,
     }
+}
+
+/// Return extended server info with dynamic root detection, matching the
+/// 28+ server definitions from TS `packages/opencode/src/lsp/server.ts`.
+///
+/// Each server gets a root function that walks up from the source file
+/// to find the project root by looking for well-known config files.
+///
+/// Ported from: `packages/opencode/src/lsp/server.ts` — all `export const X: Info`
+pub fn known_servers_extended() -> Vec<LspExtendedInfo> {
+    vec![
+        // Deno — StrictNearestRoot for deno.json/deno.jsonc
+        LspExtendedInfo {
+            id: "deno".into(),
+            extensions: vec![".ts".into(), ".tsx".into(), ".js".into(), ".jsx".into(), ".mjs".into()],
+            global: true,
+            root: strict_nearest_root(&["deno.json", "deno.jsonc"], None),
+            spawn_fn: None,
+        },
+        // TypeScript — NearestRoot for lockfiles, excludes Deno configs
+        LspExtendedInfo {
+            id: "typescript".into(),
+            extensions: vec![".ts".into(), ".tsx".into(), ".js".into(), ".jsx".into(), ".mjs".into(), ".cjs".into(), ".mts".into(), ".cts".into()],
+            global: false,
+            root: nearest_root(
+                &["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"],
+                Some(&["deno.json", "deno.jsonc"]),
+            ),
+            spawn_fn: None,
+        },
+        // Vue
+        LspExtendedInfo {
+            id: "vue".into(),
+            extensions: vec![".vue".into()],
+            global: false,
+            root: nearest_root(&["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"], None),
+            spawn_fn: None,
+        },
+        // ESLint
+        LspExtendedInfo {
+            id: "eslint".into(),
+            extensions: vec![".ts".into(), ".tsx".into(), ".js".into(), ".jsx".into(), ".mjs".into(), ".cjs".into(), ".mts".into(), ".cts".into(), ".vue".into()],
+            global: false,
+            root: nearest_root(&["package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"], None),
+            spawn_fn: None,
+        },
+        // Oxlint
+        LspExtendedInfo {
+            id: "oxlint".into(),
+            extensions: vec![".ts".into(), ".tsx".into(), ".js".into(), ".jsx".into(), ".mjs".into(), ".cjs".into(), ".mts".into(), ".cts".into(), ".vue".into(), ".astro".into(), ".svelte".into()],
+            global: false,
+            root: nearest_root(
+                &[".oxlintrc.json", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock", "package.json"],
+                None,
+            ),
+            spawn_fn: None,
+        },
+        // Biome
+        LspExtendedInfo {
+            id: "biome".into(),
+            extensions: vec![".ts".into(), ".tsx".into(), ".js".into(), ".jsx".into(), ".mjs".into(), ".cjs".into(), ".mts".into(), ".cts".into(), ".json".into(), ".jsonc".into(), ".vue".into(), ".astro".into(), ".svelte".into(), ".css".into(), ".graphql".into(), ".gql".into(), ".html".into()],
+            global: false,
+            root: nearest_root(
+                &["biome.json", "biome.jsonc", "package-lock.json", "bun.lockb", "bun.lock", "pnpm-lock.yaml", "yarn.lock"],
+                None,
+            ),
+            spawn_fn: None,
+        },
+        // Gopls — first try go.work, then go.mod/go.sum
+        LspExtendedInfo {
+            id: "gopls".into(),
+            extensions: vec![".go".into()],
+            global: true,
+            root: Arc::new(|file: &str, stop_dir: &str| {
+                if let Some(work_root) = nearest_root(&["go.work"], None)(file, stop_dir) {
+                    return Some(work_root);
+                }
+                nearest_root(&["go.mod", "go.sum"], None)(file, stop_dir)
+            }),
+            spawn_fn: None,
+        },
+        // Rubocop
+        LspExtendedInfo {
+            id: "ruby-lsp".into(),
+            extensions: vec![".rb".into(), ".rake".into(), ".gemspec".into(), ".ru".into()],
+            global: true,
+            root: nearest_root(&["Gemfile"], None),
+            spawn_fn: None,
+        },
+        // Ty (experimental Python)
+        LspExtendedInfo {
+            id: "ty".into(),
+            extensions: vec![".py".into(), ".pyi".into()],
+            global: false,
+            root: nearest_root(&["pyproject.toml", "ty.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"], None),
+            spawn_fn: None,
+        },
+        // Pyright
+        LspExtendedInfo {
+            id: "pyright".into(),
+            extensions: vec![".py".into(), ".pyi".into()],
+            global: true,
+            root: nearest_root(&["pyproject.toml", "setup.py", "setup.cfg", "requirements.txt", "Pipfile", "pyrightconfig.json"], None),
+            spawn_fn: None,
+        },
+        // ElixirLS
+        LspExtendedInfo {
+            id: "elixir-ls".into(),
+            extensions: vec![".ex".into(), ".exs".into()],
+            global: true,
+            root: nearest_root(&["mix.exs", "mix.lock"], None),
+            spawn_fn: None,
+        },
+        // Zls
+        LspExtendedInfo {
+            id: "zls".into(),
+            extensions: vec![".zig".into(), ".zon".into()],
+            global: true,
+            root: nearest_root(&["build.zig"], None),
+            spawn_fn: None,
+        },
+        // C#
+        LspExtendedInfo {
+            id: "csharp".into(),
+            extensions: vec![".cs".into(), ".csx".into()],
+            global: true,
+            root: nearest_root(&[".slnx", ".sln", ".csproj", "global.json"], None),
+            spawn_fn: None,
+        },
+        // Razor
+        LspExtendedInfo {
+            id: "razor".into(),
+            extensions: vec![".razor".into(), ".cshtml".into()],
+            global: true,
+            root: nearest_root(&[".slnx", ".sln", ".csproj", "global.json"], None),
+            spawn_fn: None,
+        },
+    ]
 }
 
 /// Return every known server that supports the given file extension.
@@ -1844,6 +2122,13 @@ impl LspClient {
 /// ```
 pub struct LspManager {
     clients: std::sync::RwLock<HashMap<String, Arc<LspClient>>>,
+    /// Deduplication set for concurrent spawn attempts.
+    /// Stores server IDs currently being spawned by another task.
+    /// Ported from: `packages/opencode/src/lsp/lsp.ts` — internal dedup via Effect.cached.
+    spawn_in_progress: std::sync::Mutex<HashSet<String>>,
+    /// Set of server IDs that have been marked as broken (failed to start).
+    /// Ported from: `packages/opencode/src/lsp/lsp.ts` — broken server tracking.
+    broken: std::sync::RwLock<HashSet<String>>,
 }
 
 impl LspManager {
@@ -1851,14 +2136,58 @@ impl LspManager {
     pub fn new() -> Self {
         Self {
             clients: std::sync::RwLock::new(HashMap::new()),
+            spawn_in_progress: std::sync::Mutex::new(HashSet::new()),
+            broken: std::sync::RwLock::new(HashSet::new()),
         }
+    }
+
+    /// Mark a server as broken (failed to start). Broken servers are skipped
+    /// on future connection attempts until explicitly cleared.
+    ///
+    /// Ported from: `packages/opencode/src/lsp/lsp.ts` — broken server tracking.
+    pub fn mark_broken(&self, server_id: &str) {
+        let mut broken = self.broken.write().expect("lock poisoned");
+        broken.insert(server_id.to_string());
+    }
+
+    /// Clear the broken status for a server, allowing reconnection attempts.
+    pub fn clear_broken(&self, server_id: &str) {
+        let mut broken = self.broken.write().expect("lock poisoned");
+        broken.remove(server_id);
+    }
+
+    /// Check if a server is marked as broken.
+    pub fn is_broken(&self, server_id: &str) -> bool {
+        let broken = self.broken.read().expect("lock poisoned");
+        broken.contains(server_id)
+    }
+
+    /// Try to acquire a spawn permit for the given server ID.
+    /// Returns true if the caller should proceed with spawning.
+    fn try_acquire_spawn(&self, server_id: &str) -> bool {
+        let mut in_progress = self.spawn_in_progress.lock().expect("lock poisoned");
+        if in_progress.contains(server_id) {
+            false
+        } else {
+            in_progress.insert(server_id.to_string());
+            true
+        }
+    }
+
+    /// Release the spawn permit for the given server ID.
+    fn release_spawn(&self, server_id: &str) {
+        let mut in_progress = self.spawn_in_progress.lock().expect("lock poisoned");
+        in_progress.remove(server_id);
     }
 
     /// Connect to a language server for the given root directory.
     ///
-    /// Spawns the process, performs the init handshake, and stores the
-    /// client. If a client with the same `server_info.id` is already
-    /// connected the existing one is returned unchanged.
+    /// Uses a dedup set to prevent concurrent spawn attempts for the
+    /// same server ID. If a server is marked as broken, returns an error.
+    /// If a client with the same `server_info.id` is already connected,
+    /// the existing one is returned unchanged.
+    ///
+    /// Ported from: `packages/opencode/src/lsp/lsp.ts` — dedup via Effect.cached.
     pub async fn connect(
         &self,
         server_info: LspServerInfo,
@@ -1872,24 +2201,68 @@ impl LspManager {
             }
         }
 
-        let client = Arc::new(LspClient::new(&server_info, root_dir).await?);
-
-        {
-            let mut clients = self.clients.write().expect("lock poisoned");
-            // Double-check after acquiring write lock
-            if let Some(existing) = clients.get(&server_info.id) {
-                return Ok(Arc::clone(existing));
-            }
-            clients.insert(server_info.id.clone(), Arc::clone(&client));
+        // Check if broken
+        if self.is_broken(&server_info.id) {
+            return Err(LspError::ServerExited(format!(
+                "server '{}' is marked as broken",
+                server_info.id
+            )));
         }
 
-        Ok(client)
+        // Dedup: try to acquire spawn permit
+        if !self.try_acquire_spawn(&server_info.id) {
+            // Another task is spawning this server — wait briefly then retry
+            for _ in 0..50 {
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                let clients = self.clients.read().expect("lock poisoned");
+                if let Some(existing) = clients.get(&server_info.id) {
+                    return Ok(Arc::clone(existing));
+                }
+                if !self.is_broken(&server_info.id) {
+                    // Still in progress, keep waiting
+                    continue;
+                }
+                return Err(LspError::ServerExited(format!(
+                    "server '{}' spawn failed (concurrent)",
+                    server_info.id
+                )));
+            }
+            return Err(LspError::Timeout(format!(
+                "timed out waiting for concurrent spawn of '{}'",
+                server_info.id
+            )));
+        }
+
+        // We have the spawn permit — proceed with spawning
+        let result = LspClient::new(&server_info, root_dir).await;
+        self.release_spawn(&server_info.id);
+
+        match result {
+            Ok(client) => {
+                let arc_client = Arc::new(client);
+                {
+                    let mut clients = self.clients.write().expect("lock poisoned");
+                    clients.insert(server_info.id.clone(), Arc::clone(&arc_client));
+                }
+                Ok(arc_client)
+            }
+            Err(e) => {
+                self.mark_broken(&server_info.id);
+                Err(e)
+            }
+        }
     }
 
     /// Disconnect a language server by its ID.
     ///
     /// Sends the shutdown/exit sequence and removes the client.
+    /// Also cleans up the spawn dedup state and broken status.
     pub async fn disconnect(&self, server_id: &str) -> Result<()> {
+        self.release_spawn(server_id);
+        {
+            let mut broken = self.broken.write().expect("lock poisoned");
+            broken.remove(server_id);
+        }
         let client = {
             let mut clients = self.clients.write().expect("lock poisoned");
             clients.remove(server_id)
@@ -1925,28 +2298,80 @@ impl LspManager {
 
     /// Find and connect to a server that supports the given file.
     ///
-    /// Looks up servers that handle the file's extension, determines the
-    /// project root for that file, and spawns the server if not already running.
+    /// Uses dynamic root detection (walk-up directory search for well-known
+    /// config files) via [`known_servers_extended`]. Falls back to basic
+    /// server info from [`known_servers`] when no extended root is found.
     ///
     /// Returns the matching client, or `None` if no server handles the file.
     ///
     /// # Source
-    /// Ported from `packages/opencode/src/lsp/lsp.ts` `getClients()` (lines 210–299).
-    pub async fn get_client_for_file(&self, file_path: &str, workspace_root: &Path) -> Result<Option<Arc<LspClient>>> {
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `getClients()` (lines 210–299)
+    /// and `packages/opencode/src/lsp/server.ts` root detection.
+    pub async fn get_client_for_file(
+        &self,
+        file_path: &str,
+        workspace_root: &Path,
+    ) -> Result<Option<Arc<LspClient>>> {
         let ext = Path::new(file_path)
             .extension()
             .and_then(|e| e.to_str())
             .map(|e| format!(".{e}"))
             .unwrap_or_default();
 
-        let servers = get_server_for_file(&ext);
-        if servers.is_empty() {
-            return Ok(None);
+        let ws_str = workspace_root.to_string_lossy().to_string();
+
+        // Try extended servers (with dynamic root detection) first
+        let extended = known_servers_extended();
+        for ext_server in &extended {
+            if !ext_server.extensions.iter().any(|e| e == &ext) {
+                continue;
+            }
+
+            // Check if already connected
+            {
+                let clients = self.clients.read().expect("lock poisoned");
+                if let Some(existing) = clients.get(&ext_server.id) {
+                    return Ok(Some(Arc::clone(existing)));
+                }
+            }
+
+            // Check broken
+            if self.is_broken(&ext_server.id) {
+                continue;
+            }
+
+            let server_id = ext_server.id.clone();
+
+            // Use dynamic root detection
+            if let Some(root_str) = (ext_server.root)(file_path, &ws_str) {
+                let root_dir = Path::new(&root_str).to_path_buf();
+                let info = ext_server.to_server_info(file_path, &ws_str);
+                let server_info = info.unwrap_or_else(|| LspServerInfo {
+                    id: ext_server.id.clone(),
+                    extensions: ext_server.extensions.clone(),
+                    command: None,
+                    env: None,
+                    initialization: None,
+                    root: Some(root_str.clone()),
+                });
+
+                match self.connect(server_info, &root_dir).await {
+                    Ok(client) => return Ok(Some(client)),
+                    Err(e) => {
+                        warn!(
+                            server_id = %server_id,
+                            error = %e,
+                            "Failed to connect extended LSP server for file"
+                        );
+                        continue;
+                    }
+                }
+            }
         }
 
-        // Try each candidate server
+        // Fall back to basic servers
+        let servers = get_server_for_file(&ext);
         for server_info in servers {
-            // Check if already connected
             {
                 let clients = self.clients.read().expect("lock poisoned");
                 if let Some(existing) = clients.get(&server_info.id) {
@@ -1955,9 +2380,6 @@ impl LspManager {
             }
 
             let server_id = server_info.id.clone();
-
-            // Determine root for this file.
-            // Use server_info.root hint if set, otherwise use workspace_root.
             let root_dir = if let Some(root_str) = &server_info.root {
                 let candidate = Path::new(root_str);
                 if candidate.is_absolute() {
@@ -1969,7 +2391,6 @@ impl LspManager {
                 workspace_root.to_path_buf()
             };
 
-            // Connect to the server
             match self.connect(server_info, &root_dir).await {
                 Ok(client) => return Ok(Some(client)),
                 Err(e) => {
@@ -1978,7 +2399,6 @@ impl LspManager {
                         error = %e,
                         "Failed to connect LSP server for file"
                     );
-                    // Try next server
                     continue;
                 }
             }
@@ -1989,15 +2409,24 @@ impl LspManager {
 
     /// Scan the workspace and update the server fleet.
     ///
-    /// Detects required servers, starts missing ones, and stops servers
-    /// whose toolchains are no longer present. Returns the current status
-    /// of every detected server.
+    /// Detects required servers, starts missing ones (using dedup for
+    /// concurrent spawns), and stops servers whose toolchains are no
+    /// longer present. Broken servers are automatically cleared on a
+    /// successful detection cycle.
+    /// Returns the current status of every detected server.
     pub async fn update(&self, workspace_root: &Path) -> Vec<LspStatus> {
         let needed = detect_servers_for_workspace(workspace_root);
 
-        // Start new servers
+        // Clear broken status for any server that is needed again
+        {
+            let mut broken = self.broken.write().expect("lock poisoned");
+            let needed_ids: HashSet<&str> = needed.iter().map(|s| s.id.as_str()).collect();
+            broken.retain(|id| !needed_ids.contains(id.as_str()));
+        }
+
+        // Start new servers (using dedup via connect)
         for info in &needed {
-            if self.get_client(&info.id).is_none() {
+            if self.get_client(&info.id).is_none() && !self.is_broken(&info.id) {
                 if let Err(e) = self.connect(info.clone(), workspace_root).await {
                     warn!(
                         server_id = %info.id,

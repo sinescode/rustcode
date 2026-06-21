@@ -478,7 +478,31 @@ impl SnapshotService {
         Ok(result.text.trim().to_string())
     }
 
+    /// Structured row from `git diff --numstat` output.
+    struct DiffRow {
+        file: String,
+        status: String,
+        binary: bool,
+        additions: i64,
+        deletions: i64,
+    }
+
+    /// A ref pointing to a file at a git revision (`<tree>:<path>`).
+    struct FileRef {
+        file: String,
+        side: Side,
+        ref_str: String,
+    }
+
+    enum Side {
+        Before,
+        After,
+    }
+
     /// Get a full diff (with file contents and patches) between two hashes.
+    ///
+    /// Uses `git cat-file --batch` to fetch all file contents in a single
+    /// round trip instead of per-file `git show` calls.
     ///
     /// # Source
     /// `packages/opencode/src/snapshot/index.ts` lines 545–758.
@@ -486,7 +510,7 @@ impl SnapshotService {
         self.ensure_init()?;
         let _guard = self.lock.lock().map_err(|_| SnapshotError::LockPoison)?;
 
-        // Get name-status
+        // ── Step 1: name-status ──────────────────────────────────────────
         let statuses = self.snapshot_git(
             &[
                 "diff",
@@ -518,7 +542,7 @@ impl SnapshotService {
             }
         }
 
-        // Get numstat
+        // ── Step 2: numstat ──────────────────────────────────────────────
         let numstat = self.snapshot_git(
             &[
                 "diff",
@@ -533,15 +557,7 @@ impl SnapshotService {
             self.cwd_env(),
         )?;
 
-        struct Row {
-            file: String,
-            status: String,
-            binary: bool,
-            additions: i64,
-            deletions: i64,
-        }
-
-        let rows: Vec<Row> = numstat
+        let rows: Vec<DiffRow> = numstat
             .text
             .lines()
             .filter(|l| !l.is_empty())
@@ -554,7 +570,7 @@ impl SnapshotService {
                 let dels = parts[1];
                 let file = parts[2].to_string();
                 let binary = adds == "-" && dels == "-";
-                Some(Row {
+                Some(DiffRow {
                     status: status_map
                         .get(&file)
                         .cloned()
@@ -567,25 +583,76 @@ impl SnapshotService {
             })
             .collect();
 
-        // Generate patches for each file
+        // ── Step 3: build ref list for cat-file --batch ───────────────────
+        let refs: Vec<FileRef> = rows
+            .iter()
+            .flat_map(|row| {
+                if row.binary {
+                    return Vec::new();
+                }
+                match row.status.as_str() {
+                    "added" => vec![FileRef {
+                        file: row.file.clone(),
+                        side: Side::After,
+                        ref_str: format!("{to}:{}", row.file),
+                    }],
+                    "deleted" => vec![FileRef {
+                        file: row.file.clone(),
+                        side: Side::Before,
+                        ref_str: format!("{from}:{}", row.file),
+                    }],
+                    _ => vec![
+                        FileRef {
+                            file: row.file.clone(),
+                            side: Side::Before,
+                            ref_str: format!("{from}:{}", row.file),
+                        },
+                        FileRef {
+                            file: row.file.clone(),
+                            side: Side::After,
+                            ref_str: format!("{to}:{}", row.file),
+                        },
+                    ],
+                }
+            })
+            .collect();
+
+        // ── Step 4: fetch contents via cat-file --batch ──────────────────
+        let content_map = if refs.is_empty() {
+            HashMap::new()
+        } else {
+            self.batch_cat_file(&refs).unwrap_or_default()
+        };
+
+        // ── Step 5: build patches ────────────────────────────────────────
         let mut results = Vec::new();
         for row in &rows {
+            let (before, after) = if row.binary {
+                (String::new(), String::new())
+            } else {
+                let before = content_map
+                    .get(&format!("{}:before", row.file))
+                    .cloned()
+                    .unwrap_or_default();
+                let after = content_map
+                    .get(&format!("{}:after", row.file))
+                    .cloned()
+                    .unwrap_or_default();
+                (before, after)
+            };
+
             let patch_text = if row.binary {
                 String::new()
-            } else if row.status == "added" {
-                // New file: show content from `to`
-                self.snapshot_git(&["show", &format!("{to}:{}", row.file)], None)
-                    .map(|r| r.text)
-                    .unwrap_or_default()
-            } else if row.status == "deleted" {
-                // Deleted file: show content from `from`
-                self.snapshot_git(&["show", &format!("{from}:{}", row.file)], None)
-                    .map(|r| r.text)
-                    .unwrap_or_default()
             } else {
-                // Modified: generate unified diff
-                self.generate_file_diff(from, to, &row.file)
-                    .unwrap_or_default()
+                // Generate structured diff from before/after content
+                if row.status == "added" {
+                    after.clone()
+                } else if row.status == "deleted" {
+                    before.clone()
+                } else {
+                    self.generate_file_diff(from, to, &row.file)
+                        .unwrap_or_default()
+                }
             };
 
             results.push(SnapshotFileDiff {
@@ -602,6 +669,122 @@ impl SnapshotService {
         }
 
         Ok(results)
+    }
+
+    /// Fetch file contents via `git cat-file --batch` in a single round trip.
+    ///
+    /// Returns a map keyed by `<file>:before` / `<file>:after` with the
+    /// text content for each ref. Falls back to per-file `git show` on error.
+    ///
+    /// # Source
+    /// `packages/opencode/src/snapshot/index.ts` lines 587–681 (`load`).
+    fn batch_cat_file(&self, refs: &[FileRef]) -> Result<HashMap<String, String>, SnapshotError> {
+        let stdin_data = refs
+            .iter()
+            .map(|r| r.ref_str.as_str())
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+
+        let result = self.snapshot_git_stdin(
+            &["--git-dir", &self.gitdir.to_string_lossy(), "--work-tree", &self.worktree.to_string_lossy(), "cat-file", "--batch"],
+            &stdin_data,
+            None,
+        );
+
+        let output = match result {
+            Ok(r) => r,
+            Err(_) => {
+                // Fallback: per-file git show
+                let mut map = HashMap::new();
+                for fr in refs {
+                    let text = self
+                        .snapshot_git(&["show", &fr.ref_str], None)
+                        .map(|r| r.text)
+                        .unwrap_or_default();
+                    let key = match fr.side {
+                        Side::Before => format!("{}:before", fr.file),
+                        Side::After => format!("{}:after", fr.file),
+                    };
+                    map.insert(key, text);
+                }
+                return Ok(map);
+            }
+        };
+
+        if output.code != 0 {
+            // Fallback
+            let mut map = HashMap::new();
+            for fr in refs {
+                let text = self
+                    .snapshot_git(&["show", &fr.ref_str], None)
+                    .map(|r| r.text)
+                    .unwrap_or_default();
+                let key = match fr.side {
+                    Side::Before => format!("{}:before", fr.file),
+                    Side::After => format!("{}:after", fr.file),
+                };
+                map.insert(key, text);
+            }
+            return Ok(map);
+        }
+
+        // Parse the batch output
+        let mut map = HashMap::new();
+        let out = output.text;
+        let bytes = out.as_bytes();
+        let mut i = 0;
+        let len = bytes.len();
+
+        for fr in refs {
+            if i >= len {
+                break;
+            }
+
+            // Read header line (ends at newline)
+            let mut end = i;
+            while end < len && bytes[end] != b'\n' {
+                end += 1;
+            }
+            if end >= len {
+                break;
+            }
+            let header = String::from_utf8_lossy(&bytes[i..end]).to_string();
+            i = end + 1;
+
+            if header.ends_with(" missing") {
+                let key = match fr.side {
+                    Side::Before => format!("{}:before", fr.file),
+                    Side::After => format!("{}:after", fr.file),
+                };
+                map.insert(key, String::new());
+                continue;
+            }
+
+            // Parse "<sha> blob <size>"
+            let parts: Vec<&str> = header.split_whitespace().collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let size: usize = match parts[2].parse() {
+                Ok(n) => n,
+                Err(_) => continue,
+            };
+
+            if i + size > len {
+                break;
+            }
+            let content = String::from_utf8_lossy(&bytes[i..i + size]).to_string();
+            i += size + 1; // skip trailing newline
+
+            let key = match fr.side {
+                Side::Before => format!("{}:before", fr.file),
+                Side::After => format!("{}:after", fr.file),
+            };
+            map.insert(key, content);
+        }
+
+        Ok(map)
     }
 
     /// Run garbage collection on the snapshot git repo.

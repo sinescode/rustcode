@@ -1811,6 +1811,17 @@ pub fn generate_variants(model: &Model) -> Variants {
     let api_id = model.api.id.to_lowercase();
     let npm = &model.api.npm;
 
+    // MiniMax M3 on Anthropic / openai-compatible: none+thinking variants
+    // Ported from: transform.ts:669-677
+    if api_id.contains("minimax-m3")
+        && (npm == "@ai-sdk/anthropic" || npm == "@ai-sdk/openai-compatible")
+    {
+        return Variants::from([
+            ("none".into(), serde_json::json!({ "thinking": { "type": "disabled" } })),
+            ("thinking".into(), serde_json::json!({ "thinking": { "type": "adaptive" } })),
+        ]);
+    }
+
     // DeepSeek, MiniMax, GLM, Kimi, Qwen, big-pickle — handled differently
     if id.contains("deepseek-chat")
         || id.contains("deepseek-reasoner")
