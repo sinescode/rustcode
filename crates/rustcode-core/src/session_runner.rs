@@ -19,8 +19,14 @@ use crate::provider::{
     ChatMessage, ContentPart, LlmEvent, MessageContent, Model, Provider, ToolDefinition,
     ToolResultPart,
 };
+use crate::session_execution::{
+    CoordinatedRunner, CoordinatorState, Demand, DrainFn, FiberSet, RunCoordinator,
+    SessionRunError, SessionRunErrorKind,
+};
+use crate::session_info::SessionId;
 use crate::session_prompt::{PromptPart, SessionPromptBuilder, SessionPromptInput};
 use crate::tool::{ToolContext, ToolRegistry};
+use futures::future::BoxFuture;
 
 /// Default maximum number of LLM-tool round-trips before we abort (doom-loop guard).
 const DEFAULT_MAX_ITERATIONS: usize = 25;
@@ -106,6 +112,65 @@ impl SessionRunner {
     /// Return the configured maximum number of LLM→tool iterations.
     pub fn max_iterations(&self) -> usize {
         self.max_iterations
+    }
+
+    /// Return the tool registry.
+    pub fn tool_registry(&self) -> &Arc<ToolRegistry> {
+        &self.tool_registry
+    }
+
+    /// Create a [`DrainFn`] that wraps this runner's `run()` method.
+    ///
+    /// The returned closure is ready for use with [`RunCoordinator::new`].
+    /// All context (provider, model, input, instructions) must be provided
+    /// up-front since the runner does not resolve sessions itself.
+    ///
+    /// # Source
+    /// `packages/core/src/session/execution/local.ts` lines 17–23 `drain`.
+    pub fn make_drain_fn(
+        self: Arc<Self>,
+        provider: Arc<dyn Provider>,
+        model: Model,
+        input: SessionPromptInput,
+        instructions: Vec<String>,
+    ) -> DrainFn {
+        Arc::new(move |session_id: SessionId, demand: Demand| {
+            let runner = self.clone();
+            let provider = provider.clone();
+            let model = model.clone();
+            let input = input.clone();
+            let instructions = instructions.clone();
+            Box::pin(async move {
+                let _ = demand;
+                runner
+                    .run(&*provider, &model, &input, &instructions)
+                    .await
+                    .map_err(|e| SessionRunError {
+                        kind: SessionRunErrorKind::Internal,
+                        message: e.to_string(),
+                        session_id: Some(session_id),
+                    })?;
+                Ok(())
+            })
+        })
+    }
+
+    /// Create a [`RunCoordinator`] that drives this runner's tool loop.
+    ///
+    /// Convenience constructor; equivalent to
+    /// `RunCoordinator::new(runner.make_drain_fn(...), None)`.
+    ///
+    /// # Source
+    /// `packages/core/src/session/execution/local.ts` lines 16–25.
+    pub fn make_coordinator(
+        self: Arc<Self>,
+        provider: Arc<dyn Provider>,
+        model: Model,
+        input: SessionPromptInput,
+        instructions: Vec<String>,
+    ) -> RunCoordinator {
+        let drain_fn = self.make_drain_fn(provider, model, input, instructions);
+        RunCoordinator::new(drain_fn, None)
     }
 
     /// Run a session prompt with the given provider and model.

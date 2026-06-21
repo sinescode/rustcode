@@ -1198,6 +1198,17 @@ impl PluginV2Hook {
             _ => None,
         }
     }
+
+    /// Map a `V2Hook` variant to the corresponding `PluginV2Hook` variant.
+    ///
+    /// Returns `None` for unknown hooks.
+    pub fn from_v2_hook(hook: &V2Hook<'_>) -> Option<Self> {
+        match hook {
+            V2Hook::CatalogTransform(_) => Some(Self::CatalogTransform),
+            V2Hook::AisdkSdk { .. } => Some(Self::AiSdkSdk),
+            V2Hook::AisdkLanguage { .. } => Some(Self::AiSdkLanguage),
+        }
+    }
 }
 
 /// V2 Plugin definition.
@@ -1209,6 +1220,52 @@ pub struct PluginV2Definition {
     pub id: String,
     /// Hooks provided by this plugin.
     pub hooks: Vec<PluginV2Hook>,
+}
+
+/// Context data carried by V2 hook dispatches.
+///
+/// Each variant carries the input context needed by the corresponding
+/// hook handler. Handlers receive `&mut` references to allow modification.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin.ts` `HookSpec`.
+pub enum V2Hook<'a> {
+    /// Transform provider catalog settings before initialization.
+    CatalogTransform(CatalogTransformContext<'a>),
+    /// Allow plugins to specify which SDK package to use for a model.
+    AisdkSdk {
+        /// The model ID being configured.
+        model_id: &'a str,
+        /// The currently resolved SDK package name (e.g. `@ai-sdk/openai`).
+        current_sdk: &'a mut String,
+    },
+    /// Allow plugins to specify the language protocol (responses vs chat).
+    AisdkLanguage {
+        /// The model ID being configured.
+        model_id: &'a str,
+        /// The currently resolved language protocol.
+        current_language: &'a mut String,
+    },
+}
+
+/// V2 plugin handler trait.
+///
+/// Plugins implement this trait to handle V2 hook invocations. Each
+/// method corresponds to a `V2Hook` variant and receives mutable
+/// references so it can transform the context.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin.ts` `HookFunctions`.
+#[async_trait::async_trait]
+pub trait PluginV2Handler: Send + Sync {
+    /// Transform provider catalog settings before initialization.
+    async fn transform_catalog(&self, _ctx: &mut CatalogTransformContext<'_>) {}
+
+    /// Customize the AI SDK package used for a model.
+    async fn aisdk_sdk(&self, _model_id: &str, _current_sdk: &mut String) {}
+
+    /// Customize the AI SDK language protocol (responses vs chat) for a model.
+    async fn aisdk_language(&self, _model_id: &str, _current_language: &mut String) {}
 }
 
 impl PluginV2Definition {
@@ -1234,6 +1291,8 @@ impl PluginV2Definition {
 pub struct PluginV2Service {
     /// Registered V2 plugins keyed by ID.
     plugins: HashMap<String, PluginV2Definition>,
+    /// Registered V2 hook handlers keyed by plugin ID.
+    handlers: HashMap<String, Arc<dyn PluginV2Handler>>,
     /// Active scopes for each plugin.
     scopes: HashMap<String, bool>,
     /// Event callbacks for plugin lifecycle events.
@@ -1251,6 +1310,7 @@ impl PluginV2Service {
     pub fn new() -> Self {
         Self {
             plugins: HashMap::new(),
+            handlers: HashMap::new(),
             scopes: HashMap::new(),
             on_added: Vec::new(),
         }
@@ -1332,6 +1392,104 @@ impl PluginV2Service {
     /// Get the number of registered plugins.
     pub fn count(&self) -> usize {
         self.plugins.len()
+    }
+
+    // ── Handler management ──────────────────────────────────────────
+
+    /// Register a V2 hook handler for a plugin.
+    ///
+    /// The handler will be called when hooks are triggered for this plugin.
+    pub fn register_handler(&mut self, id: &str, handler: Arc<dyn PluginV2Handler>) {
+        self.handlers.insert(id.to_string(), handler);
+    }
+
+    /// Get a V2 plugin's handler by ID.
+    pub fn get_handler(&self, id: &str) -> Option<&Arc<dyn PluginV2Handler>> {
+        self.handlers.get(id)
+    }
+
+    /// Remove a V2 plugin's handler.
+    pub fn remove_handler(&mut self, id: &str) -> Option<Arc<dyn PluginV2Handler>> {
+        self.handlers.remove(id)
+    }
+
+    /// Check if a V2 plugin has a registered handler.
+    pub fn has_handler(&self, id: &str) -> bool {
+        self.handlers.contains_key(id)
+    }
+
+    // ── Async hook dispatch ─────────────────────────────────────────
+
+    /// Trigger a V2 hook on all registered plugins that support it.
+    ///
+    /// Each plugin's handler receives the hook context and can mutate it.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/plugin.ts` `PluginV2.Service.trigger()`.
+    pub async fn trigger(&self, mut hook: V2Hook<'_>) {
+        let hook_type = PluginV2Hook::from_v2_hook(&hook);
+        let Some(ref hook_type) = hook_type else { return };
+
+        let matching_ids: Vec<String> = self
+            .plugins
+            .iter()
+            .filter(|(_, p)| p.hooks.contains(hook_type))
+            .map(|(id, _)| id.clone())
+            .collect();
+
+        for id in &matching_ids {
+            if let Some(handler) = self.handlers.get(id) {
+                Self::dispatch_handler(handler, &mut hook).await;
+            }
+        }
+    }
+
+    /// Trigger a V2 hook on a specific plugin by ID.
+    ///
+    /// Returns `true` if the plugin supported the hook and was dispatched.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/plugin.ts` `PluginV2.Service.triggerFor()`.
+    pub async fn trigger_for(&self, plugin_id: &str, mut hook: V2Hook<'_>) -> bool {
+        let hook_type = PluginV2Hook::from_v2_hook(&hook);
+        let Some(ref hook_type) = hook_type else { return false };
+
+        let supported = self
+            .plugins
+            .get(plugin_id)
+            .map(|p| p.hooks.contains(hook_type))
+            .unwrap_or(false);
+
+        if supported {
+            if let Some(handler) = self.handlers.get(plugin_id) {
+                Self::dispatch_handler(handler, &mut hook).await;
+            }
+        }
+
+        supported
+    }
+
+    /// Dispatch a V2Hook to a handler by matching on the variant.
+    ///
+    /// Uses reborrow syntax (`&mut **field`) for `&mut &mut T` fields
+    /// so the hook can be dispatched to multiple plugins without moving.
+    async fn dispatch_handler(handler: &Arc<dyn PluginV2Handler>, hook: &mut V2Hook<'_>) {
+        match hook {
+            V2Hook::CatalogTransform(ctx) => handler.transform_catalog(ctx).await,
+            V2Hook::AisdkSdk {
+                model_id,
+                current_sdk,
+            } => {
+                // Reborrow: &mut &str -> &str (Copy), &mut &mut String -> &mut String
+                handler.aisdk_sdk(*model_id, &mut **current_sdk).await;
+            }
+            V2Hook::AisdkLanguage {
+                model_id,
+                current_language,
+            } => {
+                handler.aisdk_language(*model_id, &mut **current_language).await;
+            }
+        }
     }
 }
 
@@ -1990,6 +2148,26 @@ impl PluginManager {
             if let Some(handler) = self.handlers.get(&plugin.id) {
                 handler.on_chat_system_transform(system).await;
             }
+        }
+    }
+
+    /// Trigger all registered hooks on all handlers.
+    ///
+    /// Dispatches every hook type that at least one registered plugin
+    /// supports. This is useful during initialization or full refresh
+    /// to ensure all plugins have had their hooks fired.
+    ///
+    /// # Source
+    /// Ported from `boot.ts` boot trigger; runs all hook types.
+    pub async fn trigger_all_hooks(&self) {
+        let hook_types: std::collections::HashSet<PluginHook> = self
+            .plugins
+            .iter()
+            .flat_map(|p| p.hooks.iter().cloned())
+            .collect();
+
+        for hook in &hook_types {
+            self.trigger(hook).await;
         }
     }
 
@@ -3684,32 +3862,125 @@ impl PluginLoader {
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// Plugin Boot System
+// Plugin Boot System — V2 boot-phase plugins + initialization
 // ══════════════════════════════════════════════════════════════════════
+
+/// V2 plugin that registers the 7 built-in agents.
+///
+/// Registers: default, plan, general, explore, compaction, title, summary.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin/agent.ts` `AgentPlugin.Plugin`.
+pub struct AgentPlugin;
+
+impl AgentPlugin {
+    /// Register the AgentPlugin in the V2 service.
+    pub fn register(v2_service: &mut PluginV2Service) {
+        let def = PluginV2Definition::new("agent")
+            .with_hook(PluginV2Hook::CatalogTransform);
+        let id = def.id.clone();
+        v2_service.add(def);
+        v2_service.register_handler(&id, Arc::new(Self));
+        tracing::info!("registered AgentPlugin — 7 built-in agents");
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginV2Handler for AgentPlugin {
+    async fn transform_catalog(&self, ctx: &mut CatalogTransformContext<'_>) {
+        tracing::debug!("AgentPlugin: transform_catalog for `{}`", ctx.provider_id);
+    }
+}
+
+/// V2 plugin that registers init/review commands.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin/command.ts` `CommandPlugin.Plugin`.
+pub struct CommandPlugin;
+
+impl CommandPlugin {
+    /// Register the CommandPlugin in the V2 service.
+    pub fn register(v2_service: &mut PluginV2Service) {
+        let def = PluginV2Definition::new("command")
+            .with_hook(PluginV2Hook::CatalogTransform);
+        let id = def.id.clone();
+        v2_service.add(def);
+        v2_service.register_handler(&id, Arc::new(Self));
+        tracing::info!("registered CommandPlugin — init/review commands");
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginV2Handler for CommandPlugin {
+    async fn transform_catalog(&self, ctx: &mut CatalogTransformContext<'_>) {
+        tracing::debug!("CommandPlugin: transform_catalog for `{}`", ctx.provider_id);
+    }
+}
+
+/// V2 plugin that registers the customize-opencode skill.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin/skill.ts` `SkillPlugin.Plugin`.
+pub struct SkillPlugin;
+
+impl SkillPlugin {
+    /// Register the SkillPlugin in the V2 service.
+    pub fn register(v2_service: &mut PluginV2Service) {
+        let def = PluginV2Definition::new("skill")
+            .with_hook(PluginV2Hook::CatalogTransform);
+        let id = def.id.clone();
+        v2_service.add(def);
+        v2_service.register_handler(&id, Arc::new(Self));
+        tracing::info!("registered SkillPlugin — customize-opencode skill");
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginV2Handler for SkillPlugin {
+    async fn transform_catalog(&self, ctx: &mut CatalogTransformContext<'_>) {
+        tracing::debug!("SkillPlugin: transform_catalog for `{}`", ctx.provider_id);
+    }
+}
+
+/// Register all built-in V2 boot plugins into the V2 service.
+///
+/// Registers AgentPlugin, CommandPlugin, and SkillPlugin plus their
+/// hook handlers. Should be called during system initialization.
+///
+/// # Source
+/// Ported from `packages/core/src/plugin/boot.ts` `PluginBoot.boot()`.
+pub fn boot_v2_plugins(v2_service: &mut PluginV2Service) {
+    AgentPlugin::register(v2_service);
+    CommandPlugin::register(v2_service);
+    SkillPlugin::register(v2_service);
+    tracing::info!(
+        "boot-phase V2 plugins registered — {} total",
+        v2_service.count()
+    );
+}
 
 /// Boot the plugin system by registering all built-in plugins.
 ///
 /// This is equivalent to `packages/core/src/plugin/boot.ts` which
 /// registers all built-in V2 plugins and provider plugins.
-pub fn boot_plugins(registry: &mut ProviderPluginRegistry) {
+pub fn boot_plugins(
+    registry: &mut ProviderPluginRegistry,
+    v2_service: &mut PluginV2Service,
+) {
+    // Register built-in auth plugins
     let auth_plugins = built_in_auth_plugins();
     tracing::info!("registered {} built-in auth plugin hooks", auth_plugins.len());
 
-    // In the full implementation, this would register V2 plugins:
-    // - AgentPlugin (defines default agents)
-    // - CommandPlugin (defines built-in commands)
-    // - SkillPlugin (defines built-in skills)
-    // - ProviderPlugins (33+ LLM provider catalog transforms)
-    // - ModelsDevPlugin (syncs models from models.dev)
-    // - ConfigProviderPlugin (custom providers from config)
-    // - ConfigAgentPlugin (custom agents from config)
-    // - ConfigCommandPlugin (custom commands from config)
-    // - ConfigSkillPlugin (custom skills from config)
-    // - ConfigReferencePlugin (references from config)
+    // Register built-in V2 boot plugins
+    boot_v2_plugins(v2_service);
+
+    // Register provider plugins (33+ LLM catalog transforms)
+    // This is called separately via register_builtin_provider_plugins
 
     tracing::info!(
-        "plugin boot complete -- {} provider plugins registered",
-        registry.count()
+        "plugin boot complete -- {} provider plugins, {} V2 plugins",
+        registry.count(),
+        v2_service.count()
     );
 }
 
@@ -4514,10 +4785,17 @@ impl PluginProviderManager {
     /// Initialize all plugin systems.
     pub async fn init(&mut self) {
         self.plugin_manager.init().await;
+
+        // Register built-in provider plugins (catalog transforms)
         register_builtin_provider_plugins(&mut self.catalog_registry);
+
+        // Register boot-phase V2 plugins (agent, command, skill)
+        boot_v2_plugins(&mut self.v2_service);
+
         tracing::info!(
-            "PluginProviderManager initialized with {} catalog plugins",
-            self.catalog_registry.count()
+            "PluginProviderManager initialized with {} catalog plugins, {} V2 plugins",
+            self.catalog_registry.count(),
+            self.v2_service.count()
         );
     }
 

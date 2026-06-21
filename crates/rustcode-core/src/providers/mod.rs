@@ -26,6 +26,7 @@
 pub mod anthropic;
 pub mod azure;
 pub mod bedrock;
+pub mod bedrock_converse;
 pub mod chat_completions;
 pub mod cloudflare;
 pub mod gemini;
@@ -59,8 +60,15 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
         tracing::info!("Detected OpenRouter provider (OPENROUTER_API_KEY)");
         providers.push(Box::new(p));
     }
-    if let Ok(p) = bedrock::BedrockProvider::new() {
-        tracing::info!("Detected Amazon Bedrock provider (AWS_ACCESS_KEY_ID)");
+    // Prefer Bedrock Converse protocol (native) over the Chat Completions
+    // bridge. Both use the same AWS credentials env vars.
+    if let Ok(p) = bedrock_converse::BedrockConverseProvider::new() {
+        tracing::info!("Detected Amazon Bedrock Converse provider (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)");
+        providers.push(Box::new(p));
+    } else if let Ok(p) = bedrock::BedrockProvider::new() {
+        tracing::info!(
+            "Detected Amazon Bedrock provider (Chat Completions bridge, AWS_ACCESS_KEY_ID)"
+        );
         providers.push(Box::new(p));
     }
     if let Ok(p) = azure::AzureProvider::new() {
@@ -81,6 +89,12 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
     // Dedicated GitHub Copilot provider (was previously handled by openai_compatible profile)
     if let Ok(p) = github_copilot::GitHubCopilotProvider::new() {
         tracing::info!("Detected GitHub Copilot provider (GITHUB_TOKEN)");
+        providers.push(Box::new(p));
+    }
+
+    // OpenAI Responses API provider (GPT-5 family uses Responses, not Chat Completions)
+    if let Ok(p) = openai_responses::ResponsesProvider::new() {
+        tracing::info!("Detected OpenAI Responses provider (OPENAI_API_KEY)");
         providers.push(Box::new(p));
     }
 
