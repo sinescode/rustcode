@@ -74,6 +74,10 @@ pub enum SessionError {
 
     #[error("{0}")]
     Other(String),
+
+    /// A wrapped internal error with the original type preserved.
+    #[error("internal error: {0}")]
+    Internal(Box<dyn std::error::Error + Send + Sync>),
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

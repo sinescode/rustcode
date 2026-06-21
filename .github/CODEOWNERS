@@ -1,0 +1,24 @@
+# Repository maintainers
+* @sinescode
+
+# Core library
+/crates/rustcode-core/ @sinescode
+
+# Server
+/crates/rustcode-server/ @sinescode
+
+# TUI
+/crates/rustcode-tui/ @sinescode
+
+# LSP
+/crates/rustcode-lsp/ @sinescode
+
+# MCP
+/crates/rustcode-mcp/ @sinescode
+
+# CI/CD
+/.github/ @sinescode
+
+# Documentation
+/docs/ @sinescode
+/*.md @sinescode
