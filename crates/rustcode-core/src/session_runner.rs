@@ -1239,18 +1239,18 @@ async fn build_chat_messages(
 ) -> Result<Vec<ChatMessage>, Error> {
     let mut messages: Vec<ChatMessage> = Vec::new();
 
-    if !system_prompt.is_empty() {
+    // Merge system prompts into a single message to avoid provider issues
+    // with multiple system messages (some providers reject them).
+    let merged_system = match (system_prompt.is_empty(), input.system.as_deref()) {
+        (true, None) => String::new(),
+        (true, Some(sys)) => sys.to_string(),
+        (false, None) => system_prompt.to_string(),
+        (false, Some(sys)) => format!("{system_prompt}\n\n{sys}"),
+    };
+    if !merged_system.is_empty() {
         messages.push(ChatMessage::System {
-            content: MessageContent::Text(system_prompt.to_string()),
+            content: MessageContent::Text(merged_system),
         });
-    }
-
-    if let Some(ref sys) = input.system {
-        if !sys.is_empty() {
-            messages.push(ChatMessage::System {
-                content: MessageContent::Text(sys.clone()),
-            });
-        }
     }
 
     let mut user_parts: Vec<ContentPart> = Vec::new();

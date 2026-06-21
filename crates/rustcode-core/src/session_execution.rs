@@ -162,18 +162,28 @@ impl<T: Send + 'static> FiberSet<T> {
         let handle: JoinHandle<()> = tokio::spawn(async move {
             tokio::select! {
                 result = future => {
-                    let _ = result_tx.send(FiberResult { id, result: crate::error::Result::Ok(result) });
+                    if result_tx.send(FiberResult { id, result: crate::error::Result::Ok(result) }).is_err() {
+                        tracing::warn!(fiber_id = id, "fiber result receiver closed before completion");
+                    }
                 }
                 _ = cancel_clone.cancelled() => {
-                    let _ = result_tx.send(FiberResult {
+                    if result_tx.send(FiberResult {
                         id,
                         result: crate::error::Result::Err(crate::error::Error::Aborted),
-                    });
+                    }).is_err() {
+                        tracing::debug!(fiber_id = id, "fiber abort receiver already closed");
+                    }
                 }
             }
         });
 
-        self.handles.insert(id, handle);
+        // Clean up old handle for this ID (should not happen with unique IDs)
+        if let Some(old) = self.handles.insert(id, handle) {
+            // Detach the old handle — it will be cleaned up when the task completes
+            tokio::spawn(async move { old.await.ok(); });
+        } else {
+            self.handles.insert(id, handle);
+        }
         self.cancels.insert(id, cancel.clone());
 
         FiberHandle { id, cancel }
