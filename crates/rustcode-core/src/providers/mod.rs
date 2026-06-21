@@ -111,3 +111,31 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
 
     providers
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_auto_detect_all_returns_empty_when_no_env_vars() {
+        let providers = auto_detect_all();
+        assert!(providers.is_empty(), "no API keys should be set in test env");
+    }
+
+    #[test]
+    fn test_provider_profile_count() {
+        let count = openai_compatible::PROFILES.len();
+        assert!(count >= 20, "expected 20+ profiles, got {count}");
+    }
+
+    #[test]
+    fn test_each_profile_has_valid_config() {
+        for config in openai_compatible::PROFILES {
+            assert!(!config.provider_id.is_empty());
+            assert!(!config.name.is_empty());
+            assert!(!config.base_url.is_empty());
+            assert!(!config.env_var.is_empty());
+            assert!(!config.models.is_empty(), "{} has no models", config.provider_id);
+        }
+    }
+}
