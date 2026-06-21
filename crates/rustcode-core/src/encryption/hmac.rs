@@ -161,4 +161,66 @@ mod tests {
         let encrypted = s1.encrypt("test").unwrap();
         assert!(s2.decrypt(&encrypted).is_err());
     }
+
+    #[test]
+    fn test_empty_string() {
+        let key = [0xABu8; KEY_LENGTH];
+        let service = EncryptionService::new(key);
+        let encrypted = service.encrypt("").unwrap();
+        let decrypted = service.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, "");
+    }
+
+    #[test]
+    fn test_unicode_content() {
+        let key = [0xABu8; KEY_LENGTH];
+        let service = EncryptionService::new(key);
+        let plaintext = "Hello 世界! 🎉";
+        let encrypted = service.encrypt(plaintext).unwrap();
+        let decrypted = service.decrypt(&encrypted).unwrap();
+        assert_eq!(plaintext, decrypted);
+    }
+
+    #[test]
+    fn test_long_content() {
+        let key = [0xABu8; KEY_LENGTH];
+        let service = EncryptionService::new(key);
+        let plaintext = "a".repeat(10000);
+        let encrypted = service.encrypt(&plaintext).unwrap();
+        let decrypted = service.decrypt(&encrypted).unwrap();
+        assert_eq!(plaintext, decrypted);
+    }
+
+    #[test]
+    fn test_invalid_format() {
+        let key = [0xABu8; KEY_LENGTH];
+        let service = EncryptionService::new(key);
+        assert!(service.decrypt("invalid").is_err());
+        assert!(service.decrypt("no-separator").is_err());
+    }
+
+    #[test]
+    fn test_key_loading() {
+        use tempfile::TempDir;
+        let dir = TempDir::new().unwrap();
+        let svc = EncryptionService::load_or_create(dir.path()).unwrap();
+        let encrypted = svc.encrypt("test").unwrap();
+        // Load again — should use the persisted key
+        let svc2 = EncryptionService::load_or_create(dir.path()).unwrap();
+        let decrypted = svc2.decrypt(&encrypted).unwrap();
+        assert_eq!(decrypted, "test");
+    }
+
+    #[test]
+    fn test_invalid_key_length() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let key_path = dir.path().join("encryption.key");
+        std::fs::write(&key_path, b"too-short").unwrap();
+        let result = EncryptionService::load_or_create(dir.path());
+        assert!(result.is_err());
+        match result {
+            Err(EncryptionError::KeyLength(len)) => assert_eq!(len, 9),
+            _ => panic!("expected KeyLength error"),
+        }
+    }
 }
