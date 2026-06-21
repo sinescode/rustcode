@@ -314,7 +314,7 @@ impl SharedBus {
 
 impl Default for SharedBus {
     fn default() -> Self {
-        Self::new(1024)
+        Self::new(DEFAULT_BUS_CAPACITY)
     }
 }
 

@@ -864,29 +864,36 @@ impl SessionManager {
         let mut id_map: HashMap<MessageId, MessageId> = HashMap::new();
 
         for msg in &messages {
-            // Check if we should stop copying
-            if let Some(stop_at) = message_id {
-                if msg.info.id() == stop_at {
-                    break;
-                }
-            }
+            let msg_id = msg.info.id().to_string();
+            let is_stop = match message_id {
+                Some(ref stop_at) => msg_id == *stop_at,
+                None => false,
+            };
 
+            // Map the message ID before breaking so cloned children
+            // referencing this parent don't produce dangling pointers.
             let new_msg_id = id::ascending(id::IdPrefix::Message, None)
                 .map_err(|e| SessionError::Other(e.to_string()))?;
-            let old_msg_id = msg.info.id().to_string();
-            id_map.insert(old_msg_id.clone(), new_msg_id.clone());
+            id_map.insert(msg_id.clone(), new_msg_id.clone());
+
+            if is_stop {
+                break;
+            }
 
             // Clone message info with new IDs
             let new_info = msg.info.clone_with_session(&new_session_id, &new_msg_id, &id_map);
 
             // Clone parts with new IDs
-            let new_parts: Vec<Part> = msg.parts.iter().map(|p| {
+            let mut new_parts: Vec<Part> = Vec::with_capacity(msg.parts.len());
+            for p in &msg.parts {
                 let mut part = p.clone();
-                part.set_id(&id::ascending(id::IdPrefix::Part, None).unwrap_or_default());
+                let new_part_id = id::ascending(id::IdPrefix::Part, None)
+                    .map_err(|e| SessionError::Other(format!("part id generation: {e}")))?;
+                part.set_id(&new_part_id);
                 part.set_message_id(&new_msg_id);
                 part.set_session_id(&new_session_id);
-                part
-            }).collect();
+                new_parts.push(part);
+            }
 
             self.append_message(new_session_id.clone(), new_info, new_parts).await?;
         }

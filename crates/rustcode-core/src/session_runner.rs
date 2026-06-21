@@ -972,21 +972,17 @@ impl SessionRunner {
 
     /// Try to decode a `TurnControl` from a string.
     fn parse_turn_control(msg: &str) -> Option<TurnControl> {
-        if msg.starts_with("__TURN_CTRL::") {
-            if msg.contains("RebuildPreparedTurn") {
-                let prom = if msg.contains("(steer)") {
-                    Some(InputDelivery::Steer)
-                } else if msg.contains("(queue)") {
-                    Some(InputDelivery::Queue)
-                } else {
-                    None
-                };
-                Some(TurnControl::RebuildPreparedTurn { promotion: prom })
-            } else if msg.contains("ContinueAfterOverflowCompaction") {
-                Some(TurnControl::ContinueAfterOverflowCompaction)
+        if msg.starts_with("__TURN_CTRL::RebuildPreparedTurn(") {
+            let prom = if msg.contains("(steer)") {
+                Some(InputDelivery::Steer)
+            } else if msg.contains("(queue)") {
+                Some(InputDelivery::Queue)
             } else {
                 None
-            }
+            };
+            Some(TurnControl::RebuildPreparedTurn { promotion: prom })
+        } else if msg.starts_with("__TURN_CTRL::ContinueAfterOverflowCompaction") {
+            Some(TurnControl::ContinueAfterOverflowCompaction)
         } else {
             None
         }

@@ -744,6 +744,8 @@ impl RunCoordinator {
     /// If the session is idle, starts a new drain chain. If already draining,
     /// coalesces the wake into the pending slot (at most one follow-up).
     ///
+    /// Uses DashMap::alter for atomic read-modify-write to prevent TOCTOU races.
+    ///
     /// # Source
     /// `packages/core/src/session/run-coordinator.ts` lines 161–175 `wake`.
     pub async fn wake(&self, session_id: SessionId, seq: Option<u64>) {
@@ -751,19 +753,25 @@ impl RunCoordinator {
             return;
         }
 
-        // Check if a lane already exists
-        if let Some(lane) = self.lanes.get(&session_id) {
-            if !lane.stopping {
-                drop(lane);
-                if let Some(mut lane) = self.lanes.get_mut(&session_id) {
+        // Atomic check-and-update: if lane exists and isn't stopping, coalesce
+        let mut inserted = false;
+        self.lanes.alter(&session_id, |opt_lane| {
+            match opt_lane {
+                Some(mut lane) if !lane.stopping => {
                     lane.pending = Some(coalesce_demand(
                         lane.pending.as_ref(),
                         &Demand::Wake { seq },
                     ));
+                    Some(lane)
+                }
+                other => {
+                    // No lane or lane is stopping — mark for insert below
+                    inserted = true;
+                    other
                 }
             }
-            return;
-        }
+        });
+        if inserted {
 
         // Idle — start a new drain chain
         self.lanes.insert(
@@ -832,10 +840,26 @@ impl RunCoordinator {
 
     /// Wait until the current drain chain for the session settles.
     ///
+    /// Times out after 30 seconds to prevent unbounded busy-wait.
+    ///
     /// # Source
     /// `packages/core/src/session/run-coordinator.ts` lines 177–191 `awaitIdle`.
     pub async fn await_idle(&self, session_id: SessionId) -> Result<(), SessionRunError> {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(30);
+        let mut attempts: u64 = 0;
         loop {
+            if attempts > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+            attempts += 1;
+            if start.elapsed() > timeout {
+                return Err(SessionRunError {
+                    kind: SessionRunErrorKind::Timeout,
+                    message: format!("await_idle timed out after 30s ({attempts} attempts)"),
+                    session_id: Some(session_id.clone()),
+                });
+            }
             if !self.lanes.contains_key(&session_id) {
                 return Ok(());
             }
