@@ -1155,6 +1155,31 @@ pub enum DatabaseServiceError {
     ConstraintViolation(String),
 }
 
+/// Structured session update — replaces the 19-parameter `update_session`.
+///
+/// All fields are optional. `None` means "don't update", `Some(value)` updates.
+#[derive(Debug, Clone, Default)]
+pub struct SessionUpdateFields {
+    pub time_updated: Option<i64>,
+    pub title: Option<String>,
+    pub cost: Option<f64>,
+    pub tokens_input: Option<i64>,
+    pub tokens_output: Option<i64>,
+    pub tokens_reasoning: Option<i64>,
+    pub tokens_cache_read: Option<i64>,
+    pub tokens_cache_write: Option<i64>,
+    pub share_url: Option<String>,
+    pub summary_additions: Option<i64>,
+    pub summary_deletions: Option<i64>,
+    pub summary_files: Option<i64>,
+    pub summary_diffs: Option<String>,
+    pub metadata: Option<String>,
+    pub revert: Option<String>,
+    pub permission: Option<String>,
+    pub time_compacting: Option<i64>,
+    pub time_archived: Option<i64>,
+}
+
 /// High-level database service providing CRUD operations for core tables.
 ///
 /// Wraps a `sqlx::SqlitePool` (obtained from `crate::storage::Database::pool()`)
@@ -1279,6 +1304,59 @@ impl DatabaseService {
         .await
         .map_err(|e| DatabaseServiceError::Database(format!("insert session: {e}")))?;
 
+        Ok(())
+    }
+
+    /// Update a session using a structured [`SessionUpdateFields`] struct.
+    ///
+    /// Preferred over the 19-parameter `update_session` for new code.
+    pub async fn update_session_fields(
+        &self,
+        id: &str,
+        fields: &SessionUpdateFields,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "UPDATE session SET time_updated = COALESCE(?2, time_updated),
+             title = COALESCE(?3, title), cost = COALESCE(?4, cost),
+             tokens_input = COALESCE(?5, tokens_input),
+             tokens_output = COALESCE(?6, tokens_output),
+             tokens_reasoning = COALESCE(?7, tokens_reasoning),
+             tokens_cache_read = COALESCE(?8, tokens_cache_read),
+             tokens_cache_write = COALESCE(?9, tokens_cache_write),
+             share_url = COALESCE(?10, share_url),
+             summary_additions = COALESCE(?11, summary_additions),
+             summary_deletions = COALESCE(?12, summary_deletions),
+             summary_files = COALESCE(?13, summary_files),
+             summary_diffs = COALESCE(?14, summary_diffs),
+             metadata = COALESCE(?15, metadata),
+             revert = COALESCE(?16, revert),
+             permission = COALESCE(?17, permission),
+             time_compacting = COALESCE(?18, time_compacting),
+             time_archived = COALESCE(?19, time_archived)
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(fields.time_updated)
+        .bind(fields.title.as_deref())
+        .bind(fields.cost)
+        .bind(fields.tokens_input)
+        .bind(fields.tokens_output)
+        .bind(fields.tokens_reasoning)
+        .bind(fields.tokens_cache_read)
+        .bind(fields.tokens_cache_write)
+        .bind(fields.share_url.as_deref())
+        .bind(fields.summary_additions)
+        .bind(fields.summary_deletions)
+        .bind(fields.summary_files)
+        .bind(fields.summary_diffs.as_deref())
+        .bind(fields.metadata.as_deref())
+        .bind(fields.revert.as_deref())
+        .bind(fields.permission.as_deref())
+        .bind(fields.time_compacting)
+        .bind(fields.time_archived)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update session fields: {e}")))?;
         Ok(())
     }
 

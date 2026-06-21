@@ -1216,7 +1216,7 @@ impl SessionManager {
     /// `packages/opencode/src/session/session.ts` lines 828–830.
     pub async fn clear_revert(&self, id: &str) -> Result<(), SessionError> {
         let now = Utc::now().timestamp_millis();
-        // To clear revert, we set it to None which serializes as SQL NULL
+        // To clear revert, we set time_updated and reset revert to NULL
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
