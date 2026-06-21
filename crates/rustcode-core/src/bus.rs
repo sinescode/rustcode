@@ -251,9 +251,15 @@ impl EventBus {
     }
 }
 
+/// Default event bus capacity: 8192 events.
+///
+/// Increased from 1024 to prevent slow consumers from lagging during
+/// high-throughput operations (bulk tool execution, rapid streaming).
+pub const DEFAULT_BUS_CAPACITY: usize = 8192;
+
 impl Default for EventBus {
     fn default() -> Self {
-        Self::new(1024)
+        Self::new(DEFAULT_BUS_CAPACITY)
     }
 }
 

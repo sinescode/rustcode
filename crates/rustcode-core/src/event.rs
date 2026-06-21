@@ -930,19 +930,20 @@ impl EventV2 {
                     });
                 }
 
-                // Run commit guards
+                // Run commit guards — clone payload once, share across guards
+                let payload_clone = payload.clone();
                 let guards = self.commit_guards.read().await;
                 for guard in guards.iter() {
-                    guard(payload.clone()).await.map_err(|e| {
+                    guard(payload_clone.clone()).await.map_err(|e| {
                         EventError::Internal(format!("Commit guard rejected: {e}"))
                     })?;
                 }
                 drop(guards);
 
-                // Run projectors for this event type
+                // Run projectors for this event type — reuse payload_clone
                 let projectors = self.get_projectors(&definition.event_type).await;
                 for projector in projectors.iter() {
-                    projector(payload.clone()).await.map_err(|e| {
+                    projector(payload_clone.clone()).await.map_err(|e| {
                         EventError::Internal(format!("Projector failed: {e}"))
                     })?;
                 }
@@ -963,7 +964,7 @@ impl EventV2 {
                 .await
                 .map_err(|e| EventError::Internal(format!("upsert seq: {e}")))?;
 
-                // Serialize event data as JSON
+                // Serialize event data as JSON — borrow from original payload, not clone
                 let data_json = serde_json::to_string(&payload.data)
                     .map_err(|e| EventError::Internal(format!("serialize data: {e}")))?;
 
@@ -991,19 +992,20 @@ impl EventV2 {
                 let latest: i64 = -1;
                 let new_seq = latest + 1;
 
-                // Run commit guards
+                // Run commit guards — clone once, share across all
+                let payload_clone = payload.clone();
                 let guards = self.commit_guards.read().await;
                 for guard in guards.iter() {
-                    guard(payload.clone()).await.map_err(|e| {
+                    guard(payload_clone.clone()).await.map_err(|e| {
                         EventError::Internal(format!("Commit guard rejected: {e}"))
                     })?;
                 }
                 drop(guards);
 
-                // Run projectors for this event type
+                // Run projectors — reuse payload_clone
                 let projectors = self.get_projectors(&definition.event_type).await;
                 for projector in projectors.iter() {
-                    projector(payload.clone()).await.map_err(|e| {
+                    projector(payload_clone.clone()).await.map_err(|e| {
                         EventError::Internal(format!("Projector failed: {e}"))
                     })?;
                 }

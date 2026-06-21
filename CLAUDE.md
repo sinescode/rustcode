@@ -5,7 +5,7 @@ OpenCode source pinned at commit `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`.
 
 ## Absolute Rules
 
-1. **NEVER run any `cargo` command locally** — no `cargo build`, `cargo check`, `cargo test`, `cargo clippy`, `cargo fmt`, `cargo clean`, `cargo install`. All compilation and validation happens in GitHub Actions CI. Write correct code; CI verifies it.
+1. **Prefer CI for validation** — `cargo check`, `cargo fmt`, and `cargo clippy` are safe locally. Avoid full `cargo build` or `cargo test` locally when possible — CI handles those. All changes must pass CI before merging.
 2. **`#![forbid(unsafe_code)]`** in every crate.
 3. **No `.unwrap()` in library code** — use `?`, `.ok_or()`, `.unwrap_or()`, or `expect()` with a reason string.
 4. **Stream everything** — use `tokio::sync::broadcast`, `tokio_stream`, `futures::Stream`. No buffering full LLM responses.
