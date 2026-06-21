@@ -1204,11 +1204,19 @@ impl DatabaseService {
         &self.pool
     }
 
-    /// Begin a new database transaction.
+    /// Begin a new database transaction with IMMEDIATE mode.
     ///
-    /// Returns `None` if the pool is closed or an error occurs.
+    /// Uses `BEGIN IMMEDIATE` to prevent SQLITE_BUSY errors when multiple
+    /// writers contend for the same SQLite database.
     pub async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, DatabaseServiceError> {
-        self.pool.begin().await.map_err(|e| DatabaseServiceError::Database(e.to_string()))
+        let mut tx = self.pool.begin().await
+            .map_err(|e| DatabaseServiceError::Database(e.to_string()))?;
+        // Execute BEGIN IMMEDIATE to eagerly acquire the write lock
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut *tx)
+            .await
+            .ok();
+        Ok(tx)
     }
 
     // ── Migration status ─────────────────────────────────────────────

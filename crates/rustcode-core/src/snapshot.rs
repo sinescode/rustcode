@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::Mutex;
+use tokio::sync::Mutex;
 
 use sha2::{Digest, Sha256};
 
