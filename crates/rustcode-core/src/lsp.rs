@@ -287,6 +287,97 @@ pub struct LspDocumentSymbol {
     pub selection_range: LspRange,
 }
 
+
+// ---------------------------------------------------------------------------
+// Hover, Completion, and other LSP result types
+// ---------------------------------------------------------------------------
+
+/// A hover result from a language server.
+///
+/// # Source
+/// Ported from `packages/opencode/src/lsp/lsp.ts` `hover()` return type (line 127).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspHover {
+    /// The hover contents (markdown string or markup content).
+    #[serde(default)]
+    pub contents: serde_json::Value,
+    /// Optional range for the hover.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub range: Option<LspRange>,
+}
+
+/// A completion item from a language server.
+///
+/// # Source
+/// Ported from `packages/opencode/src/lsp/client.ts` LSP completion protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspCompletionItem {
+    /// The label of the completion item.
+    pub label: String,
+    /// The kind of this completion item.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<u32>,
+    /// The detail description.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    /// The documentation string.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub documentation: Option<String>,
+    /// The text to be inserted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insert_text: Option<String>,
+}
+
+/// A location link returned from go-to-definition requests.
+///
+/// # Source
+/// Ported from `packages/opencode/src/lsp/lsp.ts` `definition()` return type (line 128).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspLocationLink {
+    /// The target URI of the definition.
+    pub target_uri: String,
+    /// The target range of the definition.
+    pub target_range: LspRange,
+    /// The target selection range of the definition.
+    pub target_selection_range: LspRange,
+    /// The origin selection range (optional).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin_selection_range: Option<LspRange>,
+}
+
+/// A call hierarchy item.
+///
+/// # Source
+/// Ported from `packages/opencode/src/lsp/lsp.ts` `prepareCallHierarchy()` return type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspCallHierarchyItem {
+    /// The name of the item.
+    pub name: String,
+    /// The kind of the item.
+    pub kind: u32,
+    /// The URI of the item.
+    pub uri: String,
+    /// The range of the item.
+    pub range: LspRange,
+    /// The selection range of the item.
+    pub selection_range: LspRange,
+    /// Optional detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// A call hierarchy incoming or outgoing call.
+///
+/// # Source
+/// Ported from `packages/opencode/src/lsp/lsp.ts` `incomingCalls()`/`outgoingCalls()` return type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LspCallHierarchyCall {
+    /// The from item of the call.
+    pub from: LspCallHierarchyItem,
+    /// The from ranges.
+    pub from_ranges: Vec<LspRange>,
+}
+
 // ---------------------------------------------------------------------------
 // Server info
 // ---------------------------------------------------------------------------
@@ -313,6 +404,11 @@ pub struct LspServerInfo {
     /// Optional initialization options to send with the `initialize` request.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initialization: Option<serde_json::Value>,
+    /// Optional project root directory hint. When set, this path (relative or
+    /// absolute) is used as the server root. If absent, the workspace root is used.
+    /// Ported from: `packages/opencode/src/lsp/server.ts` `Info.root` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -435,6 +531,8 @@ pub fn language_extensions() -> &'static HashMap<&'static str, &'static str> {
         m.insert(".fsx", "fsharp");
         m.insert(".fsscript", "fsharp");
         m.insert(".go", "go");
+        m.insert(".gitcommit", "git-commit");
+        m.insert(".gitrebase", "git-rebase");
         m.insert(".groovy", "groovy");
         m.insert(".gleam", "gleam");
         m.insert(".hbs", "handlebars");
@@ -455,13 +553,18 @@ pub fn language_extensions() -> &'static HashMap<&'static str, &'static str> {
         m.insert(".latex", "latex");
         m.insert(".less", "less");
         m.insert(".lua", "lua");
+        m.insert(".makefile", "makefile");
+        m.insert("makefile", "makefile");
         m.insert(".md", "markdown");
         m.insert(".markdown", "markdown");
         m.insert(".m", "objective-c");
         m.insert(".mm", "objective-cpp");
         m.insert(".pl", "perl");
         m.insert(".pm", "perl");
+        m.insert(".pm6", "perl6");
         m.insert(".php", "php");
+        m.insert(".ps1", "powershell");
+        m.insert(".psm1", "powershell");
         m.insert(".pug", "jade");
         m.insert(".jade", "jade");
         m.insert(".py", "python");
@@ -474,10 +577,14 @@ pub fn language_extensions() -> &'static HashMap<&'static str, &'static str> {
         m.insert(".ru", "ruby");
         m.insert(".erb", "erb");
         m.insert(".html.erb", "erb");
+        m.insert(".js.erb", "erb");
+        m.insert(".css.erb", "erb");
+        m.insert(".json.erb", "erb");
         m.insert(".rs", "rust");
         m.insert(".scss", "scss");
         m.insert(".sass", "sass");
         m.insert(".scala", "scala");
+        m.insert(".shader", "shaderlab");
         m.insert(".sh", "shellscript");
         m.insert(".bash", "shellscript");
         m.insert(".zsh", "shellscript");
@@ -512,6 +619,49 @@ pub fn language_extensions() -> &'static HashMap<&'static str, &'static str> {
         m.insert(".typc", "typst");
         m
     })
+}
+
+// ---------------------------------------------------------------------------
+// LspBridge — abstract LSP operations for use from tools
+// ---------------------------------------------------------------------------
+
+use std::sync::OnceLock;
+
+/// A global bridge for LSP operations, allowing the tool system to invoke
+/// LSP features without depending directly on the `rustcode-lsp` crate.
+///
+/// The `rustcode-lsp` crate registers its implementation at startup via
+/// [`set_global_lsp_bridge`].
+pub trait LspBridge: Send + Sync {
+    /// Perform a workspace symbol search.
+    fn workspace_symbols(&self, query: &str) -> Vec<LspSymbol>;
+}
+
+static GLOBAL_LSP_BRIDGE: OnceLock<Box<dyn LspBridge>> = OnceLock::new();
+
+/// Register the global LSP bridge implementation.
+///
+/// Called by the `rustcode-lsp` crate at initialization time.
+/// Returns `Ok(())` on success, or `Err` if already registered.
+pub fn set_global_lsp_bridge(bridge: Box<dyn LspBridge>) -> std::result::Result<(), &'static str> {
+    GLOBAL_LSP_BRIDGE
+        .set(bridge)
+        .map_err(|_| "LSP bridge already initialized")
+}
+
+/// Check whether a global LSP bridge has been registered.
+pub fn has_lsp_bridge() -> bool {
+    GLOBAL_LSP_BRIDGE.get().is_some()
+}
+
+/// Execute a workspace symbol search via the global bridge.
+///
+/// Returns an empty vec if no bridge is registered.
+pub fn global_workspace_symbols(query: &str) -> Vec<LspSymbol> {
+    GLOBAL_LSP_BRIDGE
+        .get()
+        .map(|bridge| bridge.workspace_symbols(query))
+        .unwrap_or_default()
 }
 
 /// Get the language ID for a file extension.

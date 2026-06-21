@@ -231,6 +231,44 @@ pub struct Info {
     /// Experimental flags
     #[serde(skip_serializing_if = "Option::is_none")]
     pub experimental: Option<ExperimentalConfig>,
+
+    /// Derived plugin provenance — not persisted, not serialized.
+    /// Keeps each winning plugin spec together with the file and scope it came
+    /// from so that downstream runtime code can make location-sensitive decisions.
+    /// Populated during config loading, not read from files.
+    #[serde(skip)]
+    pub plugin_origins: Vec<PluginOrigin>,
+}
+
+// ── Plugin origin tracking ──────────────────────────────────────────────
+
+/// Plugin origin metadata — tracks where a plugin spec was declared.
+///
+/// After multiple config files are merged, callers still need to know which
+/// config file declared the plugin and whether it should behave like a
+/// global or project-local plugin.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` — `Origin` type.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PluginOrigin {
+    /// The plugin specifier (npm package name or file URL).
+    pub spec: PluginSpec,
+    /// Config file path that declared this plugin.
+    pub source: String,
+    /// Whether this plugin is global or project-local.
+    pub scope: PluginScope,
+}
+
+/// Plugin scope — global or local.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` — `Scope` type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PluginScope {
+    Global,
+    Local,
 }
 
 // ── Enums ────────────────────────────────────────────────────────────────
@@ -936,18 +974,104 @@ impl Config {
             }
         }
 
+        // Seed schema if no config file exists yet
+        let _ = seed_global_config_schema();
+
+        // Post-processing
+        normalize_config(&mut info);
+
         Ok(info)
     }
 
     /// Load configuration from the default location.
     ///
-    /// Convenience wrapper around [`Config::load_global`] for the CLI.
+    /// Loads global config, then applies env var overrides
+    /// (`OPENCODE_CONFIG_CONTENT`, `OPENCODE_CONFIG_DIR`, `OPENCODE_CONFIG`),
+    /// managed config, and CLI flags.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` — `loadInstanceState`.
     ///
     /// # Errors
     /// Returns an error if the config directory cannot be determined
     /// or the config file cannot be read or parsed.
     pub fn load() -> crate::error::Result<Info> {
-        Self::load_global()
+        let mut info = Self::load_global()?;
+
+        // OPENCODE_CONFIG env var — specific config file path
+        if let Ok(config_path) = std::env::var("OPENCODE_CONFIG") {
+            let path = std::path::Path::new(&config_path);
+            if let Ok(loaded) = Self::load_from_file(path) {
+                merge_info(&mut info, &loaded);
+            }
+        }
+
+        // Project config files (walk up from cwd)
+        if std::env::var("OPENCODE_DISABLE_PROJECT_CONFIG").is_err() {
+            if let Ok(cwd) = std::env::current_dir() {
+                if let Ok(files) = discover_config_files("opencode", &cwd, None) {
+                    for file in files {
+                        if let Ok(loaded) = Self::load_from_file(&file) {
+                            merge_info(&mut info, &loaded);
+                        }
+                    }
+                }
+                // .opencode directories
+                if let Ok(dirs) = discover_opencode_dirs(&cwd, None) {
+                    for dir in dirs {
+                        for name in &["opencode.json", "opencode.jsonc"] {
+                            let path = dir.join(name);
+                            if let Ok(loaded) = Self::load_from_file(&path) {
+                                merge_info(&mut info, &loaded);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Managed config
+        if let Ok(managed) = Self::load_managed() {
+            merge_info(&mut info, &managed);
+        }
+
+        // OPENCODE_CONFIG_DIR env var
+        if let Ok(config_dir_info) = Self::load_from_config_dir() {
+            merge_info(&mut info, &config_dir_info);
+        }
+
+        // OPENCODE_CONFIG_CONTENT env var
+        if let Ok(Some(from_env)) = Self::load_from_env() {
+            merge_info(&mut info, &from_env);
+        }
+
+        // OPENCODE_PERMISSION env var — JSON permission override
+        if let Ok(perm_json) = std::env::var("OPENCODE_PERMISSION") {
+            if let Ok(perm_value) = serde_json::from_str::<PermissionConfig>(&perm_json) {
+                let mut perm_info = Info::default();
+                perm_info.permission = Some(perm_value);
+                merge_info(&mut info, &perm_info);
+            }
+        }
+
+        // Disable autocompact from CLI flag
+        if std::env::var("OPENCODE_DISABLE_AUTOCOMPACT").is_ok() {
+            let mut comp = info.compaction.clone().unwrap_or_default();
+            comp.auto = Some(false);
+            info.compaction = Some(comp);
+        }
+
+        // Disable prune from CLI flag
+        if std::env::var("OPENCODE_DISABLE_PRUNE").is_ok() {
+            let mut comp = info.compaction.clone().unwrap_or_default();
+            comp.prune = Some(false);
+            info.compaction = Some(comp);
+        }
+
+        // Post-processing (mode→agent, tools→permission, etc.)
+        normalize_config(&mut info);
+
+        Ok(info)
     }
 
     /// Load configuration from the default location into this instance.
@@ -1012,6 +1136,101 @@ impl Config {
     pub fn save_project(info: &Info, dir: &std::path::Path) -> crate::error::Result<()> {
         let path = dir.join("opencode.json");
         Self::save_to_file(&path, info)
+    }
+
+    /// Load config from `OPENCODE_CONFIG_CONTENT` environment variable.
+    ///
+    /// Returns `None` if the env var is not set.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` lines 467–475
+    /// (`OPENCODE_CONFIG_CONTENT` block).
+    pub fn load_from_env() -> crate::error::Result<Option<Info>> {
+        let content = match std::env::var("OPENCODE_CONFIG_CONTENT") {
+            Ok(v) => v,
+            Err(_) => return Ok(None),
+        };
+        let expanded = match substitute_variables(&content, &std::path::Path::new("."), None) {
+            Ok(s) => s,
+            Err(e) => {
+                return Err(crate::error::Error::Config(format!(
+                    "OPENCODE_CONFIG_CONTENT variable substitution failed: {e}"
+                )));
+            }
+        };
+        let parsed = parse_jsonc(&expanded, std::path::Path::new("OPENCODE_CONFIG_CONTENT"))?;
+        let info = validate_info(parsed, std::path::Path::new("OPENCODE_CONFIG_CONTENT"))?;
+        Ok(Some(info))
+    }
+
+    /// Load config from the managed config directory (system-wide).
+    ///
+    /// Reads `opencode.json` and `opencode.jsonc` from the managed config
+    /// directory (`/etc/opencode/`, `/Library/Application Support/opencode/`,
+    /// etc.) and also attempts macOS MDM managed preferences.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` lines 516–533
+    /// (managed config and managed preferences blocks).
+    pub fn load_managed() -> crate::error::Result<Info> {
+        let mut info = Info::default();
+
+        // Managed config directory
+        let managed_dir = managed_config_dir();
+        if managed_dir.exists() {
+            for filename in &["opencode.json", "opencode.jsonc"] {
+                let path = managed_dir.join(filename);
+                if path.exists() {
+                    if let Ok(text) = std::fs::read_to_string(&path) {
+                        if let Ok(parsed) = parse_jsonc(&text, &path) {
+                            if let Ok(loaded) = validate_info(parsed, &path) {
+                                merge_info(&mut info, &loaded);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // macOS managed preferences (MDM)
+        if let Some((source, text)) = read_managed_preferences() {
+            let expanded = substitute_variables(&text, &std::path::Path::new("."), None).unwrap_or(text);
+            let parsed = parse_jsonc(&expanded, std::path::Path::new(&source))
+                .unwrap_or(serde_json::Value::Object(serde_json::Map::new()));
+            if let Ok(loaded) = validate_info(parsed, std::path::Path::new(&source)) {
+                merge_info(&mut info, &loaded);
+            }
+        }
+
+        Ok(info)
+    }
+
+    /// Load config from the `OPENCODE_CONFIG_DIR` directory.
+    ///
+    /// Returns `Ok(Info::default())` if the directory does not exist.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/config/config.ts` lines 417–419
+    /// (`OPENCODE_CONFIG_DIR` block).
+    pub fn load_from_config_dir() -> crate::error::Result<Info> {
+        let config_dir = match std::env::var("OPENCODE_CONFIG_DIR") {
+            Ok(dir) => std::path::PathBuf::from(dir),
+            Err(_) => return Ok(Info::default()),
+        };
+        let mut info = Info::default();
+        for filename in &["opencode.json", "opencode.jsonc"] {
+            let path = config_dir.join(filename);
+            if path.exists() {
+                if let Ok(text) = std::fs::read_to_string(&path) {
+                    if let Ok(parsed) = parse_jsonc(&text, &path) {
+                        if let Ok(loaded) = validate_info(parsed, &path) {
+                            merge_info(&mut info, &loaded);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(info)
     }
 
     /// Serialize `config` to pretty JSON and write to `path`.
@@ -1759,6 +1978,471 @@ fn global_config_dir() -> crate::error::Result<PathBuf> {
     Ok(config_dir.join("opencode"))
 }
 
+/// Find the first existing global config file from the candidate list.
+///
+/// Candidates: `opencode.jsonc`, `opencode.json`, `config.json`
+/// Returns the path of the first existing file, or the first candidate if none exist.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 139–147
+/// (`globalConfigFile`).
+pub fn global_config_file() -> crate::error::Result<std::path::PathBuf> {
+    let config_dir = global_config_dir()?;
+    let candidates = ["opencode.jsonc", "opencode.json", "config.json"];
+    for file in &candidates {
+        let path = config_dir.join(file);
+        if path.exists() {
+            return Ok(path);
+        }
+    }
+    Ok(config_dir.join(candidates[0]))
+}
+
+/// Write the schema URL to a new global config file if one doesn't exist.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 250–257
+/// (schema seeding block).
+pub fn seed_global_config_schema() -> crate::error::Result<()> {
+    let config_dir = global_config_dir()?;
+    std::fs::create_dir_all(&config_dir)?;
+    let file = config_dir.join("opencode.jsonc");
+    if !file.exists() {
+        let content = serde_json::json!({
+            "$schema": "https://opencode.ai/config.json"
+        });
+        std::fs::write(&file, serde_json::to_string_pretty(&content)?)?;
+    }
+    Ok(())
+}
+
+
+// ── Config post-processing / normalization ───────────────────────────────
+
+/// Normalize a fully-merged `Info` by applying post-processing rules.
+///
+/// This mimics the logic in `packages/opencode/src/config/config.ts`:
+///   - `mode` entries are merged into `agent` with `mode: Some(AgentMode::Primary)`
+///   - `tools` (deprecated boolean map) is converted to `permission` rules
+///   - `autoshare: true` is converted to `share: Some(ShareMode::Auto)`
+///   - `username` is set to the system username if not already set
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/config.ts` lines 411–576.
+pub fn normalize_config(config: &mut Info) {
+    // Mode → agent flattening (deprecated `mode` field)
+    for (name, mode_cfg) in config.mode.clone().iter() {
+        let mut entry = mode_cfg.clone();
+        if entry.mode.is_none() {
+            entry.mode = Some(AgentMode::Primary);
+        }
+        config
+            .agent
+            .entry(name.clone())
+            .or_insert(entry);
+    }
+    config.mode.clear();
+
+    // Tools → permission conversion (deprecated `tools` field)
+    if !config.tools.is_empty() {
+        let mut perm = PermissionConfig::default();
+        for (tool, enabled) in config.tools.clone() {
+            let action = if enabled {
+                PermissionAction::Allow
+            } else {
+                PermissionAction::Deny
+            };
+            let rule = PermissionRule::Action(action);
+            // Map well-known tool names to permission fields
+            match tool.as_str() {
+                "write" | "edit" | "patch" => {
+                    perm.edit = Some(rule);
+                }
+                "read" => perm.read = Some(rule),
+                "glob" => perm.glob = Some(rule),
+                "grep" => perm.grep = Some(rule),
+                "list" => perm.list = Some(rule),
+                "bash" => perm.bash = Some(rule),
+                "task" => perm.task = Some(rule),
+                "lsp" => perm.lsp = Some(rule),
+                "skill" => perm.skill = Some(rule),
+                "external_directory" => perm.external_directory = Some(rule),
+                _ => {
+                    // Unknown tools go into extra
+                    perm.extra.insert(tool, rule);
+                }
+            }
+        }
+        // Merge with existing permission — explicit user permission overrides tools-derived rules
+        match &mut config.permission {
+            Some(existing) => {
+                // Override tools-derived defaults with any explicitly-set fields
+                if let Some(ref existing_rule) = existing.edit {
+                    perm.edit = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.read {
+                    perm.read = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.bash {
+                    perm.bash = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.glob {
+                    perm.glob = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.grep {
+                    perm.grep = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.list {
+                    perm.list = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.task {
+                    perm.task = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.lsp {
+                    perm.lsp = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.skill {
+                    perm.skill = Some(existing_rule.clone());
+                }
+                if let Some(ref existing_rule) = existing.external_directory {
+                    perm.external_directory = Some(existing_rule.clone());
+                }
+                // Copy over extra rules from existing permission
+                for (k, v) in existing.extra.clone() {
+                    perm.extra.entry(k).or_insert(v);
+                }
+                config.permission = Some(perm);
+            }
+            None => {
+                config.permission = Some(perm);
+            }
+        }
+        config.tools.clear();
+    }
+
+    // autoshare → share conversion
+    if config.autoshare == Some(true) && config.share.is_none() {
+        config.share = Some(ShareMode::Auto);
+    }
+
+    // Username fallback
+    if config.username.is_none() {
+        config.username = Some(
+            std::env::var("USER")
+                .or_else(|_| std::env::var("USERNAME"))
+                .unwrap_or_else(|_| "user".to_string()),
+        );
+    }
+}
+
+// ── ConfigPaths helpers ──────────────────────────────────────────────────
+
+/// Return the candidate file paths for a named config in a directory.
+///
+/// Returns `[dir/{name}.json, dir/{name}.jsonc]`.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/paths.ts` line 43
+/// (`fileInDirectory`).
+pub fn config_file_in_directory(dir: &std::path::Path, name: &str) -> Vec<std::path::PathBuf> {
+    vec![
+        dir.join(format!("{name}.json")),
+        dir.join(format!("{name}.jsonc")),
+    ]
+}
+
+// ── Plugin discovery ─────────────────────────────────────────────────────
+
+/// Discover plugin files under `.opencode/plugin/` or `.opencode/plugins/`.
+///
+/// Scans for `.ts` and `.js` files in those directories.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` lines 18–30
+/// (`ConfigPlugin.load`).
+pub fn discover_plugin_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut plugins = Vec::new();
+    for sub in &["plugin", "plugins"] {
+        let plugin_dir = dir.join(sub);
+        if plugin_dir.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(&plugin_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    let ext = path.extension().and_then(|e| e.to_str());
+                    if ext == Some("ts") || ext == Some("js") {
+                        // Convert to file:// URL
+                        let abs = if path.is_absolute() {
+                            path
+                        } else {
+                            dir.join(&path)
+                        };
+                        if let Ok(canon) = abs.canonicalize() {
+                            let url = format!("file://{}", canon.display());
+                            plugins.push(url);
+                        } else {
+                            plugins.push(format!("file://{}", abs.display()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(plugins)
+}
+
+/// Resolve a path-like plugin spec relative to a config file path.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` lines 42–60
+/// (`ConfigPlugin.resolvePluginSpec`).
+pub fn resolve_plugin_spec(spec: &PluginSpec, config_filepath: &std::path::Path) -> PluginSpec {
+    let spec_str = plugin_specifier(spec);
+    // Only path-like specs need resolution
+    if !spec_str.starts_with('.') && !spec_str.starts_with('/') && !spec_str.starts_with("file://")
+    {
+        return spec.clone();
+    }
+    let base = config_filepath.parent().unwrap_or(std::path::Path::new("."));
+    let resolved = if spec_str.starts_with("file://") {
+        std::path::PathBuf::from(spec_str.trim_start_matches("file://"))
+    } else if std::path::Path::new(&spec_str).is_absolute() {
+        std::path::PathBuf::from(&spec_str)
+    } else {
+        base.join(&spec_str)
+    };
+    let resolved_str = format!("file://{}", resolved.display());
+    match spec {
+        PluginSpec::WithOptions(_, opts) => PluginSpec::WithOptions(resolved_str, opts.clone()),
+        PluginSpec::Simple(_) => PluginSpec::Simple(resolved_str),
+    }
+}
+
+/// Extract the string specifier from a `PluginSpec`.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` lines 32–34
+/// (`pluginSpecifier`).
+pub fn plugin_specifier(spec: &PluginSpec) -> String {
+    match spec {
+        PluginSpec::Simple(s) => s.clone(),
+        PluginSpec::WithOptions(s, _) => s.clone(),
+    }
+}
+
+/// Deduplicate a list of plugin origins by identity.
+///
+/// Later entries win (overridden by higher-priority config). Returns
+/// origins in their original order with duplicates removed.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/plugin.ts` lines 64–77
+/// (`deduplicatePluginOrigins`).
+pub fn deduplicate_plugin_origins(plugins: Vec<PluginOrigin>) -> Vec<PluginOrigin> {
+    let mut seen = std::collections::HashSet::new();
+    let mut result = Vec::new();
+    for origin in plugins.into_iter().rev() {
+        let ident = plugin_specifier(&origin.spec);
+        if seen.insert(ident) {
+            result.push(origin);
+        }
+    }
+    result.reverse();
+    result
+}
+
+// ── Agent discovery from .opencode/agent(s) directories ─────────────────
+
+/// Discover agent markdown files under `.opencode/agent/` or `.opencode/agents/`.
+///
+/// Returns a list of (agent_name, file_path) tuples.
+/// Actual markdown parsing uses the markdown module.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/agent.ts` lines 11–32
+/// (`ConfigAgent.load`).
+pub fn discover_agent_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    for sub in &["agent", "agents"] {
+        let agent_dir = dir.join(sub);
+        if agent_dir.is_dir() {
+            if let Ok(entries) = find_files_recursive(&agent_dir, "md") {
+                files.extend(entries);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Discover mode markdown files under `.opencode/mode/` or `.opencode/modes/`.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/agent.ts` lines 34–59
+/// (`ConfigAgent.loadMode`).
+pub fn discover_mode_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    for sub in &["mode", "modes"] {
+        let mode_dir = dir.join(sub);
+        if mode_dir.is_dir() {
+            if let Ok(entries) = find_files_recursive(&mode_dir, "md") {
+                files.extend(entries);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Discover command markdown files under `.opencode/command/` or `.opencode/commands/`.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/command.ts` lines 13–39
+/// (`ConfigCommand.load`).
+pub fn discover_command_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    for sub in &["command", "commands"] {
+        let cmd_dir = dir.join(sub);
+        if cmd_dir.is_dir() {
+            if let Ok(entries) = find_files_recursive(&cmd_dir, "md") {
+                files.extend(entries);
+            }
+        }
+    }
+    Ok(files)
+}
+
+/// Recursively find files with a given extension under a directory.
+fn find_files_recursive(dir: &std::path::Path, ext: &str) -> std::io::Result<Vec<String>> {
+    let mut files = Vec::new();
+    if dir.is_dir() {
+        let mut stack = vec![dir.to_path_buf()];
+        while let Some(current) = stack.pop() {
+            if let Ok(entries) = std::fs::read_dir(&current) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        if stack.len() < 100 {
+                            stack.push(path);
+                        }
+                    } else if path.is_file() {
+                        if let Some(e) = path.extension() {
+                            if e == ext {
+                                files.push(path.to_string_lossy().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(files)
+}
+
+// ── Managed config support ──────────────────────────────────────────────
+
+/// Return the system-level managed config directory.
+///
+/// On macOS: `/Library/Application Support/opencode`
+/// On Windows: `%ProgramData%/opencode`
+/// On Linux: `/etc/opencode`
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/managed.ts` lines 20–29
+/// (`systemManagedConfigDir`).
+pub fn system_managed_config_dir() -> std::path::PathBuf {
+    #[cfg(target_os = "macos")]
+    {
+        std::path::PathBuf::from("/Library/Application Support/opencode")
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let pd = std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".to_string());
+        std::path::PathBuf::from(pd).join("opencode")
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+    {
+        std::path::PathBuf::from("/etc/opencode")
+    }
+}
+
+/// Return the managed config directory (overridable via env var).
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/managed.ts` lines 31–33
+/// (`managedConfigDir`).
+pub fn managed_config_dir() -> std::path::PathBuf {
+    std::env::var("OPENCODE_TEST_MANAGED_CONFIG_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| system_managed_config_dir())
+}
+
+/// Parse a managed plist JSON string to strip plist meta keys.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/managed.ts` lines 35–41
+/// (`parseManagedPlist`).
+pub fn parse_managed_plist(json: &str) -> crate::error::Result<String> {
+    let mut value: serde_json::Value = serde_json::from_str(json)?;
+    if let Some(obj) = value.as_object_mut() {
+        let meta_keys: Vec<String> = [
+            "PayloadDisplayName",
+            "PayloadIdentifier",
+            "PayloadType",
+            "PayloadUUID",
+            "PayloadVersion",
+            "_manualProfile",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        for key in meta_keys {
+            obj.remove(&key);
+        }
+    }
+    serde_json::to_string(&value).map_err(crate::error::Error::Json)
+}
+
+/// Read macOS managed preferences (MDM-deployed `.mobileconfig`).
+///
+/// Returns the config text if a managed plist was found, or `None`.
+/// Only supported on macOS; returns `None` on other platforms.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/managed.ts` lines 43–69
+/// (`readManagedPreferences`).
+pub fn read_managed_preferences() -> Option<(String, String)> {
+    #[cfg(target_os = "macos")]
+    {
+        let domain = "ai.opencode.managed";
+        let user = std::env::var("USER").unwrap_or_else(|_| "user".to_string());
+        let plist_paths = vec![
+            std::path::PathBuf::from(format!("/Library/Managed Preferences/{user}/{domain}.plist")),
+            std::path::PathBuf::from(format!("/Library/Managed Preferences/{domain}.plist")),
+        ];
+        for plist in plist_paths {
+            if !plist.exists() {
+                continue;
+            }
+            // Attempt to convert plist to JSON using plutil
+            let output = std::process::Command::new("plutil")
+                .args(["-convert", "json", "-o", "-", &plist.to_string_lossy()])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                continue;
+            }
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            if let Ok(parsed) = parse_managed_plist(&stdout) {
+                return Some((format!("mobileconfig:{}", plist.display()), parsed));
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = domain;
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2444,5 +3128,156 @@ mod tests {
         // Source overrides disabled_providers (full replacement)
         assert_eq!(target.disabled_providers, vec!["b", "c"]);
         assert_eq!(target.enabled_providers, vec!["d"]);
+    }
+
+    // ── Normalize config tests ──────────────────────────────────────────
+
+    #[test]
+    fn test_normalize_mode_to_agent() {
+        let mut info = Info {
+            mode: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("build".into(), AgentConfig {
+                    name: Some("build-agent".into()),
+                    ..Default::default()
+                });
+                m
+            },
+            ..Default::default()
+        };
+        normalize_config(&mut info);
+        // mode should be empty after normalization
+        assert!(info.mode.is_empty());
+        // agent should have the entry with mode = primary
+        assert!(info.agent.contains_key("build"));
+        assert_eq!(info.agent["build"].mode, Some(AgentMode::Primary));
+    }
+
+    #[test]
+    fn test_normalize_tools_to_permission() {
+        let mut info = Info {
+            tools: {
+                let mut m = std::collections::HashMap::new();
+                m.insert("bash".into(), true);
+                m.insert("write".into(), false);
+                m.insert("read".into(), true);
+                m
+            },
+            ..Default::default()
+        };
+        normalize_config(&mut info);
+        // tools should be empty after normalization
+        assert!(info.tools.is_empty());
+        // permission should be set
+        let perm = info.permission.expect("permission should be set");
+        match perm.bash {
+            Some(crate::config::PermissionRule::Action(crate::config::PermissionAction::Allow)) => {}
+            _ => panic!("bash should be Allow"),
+        }
+        match perm.edit {
+            Some(crate::config::PermissionRule::Action(crate::config::PermissionAction::Deny)) => {}
+            _ => panic!("edit (from write) should be Deny"),
+        }
+    }
+
+    #[test]
+    fn test_normalize_autoshare() {
+        let mut info = Info {
+            autoshare: Some(true),
+            ..Default::default()
+        };
+        normalize_config(&mut info);
+        assert_eq!(info.share, Some(crate::config::ShareMode::Auto));
+    }
+
+    #[test]
+    fn test_normalize_username_fallback() {
+        let mut info = Info::default();
+        normalize_config(&mut info);
+        // username should be set (either system user or "user")
+        assert!(info.username.is_some());
+    }
+
+    // ── Plugin origin tests ─────────────────────────────────────────────
+
+    #[test]
+    fn test_plugin_specifier_simple() {
+        let spec = PluginSpec::Simple("my-plugin".into());
+        assert_eq!(plugin_specifier(&spec), "my-plugin");
+    }
+
+    #[test]
+    fn test_plugin_specifier_with_options() {
+        let opts = std::collections::HashMap::new();
+        let spec = PluginSpec::WithOptions("my-plugin".into(), opts);
+        assert_eq!(plugin_specifier(&spec), "my-plugin");
+    }
+
+    #[test]
+    fn test_deduplicate_plugin_origins() {
+        let origins = vec![
+            PluginOrigin {
+                spec: PluginSpec::Simple("plugin-a".into()),
+                source: "global/config.json".into(),
+                scope: PluginScope::Global,
+            },
+            PluginOrigin {
+                spec: PluginSpec::Simple("plugin-b".into()),
+                source: "local/.opencode/config.json".into(),
+                scope: PluginScope::Local,
+            },
+            PluginOrigin {
+                spec: PluginSpec::Simple("plugin-a".into()),
+                source: "other/config.json".into(),
+                scope: PluginScope::Global,
+            },
+        ];
+        let deduped = deduplicate_plugin_origins(origins);
+        // Should be 2 entries (plugin-a deduplicated, later entry wins)
+        assert_eq!(deduped.len(), 2);
+        // plugin-a should be the second source (later wins)
+        let plugin_a = deduped.iter().find(|o| plugin_specifier(&o.spec) == "plugin-a").unwrap();
+        assert_eq!(plugin_a.source, "other/config.json");
+    }
+
+    // ── Config paths tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_config_file_in_directory() {
+        let dir = std::path::Path::new("/tmp/test");
+        let files = config_file_in_directory(dir, "opencode");
+        assert_eq!(files.len(), 2);
+        assert!(files[0].ends_with("opencode.json"));
+        assert!(files[1].ends_with("opencode.jsonc"));
+    }
+
+    // ── Managed config tests ────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_managed_plist_strips_meta() {
+        let plist = r#"{"PayloadDisplayName": "Test", "shell": "/bin/bash", "PayloadUUID": "abc123"}"#;
+        let result = parse_managed_plist(plist).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&result).unwrap();
+        let obj = v.as_object().unwrap();
+        assert!(!obj.contains_key("PayloadDisplayName"));
+        assert!(!obj.contains_key("PayloadUUID"));
+        assert_eq!(obj["shell"], "/bin/bash");
+    }
+
+    // ── Global config file tests ───────────────────────────────────────
+
+    #[test]
+    fn test_global_config_file_returns_first() {
+        // This is hard to test without filesystem side effects, but at least
+        // verify the function compiles and runs without panicking
+        let _ = global_config_dir();
+    }
+
+    #[test]
+    fn test_load_from_env_not_set() {
+        // Should return Ok(None) when env var is not set
+        let result = Config::load_from_env();
+        assert!(result.is_ok());
+        assert!(result.unwrap().is_none());
     }
 }

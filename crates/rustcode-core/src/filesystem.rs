@@ -750,8 +750,25 @@ pub fn list_directory(
         } else if file_type.is_file() {
             let item_abs = item.path();
             (FileType::File, mime_type(&item_abs), name.clone())
+        } else if file_type.is_symlink() {
+            // Resolve symlink target
+            let item_abs = item.path();
+            let target_type = std::fs::symlink_metadata(&item_abs)
+                .ok()
+                .and_then(|m| if m.is_dir() { Some(FileType::Directory) } else if m.is_file() { Some(FileType::File) } else { None })
+                .unwrap_or(FileType::File);
+            match target_type {
+                FileType::Directory => (
+                    FileType::Directory,
+                    "application/x-directory".to_string(),
+                    format!("{name}/"),
+                ),
+                FileType::File => {
+                    (FileType::File, mime_type(&item_abs), name.clone())
+                },
+            }
         } else {
-            continue; // Skip symlinks and special files
+            continue; // Skip special files (sockets, fifos, etc.)
         };
 
         // Compute relative path from root
@@ -987,6 +1004,63 @@ pub fn file_exists(root: &Path, rel_path: &RelativePath) -> bool {
     absolute.exists()
 }
 
+/// Write content to a file, creating parent directories as needed.
+///
+/// Returns the number of bytes written.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` (FileSystem.WriteInput handling).
+pub fn write_file(root: &Path, path: &RelativePath, content: &str) -> Result<usize, FileSystemError> {
+    let absolute = resolve_safe(root, path)?;
+    if let Some(parent) = absolute.parent() {
+        std::fs::create_dir_all(parent).map_err(FileSystemError::Io)?;
+    }
+    let bytes_written = std::fs::write(&absolute, content).map_err(FileSystemError::Io)?;
+    Ok(bytes_written)
+}
+
+/// Ensure a directory exists, creating it and all parent directories if needed.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` (ensureDir equivalent).
+pub fn ensure_dir(root: &Path, path: &RelativePath) -> Result<(), FileSystemError> {
+    let absolute = resolve_safe(root, path)?;
+    std::fs::create_dir_all(&absolute).map_err(FileSystemError::Io)
+}
+
+/// Remove a file or empty directory.
+///
+/// Returns `true` if the file existed and was removed, `false` if it did not exist.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` (FileSystem.RemoveInput handling).
+pub fn remove_file(root: &Path, path: &RelativePath) -> Result<bool, FileSystemError> {
+    let absolute = resolve_safe(root, path)?;
+    if !absolute.exists() {
+        return Ok(false);
+    }
+    if absolute.is_dir() {
+        std::fs::remove_dir(&absolute).map_err(FileSystemError::Io)?;
+    } else {
+        std::fs::remove_file(&absolute).map_err(FileSystemError::Io)?;
+    }
+    Ok(true)
+}
+
+/// Resolve a path to its canonical (real) form, following symlinks.
+///
+/// Returns the canonicalized absolute path, or an error if the path does not exist.
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem.ts` (realpath equivalent).
+pub fn realpath(root: &Path, path: &RelativePath) -> Result<String, FileSystemError> {
+    let absolute = resolve_safe(root, path)?;
+    let canonical = absolute.canonicalize().map_err(|_| {
+        FileSystemError::NotFound(absolute.to_string_lossy().to_string())
+    })?;
+    Ok(canonical.to_string_lossy().to_string())
+}
+
 /// Check whether a path is a directory.
 pub fn is_directory(root: &Path, rel_path: &RelativePath) -> Result<bool, FileSystemError> {
     let absolute = resolve_safe(root, rel_path)?;
@@ -1090,6 +1164,28 @@ fn walk_for_entries(
             };
             if predicate(&entry) {
                 results.push(entry);
+            }
+        } else if file_type.is_symlink() {
+            // Resolve symlink: follow the link to determine target type
+            let target_type = std::fs::symlink_metadata(&item_abs)
+                .ok()
+                .and_then(|m| if m.is_dir() { Some(FileType::Directory) } else if m.is_file() { Some(FileType::File) } else { None })
+                .unwrap_or(FileType::File);
+            let mime = match target_type {
+                FileType::Directory => "application/x-directory".to_string(),
+                FileType::File => mime_type(&item_abs),
+            };
+            let entry = Entry {
+                path: RelativePath::new(&item_rel),
+                entry_type: target_type,
+                mime,
+            };
+            if predicate(&entry) {
+                results.push(entry);
+            }
+            // Recurse into symlinked directories
+            if target_type == FileType::Directory {
+                let _ = walk_for_entries(root, &item_abs, results, &predicate);
             }
         }
     }

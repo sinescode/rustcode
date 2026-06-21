@@ -1130,30 +1130,40 @@ impl DatabaseService {
         id: &str,
         project_id: &str,
         workspace_id: Option<&str>,
+        parent_id: Option<&str>,
         slug: &str,
         directory: &str,
+        path: Option<&str>,
         title: &str,
         version: &str,
         time_created: i64,
         time_updated: i64,
         agent: Option<&str>,
         model: Option<&str>,
+        cost: Option<f64>,
+        tokens_input: Option<i64>,
+        tokens_output: Option<i64>,
     ) -> Result<(), DatabaseServiceError> {
         sqlx::query(
-            "INSERT INTO session (id, project_id, workspace_id, slug, directory, title, version, time_created, time_updated, agent, model)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO session (id, project_id, workspace_id, parent_id, slug, directory, path, title, version, time_created, time_updated, agent, model, cost, tokens_input, tokens_output)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
         )
         .bind(id)
         .bind(project_id)
         .bind(workspace_id)
+        .bind(parent_id)
         .bind(slug)
         .bind(directory)
+        .bind(path)
         .bind(title)
         .bind(version)
         .bind(time_created)
         .bind(time_updated)
         .bind(agent)
         .bind(model)
+        .bind(cost)
+        .bind(tokens_input)
+        .bind(tokens_output)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseServiceError::Database(format!("insert session: {e}")))?;
@@ -1162,6 +1172,10 @@ impl DatabaseService {
     }
 
     /// Update a session's time_updated and optional fields.
+    ///
+    /// Supports all mutable session columns. Only non-None optional fields
+    /// are updated.
+    #[allow(clippy::too_many_arguments)]
     pub async fn update_session(
         &self,
         id: &str,
@@ -1170,11 +1184,38 @@ impl DatabaseService {
         cost: Option<f64>,
         tokens_input: Option<i64>,
         tokens_output: Option<i64>,
+        tokens_reasoning: Option<i64>,
+        tokens_cache_read: Option<i64>,
+        tokens_cache_write: Option<i64>,
+        share_url: Option<&str>,
+        summary_additions: Option<i64>,
+        summary_deletions: Option<i64>,
+        summary_files: Option<i64>,
+        summary_diffs: Option<&str>,
+        metadata: Option<&str>,
+        revert: Option<&str>,
+        permission: Option<&str>,
+        time_compacting: Option<i64>,
+        time_archived: Option<i64>,
     ) -> Result<(), DatabaseServiceError> {
         sqlx::query(
             "UPDATE session SET time_updated = ?2, title = COALESCE(?3, title),
              cost = COALESCE(?4, cost), tokens_input = COALESCE(?5, tokens_input),
-             tokens_output = COALESCE(?6, tokens_output) WHERE id = ?1",
+             tokens_output = COALESCE(?6, tokens_output),
+             tokens_reasoning = COALESCE(?7, tokens_reasoning),
+             tokens_cache_read = COALESCE(?8, tokens_cache_read),
+             tokens_cache_write = COALESCE(?9, tokens_cache_write),
+             share_url = COALESCE(?10, share_url),
+             summary_additions = COALESCE(?11, summary_additions),
+             summary_deletions = COALESCE(?12, summary_deletions),
+             summary_files = COALESCE(?13, summary_files),
+             summary_diffs = COALESCE(?14, summary_diffs),
+             metadata = COALESCE(?15, metadata),
+             revert = COALESCE(?16, revert),
+             permission = COALESCE(?17, permission),
+             time_compacting = COALESCE(?18, time_compacting),
+             time_archived = COALESCE(?19, time_archived)
+             WHERE id = ?1",
         )
         .bind(id)
         .bind(time_updated)
@@ -1182,9 +1223,170 @@ impl DatabaseService {
         .bind(cost)
         .bind(tokens_input)
         .bind(tokens_output)
+        .bind(tokens_reasoning)
+        .bind(tokens_cache_read)
+        .bind(tokens_cache_write)
+        .bind(share_url)
+        .bind(summary_additions)
+        .bind(summary_deletions)
+        .bind(summary_files)
+        .bind(summary_diffs)
+        .bind(metadata)
+        .bind(revert)
+        .bind(permission)
+        .bind(time_compacting)
+        .bind(time_archived)
         .execute(&self.pool)
         .await
         .map_err(|e| DatabaseServiceError::Database(format!("update session: {e}")))?;
+
+        Ok(())
+    }
+
+    // ── List sessions globally (across projects) ─────────────────────
+    /// List all sessions with optional filters.
+    ///
+    /// Supports directory, search, roots, cursor, archived, and limit filters.
+    pub async fn list_sessions_global(
+        &self,
+        directory: Option<&str>,
+        search: Option<&str>,
+        roots: Option<bool>,
+        cursor: Option<i64>,
+        archived: Option<bool>,
+        limit: Option<u32>,
+    ) -> Result<Vec<SessionRow>, DatabaseServiceError> {
+        let limit = limit.unwrap_or(100) as i64;
+        let mut conditions: Vec<String> = Vec::new();
+        let mut next_bind = 2u32;
+
+        if let Some(_dir) = directory {
+            conditions.push(format!("directory = ?{next_bind}"));
+            next_bind += 1;
+        }
+        if roots.unwrap_or(false) {
+            conditions.push("parent_id IS NULL".to_string());
+        }
+        if let Some(_c) = cursor {
+            conditions.push(format!("time_updated < ?{next_bind}"));
+            next_bind += 1;
+        }
+        // Default: exclude archived unless explicitly included
+        if !archived.unwrap_or(false) {
+            conditions.push("time_archived IS NULL".to_string());
+        }
+        if let Some(_s) = search {
+            conditions.push(format!("title LIKE ?{next_bind}"));
+            next_bind += 1;
+        }
+
+        let where_clause = if conditions.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", conditions.join(" AND "))
+        };
+
+        let sql = format!(
+            "SELECT id, project_id, workspace_id, parent_id, slug, directory, path, title, version, \
+             share_url, summary_additions, summary_deletions, summary_files, summary_diffs, \
+             metadata, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, \
+             tokens_cache_write, revert, permission, agent, model, \
+             time_created, time_updated, time_compacting, time_archived \
+             FROM session {} ORDER BY time_updated DESC, id DESC LIMIT ?1",
+            where_clause
+        );
+
+        let mut query = sqlx::query_as::<_, SessionRowRaw>(&sql).bind(limit);
+        if let Some(dir) = directory {
+            query = query.bind(dir);
+        }
+        if let Some(c) = cursor {
+            query = query.bind(c);
+        }
+        if let Some(s) = search {
+            query = query.bind(format!("%{{}}%", s));
+        }
+
+        let rows = query
+            .fetch_all(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("list sessions global: {{e}}")))?;
+
+        Ok(rows.into_iter().map(SessionRowRaw::into_row).collect())
+    }
+
+    // ── List child sessions ───────────────────────────────────────────
+    /// List sessions with a given parent_id.
+    pub async fn list_child_sessions(
+        &self,
+        parent_id: &str,
+    ) -> Result<Vec<SessionRow>, DatabaseServiceError> {
+        let rows: Vec<SessionRowRaw> = sqlx::query_as(
+            "SELECT id, project_id, workspace_id, parent_id, slug, directory, path, title, version, \
+             share_url, summary_additions, summary_deletions, summary_files, summary_diffs, \
+             metadata, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, \
+             tokens_cache_write, revert, permission, agent, model, \
+             time_created, time_updated, time_compacting, time_archived \
+             FROM session WHERE parent_id = ?1 ORDER BY time_updated DESC",
+        )
+        .bind(parent_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list child sessions: {{e}}")))?;
+
+        Ok(rows.into_iter().map(SessionRowRaw::into_row).collect())
+    }
+
+    // ── Get part by ID ────────────────────────────────────────────────
+    /// Get a single part by its ID.
+    pub async fn get_part_by_id(
+        &self,
+        part_id: &str,
+    ) -> Result<Option<PartRow>, DatabaseServiceError> {
+        #[derive(Debug, sqlx::FromRow)]
+        struct PartRowQuery {
+            id: String,
+            message_id: String,
+            session_id: String,
+            data: String,
+            time_created: i64,
+            time_updated: i64,
+        }
+
+        let row: Option<PartRowQuery> = sqlx::query_as(
+            "SELECT id, message_id, session_id, data, time_created, time_updated \
+             FROM part WHERE id = ?1",
+        )
+        .bind(part_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get part by id: {{e}}")))?;
+
+        Ok(row.map(|r| PartRow {
+            id: r.id,
+            message_id: r.message_id,
+            session_id: r.session_id,
+            data: r.data,
+            time_created: r.time_created,
+            time_updated: r.time_updated,
+        }))
+    }
+
+    // ── Update session workspace_id ───────────────────────────────────
+    /// Update a session's workspace_id.
+    pub async fn update_session_workspace(
+        &self,
+        id: &str,
+        workspace_id: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query("UPDATE session SET workspace_id = ?2, time_updated = ?3 WHERE id = ?1")
+            .bind(id)
+            .bind(workspace_id)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("update session workspace: {{e}}")))?;
 
         Ok(())
     }
@@ -1211,7 +1413,11 @@ impl DatabaseService {
     ) -> Result<Vec<SessionRow>, DatabaseServiceError> {
         let limit = limit.unwrap_or(50) as i64;
         let rows: Vec<SessionRowRaw> = sqlx::query_as(
-            "SELECT id, project_id, workspace_id, slug, directory, title, version, time_created, time_updated, cost, tokens_input, tokens_output, agent, model
+            "SELECT id, project_id, workspace_id, parent_id, slug, directory, path, title, version, \
+             share_url, summary_additions, summary_deletions, summary_files, summary_diffs, \
+             metadata, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, \
+             tokens_cache_write, revert, permission, agent, model, \
+             time_created, time_updated, time_compacting, time_archived \
              FROM session WHERE project_id = ?1 ORDER BY time_updated DESC LIMIT ?2",
         )
         .bind(project_id)
@@ -1398,8 +1604,11 @@ impl DatabaseService {
     /// Get a single session by ID.
     pub async fn get_session(&self, id: &str) -> Result<Option<SessionRow>, DatabaseServiceError> {
         let row: Option<SessionRowRaw> = sqlx::query_as(
-            "SELECT id, project_id, workspace_id, slug, directory, title, version, \
-             time_created, time_updated, cost, tokens_input, tokens_output, agent, model \
+            "SELECT id, project_id, workspace_id, parent_id, slug, directory, path, title, version, \
+             share_url, summary_additions, summary_deletions, summary_files, summary_diffs, \
+             metadata, cost, tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, \
+             tokens_cache_write, revert, permission, agent, model, \
+             time_created, time_updated, time_compacting, time_archived \
              FROM session WHERE id = ?1",
         )
         .bind(id)
@@ -1536,22 +1745,40 @@ impl DatabaseService {
 // ── Row types for CRUD results ────────────────────────────────────────────
 
 /// A row from the session table (query result).
+///
+/// # Source
+/// Ported from `packages/core/src/database/schema.gen.ts` — session table.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRow {
     pub id: String,
     pub project_id: String,
     pub workspace_id: Option<String>,
+    pub parent_id: Option<String>,
     pub slug: String,
     pub directory: String,
+    pub path: Option<String>,
     pub title: String,
     pub version: String,
-    pub time_created: i64,
-    pub time_updated: i64,
+    pub share_url: Option<String>,
+    pub summary_additions: Option<i64>,
+    pub summary_deletions: Option<i64>,
+    pub summary_files: Option<i64>,
+    pub summary_diffs: Option<String>,
+    pub metadata: Option<String>,
     pub cost: f64,
     pub tokens_input: i64,
     pub tokens_output: i64,
+    pub tokens_reasoning: i64,
+    pub tokens_cache_read: i64,
+    pub tokens_cache_write: i64,
+    pub revert: Option<String>,
+    pub permission: Option<String>,
     pub agent: Option<String>,
     pub model: Option<String>,
+    pub time_created: i64,
+    pub time_updated: i64,
+    pub time_compacting: Option<i64>,
+    pub time_archived: Option<i64>,
 }
 
 /// A row from the message table (query result).
@@ -1594,17 +1821,32 @@ struct SessionRowRaw {
     id: String,
     project_id: String,
     workspace_id: Option<String>,
+    parent_id: Option<String>,
     slug: String,
     directory: String,
+    path: Option<String>,
     title: String,
     version: String,
-    time_created: i64,
-    time_updated: i64,
+    share_url: Option<String>,
+    summary_additions: Option<i64>,
+    summary_deletions: Option<i64>,
+    summary_files: Option<i64>,
+    summary_diffs: Option<String>,
+    metadata: Option<String>,
     cost: f64,
     tokens_input: i64,
     tokens_output: i64,
+    tokens_reasoning: i64,
+    tokens_cache_read: i64,
+    tokens_cache_write: i64,
+    revert: Option<String>,
+    permission: Option<String>,
     agent: Option<String>,
     model: Option<String>,
+    time_created: i64,
+    time_updated: i64,
+    time_compacting: Option<i64>,
+    time_archived: Option<i64>,
 }
 
 impl SessionRowRaw {
@@ -1613,17 +1855,32 @@ impl SessionRowRaw {
             id: self.id,
             project_id: self.project_id,
             workspace_id: self.workspace_id,
+            parent_id: self.parent_id,
             slug: self.slug,
             directory: self.directory,
+            path: self.path,
             title: self.title,
             version: self.version,
-            time_created: self.time_created,
-            time_updated: self.time_updated,
+            share_url: self.share_url,
+            summary_additions: self.summary_additions,
+            summary_deletions: self.summary_deletions,
+            summary_files: self.summary_files,
+            summary_diffs: self.summary_diffs,
+            metadata: self.metadata,
             cost: self.cost,
             tokens_input: self.tokens_input,
             tokens_output: self.tokens_output,
+            tokens_reasoning: self.tokens_reasoning,
+            tokens_cache_read: self.tokens_cache_read,
+            tokens_cache_write: self.tokens_cache_write,
+            revert: self.revert,
+            permission: self.permission,
             agent: self.agent,
             model: self.model,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+            time_compacting: self.time_compacting,
+            time_archived: self.time_archived,
         }
     }
 }
@@ -2041,14 +2298,19 @@ mod tests {
             "sess-1",
             "proj-1",
             None,
+            None,
             "my-session",
             "/home/proj",
+            None,
             "Test Session",
             "1.0",
             now,
             now,
             Some("build"),
             Some("claude"),
+            None,
+            None,
+            None,
         )
         .await
         .expect("insert session");
@@ -2057,12 +2319,17 @@ mod tests {
             "sess-2",
             "proj-1",
             None,
+            None,
             "other-session",
             "/home/proj",
+            None,
             "Other Session",
             "1.0",
             now + 1,
             now + 1,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -2103,12 +2370,17 @@ mod tests {
             "sess-1",
             "proj-1",
             None,
+            None,
             "slug",
             "/dir",
+            None,
             "Old Title",
             "1.0",
             now,
             now,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -2122,6 +2394,19 @@ mod tests {
             Some(0.05),
             Some(100),
             Some(50),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2153,7 +2438,7 @@ mod tests {
         .unwrap();
 
         svc.insert_session(
-            "sess-1", "proj-1", None, "s", "/d", "T", "1", now, now, None, None,
+            "sess-1", "proj-1", None, None, "s", "/d", None, "T", "1", now, now, None, None, None, None, None,
         )
         .await
         .unwrap();
@@ -2448,12 +2733,17 @@ mod tests {
                 "sess-2",
                 "proj-1",
                 None,
+                None,
                 "slug2",
                 "/dir2",
+                None,
                 "Title2",
                 "1.0",
                 now + 1,
                 now + 1,
+                None,
+                None,
+                None,
                 None,
                 None,
             )
@@ -2466,12 +2756,17 @@ mod tests {
             "sess-3",
             "proj-1",
             None,
+            None,
             "slug3",
             "/dir3",
+            None,
             "Title3",
             "1.0",
             now + 2,
             now + 2,
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -2578,12 +2873,17 @@ mod tests {
                 &format!("sess-{i}"),
                 "proj-1",
                 None,
+                None,
                 &format!("slug-{i}"),
                 "/d",
+                None,
                 &format!("Title {i}"),
                 "1",
                 now + i,
                 now + i,
+                None,
+                None,
+                None,
                 None,
                 None,
             )

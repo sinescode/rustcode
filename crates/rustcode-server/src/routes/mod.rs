@@ -4,6 +4,7 @@
 //! `packages/opencode/src/server/routes/instance/httpapi/groups/`
 
 pub mod agent;
+pub mod api;
 pub mod command;
 pub mod config;
 pub mod control;

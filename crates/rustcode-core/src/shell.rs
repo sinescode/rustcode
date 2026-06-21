@@ -12,6 +12,11 @@ use std::sync::OnceLock;
 /// Ported from: `shell.ts` — `SIGKILL_TIMEOUT_MS`
 pub const SIGKILL_TIMEOUT_MS: u64 = 200;
 
+/// Maximum bytes to capture from a shell command's stdout/stderr (1 MB).
+///
+/// Ported from: `packages/core/src/tool/bash.ts` — `MAX_CAPTURE_BYTES`
+pub const MAX_CAPTURE_BYTES: usize = 1024 * 1024;
+
 /// A detected shell on the system.
 ///
 /// Ported from: `shell.ts` — `Item`
@@ -139,16 +144,49 @@ pub fn is_shell_allowed(name: &str) -> bool {
 }
 
 /// Construct shell-specific invocation arguments for running `command` in `cwd`.
+///
+/// Matches the OpenCode shell invocation pattern:
+/// - bash: sources ~/.bashrc, enables aliases, uses cd -- and eval
+/// - zsh: sources ~/.zshenv and ~/.zshrc
+/// - fish/nu: simple -c
+/// - powershell/pwsh: -NoProfile -Command
+///
+/// # Source
+/// `packages/core/src/shell.ts` lines 166-200 `args`.
 pub fn args(shell: &ShellItem, command: &str, cwd: &str) -> Vec<String> {
     match shell.name.as_str() {
-        "bash" | "zsh" => {
+        "bash" => {
             let quoted = shlex::try_quote(command)
                 .map(|c| c.into_owned())
                 .unwrap_or_else(|_| command.to_string());
             vec![
                 "-l".into(),
                 "-c".into(),
-                format!("cd {}; eval {}", cwd, quoted),
+                format!(
+                    "shopt -s expand_aliases
+[[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
+cd -- "$1"
+eval {}",
+                    quoted
+                ),
+                "opencode".into(),
+                cwd.into(),
+            ]
+        }
+        "zsh" => {
+            let quoted = shlex::try_quote(command)
+                .map(|c| c.into_owned())
+                .unwrap_or_else(|_| command.to_string());
+            vec![
+                "-l".into(),
+                "-c".into(),
+                format!(
+                    "[[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
+[[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
+cd -- "$1"
+eval {}",
+                    quoted
+                ),
                 "opencode".into(),
                 cwd.into(),
             ]
@@ -505,12 +543,22 @@ impl ShellService {
             Ok(Ok(output)) => {
                 let stdout = String::from_utf8_lossy(&output.stdout).to_string();
                 let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let stdout = if stdout.len() > MAX_CAPTURE_BYTES {
+                    stdout.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
+                } else {
+                    stdout
+                };
+                let stderr = if stderr.len() > MAX_CAPTURE_BYTES {
+                    stderr.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
+                } else {
+                    stderr
+                };
                 Ok(ShellResult {
                     exit_code: output.status.code().unwrap_or(-1),
                     stdout,
                     stderr,
-                    stdout_truncated: false,
-                    stderr_truncated: false,
+                    stdout_truncated: stdout.len() > MAX_CAPTURE_BYTES,
+                    stderr_truncated: stderr.len() > MAX_CAPTURE_BYTES,
                     duration_ms,
                     killed: false,
                 })
@@ -538,7 +586,7 @@ impl ShellService {
                 .arg("-TERM")
                 .arg(format!("-{}", pid))
                 .output();
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tokio::time::sleep(std::time::Duration::from_millis(SIGKILL_TIMEOUT_MS)).await;
 
             // Check if process already exited before escalating to SIGKILL
             let exited = std::process::Command::new("kill")

@@ -297,6 +297,316 @@ impl SessionHistory {
         }
     }
 
+
+    /// Load messages for a runner context (since a baseline sequence).
+    ///
+    /// Filters messages to only those with seq > baseline_seq, applying
+    /// compaction-aware filtering: if a compaction message exists, all messages
+    /// with seq >= the compaction's seq are included.
+    ///
+    /// # Source
+    /// `packages/core/src/session/history.ts` lines 82–88 `loadForRunner`.
+    pub fn load_for_runner(&mut self, messages: Vec<serde_json::Value>, baseline_seq: u64) -> Vec<serde_json::Value> {
+        let mut result = Vec::new();
+        let mut compaction_seq: Option<u64> = None;
+
+        // First pass: find compaction seq
+        for msg in &messages {
+            if msg.get("type").and_then(|t| t.as_str()) == Some("compaction") {
+                if let Some(seq) = msg.get("seq").and_then(|s| s.as_u64()) {
+                    compaction_seq = Some(seq);
+                }
+            }
+        }
+
+        // Second pass: filter messages
+        for msg in messages {
+            let seq = msg.get("seq").and_then(|s| s.as_u64()).unwrap_or(0);
+            let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            let should_include = if let Some(comp_seq) = compaction_seq {
+                // Compaction-aware: include messages >= compaction seq,
+                // or system messages > baseline_seq
+                if seq >= comp_seq {
+                    true
+                } else if msg_type == "system" && seq > baseline_seq {
+                    true
+                } else {
+                    false
+                }
+            } else {
+                // No compaction: include messages > baseline_seq
+                // Always exclude system messages <= baseline_seq
+                if msg_type == "system" && seq <= baseline_seq {
+                    false
+                } else {
+                    seq > baseline_seq
+                }
+            };
+
+            if should_include {
+                result.push(msg);
+            }
+        }
+
+        // Load into history for further processing
+        self.load(result.clone());
+        result
+    }
+
+    /// Get entries (seq + message) for a runner context.
+    ///
+    /// Returns history entries with sequence numbers, filtered by compaction-awareness.
+    ///
+    /// # Source
+    /// `packages/core/src/session/history.ts` lines 90–99 `entriesForRunner`.
+    pub fn entries_for_runner(
+        &mut self,
+        messages: Vec<serde_json::Value>,
+        baseline_seq: u64,
+    ) -> Vec<HistoryEntry> {
+        let filtered = self.load_for_runner(messages, baseline_seq);
+        self.messages.iter()
+            .filter(|e| filtered.iter().any(|m| {
+                m.get("seq").and_then(|s| s.as_u64()) == Some(e.seq)
+            }))
+            .cloned()
+            .collect()
+    }
+
+    /// Filter compacted messages — reorder for model consumption.
+    ///
+    /// When compaction has occurred, messages are reordered so that the
+    /// [compaction-user, summary, retained-tail, continue-user] sequence
+    /// is presented to the model in the correct order.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/message-v2.ts` lines 532–583 `filterCompacted`.
+    pub fn filter_compacted(&self) -> Vec<&HistoryEntry> {
+        if self.messages.is_empty() {
+            return Vec::new();
+        }
+
+        // Find compaction messages
+        let mut compaction_indices: Vec<usize> = Vec::new();
+        for (i, entry) in self.messages.iter().enumerate() {
+            if entry.message.get("type").and_then(|t| t.as_str()) == Some("compaction") {
+                compaction_indices.push(i);
+            }
+        }
+
+        if compaction_indices.is_empty() {
+            return self.messages.iter().collect();
+        }
+
+        // Apply filter: keep compaction user + summary + tail after compaction + remaining
+        // Find the last compaction
+        let last_compaction_idx = *compaction_indices.last().unwrap();
+
+        // Find the compaction user message (the user message with the compaction part)
+        let mut compaction_user_idx = None;
+        for (i, entry) in self.messages.iter().enumerate() {
+            if i >= last_compaction_idx {
+                break;
+            }
+            if entry.message.get("type").and_then(|t| t.as_str()) == Some("user") {
+                // Check if this user has a compaction part
+                if entry.message.get("parts").and_then(|p| p.as_array()).map_or(false, |parts| {
+                    parts.iter().any(|p| p.get("type").and_then(|t| t.as_str()) == Some("compaction"))
+                }) {
+                    compaction_user_idx = Some(i);
+                }
+            }
+        }
+
+        // Find the summary assistant (assistant after compaction user with summary flag)
+        let mut summary_idx = None;
+        if let Some(comp_user_idx) = compaction_user_idx {
+            for (i, entry) in self.messages.iter().enumerate() {
+                if i > comp_user_idx {
+                    if entry.message.get("type").and_then(|t| t.as_str()) == Some("assistant") {
+                        if entry.message.get("summary").and_then(|s| s.as_bool()).unwrap_or(false) {
+                            summary_idx = Some(i);
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Find tail_start_id from the compaction part
+        let tail_start_id = if let Some(comp_user_idx) = compaction_user_idx {
+            self.messages[comp_user_idx].message.get("parts").and_then(|p| p.as_array()).and_then(|parts| {
+                parts.iter().find(|p| p.get("type").and_then(|t| t.as_str()) == Some("compaction"))
+                    .and_then(|p| p.get("tail_start_id").and_then(|t| t.as_str()))
+            })
+        } else {
+            None
+        };
+
+        // Find tail index
+        let tail_idx = tail_start_id.and_then(|id| {
+            self.messages.iter().position(|e| {
+                e.message.get("id").and_then(|i| i.as_str()) == Some(id)
+            })
+        });
+
+        // Build reordered result
+        if let (Some(comp_user_idx), Some(summary_idx), Some(tail_idx)) = (compaction_user_idx, summary_idx, tail_idx) {
+            if tail_idx < comp_user_idx && summary_idx > comp_user_idx {
+                // Reorder: [compaction-user, summary], [tail..compaction], [summary+1..]
+                let mut result = Vec::new();
+
+                // Part 1: compaction user through summary
+                for i in comp_user_idx..=summary_idx {
+                    result.push(&self.messages[i]);
+                }
+
+                // Part 2: tail through compaction (exclusive of compaction user)
+                for i in tail_idx..comp_user_idx {
+                    result.push(&self.messages[i]);
+                }
+
+                // Part 3: everything after summary
+                for i in (summary_idx + 1)..self.messages.len() {
+                    result.push(&self.messages[i]);
+                }
+
+                return result;
+            }
+        }
+
+        // Fallthrough: return all messages as-is
+        self.messages.iter().collect()
+    }
+
+    /// Convert messages to AI SDK model messages format.
+    ///
+    /// Converts session messages (WithParts) into the ModelMessage format
+    /// suitable for LLM provider consumption.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/message-v2.ts` lines 142–434 `toModelMessagesEffect`.
+    pub fn to_model_messages(&self) -> Vec<serde_json::Value> {
+        let mut result: Vec<serde_json::Value> = Vec::new();
+
+        // First apply compaction filtering
+        let entries = self.filter_compacted();
+
+        for entry in &entries {
+            let msg = &entry.message;
+            let msg_type = msg.get("type").and_then(|t| t.as_str()).unwrap_or("");
+
+            match msg_type {
+                "user" => {
+                    let parts = msg.get("parts").and_then(|p| p.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+                    if parts.is_empty() {
+                        continue;
+                    }
+
+                    let mut user_parts: Vec<serde_json::Value> = Vec::new();
+                    for part in &parts {
+                        let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match part_type {
+                            "text" => {
+                                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                    if !text.is_empty() {
+                                        user_parts.push(serde_json::json!({"type": "text", "text": text}));
+                                    }
+                                }
+                            }
+                            "file" => {
+                                let mime = part.get("mime").and_then(|m| m.as_str()).unwrap_or("");
+                                if mime != "text/plain" && mime != "application/x-directory" {
+                                    user_parts.push(serde_json::json!({
+                                        "type": "file",
+                                        "url": part.get("url"),
+                                        "mediaType": mime,
+                                        "filename": part.get("filename"),
+                                    }));
+                                }
+                            }
+                            "compaction" => {
+                                user_parts.push(serde_json::json!({
+                                    "type": "text",
+                                    "text": "What did we do so far?"
+                                }));
+                            }
+                            "subtask" => {
+                                user_parts.push(serde_json::json!({
+                                    "type": "text",
+                                    "text": "The following tool was executed by the user"
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if !user_parts.is_empty() {
+                        result.push(serde_json::json!({
+                            "role": "user",
+                            "parts": user_parts,
+                        }));
+                    }
+                }
+                "assistant" => {
+                    let parts = msg.get("parts").and_then(|p| p.as_array()).map(|a| a.to_vec()).unwrap_or_default();
+
+                    let mut assistant_parts: Vec<serde_json::Value> = Vec::new();
+                    let mut media: Vec<serde_json::Value> = Vec::new();
+
+                    for part in &parts {
+                        let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                        match part_type {
+                            "text" => {
+                                if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
+                                    assistant_parts.push(serde_json::json!({
+                                        "type": "text",
+                                        "text": if text.is_empty() { " " } else { text },
+                                        "providerMetadata": part.get("metadata"),
+                                    }));
+                                }
+                            }
+                            "step-start" => {
+                                assistant_parts.push(serde_json::json!({"type": "step-start"}));
+                            }
+                            "tool" => {
+                                if let Some(state) = part.get("state") {
+                                    if let Some(status) = state.get("status").and_then(|s| s.as_str()) {
+                                        let tool_part = serde_json::json!({
+                                            "type": "tool-" + part.get("tool").and_then(|t| t.as_str()).unwrap_or("unknown"),
+                                            "toolCallId": part.get("call_id"),
+                                            "input": state.get("input"),
+                                        });
+                                        assistant_parts.push(tool_part);
+                                    }
+                                }
+                            }
+                            "reasoning" => {
+                                assistant_parts.push(serde_json::json!({
+                                    "type": "reasoning",
+                                    "text": part.get("text"),
+                                    "providerMetadata": part.get("metadata"),
+                                }));
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    if !assistant_parts.is_empty() {
+                        result.push(serde_json::json!({
+                            "role": "assistant",
+                            "parts": assistant_parts,
+                        }));
+                    }
+                }
+                // Skip non-conversation types
+                _ => {}
+            }
+        }
+
+        result
+    }
     /// Clear all history.
     pub fn clear(&mut self) {
         self.messages.clear();
@@ -541,3 +851,104 @@ mod tests {
         assert!(history.is_empty());
     }
 }
+
+    #[test]
+    fn test_load_for_runner_with_compaction() {
+        let mut history = SessionHistory::new();
+        let messages = vec![
+            serde_json::json!({"seq": 1, "type": "user", "text": "hello", "id": "msg_1"}),
+            serde_json::json!({"seq": 2, "type": "assistant", "text": "hi", "id": "msg_2"}),
+            serde_json::json!({"seq": 3, "type": "compaction", "summary": "worked", "id": "msg_3"}),
+            serde_json::json!({"seq": 4, "type": "user", "text": "continue", "id": "msg_4"}),
+            serde_json::json!({"seq": 5, "type": "assistant", "text": "ok", "id": "msg_5"}),
+        ];
+        let result = history.load_for_runner(messages, 0);
+        // Should include messages >= compaction seq (3) and system > baseline
+        // All messages from seq 3 onward should be included
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0]["seq"], 3);
+        assert_eq!(result[2]["seq"], 5);
+    }
+
+    #[test]
+    fn test_load_for_runner_without_compaction() {
+        let mut history = SessionHistory::new();
+        let messages = vec![
+            serde_json::json!({"seq": 1, "type": "user", "text": "hello", "id": "msg_1"}),
+            serde_json::json!({"seq": 2, "type": "assistant", "text": "hi", "id": "msg_2"}),
+            serde_json::json!({"seq": 3, "type": "user", "text": "more", "id": "msg_3"}),
+        ];
+        let result = history.load_for_runner(messages, 1);
+        // Should include messages with seq > 1 (seq 2 and 3)
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0]["seq"], 2);
+        assert_eq!(result[1]["seq"], 3);
+    }
+
+    #[test]
+    fn test_entries_for_runner() {
+        let mut history = SessionHistory::new();
+        let messages = vec![
+            serde_json::json!({"seq": 1, "type": "user", "text": "hello"}),
+            serde_json::json!({"seq": 2, "type": "assistant", "text": "hi"}),
+        ];
+        let entries = history.entries_for_runner(messages, 0);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].seq, 1);
+        assert_eq!(entries[1].seq, 2);
+    }
+
+    #[test]
+    fn test_filter_compacted_empty() {
+        let history = SessionHistory::new();
+        let result = history.filter_compacted();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_filter_compacted_no_compaction() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({"type": "user", "text": "hello"}));
+        history.append(serde_json::json!({"type": "assistant", "text": "hi"}));
+        let result = history.filter_compacted();
+        assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn test_to_model_messages_user() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({
+            "type": "user",
+            "parts": [
+                {"type": "text", "text": "Hello, can you help?"}
+            ]
+        }));
+        let result = history.to_model_messages();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "user");
+    }
+
+    #[test]
+    fn test_to_model_messages_assistant() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({
+            "type": "assistant",
+            "parts": [
+                {"type": "text", "text": "I can help!"}
+            ]
+        }));
+        let result = history.to_model_messages();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "assistant");
+    }
+
+    #[test]
+    fn test_to_model_messages_skip_non_conversation() {
+        let mut history = SessionHistory::new();
+        history.append(serde_json::json!({"type": "system", "text": "system update"}));
+        history.append(serde_json::json!({"type": "user", "parts": [{"type": "text", "text": "hello"}]}));
+        let result = history.to_model_messages();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0]["role"], "user");
+    }
+

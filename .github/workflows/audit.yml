@@ -1,0 +1,98 @@
+# Security audit workflow for RustCode
+# Runs cargo-audit to check for known vulnerabilities in dependencies
+# Runs on schedule (weekly) and on dependency file changes
+
+name: Security Audit
+
+on:
+  schedule:
+    - cron: "0 0 * * 1"  # Every Monday at midnight UTC
+  workflow_dispatch:
+  push:
+    branches: [main, dev]
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "**/Cargo.lock"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  audit:
+    name: cargo-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: Run cargo-audit
+        continue-on-error: true
+        id: audit
+        run: |
+          cargo audit --json > /tmp/audit-results.json 2>&1 || true
+
+      - name: Display audit results
+        run: |
+          python3 -c "
+import json
+with open('/tmp/audit-results.json') as f:
+    data = json.load(f)
+vulns = data.get('vulnerabilities', {}).get('found', [])
+if vulns:
+    print(f'Found {len(vulns)} vulnerability(ies):')
+    for v in vulns:
+        advisory = v.get('advisory', {})
+        print(f'  - {advisory.get(\"id\", \"unknown\")}: {advisory.get(\"title\", \"\")} (severity: {advisory.get(\"severity\", \"unknown\")})')
+        print(f'    Package: {v.get(\"package\", {}).get(\"name\", \"unknown\")} {v.get(\"package\", {}).get(\"version\", \"\")}')
+        print(f'    Patched in: {advisory.get(\"patched_versions\", \"N/A\")}')
+else:
+    print('No vulnerabilities found.')
+" 2>/dev/null || cat /tmp/audit-results.json
+
+      - name: Create issue on vulnerability
+        if: failure() && github.event_name != 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const fs = require('fs');
+            const results = JSON.parse(fs.readFileSync('/tmp/audit-results.json', 'utf8'));
+            const vulns = results.vulnerabilities?.found || [];
+            if (vulns.length === 0) return;
+
+            let body = '# Security Vulnerabilities Found\n\n';
+            for (const v of vulns) {
+              const adv = v.advisory || {};
+              const pkg = v.package || {};
+              body += `## ${adv.id}: ${adv.title}\n`;
+              body += `- **Package**: ${pkg.name} ${pkg.version}\n`;
+              body += `- **Severity**: ${adv.severity || 'unknown'}\n`;
+              body += `- **Patched in**: ${adv.patched_versions || 'N/A'}\n`;
+              body += `- **Description**: ${adv.description || ''}\n\n`;
+            }
+
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Security vulnerabilities found in dependencies (${new Date().toISOString().split('T')[0]})`,
+              body: body,
+              labels: ['security', 'automated']
+            });

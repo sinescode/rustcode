@@ -318,8 +318,14 @@ pub enum Part {
     StepStart(StepStartPart),
     #[serde(rename = "step-finish")]
     StepFinish(StepFinishPart),
+    #[serde(rename = "snapshot")]
+    Snapshot(SnapshotPart),
     #[serde(rename = "patch")]
     Patch(PatchPart),
+    #[serde(rename = "agent")]
+    Agent(AgentPart),
+    #[serde(rename = "retry")]
+    Retry(RetryPart),
     #[serde(rename = "compaction")]
     Compaction(CompactionPart),
     #[serde(rename = "subtask")]
@@ -485,6 +491,79 @@ pub struct SubtaskPart {
     pub id: PartId,
     pub message_id: MessageId,
     pub session_id: SessionId,
+}
+
+/// Snapshot part — checkpoint at a point in time.
+///
+/// # Source
+/// `packages/sdk/js/src/v2/gen/types.gen.ts` lines 573–579 `SnapshotPart`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SnapshotPart {
+    pub id: PartId,
+    pub message_id: MessageId,
+    pub session_id: SessionId,
+    pub snapshot: String,
+}
+
+/// Agent part — agent selection with optional source.
+///
+/// # Source
+/// `packages/sdk/js/src/v2/gen/types.gen.ts` lines 590–601 `AgentPart`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentPart {
+    pub id: PartId,
+    pub message_id: MessageId,
+    pub session_id: SessionId,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<PartSource>,
+}
+
+/// Source reference for AgentPart — value with start/end range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartSource {
+    pub value: String,
+    pub start: f64,
+    pub end: f64,
+}
+
+/// Retry part — records a retry attempt with error details.
+///
+/// # Source
+/// `packages/sdk/js/src/v2/gen/types.gen.ts` lines 603–613 `RetryPart`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPart {
+    pub id: PartId,
+    pub message_id: MessageId,
+    pub session_id: SessionId,
+    pub attempt: f64,
+    pub error: ApiErrorData,
+    pub time: RetryPartTime,
+}
+
+/// Timestamps for retry parts.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetryPartTime {
+    pub created: u64,
+}
+
+/// V2 API error data — used in RetryPart and AssistantMessage.
+///
+/// # Source
+/// `packages/sdk/js/src/v2/gen/types.gen.ts` lines 315–329 `ApiError`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApiErrorData {
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status_code: Option<f64>,
+    #[serde(default)]
+    pub is_retryable: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_headers: Option<std::collections::HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<std::collections::HashMap<String, String>>,
 }
 
 /// Part timestamps.
@@ -703,18 +782,115 @@ impl SessionManager {
 
     /// Fork a session — copy messages up to a message ID.
     ///
-    /// **TODO**: reimplement with DB-backed message copying.
+    /// Creates a new session with the same project, directory, agent, and model
+    /// as the original. Copies all messages (or up to `message_id` if provided)
+    /// to the new session.
     ///
     /// # Source
     /// `packages/opencode/src/session/session.ts` lines 733–773.
     pub async fn fork(
         &self,
-        _session_id: &str,
-        _message_id: Option<&str>,
+        session_id: &str,
+        message_id: Option<&str>,
     ) -> Result<SessionInfo, SessionError> {
-        Err(SessionError::Other(
-            "fork() is not yet implemented with DB-backed storage".into(),
-        ))
+        // Get the original session
+        let original = self.get(session_id).await?;
+
+        // Create the forked session
+        let now = Utc::now().timestamp_millis();
+        let new_session_id = id::descending(id::IdPrefix::Session, None)
+            .map_err(|e| SessionError::Other(e.to_string()))?;
+        let new_slug = id::descending(id::IdPrefix::Session, None)
+            .map_err(|e| SessionError::Other(e.to_string()))?;
+
+        let new_title = fork_title(&original.title);
+
+        let model_json = original
+            .model
+            .as_ref()
+            .and_then(|m| serde_json::to_string(m).ok());
+
+        self.db
+            .insert_session(
+                &new_session_id,
+                &original.project_id,
+                original.workspace_id.as_deref(),
+                &new_slug,
+                &original.directory,
+                &new_title,
+                env!("CARGO_PKG_VERSION"),
+                now,
+                now,
+                original.agent.as_deref(),
+                model_json.as_deref(),
+            )
+            .await?;
+
+        // Copy messages up to message_id (or all if None)
+        let messages = self.get_messages(session_id).await?;
+        let mut id_map: HashMap<MessageId, MessageId> = HashMap::new();
+
+        for msg in &messages {
+            // Check if we should stop copying
+            if let Some(stop_at) = message_id {
+                if msg.info.id() == stop_at {
+                    break;
+                }
+            }
+
+            let new_msg_id = id::ascending(id::IdPrefix::Message, None)
+                .map_err(|e| SessionError::Other(e.to_string()))?;
+            let old_msg_id = msg.info.id().to_string();
+            id_map.insert(old_msg_id.clone(), new_msg_id.clone());
+
+            // Clone message info with new IDs
+            let new_info = msg.info.clone_with_session(&new_session_id, &new_msg_id, &id_map);
+
+            // Clone parts with new IDs
+            let new_parts: Vec<Part> = msg.parts.iter().map(|p| {
+                let mut part = p.clone();
+                part.set_id(&id::ascending(id::IdPrefix::Part, None).unwrap_or_default());
+                part.set_message_id(&new_msg_id);
+                part.set_session_id(&new_session_id);
+                part
+            }).collect();
+
+            self.append_message(new_session_id.clone(), new_info, new_parts).await?;
+        }
+
+        // Build and return the new session info
+        let info = SessionInfo {
+            id: new_session_id,
+            slug: new_slug,
+            project_id: original.project_id,
+            workspace_id: original.workspace_id,
+            directory: original.directory,
+            path: original.path,
+            parent_id: original.parent_id,
+            title: new_title,
+            agent: original.agent,
+            model: original.model,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            summary: None,
+            cost: 0.0,
+            tokens: TokenUsage::default(),
+            share: None,
+            metadata: original.metadata,
+            permission: original.permission,
+            revert: None,
+            time: SessionTimestamps {
+                created: now as u64,
+                updated: now as u64,
+                compacting: None,
+                archived: None,
+            },
+        };
+
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.created", "session": &info}),
+        ))?;
+
+        Ok(info)
     }
 
     /// Get all messages for a session (with parts).
@@ -824,42 +1000,411 @@ impl SessionManager {
 
         Ok(())
     }
+
+    /// Remove a message and its parts from a session.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` — `removeMessage()`.
+    pub async fn remove_message(
+        &self,
+        session_id: &str,
+        message_id: &str,
+    ) -> Result<(), SessionError> {
+        // Delete parts first
+        self.db.delete_parts_for_message(message_id).await?;
+
+        // Delete the message
+        self.db.delete_message(message_id).await?;
+
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.message_removed", "session_id": session_id, "message_id": message_id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Remove a specific part from a message.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` — `removePart()`.
+    pub async fn remove_part(
+        &self,
+        _session_id: &str,
+        message_id: &str,
+        part_id: &str,
+    ) -> Result<(), SessionError> {
+        // Get the message and its parts
+        let parts = self.db.list_parts(message_id).await?;
+
+        // Find the part to remove
+        let part = parts.iter().find(|p| p.id == part_id)
+            .ok_or_else(|| SessionError::NotFound(format!("part {part_id}")))?;
+
+        // Deserialize the part data
+        let _part_data: Part = serde_json::from_str(&part.data)
+            .map_err(|e| SessionError::Other(format!("deserialize part: {e}")))?;
+
+        // Delete the part
+        sqlx::query("DELETE FROM part WHERE id = ?1")
+            .bind(part_id)
+            .execute(self.db.pool())
+            .await
+            .map_err(|e| SessionError::Other(format!("delete part: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a specific part's data.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` — `updatePart()`.
+    pub async fn update_part(
+        &self,
+        _session_id: &str,
+        part_id: &str,
+        part: &Part,
+    ) -> Result<(), SessionError> {
+        let data = serde_json::to_string(part)
+            .map_err(|e| SessionError::Other(format!("serialize part: {e}")))?;
+
+        self.db.update_part(part_id, &data).await?;
+
+
+    // ── Convenience setters ──────────────────────────────────────────────
+
+    /// Touch a session — update its updated timestamp.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 791–793.
+    pub async fn touch(&self, id: &str) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set the session title.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 795–797.
+    pub async fn set_title(&self, id: &str, title: &str) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        self.db.update_session(id, now, Some(title), None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id, "title": title}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set the archived timestamp on a session.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 799–801.
+    pub async fn set_archived(&self, id: &str, time: Option<u64>) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        let archived = time.map(|t| t as i64);
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, archived)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id, "time_archived": time}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set session metadata.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 803–805.
+    pub async fn set_metadata(&self, id: &str, metadata: Option<&serde_json::Value>) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        let meta_str = metadata.and_then(|m| serde_json::to_string(m).ok());
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, meta_str.as_deref(), None, None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set session permission rules.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 807–814.
+    pub async fn set_permission(&self, id: &str, permission: Option<&serde_json::Value>) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        let perm_str = permission.and_then(|p| serde_json::to_string(p).ok());
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, perm_str.as_deref(), None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set session revert information and optional summary.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 816–826.
+    pub async fn set_revert(&self, id: &str, revert: Option<&RevertInfo>, summary: Option<&SessionSummary>) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        let revert_str = revert.and_then(|r| serde_json::to_string(r).ok());
+        let (sum_add, sum_del, sum_files, sum_diffs) = if let Some(s) = summary {
+            let diffs = s.diffs.as_ref().and_then(|d| serde_json::to_string(d).ok());
+            (Some(s.additions), Some(s.deletions), Some(s.files), diffs)
+        } else {
+            (None, None, None, None)
+        };
+        self.db.update_session(id, now, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, revert_str.as_deref(), None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Clear session revert information.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 828–830.
+    pub async fn clear_revert(&self, id: &str) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        // To clear revert, we set it to an empty string which will be serialized
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, Some("null"), None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set session summary.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 832–837.
+    pub async fn set_summary(&self, id: &str, summary: Option<&SessionSummary>) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        let (sum_add, sum_del, sum_files, sum_diffs) = if let Some(s) = summary {
+            let diffs = s.diffs.as_ref().and_then(|d| serde_json::to_string(d).ok());
+            (Some(s.additions), Some(s.deletions), Some(s.files), diffs)
+        } else {
+            // Set all summary fields to null to clear
+            (None, None, None, None)
+        };
+        self.db.update_session(id, now, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, None, None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set session share URL.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 839–841.
+    pub async fn set_share(&self, id: &str, share_url: Option<&str>) -> Result<(), SessionError> {
+        let now = Utc::now().timestamp_millis();
+        self.db.update_session(id, now, None, None, None, None, None, None, share_url, None, None, None, None, None, None, None, None, None)
+            .await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Set session workspace ID.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 843–850.
+    pub async fn set_workspace(&self, id: &str, workspace_id: Option<&str>) -> Result<(), SessionError> {
+        self.db.update_session_workspace(id, workspace_id).await?;
+        self.bus.publish(GlobalEvent::new(
+            serde_json::json!({"type": "session.updated", "session_id": id}),
+        ))?;
+        Ok(())
+    }
+
+    /// Get session diff — currently a stub.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 852–855.
+    pub async fn diff(&self, _id: &str) -> Result<Vec<FileDiff>, SessionError> {
+        // Currently returns empty — actual diff computation requires snapshot comparison
+        Ok(Vec::new())
+    }
+
+    /// Get child sessions of a given parent session.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 638–646.
+    pub async fn children(&self, parent_id: &str) -> Result<Vec<SessionInfo>, SessionError> {
+        let rows = self.db.list_child_sessions(parent_id).await?;
+        Ok(rows.into_iter().map(session_row_to_info).collect())
+    }
+
+    /// List sessions globally (across all projects) with optional filters.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 597–636.
+    pub async fn list_global(
+        &self,
+        directory: Option<&str>,
+        search: Option<&str>,
+        roots: Option<bool>,
+        cursor: Option<i64>,
+        archived: Option<bool>,
+        limit: Option<u32>,
+    ) -> Result<Vec<SessionInfo>, SessionError> {
+        let rows = self.db
+            .list_sessions_global(directory, search, roots, cursor, archived, limit)
+            .await?;
+        Ok(rows.into_iter().map(session_row_to_info).collect())
+    }
+
+    /// Get a single part by its ID, session ID, and message ID.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 687–707.
+    pub async fn get_part(
+        &self,
+        _session_id: &str,
+        _message_id: &str,
+        part_id: &str,
+    ) -> Result<Option<Part>, SessionError> {
+        let row = self.db.get_part_by_id(part_id).await?;
+        match row {
+            Some(r) => {
+                let part: Part = serde_json::from_str(&r.data)
+                    .map_err(|e| SessionError::Other(format!("deserialize part: {e}")))?;
+                Ok(Some(part))
+            }
+            None => Ok(None),
+        }
+    }
+
+    /// Find the first message matching a predicate, searching newest-first.
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 917–933.
+    pub async fn find_message(
+        &self,
+        session_id: &str,
+        predicate: &dyn Fn(&Message) -> bool,
+    ) -> Result<Option<Message>, SessionError> {
+        // Get all messages with parts
+        let messages = self.get_messages(session_id).await?;
+        // Search newest-first (messages are returned in chronological order)
+        for msg in messages.iter().rev() {
+            if predicate(msg) {
+                return Ok(Some(msg.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Update a specific field of a part with a delta (string append).
+    ///
+    /// # Source
+    /// `packages/opencode/src/session/session.ts` lines 906–914.
+    pub async fn update_part_delta(
+        &self,
+        session_id: &str,
+        _message_id: &str,
+        part_id: &str,
+        field: &str,
+        delta: &str,
+    ) -> Result<(), SessionError> {
+        // Get the current part
+        let row = self.db.get_part_by_id(part_id).await?;
+        let row = row.ok_or_else(|| SessionError::NotFound(format!("part {part_id}")))?;
+
+        // Deserialize the part data as a generic JSON value
+        let mut data: serde_json::Value = serde_json::from_str(&row.data)
+            .map_err(|e| SessionError::Other(format!("deserialize part data: {e}")))?;
+
+        // Append delta to the specified field
+        if let Some(current) = data.get_mut(field) {
+            if let Some(text) = current.as_str() {
+                let new_text = format!("{text}{delta}");
+                *current = serde_json::Value::String(new_text);
+            } else {
+                // If field is not a string, set it to the delta
+                *current = serde_json::Value::String(delta.to_string());
+            }
+        } else {
+            // Field doesn't exist, create it
+            data[field] = serde_json::Value::String(delta.to_string());
+        }
+
+        // Re-serialize and update
+        let new_data = serde_json::to_string(&data)
+            .map_err(|e| SessionError::Other(format!("serialize part data: {e}")))?;
+
+        self.db.update_part(part_id, &new_data).await?;
+
+        Ok(())
+    }
+}
+        Ok(())
+    }
 }
 
 /// Convert a [`SessionRow`] from the database into a [`SessionInfo`].
 ///
-/// Fields not present in the current `SessionRow` (parent_id, path, metadata,
-/// summary, share, permission, revert, etc.) are set to their defaults.
+/// # Source
+/// Ported from `packages/opencode/src/session/session.ts` `fromRow()`.
 fn session_row_to_info(row: SessionRow) -> SessionInfo {
+    let summary = if row.summary_additions.is_some() || row.summary_deletions.is_some() || row.summary_files.is_some() {
+        Some(SessionSummary {
+            additions: row.summary_additions.unwrap_or(0),
+            deletions: row.summary_deletions.unwrap_or(0),
+            files: row.summary_files.unwrap_or(0),
+            diffs: row.summary_diffs.as_deref().and_then(|d| serde_json::from_str(d).ok()),
+        })
+    } else {
+        None
+    };
+
+    let metadata: Option<serde_json::Value> = row.metadata.as_deref().and_then(|m| serde_json::from_str(m).ok());
+    let permission: Option<Vec<crate::permission::PermissionRule>> = row.permission.as_deref().and_then(|p| serde_json::from_str(p).ok());
+    let revert: Option<RevertInfo> = row.revert.as_deref().and_then(|r| serde_json::from_str(r).ok());
+    let share: Option<ShareInfo> = row.share_url.as_ref().map(|u| ShareInfo { url: u.clone() });
+
     SessionInfo {
         id: row.id,
         slug: row.slug,
         project_id: row.project_id,
         workspace_id: row.workspace_id,
         directory: row.directory,
-        path: None,
-        parent_id: None,
+        path: row.path,
+        parent_id: row.parent_id,
         title: row.title,
         agent: row.agent,
         model: row.model.and_then(|m| serde_json::from_str(&m).ok()),
         version: row.version,
-        summary: None,
+        summary,
         cost: row.cost,
         tokens: TokenUsage {
             input: row.tokens_input as u64,
             output: row.tokens_output as u64,
-            reasoning: 0,
-            cache: CacheUsage::default(),
+            reasoning: row.tokens_reasoning as u64,
+            cache: CacheUsage {
+                read: row.tokens_cache_read as u64,
+                write: row.tokens_cache_write as u64,
+            },
         },
-        share: None,
-        metadata: None,
-        permission: None,
-        revert: None,
+        share,
+        metadata,
+        permission,
+        revert,
         time: SessionTimestamps {
             created: row.time_created as u64,
             updated: row.time_updated as u64,
-            compacting: None,
-            archived: None,
+            compacting: row.time_compacting.map(|t| t as u64),
+            archived: row.time_archived.map(|t| t as u64),
         },
     }
 }
@@ -873,7 +1418,10 @@ fn part_id(part: &Part) -> &str {
         Part::File(p) => &p.id,
         Part::StepStart(p) => &p.id,
         Part::StepFinish(p) => &p.id,
+        Part::Snapshot(p) => &p.id,
         Part::Patch(p) => &p.id,
+        Part::Agent(p) => &p.id,
+        Part::Retry(p) => &p.id,
         Part::Compaction(p) => &p.id,
         Part::Subtask(p) => &p.id,
     }
@@ -1014,7 +1562,8 @@ impl MessageInfo {
 // ── Part helpers ───────────────────────────────────────────────────────────
 
 impl Part {
-    fn set_message_id(&mut self, id: &str) {
+    /// Set the message ID on any part variant.
+    pub fn set_message_id(&mut self, id: &str) {
         let mid = match self {
             Part::Text(p) => &mut p.message_id,
             Part::Tool(p) => &mut p.message_id,
@@ -1022,14 +1571,18 @@ impl Part {
             Part::File(p) => &mut p.message_id,
             Part::StepStart(p) => &mut p.message_id,
             Part::StepFinish(p) => &mut p.message_id,
+            Part::Snapshot(p) => &mut p.message_id,
             Part::Patch(p) => &mut p.message_id,
+            Part::Agent(p) => &mut p.message_id,
+            Part::Retry(p) => &mut p.message_id,
             Part::Compaction(p) => &mut p.message_id,
             Part::Subtask(p) => &mut p.message_id,
         };
         *mid = id.to_string();
     }
 
-    fn set_session_id(&mut self, id: &str) {
+    /// Set the session ID on any part variant.
+    pub fn set_session_id(&mut self, id: &str) {
         let sid = match self {
             Part::Text(p) => &mut p.session_id,
             Part::Tool(p) => &mut p.session_id,
@@ -1037,14 +1590,18 @@ impl Part {
             Part::File(p) => &mut p.session_id,
             Part::StepStart(p) => &mut p.session_id,
             Part::StepFinish(p) => &mut p.session_id,
+            Part::Snapshot(p) => &mut p.session_id,
             Part::Patch(p) => &mut p.session_id,
+            Part::Agent(p) => &mut p.session_id,
+            Part::Retry(p) => &mut p.session_id,
             Part::Compaction(p) => &mut p.session_id,
             Part::Subtask(p) => &mut p.session_id,
         };
         *sid = id.to_string();
     }
 
-    fn set_id(&mut self, id: &str) {
+    /// Set the part ID on any variant.
+    pub fn set_id(&mut self, id: &str) {
         let pid = match self {
             Part::Text(p) => &mut p.id,
             Part::Tool(p) => &mut p.id,
@@ -1052,7 +1609,10 @@ impl Part {
             Part::File(p) => &mut p.id,
             Part::StepStart(p) => &mut p.id,
             Part::StepFinish(p) => &mut p.id,
+            Part::Snapshot(p) => &mut p.id,
             Part::Patch(p) => &mut p.id,
+            Part::Agent(p) => &mut p.id,
+            Part::Retry(p) => &mut p.id,
             Part::Compaction(p) => &mut p.id,
             Part::Subtask(p) => &mut p.id,
         };

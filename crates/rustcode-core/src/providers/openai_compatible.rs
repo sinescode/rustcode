@@ -2,7 +2,7 @@
 //!
 //! A single, configurable [`OpenAICompatibleProvider`] that covers any provider
 //! speaking the OpenAI Chat Completions wire format: DeepSeek, Groq, TogetherAI,
-//! xAI, Mistral, GitHub Copilot, Cerebras, Fireworks, AI21, Cohere, Perplexity,
+//! Mistral, Cerebras, Fireworks, AI21, Cohere, Perplexity,
 //! Alibaba, and more.
 //!
 //! Provider-specific differences (auth headers, extra headers, URL construction,
@@ -195,22 +195,6 @@ pub const PROFILES: &[CompatConfig] = &[
         classify_error: default_classify_error,
     },
     CompatConfig {
-        provider_id: "xai",
-        name: "xAI Grok",
-        npm: "@ai-sdk/xai",
-        base_url: "https://api.x.ai/v1",
-        env_var: "XAI_API_KEY",
-        models: &[
-            ModelSpec { id: "grok-4", name: "Grok 4", ctx: 1_000_000, out: 128_000, family: Some("grok"), reasoning: true, image_input: true },
-            ModelSpec { id: "grok-3", name: "Grok 3", ctx: 128_000, out: 16_384, family: Some("grok"), reasoning: false, image_input: true },
-            ModelSpec { id: "grok-3-mini", name: "Grok 3 Mini", ctx: 128_000, out: 16_384, family: Some("grok"), reasoning: true, image_input: false },
-            ModelSpec { id: "grok-3-fast", name: "Grok 3 Fast", ctx: 128_000, out: 16_384, family: Some("grok"), reasoning: false, image_input: true },
-            ModelSpec { id: "grok-2", name: "Grok 2", ctx: 128_000, out: 16_384, family: Some("grok"), reasoning: false, image_input: true },
-        ],
-        extra_headers: &[],
-        classify_error: default_classify_error,
-    },
-    CompatConfig {
         provider_id: "mistral",
         name: "Mistral",
         npm: "@ai-sdk/mistral",
@@ -225,22 +209,6 @@ pub const PROFILES: &[CompatConfig] = &[
             ModelSpec { id: "ministral-8b-latest", name: "Ministral 8B", ctx: 32_768, out: 8_192, family: Some("mistral"), reasoning: false, image_input: false },
         ],
         extra_headers: &[],
-        classify_error: default_classify_error,
-    },
-    CompatConfig {
-        provider_id: "github_copilot",
-        name: "GitHub Copilot",
-        npm: "@ai-sdk/copilot",
-        base_url: "https://api.githubcopilot.com",
-        env_var: "GITHUB_TOKEN",
-        models: &[
-            ModelSpec { id: "gpt-4o", name: "GPT-4o", ctx: 128_000, out: 16_384, family: Some("gpt"), reasoning: false, image_input: true },
-            ModelSpec { id: "claude-sonnet-4", name: "Claude Sonnet 4", ctx: 200_000, out: 8_192, family: Some("claude"), reasoning: false, image_input: true },
-        ],
-        extra_headers: &[
-            ("Copilot-Integration-Id", "vscode"),
-            ("Editor-Version", "vscode/1.95.0"),
-        ],
         classify_error: default_classify_error,
     },
     CompatConfig {
@@ -448,6 +416,55 @@ pub const PROFILES: &[CompatConfig] = &[
         env_var: "CLOUDFLARE_AI_GATEWAY_API_KEY",
         models: &[
             ModelSpec { id: "auto", name: "Auto", ctx: 128_000, out: 16_384, family: Some("auto"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "baseten",
+        name: "Baseten",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://inference.baseten.co/v1",
+        env_var: "BASETEN_API_KEY",
+        models: &[
+            ModelSpec { id: "meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8", name: "Llama 4 Maverick", ctx: 128_000, out: 8_192, family: Some("llama"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "azure_cognitive_services",
+        name: "Azure Cognitive Services",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://{resourceName}.cognitiveservices.azure.com/openai",
+        env_var: "AZURE_COGNITIVE_SERVICES_KEY",
+        models: &[
+            ModelSpec { id: "gpt-4o", name: "GPT-4o", ctx: 128_000, out: 16_384, family: Some("gpt"), reasoning: false, image_input: true },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "zenmux",
+        name: "Zenmux",
+        npm: "@ai-sdk/openai-compatible",
+        base_url: "https://api.zenmux.ai/v1",
+        env_var: "ZENMUX_API_KEY",
+        models: &[
+            ModelSpec { id: "auto", name: "Auto", ctx: 128_000, out: 16_384, family: Some("auto"), reasoning: false, image_input: false },
+        ],
+        extra_headers: &[],
+        classify_error: default_classify_error,
+    },
+    CompatConfig {
+        provider_id: "google_vertex_anthropic",
+        name: "Google Vertex Anthropic",
+        npm: "@ai-sdk/google-vertex/anthropic",
+        base_url: "https://aiplatform.{location}.rep.googleapis.com/v1/projects/{project}/locations/{location}/publishers/anthropic/models",
+        env_var: "GOOGLE_APPLICATION_CREDENTIALS",
+        models: &[
+            ModelSpec { id: "claude-sonnet-4", name: "Claude Sonnet 4", ctx: 200_000, out: 8_192, family: Some("claude"), reasoning: false, image_input: true },
+            ModelSpec { id: "claude-opus-4", name: "Claude Opus 4", ctx: 200_000, out: 32_000, family: Some("claude"), reasoning: true, image_input: true },
         ],
         extra_headers: &[],
         classify_error: default_classify_error,

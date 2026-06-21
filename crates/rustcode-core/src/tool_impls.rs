@@ -44,6 +44,502 @@ use crate::tool::{
     truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry, TruncateConfig,
 };
 
+// ── Replacer trait and strategies ──────────────────────────────────────────────
+// Ported from: packages/opencode/src/tool/edit.ts (lines 217–644)
+
+/// Similarity thresholds for block anchor fallback matching.
+const SINGLE_CANDIDATE_SIMILARITY_THRESHOLD: f64 = 0.65;
+const MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD: f64 = 0.65;
+
+/// Levenshtein distance algorithm implementation.
+/// Ported from: packages/opencode/src/tool/edit.ts `levenshtein()`
+fn levenshtein_distance(a: &str, b: &str) -> usize {
+    if a.is_empty() || b.is_empty() {
+        return a.len().max(b.len());
+    }
+    let a_chars: Vec<char> = a.chars().collect();
+    let b_chars: Vec<char> = b.chars().collect();
+    let a_len = a_chars.len();
+    let b_len = b_chars.len();
+
+    let mut matrix = vec![vec![0usize; b_len + 1]; a_len + 1];
+    for i in 0..=a_len {
+        matrix[i][0] = i;
+    }
+    for j in 0..=b_len {
+        matrix[0][j] = j;
+    }
+
+    for i in 1..=a_len {
+        for j in 1..=b_len {
+            let cost = if a_chars[i - 1] == b_chars[j - 1] { 0 } else { 1 };
+            matrix[i][j] = (matrix[i - 1][j] + 1)
+                .min(matrix[i][j - 1] + 1)
+                .min(matrix[i - 1][j - 1] + cost);
+        }
+    }
+    matrix[a_len][b_len]
+}
+
+/// A replacer strategy yields candidate search strings from `content` matching `find`.
+/// Analogous to the TS `Replacer` type.
+trait Replacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String>;
+}
+
+/// Exact string match replacer — yields the find string as-is.
+/// Ported from: packages/opencode/src/tool/edit.ts `SimpleReplacer`
+struct SimpleReplacer;
+impl Replacer for SimpleReplacer {
+    fn search(&self, _content: &str, find: &str) -> Vec<String> {
+        vec![find.to_string()]
+    }
+}
+
+/// Line-by-line trimmed comparison replacer.
+/// Ported from: packages/opencode/src/tool/edit.ts `LineTrimmedReplacer`
+struct LineTrimmedReplacer;
+impl Replacer for LineTrimmedReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let original_lines: Vec<&str> = content.split('\n').collect();
+        let mut search_lines: Vec<&str> = find.split('\n').collect();
+        if search_lines.last().is_some_and(|l| l.is_empty()) {
+            search_lines.pop();
+        }
+        let mut results = Vec::new();
+        if search_lines.is_empty() || search_lines.len() > original_lines.len() {
+            return results;
+        }
+        for i in 0..=original_lines.len() - search_lines.len() {
+            let mut matches = true;
+            for j in 0..search_lines.len() {
+                if original_lines[i + j].trim() != search_lines[j].trim() {
+                    matches = false;
+                    break;
+                }
+            }
+            if !matches { continue; }
+            let mut match_start = 0usize;
+            for k in 0..i { match_start += original_lines[k].len() + 1; }
+            let mut match_end = match_start;
+            for k in 0..search_lines.len() {
+                match_end += original_lines[i + k].len();
+                if k < search_lines.len() - 1 { match_end += 1; }
+            }
+            results.push(content[match_start..match_end].to_string());
+        }
+        results
+    }
+}
+
+/// Block anchor matching with first/last line anchors and Levenshtein similarity.
+/// Ported from: packages/opencode/src/tool/edit.ts `BlockAnchorReplacer`
+struct BlockAnchorReplacer;
+impl Replacer for BlockAnchorReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let original_lines: Vec<&str> = content.split('\n').collect();
+        let mut search_lines: Vec<&str> = find.split('\n').collect();
+        if search_lines.len() < 3 { return Vec::new(); }
+        if search_lines.last().is_some_and(|l| l.is_empty()) { search_lines.pop(); }
+
+        let first_line_search = search_lines[0].trim();
+        let last_line_search = search_lines[search_lines.len() - 1].trim();
+        let search_block_size = search_lines.len();
+        let max_line_delta = 1.max(search_block_size / 4);
+
+        #[derive(Clone)]
+        struct Candidate { start_line: usize, end_line: usize }
+        let mut candidates: Vec<Candidate> = Vec::new();
+
+        for i in 0..original_lines.len() {
+            if original_lines[i].trim() != first_line_search { continue; }
+            for j in (i + 2)..original_lines.len() {
+                if original_lines[j].trim() == last_line_search {
+                    let actual_block_size = j - i + 1;
+                    let delta = if actual_block_size > search_block_size { actual_block_size - search_block_size } else { search_block_size - actual_block_size };
+                    if delta <= max_line_delta {
+                        candidates.push(Candidate { start_line: i, end_line: j });
+                    }
+                    break;
+                }
+            }
+        }
+
+        if candidates.is_empty() { return Vec::new(); }
+
+        if candidates.len() == 1 {
+            let c = &candidates[0];
+            let actual_block_size = c.end_line - c.start_line + 1;
+            let lines_to_check = (search_block_size - 2).min(actual_block_size - 2);
+            let similarity = if lines_to_check > 0 {
+                let mut sim = 0.0;
+                for j in 1..search_block_size.min(actual_block_size) - 1 {
+                    let ol = original_lines[c.start_line + j].trim();
+                    let sl = search_lines[j].trim();
+                    let max_len = ol.len().max(sl.len());
+                    if max_len == 0 { continue; }
+                    sim += 1.0 - levenshtein_distance(ol, sl) as f64 / max_len as f64;
+                }
+                sim / lines_to_check as f64
+            } else { 1.0 };
+            if similarity >= SINGLE_CANDIDATE_SIMILARITY_THRESHOLD {
+                let mut match_start = 0usize;
+                for k in 0..c.start_line { match_start += original_lines[k].len() + 1; }
+                let mut match_end = match_start;
+                for k in c.start_line..=c.end_line {
+                    match_end += original_lines[k].len();
+                    if k < c.end_line { match_end += 1; }
+                }
+                return vec![content[match_start..match_end].to_string()];
+            }
+            return Vec::new();
+        }
+
+        let mut best_similarity = -1.0f64;
+        let mut best_candidate: Option<Candidate> = None;
+        for c in &candidates {
+            let actual_block_size = c.end_line - c.start_line + 1;
+            let lines_to_check = (search_block_size - 2).min(actual_block_size - 2);
+            let similarity = if lines_to_check > 0 {
+                let mut sim = 0.0;
+                for j in 1..search_block_size.min(actual_block_size) - 1 {
+                    let ol = original_lines[c.start_line + j].trim();
+                    let sl = search_lines[j].trim();
+                    let max_len = ol.len().max(sl.len());
+                    if max_len == 0 { continue; }
+                    sim += 1.0 - levenshtein_distance(ol, sl) as f64 / max_len as f64;
+                }
+                sim / lines_to_check as f64
+            } else { 1.0 };
+            if similarity > best_similarity {
+                best_similarity = similarity;
+                best_candidate = Some(c.clone());
+            }
+        }
+
+        if best_similarity >= MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD {
+            if let Some(c) = best_candidate {
+                let mut match_start = 0usize;
+                for k in 0..c.start_line { match_start += original_lines[k].len() + 1; }
+                let mut match_end = match_start;
+                for k in c.start_line..=c.end_line {
+                    match_end += original_lines[k].len();
+                    if k < c.end_line { match_end += 1; }
+                }
+                return vec![content[match_start..match_end].to_string()];
+            }
+        }
+        Vec::new()
+    }
+}
+
+/// Whitespace-normalized matching replacer.
+/// Ported from: packages/opencode/src/tool/edit.ts `WhitespaceNormalizedReplacer`
+struct WhitespaceNormalizedReplacer;
+impl Replacer for WhitespaceNormalizedReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let normalize = |text: &str| -> String {
+            let re = regex::Regex::new(r"\s+").unwrap();
+            re.replace_all(text, " ").trim().to_string()
+        };
+        let normalized_find = normalize(find);
+        let mut results = Vec::new();
+        let lines: Vec<&str> = content.split('\n').collect();
+
+        for line in &lines {
+            if normalize(line) == normalized_find {
+                results.push(line.to_string());
+            } else {
+                let normalized_line = normalize(line);
+                if normalized_line.contains(&normalized_find) {
+                    let words: Vec<&str> = find.trim().split_whitespace().collect();
+                    if !words.is_empty() {
+                        let pattern = words.iter().map(|w| regex::escape(w)).collect::<Vec<_>>().join(r"\s+");
+                        if let Ok(re) = regex::Regex::new(&pattern) {
+                            if let Some(m) = re.find(line) {
+                                results.push(m.as_str().to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if find.contains('\n') {
+            let find_lines: Vec<&str> = find.split('\n').collect();
+            if find_lines.len() > 1 {
+                for i in 0..=lines.len().saturating_sub(find_lines.len()) {
+                    let block = lines[i..i + find_lines.len()].join("\n");
+                    if normalize(&block) == normalized_find {
+                        results.push(block);
+                    }
+                }
+            }
+        }
+        results
+    }
+}
+
+/// Indentation-flexible matching replacer.
+/// Ported from: packages/opencode/src/tool/edit.ts `IndentationFlexibleReplacer`
+struct IndentationFlexibleReplacer;
+impl Replacer for IndentationFlexibleReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let strip_indent = |text: &str| -> String {
+            let lines: Vec<&str> = text.split('\n').collect();
+            let non_empty_lines: Vec<&&str> = lines.iter().filter(|l| l.trim().len() > 0).collect();
+            if non_empty_lines.is_empty() { return text.to_string(); }
+            let min_indent = non_empty_lines.iter()
+                .map(|l| { let trimmed = l.trim_start(); l.len() - trimmed.len() })
+                .min().unwrap_or(0);
+            lines.iter().map(|l| {
+                if l.trim().is_empty() { l.to_string() } else { let s = min_indent.min(l.len()); l[s..].to_string() }
+            }).collect::<Vec<_>>().join("\n")
+        };
+        let normalized_find = strip_indent(find);
+        let content_lines: Vec<&str> = content.split('\n').collect();
+        let find_lines: Vec<&str> = find.split('\n').collect();
+        let mut results = Vec::new();
+        for i in 0..=content_lines.len().saturating_sub(find_lines.len()) {
+            let block = content_lines[i..i + find_lines.len()].join("\n");
+            if strip_indent(&block) == normalized_find { results.push(block); }
+        }
+        results
+    }
+}
+
+/// Escape-sequence normalized matching replacer.
+/// Ported from: packages/opencode/src/tool/edit.ts `EscapeNormalizedReplacer`
+struct EscapeNormalizedReplacer;
+impl Replacer for EscapeNormalizedReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let unescape = |s: &str| -> String {
+            let mut result = String::with_capacity(s.len());
+            let mut chars = s.chars().peekable();
+            while let Some(ch) = chars.next() {
+                if ch == '\\' {
+                    match chars.next() {
+                        Some('n') => result.push('\n'),
+                        Some('t') => result.push('\t'),
+                        Some('r') => result.push('\r'),
+                        Some('\'') => result.push('\''),
+                        Some('"') => result.push('"'),
+                        Some('`') => result.push('`'),
+                        Some('\\') => result.push('\\'),
+                        Some('\n') => result.push('\n'),
+                        Some('$') => result.push('$'),
+                        Some(c) => { result.push('\\'); result.push(c); },
+                        None => result.push('\\'),
+                    }
+                } else { result.push(ch); }
+            }
+            result
+        };
+        let unescaped_find = unescape(find);
+        let mut results = Vec::new();
+        if content.contains(&unescaped_find) { results.push(unescaped_find.clone()); }
+        let content_lines: Vec<&str> = content.split('\n').collect();
+        let find_lines: Vec<&str> = unescaped_find.split('\n').collect();
+        for i in 0..=content_lines.len().saturating_sub(find_lines.len()) {
+            let block = content_lines[i..i + find_lines.len()].join("\n");
+            if unescape(&block) == unescaped_find { results.push(block); }
+        }
+        results
+    }
+}
+
+/// Multi-occurrence enumeration replacer — yields all exact matches.
+/// Ported from: packages/opencode/src/tool/edit.ts `MultiOccurrenceReplacer`
+struct MultiOccurrenceReplacer;
+impl Replacer for MultiOccurrenceReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let mut results = Vec::new();
+        let mut start = 0;
+        while let Some(idx) = content[start..].find(find) {
+            results.push(find.to_string());
+            start += idx + find.len();
+        }
+        results
+    }
+}
+
+/// Trimmed boundary matching replacer.
+/// Ported from: packages/opencode/src/tool/edit.ts `TrimmedBoundaryReplacer`
+struct TrimmedBoundaryReplacer;
+impl Replacer for TrimmedBoundaryReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let trimmed_find = find.trim();
+        if trimmed_find == find { return Vec::new(); }
+        let mut results = Vec::new();
+        if content.contains(trimmed_find) { results.push(trimmed_find.to_string()); }
+        let content_lines: Vec<&str> = content.split('\n').collect();
+        let find_lines: Vec<&str> = find.split('\n').collect();
+        for i in 0..=content_lines.len().saturating_sub(find_lines.len()) {
+            let block = content_lines[i..i + find_lines.len()].join("\n");
+            if block.trim() == trimmed_find { results.push(block); }
+        }
+        results
+    }
+}
+
+/// Context-aware multi-line matching replacer.
+/// Ported from: packages/opencode/src/tool/edit.ts `ContextAwareReplacer`
+struct ContextAwareReplacer;
+impl Replacer for ContextAwareReplacer {
+    fn search(&self, content: &str, find: &str) -> Vec<String> {
+        let mut find_lines: Vec<&str> = find.split('\n').collect();
+        if find_lines.len() < 3 { return Vec::new(); }
+        if find_lines.last().is_some_and(|l| l.is_empty()) { find_lines.pop(); }
+        let content_lines: Vec<&str> = content.split('\n').collect();
+        let first_line = find_lines[0].trim();
+        let last_line = find_lines[find_lines.len() - 1].trim();
+        let mut results = Vec::new();
+        for i in 0..content_lines.len() {
+            if content_lines[i].trim() != first_line { continue; }
+            for j in (i + 2)..content_lines.len() {
+                if content_lines[j].trim() != last_line { continue; }
+                let block = &content_lines[i..=j];
+                let block_text = block.join("\n");
+                if block.len() == find_lines.len() {
+                    let mut matching_lines = 0;
+                    let mut total_non_empty = 0;
+                    for k in 1..block.len() - 1 {
+                        let bl = block[k].trim();
+                        let fl = find_lines[k].trim();
+                        if !bl.is_empty() || !fl.is_empty() {
+                            total_non_empty += 1;
+                            if bl == fl { matching_lines += 1; }
+                        }
+                    }
+                    if total_non_empty == 0 || (matching_lines as f64 / total_non_empty as f64) >= 0.5 {
+                        results.push(block_text);
+                        break;
+                    }
+                }
+                break;
+            }
+        }
+        results
+    }
+}
+
+/// Check if a matched span is disproportionately large compared to oldString.
+/// Ported from: packages/opencode/src/tool/edit.ts `isDisproportionateMatch()`
+fn is_disproportionate_match(search: &str, old_string: &str) -> bool {
+    let old_lines = old_string.split('\n').count();
+    let search_lines = search.split('\n').count();
+    if search_lines >= (old_lines + 3).max(old_lines * 2) { return true; }
+    if old_lines == 1 { return false; }
+    search.trim().len() > old_string.trim().len().max(old_string.trim().len() + 500)
+        || search.trim().len() > old_string.trim().len() * 4
+}
+
+/// Core replace function that chains all replacer strategies.
+/// Ported from: packages/opencode/src/tool/edit.ts `replace()`
+pub fn edit_replace(
+    content: &str,
+    old_string: &str,
+    new_string: &str,
+    replace_all: bool,
+) -> Result<String, String> {
+    if old_string == new_string {
+        return Err("No changes to apply: oldString and newString are identical.".into());
+    }
+    if old_string.is_empty() {
+        return Err("oldString cannot be empty when editing an existing file. Provide the exact text to replace, or use write for an intentional full-file replacement.".into());
+    }
+
+    let replacers: Vec<Box<dyn Replacer>> = vec![
+        Box::new(SimpleReplacer),
+        Box::new(LineTrimmedReplacer),
+        Box::new(BlockAnchorReplacer),
+        Box::new(WhitespaceNormalizedReplacer),
+        Box::new(IndentationFlexibleReplacer),
+        Box::new(EscapeNormalizedReplacer),
+        Box::new(TrimmedBoundaryReplacer),
+        Box::new(ContextAwareReplacer),
+        Box::new(MultiOccurrenceReplacer),
+    ];
+
+    let mut not_found = true;
+
+    for replacer in &replacers {
+        let candidates = replacer.search(content, old_string);
+        for search_str in candidates {
+            let index = match content.find(&search_str) {
+                Some(i) => i,
+                None => continue,
+            };
+            not_found = false;
+
+            if is_disproportionate_match(&search_str, old_string) {
+                return Err(
+                    "Refusing replacement because the matched span is much larger than oldString. Re-read the file and provide the full exact oldString for the intended replacement.".into(),
+                );
+            }
+
+            if replace_all {
+                return Ok(content.replace(&search_str, new_string));
+            }
+
+            let last_index = content.rfind(&search_str);
+            if Some(index) != last_index {
+                continue;
+            }
+
+            let mut result = String::with_capacity(content.len() - search_str.len() + new_string.len());
+            result.push_str(&content[..index]);
+            result.push_str(new_string);
+            result.push_str(&content[index + search_str.len()..]);
+            return Ok(result);
+        }
+    }
+
+    if not_found {
+        Err("Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.".into())
+    } else {
+        Err("Found multiple matches for oldString. Provide more surrounding context to make the match unique.".into())
+    }
+}
+
+/// Trim common leading whitespace from diff content lines.
+/// Ported from: packages/opencode/src/tool/edit.ts `trimDiff()`
+pub fn trim_diff(diff: &str) -> String {
+    let lines: Vec<&str> = diff.lines().collect();
+    let content_lines: Vec<&str> = lines.iter()
+        .filter(|line| {
+            (line.starts_with('+') || line.starts_with('-') || line.starts_with(' '))
+                && !line.starts_with("---") && !line.starts_with("+++")
+        })
+        .copied().collect();
+    if content_lines.is_empty() { return diff.to_string(); }
+    let mut min_indent = usize::MAX;
+    for line in &content_lines {
+        let content = &line[1..];
+        if content.trim().is_empty() { continue; }
+        let indent = content.len() - content.trim_start().len();
+        min_indent = min_indent.min(indent);
+    }
+    if min_indent == usize::MAX || min_indent == 0 { return diff.to_string(); }
+    lines.iter().map(|line| {
+        if (line.starts_with('+') || line.starts_with('-') || line.starts_with(' '))
+            && !line.starts_with("---") && !line.starts_with("+++")
+        {
+            let prefix = &line[..1];
+            let content = &line[1..];
+            if content.len() > min_indent {
+                format!("{}{}", prefix, &content[min_indent..])
+            } else {
+                prefix.to_string()
+            }
+        } else {
+            line.to_string()
+        }
+    }).collect::<Vec<_>>().join("\n")
+}
+
+
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // 1. BashTool — shell command execution
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -142,6 +638,16 @@ impl Tool for BashTool {
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
+        
+        // Environment sanitization (matching OC's pty_env pattern)
+        cmd.env("TERM", "xterm-256color");
+        cmd.env("OPENCODE_TERMINAL", "1");
+        #[cfg(target_os = "windows")]
+        {
+            cmd.env("LC_ALL", "C.UTF-8");
+            cmd.env("LC_CTYPE", "C.UTF-8");
+            cmd.env("LANG", "C.UTF-8");
+        }
 
         // Spawn and wait with timeout
         let child = cmd.spawn().map_err(|e| Error::Process {
@@ -168,6 +674,38 @@ impl Tool for BashTool {
             }
 
             timed_out = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
+                // Force-kill escalation: SIGTERM -> 3s wait -> SIGKILL (matching OC's forceKillAfter)
+                if let Some(pid) = child_pid {
+                    #[cfg(unix)]
+                    {
+                        let _ = std::process::Command::new("kill")
+                            .arg("-TERM")
+                            .arg(format!("-{}", pid))
+                            .output();
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        let _ = std::process::Command::new("taskkill")
+                            .args(["/pid", &pid.to_string(), "/f", "/t"])
+                            .output();
+                    }
+                    // Wait 3 seconds for graceful termination
+                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    // Escalate to SIGKILL if still running
+                    #[cfg(unix)]
+                    {
+                        let _ = std::process::Command::new("kill")
+                            .arg("-KILL")
+                            .arg(format!("-{}", pid))
+                            .output();
+                    }
+                }
+                
+                let mut meta = HashMap::new();
+                meta.insert("command".into(), serde_json::Value::String(command.to_string()));
+                meta.insert("cwd".into(), serde_json::Value::String(cwd_str));
+                meta.insert("timedOut".into(), serde_json::Value::Bool(true));
+                
                 Ok(ExecuteResult {
                     title: description.to_string(),
                     output: format!(
@@ -177,7 +715,7 @@ impl Tool for BashTool {
                     truncated: false,
                     output_path: None,
                     attachments: None,
-                    metadata: HashMap::new(),
+                    metadata: meta,
                 })
             }
 
@@ -532,8 +1070,23 @@ impl Tool for ReadTool {
             });
         }
 
-        // Read text file
-        let content = std::fs::read_to_string(path).map_err(Error::Io)?;
+        // Read text file with byte cap (~50KB)
+        const MAX_READ_BYTES: usize = 51_200; // 50KB limit
+        let raw_content = std::fs::read_to_string(path).map_err(Error::Io)?;
+        let content = if raw_content.len() > MAX_READ_BYTES {
+            // Truncate at a line boundary to avoid cutting mid-line
+            let truncated = &raw_content[..MAX_READ_BYTES];
+            let capped = match truncated.rfind('\n') {
+                Some(pos) => &raw_content[..pos],
+                None => truncated,
+            };
+            format!(
+                "{}...\n\n(Content truncated at ~50KB for performance. Total file size is {} bytes. Use offset/limit to read specific sections, or grep to search.)",
+                capped, raw_content.len()
+            )
+        } else {
+            raw_content
+        };
         let lines: Vec<&str> = content.lines().collect();
         let total_lines = lines.len();
 
@@ -656,9 +1209,24 @@ impl Tool for WriteTool {
 
         let existed = path.exists();
 
-        // Handle BOM: if we detect a BOM in content, preserve it; strip BOM from display
-        // For simplicity, write as-is
-        std::fs::write(path, content).map_err(|e| Error::FileSystem {
+        // Preserve UTF-8 BOM (EF BB BF) if the existing file has one
+        let bom = [0xEFu8, 0xBB, 0xBF];
+        let content_bytes = if existed {
+            let existing = std::fs::read(path).unwrap_or_default();
+            if existing.starts_with(&bom) && !content.as_bytes().starts_with(&bom) {
+                // Prepend BOM to new content
+                let mut bytes = Vec::with_capacity(bom.len() + content.len());
+                bytes.extend_from_slice(&bom);
+                bytes.extend_from_slice(content.as_bytes());
+                bytes
+            } else {
+                content.as_bytes().to_vec()
+            }
+        } else {
+            content.as_bytes().to_vec()
+        };
+
+        std::fs::write(path, &content_bytes).map_err(|e| Error::FileSystem {
             path: file_path.to_string(),
             message: format!("failed to write file: {}", e),
         })?;
@@ -901,32 +1469,17 @@ impl Tool for EditTool {
 
         let source_content = std::fs::read_to_string(path).map_err(Error::Io)?;
 
-        // Detect and normalize line endings
+        // Detect and normalize line endings for consistent matching
         let ending = Self::detect_line_ending(&source_content);
         let old_normalized = Self::convert_to_line_ending(old_string, ending);
         let new_normalized = Self::convert_to_line_ending(new_string, ending);
 
+        // Count exact occurrences for display/metadata (approximate for fuzzy replacer matches)
         let occurrences = Self::count_occurrences(&source_content, &old_normalized);
 
-        if occurrences == 0 {
-            return Err(Error::Tool(
-                "Could not find oldString in the file. It must match exactly, including whitespace and indentation."
-                    .into(),
-            ));
-        }
-
-        if occurrences > 1 && !replace_all {
-            return Err(Error::Tool(
-                "Found multiple exact matches for oldString. Provide more surrounding context or set replaceAll to true."
-                    .into(),
-            ));
-        }
-
-        let replaced = if replace_all {
-            source_content.replace(&old_normalized, &new_normalized)
-        } else {
-            source_content.replacen(&old_normalized, &new_normalized, 1)
-        };
+        // Use replacer strategies (exact, line-trimmed, block anchor, etc.)
+        let replaced = edit_replace(&source_content, &old_normalized, &new_normalized, replace_all)
+            .map_err(|e| Error::Tool(e))?;
 
         // Write the file
         std::fs::write(path, &replaced).map_err(|e| Error::FileSystem {
@@ -2120,6 +2673,39 @@ impl ApplyPatchTool {
         None
     }
 
+    /// Parse opencode patchText format (*** Begin Patch ... *** End Patch).
+    fn parse_opencode_patch(patch_text: &str) -> std::result::Result<(String, String), Error> {
+        let text = patch_text.trim();
+        // Extract file path from "*** Begin Patch /path/to/file ***"
+        let begin_marker = "*** Begin Patch ";
+        let end_marker = "***";
+        if let Some(after_begin) = text.strip_prefix(begin_marker) {
+            if let Some(end_pos) = after_begin.find(end_marker) {
+                let file_path = after_begin[..end_pos].trim().to_string();
+                // Find the actual patch content between End Patch markers or to end
+                let patch_start = end_pos + end_marker.len();
+                let patch_body = if let Some(end_patch) = after_begin[patch_start..].find("*** End Patch") {
+                    &after_begin[patch_start..patch_start + end_patch]
+                } else {
+                    &after_begin[patch_start..]
+                };
+                Ok((file_path, patch_body.trim().to_string()))
+            } else {
+                Err(Error::Tool("apply_patch: invalid patchText format - expected '*** Begin Patch <path> ***'".into()))
+            }
+        } else {
+            // Fallback: try to extract file path from --- a/path or +++ b/path
+            for line in text.lines() {
+                if let Some(path) = line.strip_prefix("--- a/").or_else(|| line.strip_prefix("+++ b/")) {
+                    // Strip everything after first tab or space
+                    let clean_path = path.split_once(['\t', ' ']).map(|(p, _)| p).unwrap_or(path);
+                    return Ok((clean_path.to_string(), text.to_string()));
+                }
+            }
+            Err(Error::Tool("apply_patch: missing 'patchText' field or invalid format".into()))
+        }
+    }
+
     /// Check if context lines match at a given 1-indexed line.
     fn context_matches(result: &[String], context: &[String], line: usize) -> bool {
         let idx = line.saturating_sub(1);
@@ -2163,19 +2749,27 @@ impl Tool for ApplyPatchTool {
     }
 
     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
-        let file_path = args["file_path"]
-            .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "apply_patch".into(),
-                detail: "missing 'file_path' field".into(),
-            })?;
-
-        let patch = args["patch"]
-            .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
-                tool: "apply_patch".into(),
-                detail: "missing 'patch' field".into(),
-            })?;
+        // Support both opencode format (patchText with *** Begin/End Patch markers)
+        // and rustcode format (file_path + patch separately)
+        let (file_path, patch) = if let Some(patch_text) = args["patchText"].as_str() {
+            Self::parse_opencode_patch(patch_text)?
+        } else {
+            let file_path = args["file_path"]
+                .as_str()
+                .ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "apply_patch".into(),
+                    detail: "missing 'file_path' field".into(),
+                })?
+                .to_string();
+            let patch = args["patch"]
+                .as_str()
+                .ok_or_else(|| Error::ToolInvalidArguments {
+                    tool: "apply_patch".into(),
+                    detail: "missing 'patch' field".into(),
+                })?
+                .to_string();
+            (file_path, patch)
+        };
 
         let path = std::path::Path::new(file_path);
         if !path.exists() {
@@ -3730,9 +4324,10 @@ impl Tool for TaskOutputTool {
 /// - `outgoingCalls` — Find all callees of the function at a position
 ///
 /// # Requirements
-/// Requires an active LSP manager to be registered via [`ToolContext::extra`]
-/// with key `"lsp_manager"`. Without it, the tool returns an error explaining
-/// that LSP integration requires the `rustcode-lsp` crate to be initialized.
+/// Requires an [`LspBridge`] to be registered via
+/// [`rustcode_core::lsp::set_global_lsp_bridge`]. The `rustcode-lsp` crate
+/// provides a bridge implementation that connects to the [`LspManager`].
+/// Without a registered bridge, the tool returns an informative error.
 #[derive(Debug, Clone)]
 pub struct LspTool;
 
@@ -3871,16 +4466,13 @@ impl Tool for LspTool {
             format!("{operation} {file_path}")
         };
 
-        // Check if an LSP manager is available in the context
-        let has_lsp = _ctx.extra.contains_key("lsp_manager");
-        if !has_lsp {
+                // Check if an LSP bridge is available via the global in rustcode-core
+        let has_bridge = crate::lsp::has_lsp_bridge();
+        if !has_bridge {
             return Ok(ExecuteResult {
                 title,
                 output: format!(
-                    "LSP tool invoked for operation '{operation}' on '{file_path}'. \
-                     However, no LSP manager is available in the current context. \
-                     To use LSP features, ensure the rustcode-lsp crate is initialized \
-                     and the LspManager is registered in the tool context."
+                    "LSP tool invoked for operation '{operation}' on '{file_path}'.                      However, no LSP bridge is registered.                      To use LSP features, initialize the LSP subsystem                      by calling `rustcode_core::lsp::set_global_lsp_bridge()`."
                 ),
                 truncated: false,
                 output_path: None,
@@ -3897,28 +4489,65 @@ impl Tool for LspTool {
             });
         }
 
-        // LSP manager is available — delegate to it
-        // For now, return the operation details. The actual LSP client calls
-        // would be wired through the LspManager when it's passed via extra.
-        let result = serde_json::json!({
-            "operation": operation,
-            "filePath": file_path,
-            "line": line,
-            "character": character,
-            "query": query,
-            "status": "LSP manager available but client dispatch not yet wired in tool_impls. \
-                       Use the rustcode-lsp LspClient directly for full LSP operations."
-        });
+        // Use the global LSP bridge to perform the operation
+        let result = match operation {
+            "workspaceSymbol" => {
+                let symbols = crate::lsp::global_workspace_symbols(query);
+                let symbols_value: Vec<serde_json::Value> = symbols.iter().map(|s| {
+                    serde_json::json!({
+                        "name": s.name,
+                        "kind": s.kind,
+                        "location": {
+                            "uri": s.location.uri,
+                            "range": {
+                                "start": { "line": s.location.range.start.line, "character": s.location.range.start.character },
+                                "end": { "line": s.location.range.end.line, "character": s.location.range.end.character }
+                            }
+                        }
+                    })
+                }).collect();
+                serde_json::Value::Array(symbols_value)
+            }
+            "documentSymbol" => {
+                serde_json::json!({
+                    "operation": operation,
+                    "filePath": file_path,
+                    "note": "documentSymbol requires direct LSP client access via rustcode-lsp.                              The core LspBridge only supports workspaceSymbol for now."
+                })
+            }
+            _ => {
+                // Position-based operations require direct LSP client access
+                serde_json::json!({
+                    "operation": operation,
+                    "filePath": file_path,
+                    "line": line,
+                    "character": character,
+                    "query": query,
+                    "note": "Position-based LSP operations require direct LSP client access via rustcode-lsp.                              The core LspBridge only supports workspaceSymbol for now.",
+                    "bridge_available": true,
+                })
+            }
+        };
+
+        let output = if operation == "workspaceSymbol" && result.as_array().map(|a| a.is_empty()).unwrap_or(true) {
+            "No results found for workspaceSymbol".to_string()
+        } else {
+            serde_json::to_string_pretty(&result).unwrap_or_default()
+        };
 
         Ok(ExecuteResult {
             title,
-            output: serde_json::to_string_pretty(&result).unwrap_or_default(),
+            output,
             truncated: false,
             output_path: None,
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert("result".into(), result);
+                if let Some(arr) = result.as_array() {
+                    m.insert("result".into(), serde_json::Value::Array(arr.clone()));
+                } else {
+                    m.insert("result".into(), result);
+                }
                 m.insert(
                     "operation".into(),
                     serde_json::Value::String(operation.into()),
@@ -3928,7 +4557,7 @@ impl Tool for LspTool {
             },
         })
     }
-}
+}}
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // 21. InvalidTool — sentinel for malformed tool calls

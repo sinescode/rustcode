@@ -1240,6 +1240,150 @@ impl PermissionService {
             }
         }
     }
+
+    /// Get a single pending permission request by ID.
+    ///
+    /// Returns `None` if no request with that ID is pending.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/permission.ts` lines 317–319 (`PermissionV2.get`).
+    pub fn get(&self, id: &str) -> Option<PermissionRequest> {
+        self.pending.get(id).map(|entry| entry.request.clone())
+    }
+
+    /// Get all pending permission requests for a given session.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/permission.ts` lines 321–323 (`PermissionV2.forSession`).
+    pub fn for_session(&self, session_id: &str) -> Vec<PermissionRequest> {
+        self.pending
+            .iter()
+            .filter(|entry| entry.request.session_id == session_id)
+            .map(|entry| entry.request.clone())
+            .collect()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// V2 Permission Schema Types (action/resource/effect naming)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// V2 permission effect — same values as [`PermissionAction`] but using the
+/// V2 naming convention (`action`/`resource`/`effect` instead of
+/// `permission`/`pattern`/`action`).
+///
+/// # Source
+/// Ported from `packages/core/src/permission/schema.ts` lines 5–6.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionV2Effect {
+    /// The operation is explicitly allowed.
+    Allow,
+    /// The operation is explicitly denied.
+    Deny,
+    /// The user must be asked before proceeding.
+    Ask,
+}
+
+impl From<PermissionAction> for PermissionV2Effect {
+    fn from(action: PermissionAction) -> Self {
+        match action {
+            PermissionAction::Allow => PermissionV2Effect::Allow,
+            PermissionAction::Deny => PermissionV2Effect::Deny,
+            PermissionAction::Ask => PermissionV2Effect::Ask,
+        }
+    }
+}
+
+impl From<PermissionV2Effect> for PermissionAction {
+    fn from(effect: PermissionV2Effect) -> Self {
+        match effect {
+            PermissionV2Effect::Allow => PermissionAction::Allow,
+            PermissionV2Effect::Deny => PermissionAction::Deny,
+            PermissionV2Effect::Ask => PermissionAction::Ask,
+        }
+    }
+}
+
+/// A V2 permission rule — maps an action + resource to an effect.
+///
+/// # Source
+/// Ported from `packages/core/src/permission/schema.ts` lines 8–13.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionV2Rule {
+    /// Tool/action name (e.g. "bash", "edit", "*").
+    pub action: String,
+    /// Resource pattern (e.g. "*.ts", "/home/*", "*").
+    pub resource: String,
+    /// Effect to apply when this rule matches.
+    pub effect: PermissionV2Effect,
+}
+
+/// A list of V2 permission rules.
+///
+/// # Source
+/// Ported from `packages/core/src/permission/schema.ts` lines 15–16.
+pub type PermissionV2Ruleset = Vec<PermissionV2Rule>;
+
+/// V2 permission source — identifies the origin of a permission request.
+///
+/// # Source
+/// Ported from `packages/core/src/permission.ts` lines 27–33.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "type")]
+pub enum PermissionSource {
+    /// The request originated from a tool call.
+    #[serde(rename = "tool")]
+    Tool {
+        /// The chat message ID that contained the tool call.
+        #[serde(rename = "messageID")]
+        message_id: String,
+        /// The tool call ID within that message.
+        #[serde(rename = "callID")]
+        call_id: String,
+    },
+}
+
+/// Result of a V2 `ask()` operation — returns the request ID and the effect.
+///
+/// # Source
+/// Ported from `packages/core/src/permission.ts` lines 68–72.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AskResult {
+    /// The request ID (per_ prefix).
+    pub id: String,
+    /// The effect that was determined.
+    pub effect: PermissionV2Effect,
+}
+
+/// V2 AssertInput — used for the V2 `assert()` and `ask()` calls.
+///
+/// # Source
+/// Ported from `packages/core/src/permission.ts` lines 54–59.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AssertInputV2 {
+    /// Optional request ID — generated if not provided.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    /// Session ID.
+    #[serde(rename = "sessionID")]
+    pub session_id: String,
+    /// Action being requested (e.g. "bash", "edit").
+    pub action: String,
+    /// Resources needing approval.
+    pub resources: Vec<String>,
+    /// Patterns to save on "always".
+    #[serde(default)]
+    pub save: Vec<String>,
+    /// Arbitrary metadata.
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    /// Source of the request (tool, etc.).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<PermissionSource>,
+    /// Agent ID (optional, for agent-specific permissions).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

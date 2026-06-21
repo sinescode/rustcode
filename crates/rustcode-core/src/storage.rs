@@ -21,7 +21,7 @@
 //!
 //! ## Migrations
 //!
-//! Migrations are tracked in a `_migration` table. Each migration has a
+//! Migrations are tracked in a `migration` table. Each migration has a
 //! unique ID and runs in a transaction. New tables are added as needed by
 //! downstream modules (session, project, etc.).
 
@@ -217,6 +217,7 @@ impl Database {
     /// - `busy_timeout = 5000` — wait up to 5s on lock
     /// - `cache_size = -64000` — 64 MB cache
     /// - `foreign_keys = ON` — enforce FK constraints
+    /// - `wal_checkpoint(PASSIVE)` — checkpoint WAL on open
     ///
     /// # Source
     /// Ported from `packages/core/src/database/database.ts` lines 27–32.
@@ -234,13 +235,14 @@ impl Database {
             ))
         })?;
 
-        // Set PRAGMAs
+        // Set PRAGMAs (matching database.rs CONNECTION_PRAGMAS)
         let pragmas = [
             "PRAGMA journal_mode = WAL",
             "PRAGMA synchronous = NORMAL",
             "PRAGMA busy_timeout = 5000",
             "PRAGMA cache_size = -64000",
             "PRAGMA foreign_keys = ON",
+            "PRAGMA wal_checkpoint(PASSIVE)",
         ];
         for pragma in &pragmas {
             sqlx::query(pragma)
@@ -268,7 +270,7 @@ impl Database {
     /// Run pending migrations.
     ///
     /// Each migration runs in its own transaction. Already-applied
-    /// migrations are skipped based on the `_migration` table.
+    /// migrations are skipped based on the `migration` table.
     ///
     /// # Source
     /// Ported from `packages/core/src/database/migration.ts` lines 43–81
@@ -276,7 +278,7 @@ impl Database {
     pub async fn run_migrations(&self, migrations: &[Migration]) -> Result<()> {
         // Get the set of already-applied migration IDs
         let completed: std::collections::HashSet<String> = {
-            let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM _migration ORDER BY id")
+            let rows: Vec<(String,)> = sqlx::query_as("SELECT id FROM migration ORDER BY id")
                 .fetch_all(&self.pool)
                 .await
                 .map_err(|e| Error::Config(format!("migration query error: {e}")))?;
@@ -313,7 +315,7 @@ impl Database {
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap_or_default()
                 .as_millis() as i64;
-            sqlx::query("INSERT INTO _migration (id, time_completed) VALUES (?1, ?2)")
+            sqlx::query("INSERT INTO migration (id, time_completed) VALUES (?1, ?2)")
                 .bind(migration.id)
                 .bind(now)
                 .execute(&mut *tx)
@@ -330,10 +332,10 @@ impl Database {
         Ok(())
     }
 
-    /// Create the `_migration` tracking table if it doesn't exist.
+    /// Create the `migration` tracking table if it doesn't exist.
     async fn ensure_migration_table(&self) -> Result<()> {
         sqlx::query(
-            "CREATE TABLE IF NOT EXISTS _migration (
+            "CREATE TABLE IF NOT EXISTS migration (
                 id TEXT PRIMARY KEY,
                 time_completed INTEGER NOT NULL
             )",
@@ -398,74 +400,534 @@ pub async fn open_default_db() -> Result<Database> {
 
 // ── Initial schema migration ─────────────────────────────────────────────
 
-/// Initial database schema — creates the core tables.
+/// SQL to create the `migration` journal table.
 ///
 /// # Source
-/// Derived from `packages/core/src/database/migration/` (initial migrations).
+/// Ported from `packages/core/src/database/migration.ts` line 30.
+const MIGRATION_TABLE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `migration` (
+  `id` text PRIMARY KEY,
+  `time_completed` integer NOT NULL
+);
+"#;
+
+/// SQL to create the `workspace` table.
+const WORKSPACE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `workspace` (
+  `id` text PRIMARY KEY,
+  `type` text NOT NULL,
+  `name` text DEFAULT '' NOT NULL,
+  `branch` text,
+  `directory` text,
+  `extra` text,
+  `project_id` text NOT NULL,
+  `time_used` integer NOT NULL,
+  CONSTRAINT `fk_workspace_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `data_migration` table.
+const DATA_MIGRATION_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `data_migration` (
+  `name` text PRIMARY KEY,
+  `time_completed` integer NOT NULL
+);
+"#;
+
+/// SQL to create the `account_state` table.
+const ACCOUNT_STATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `account_state` (
+  `id` integer PRIMARY KEY,
+  `active_account_id` text,
+  `active_org_id` text,
+  CONSTRAINT `fk_account_state_active_account_id_account_id_fk` FOREIGN KEY (`active_account_id`) REFERENCES `account`(`id`) ON DELETE SET NULL
+);
+"#;
+
+/// SQL to create the `account` table.
+const ACCOUNT_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `account` (
+  `id` text PRIMARY KEY,
+  `email` text NOT NULL,
+  `url` text NOT NULL,
+  `access_token` text NOT NULL,
+  `refresh_token` text NOT NULL,
+  `token_expiry` integer,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL
+);
+"#;
+
+/// SQL to create the `control_account` table.
+const CONTROL_ACCOUNT_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `control_account` (
+  `email` text NOT NULL,
+  `url` text NOT NULL,
+  `access_token` text NOT NULL,
+  `refresh_token` text NOT NULL,
+  `token_expiry` integer,
+  `active` integer NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  CONSTRAINT `control_account_pk` PRIMARY KEY(`email`, `url`)
+);
+"#;
+
+/// SQL to create the `credential` table.
+const CREDENTIAL_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `credential` (
+  `id` text PRIMARY KEY,
+  `integration_id` text,
+  `label` text NOT NULL,
+  `value` text NOT NULL,
+  `connector_id` text,
+  `method_id` text,
+  `active` integer,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL
+);
+"#;
+
+/// SQL to create the `event_sequence` table.
+const EVENT_SEQUENCE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `event_sequence` (
+  `aggregate_id` text PRIMARY KEY,
+  `seq` integer NOT NULL,
+  `owner_id` text
+);
+"#;
+
+/// SQL to create the `event` table.
+const EVENT_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `event` (
+  `id` text PRIMARY KEY,
+  `aggregate_id` text NOT NULL,
+  `seq` integer NOT NULL,
+  `type` text NOT NULL,
+  `data` text NOT NULL,
+  CONSTRAINT `fk_event_aggregate_id_event_sequence_aggregate_id_fk` FOREIGN KEY (`aggregate_id`) REFERENCES `event_sequence`(`aggregate_id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `permission` table.
+const PERMISSION_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `permission` (
+  `id` text PRIMARY KEY,
+  `project_id` text NOT NULL,
+  `action` text NOT NULL,
+  `resource` text NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  CONSTRAINT `fk_permission_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `project_directory` table.
+const PROJECT_DIRECTORY_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `project_directory` (
+  `project_id` text NOT NULL,
+  `directory` text NOT NULL,
+  `type` text,
+  `strategy` text,
+  `time_created` integer NOT NULL,
+  CONSTRAINT `project_directory_pk` PRIMARY KEY(`project_id`, `directory`),
+  CONSTRAINT `fk_project_directory_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `project` table.
+const PROJECT_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `project` (
+  `id` text PRIMARY KEY,
+  `worktree` text NOT NULL,
+  `vcs` text,
+  `name` text,
+  `icon_url` text,
+  `icon_url_override` text,
+  `icon_color` text,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `time_initialized` integer,
+  `sandboxes` text NOT NULL,
+  `commands` text
+);
+"#;
+
+/// SQL to create the `message` table (legacy).
+const MESSAGE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `message` (
+  `id` text PRIMARY KEY,
+  `session_id` text NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `data` text NOT NULL,
+  CONSTRAINT `fk_message_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `part` table (legacy).
+const PART_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `part` (
+  `id` text PRIMARY KEY,
+  `message_id` text NOT NULL,
+  `session_id` text NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `data` text NOT NULL,
+  CONSTRAINT `fk_part_message_id_message_id_fk` FOREIGN KEY (`message_id`) REFERENCES `message`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `session_context_epoch` table.
+const SESSION_CONTEXT_EPOCH_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `session_context_epoch` (
+  `session_id` text PRIMARY KEY,
+  `baseline` text NOT NULL,
+  `agent` text DEFAULT 'build' NOT NULL,
+  `snapshot` text NOT NULL,
+  `baseline_seq` integer NOT NULL,
+  `replacement_seq` integer,
+  `revision` integer DEFAULT 0 NOT NULL,
+  CONSTRAINT `fk_session_context_epoch_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `session_input` table.
+const SESSION_INPUT_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `session_input` (
+  `id` text PRIMARY KEY,
+  `session_id` text NOT NULL,
+  `prompt` text NOT NULL,
+  `delivery` text NOT NULL,
+  `admitted_seq` integer NOT NULL,
+  `promoted_seq` integer,
+  `time_created` integer NOT NULL,
+  CONSTRAINT `fk_session_input_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `session_message` table.
+const SESSION_MESSAGE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `session_message` (
+  `id` text PRIMARY KEY,
+  `session_id` text NOT NULL,
+  `type` text NOT NULL,
+  `seq` integer NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `data` text NOT NULL,
+  CONSTRAINT `fk_session_message_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `session` table.
+const SESSION_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `session` (
+  `id` text PRIMARY KEY,
+  `project_id` text NOT NULL,
+  `workspace_id` text,
+  `parent_id` text,
+  `slug` text NOT NULL,
+  `directory` text NOT NULL,
+  `path` text,
+  `title` text NOT NULL,
+  `version` text NOT NULL,
+  `share_url` text,
+  `summary_additions` integer,
+  `summary_deletions` integer,
+  `summary_files` integer,
+  `summary_diffs` text,
+  `metadata` text,
+  `cost` real DEFAULT 0 NOT NULL,
+  `tokens_input` integer DEFAULT 0 NOT NULL,
+  `tokens_output` integer DEFAULT 0 NOT NULL,
+  `tokens_reasoning` integer DEFAULT 0 NOT NULL,
+  `tokens_cache_read` integer DEFAULT 0 NOT NULL,
+  `tokens_cache_write` integer DEFAULT 0 NOT NULL,
+  `revert` text,
+  `permission` text,
+  `agent` text,
+  `model` text,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  `time_compacting` integer,
+  `time_archived` integer,
+  CONSTRAINT `fk_session_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `todo` table.
+const TODO_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `todo` (
+  `session_id` text NOT NULL,
+  `content` text NOT NULL,
+  `status` text NOT NULL,
+  `priority` text NOT NULL,
+  `position` integer NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  CONSTRAINT `todo_pk` PRIMARY KEY(`session_id`, `position`),
+  CONSTRAINT `fk_todo_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// SQL to create the `session_share` table.
+const SESSION_SHARE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS `session_share` (
+  `session_id` text PRIMARY KEY,
+  `id` text NOT NULL,
+  `secret` text NOT NULL,
+  `url` text NOT NULL,
+  `time_created` integer NOT NULL,
+  `time_updated` integer NOT NULL,
+  CONSTRAINT `fk_session_share_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE
+);
+"#;
+
+/// All CREATE INDEX statements from the canonical schema.
+///
+/// # Source
+/// Ported from `packages/core/src/database/schema.gen.ts` lines 242–274.
+const ALL_INDEX_SQL: &[&str] = &[
+    "CREATE UNIQUE INDEX IF NOT EXISTS `event_aggregate_seq_idx` ON `event` (`aggregate_id`,`seq`);",
+    "CREATE INDEX IF NOT EXISTS `event_aggregate_type_seq_idx` ON `event` (`aggregate_id`,`type`,`seq`);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `permission_project_action_resource_idx` ON `permission` (`project_id`,`action`,`resource`);",
+    "CREATE INDEX IF NOT EXISTS `message_session_time_created_id_idx` ON `message` (`session_id`,`time_created`,`id`);",
+    "CREATE INDEX IF NOT EXISTS `part_message_id_id_idx` ON `part` (`message_id`,`id`);",
+    "CREATE INDEX IF NOT EXISTS `part_session_idx` ON `part` (`session_id`);",
+    "CREATE INDEX IF NOT EXISTS `session_input_session_pending_delivery_seq_idx` ON `session_input` (`session_id`,`promoted_seq`,`delivery`,`admitted_seq`);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `session_input_session_admitted_seq_idx` ON `session_input` (`session_id`,`admitted_seq`);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `session_input_session_promoted_seq_idx` ON `session_input` (`session_id`,`promoted_seq`);",
+    "CREATE UNIQUE INDEX IF NOT EXISTS `session_message_session_seq_idx` ON `session_message` (`session_id`,`seq`);",
+    "CREATE INDEX IF NOT EXISTS `session_message_session_type_seq_idx` ON `session_message` (`session_id`,`type`,`seq`);",
+    "CREATE INDEX IF NOT EXISTS `session_message_session_time_created_id_idx` ON `session_message` (`session_id`,`time_created`,`id`);",
+    "CREATE INDEX IF NOT EXISTS `session_message_time_created_idx` ON `session_message` (`time_created`);",
+    "CREATE INDEX IF NOT EXISTS `session_project_idx` ON `session` (`project_id`);",
+    "CREATE INDEX IF NOT EXISTS `session_workspace_idx` ON `session` (`workspace_id`);",
+    "CREATE INDEX IF NOT EXISTS `session_parent_idx` ON `session` (`parent_id`);",
+    "CREATE INDEX IF NOT EXISTS `todo_session_idx` ON `todo` (`session_id`);",
+];
+
+/// Initial database schema — creates all core tables and indexes matching
+/// the final state after all 35 opencode migrations.
+///
+/// Uses `CREATE TABLE IF NOT EXISTS` and `CREATE INDEX IF NOT EXISTS` so
+/// this migration is idempotent on existing databases.
+///
+/// # Source
+/// Ported from `packages/core/src/database/schema.gen.ts` (all 20 tables).
 pub const INITIAL_MIGRATION: Migration = Migration {
-    id: "20260616_initial_schema",
-    sql: r#"
-CREATE TABLE IF NOT EXISTS project (
-    id TEXT PRIMARY KEY,
-    vcs TEXT,
-    worktree TEXT,
-    name TEXT,
-    time_created INTEGER NOT NULL,
-    time_initialized INTEGER NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS session (
-    id TEXT PRIMARY KEY,
-    project_id TEXT NOT NULL,
-    workspace_id TEXT,
-    title TEXT,
-    path TEXT,
-    time_created INTEGER NOT NULL,
-    time_updated INTEGER NOT NULL,
-    usage_input INTEGER NOT NULL DEFAULT 0,
-    usage_output INTEGER NOT NULL DEFAULT 0,
-    usage_cache_read INTEGER NOT NULL DEFAULT 0,
-    usage_cache_write INTEGER NOT NULL DEFAULT 0,
-    FOREIGN KEY (project_id) REFERENCES project(id)
-);
-
-CREATE TABLE IF NOT EXISTS message (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    role TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    time_created INTEGER NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES session(id)
-);
-
-CREATE TABLE IF NOT EXISTS part (
-    id TEXT PRIMARY KEY,
-    message_id TEXT NOT NULL,
-    type TEXT NOT NULL,
-    content TEXT NOT NULL DEFAULT '',
-    tool_call_id TEXT,
-    time_created INTEGER NOT NULL,
-    FOREIGN KEY (message_id) REFERENCES message(id)
-);
-
-CREATE TABLE IF NOT EXISTS session_input (
-    id TEXT PRIMARY KEY,
-    session_id TEXT NOT NULL,
-    text TEXT NOT NULL,
-    input_type TEXT NOT NULL DEFAULT 'user',
-    time_created INTEGER NOT NULL,
-    FOREIGN KEY (session_id) REFERENCES session(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_message_session_id ON message(session_id);
-CREATE INDEX IF NOT EXISTS idx_part_message_id ON part(message_id);
-CREATE INDEX IF NOT EXISTS idx_session_project_id ON session(project_id);
-CREATE INDEX IF NOT EXISTS idx_session_input_session ON session_input(session_id);
-"#,
+    id: "20260127222353_familiar_lady_ursula",
+    sql: {
+        // Build the combined SQL from all table + index constants
+        const TABLES: &[&str] = &[
+            PROJECT_SQL,
+            WORKSPACE_SQL,
+            DATA_MIGRATION_SQL,
+            ACCOUNT_STATE_SQL,
+            ACCOUNT_SQL,
+            CONTROL_ACCOUNT_SQL,
+            CREDENTIAL_SQL,
+            EVENT_SEQUENCE_SQL,
+            EVENT_SQL,
+            PERMISSION_SQL,
+            PROJECT_DIRECTORY_SQL,
+            MESSAGE_SQL,
+            PART_SQL,
+            SESSION_CONTEXT_EPOCH_SQL,
+            SESSION_INPUT_SQL,
+            SESSION_MESSAGE_SQL,
+            SESSION_SQL,
+            TODO_SQL,
+            SESSION_SHARE_SQL,
+        ];
+        // Concatenate all table SQL + index SQL into one string at compile time.
+        // Since Rust const strings can't be joined dynamically, we build a
+        // single literal.
+        concat!(
+            "CREATE TABLE IF NOT EXISTS `project` (\n  `id` text PRIMARY KEY,\n  `worktree` text NOT NULL,\n  `vcs` text,\n  `name` text,\n  `icon_url` text,\n  `icon_url_override` text,\n  `icon_color` text,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `time_initialized` integer,\n  `sandboxes` text NOT NULL,\n  `commands` text\n);\n",
+            "CREATE TABLE IF NOT EXISTS `workspace` (\n  `id` text PRIMARY KEY,\n  `type` text NOT NULL,\n  `name` text DEFAULT '' NOT NULL,\n  `branch` text,\n  `directory` text,\n  `extra` text,\n  `project_id` text NOT NULL,\n  `time_used` integer NOT NULL,\n  CONSTRAINT `fk_workspace_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `data_migration` (\n  `name` text PRIMARY KEY,\n  `time_completed` integer NOT NULL\n);\n",
+            "CREATE TABLE IF NOT EXISTS `account_state` (\n  `id` integer PRIMARY KEY,\n  `active_account_id` text,\n  `active_org_id` text,\n  CONSTRAINT `fk_account_state_active_account_id_account_id_fk` FOREIGN KEY (`active_account_id`) REFERENCES `account`(`id`) ON DELETE SET NULL\n);\n",
+            "CREATE TABLE IF NOT EXISTS `account` (\n  `id` text PRIMARY KEY,\n  `email` text NOT NULL,\n  `url` text NOT NULL,\n  `access_token` text NOT NULL,\n  `refresh_token` text NOT NULL,\n  `token_expiry` integer,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL\n);\n",
+            "CREATE TABLE IF NOT EXISTS `control_account` (\n  `email` text NOT NULL,\n  `url` text NOT NULL,\n  `access_token` text NOT NULL,\n  `refresh_token` text NOT NULL,\n  `token_expiry` integer,\n  `active` integer NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  CONSTRAINT `control_account_pk` PRIMARY KEY(`email`, `url`)\n);\n",
+            "CREATE TABLE IF NOT EXISTS `credential` (\n  `id` text PRIMARY KEY,\n  `integration_id` text,\n  `label` text NOT NULL,\n  `value` text NOT NULL,\n  `connector_id` text,\n  `method_id` text,\n  `active` integer,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL\n);\n",
+            "CREATE TABLE IF NOT EXISTS `event_sequence` (\n  `aggregate_id` text PRIMARY KEY,\n  `seq` integer NOT NULL,\n  `owner_id` text\n);\n",
+            "CREATE TABLE IF NOT EXISTS `event` (\n  `id` text PRIMARY KEY,\n  `aggregate_id` text NOT NULL,\n  `seq` integer NOT NULL,\n  `type` text NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_event_aggregate_id_event_sequence_aggregate_id_fk` FOREIGN KEY (`aggregate_id`) REFERENCES `event_sequence`(`aggregate_id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `permission` (\n  `id` text PRIMARY KEY,\n  `project_id` text NOT NULL,\n  `action` text NOT NULL,\n  `resource` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  CONSTRAINT `fk_permission_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `project_directory` (\n  `project_id` text NOT NULL,\n  `directory` text NOT NULL,\n  `type` text,\n  `strategy` text,\n  `time_created` integer NOT NULL,\n  CONSTRAINT `project_directory_pk` PRIMARY KEY(`project_id`, `directory`),\n  CONSTRAINT `fk_project_directory_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `message` (\n  `id` text PRIMARY KEY,\n  `session_id` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_message_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `part` (\n  `id` text PRIMARY KEY,\n  `message_id` text NOT NULL,\n  `session_id` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_part_message_id_message_id_fk` FOREIGN KEY (`message_id`) REFERENCES `message`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `session_context_epoch` (\n  `session_id` text PRIMARY KEY,\n  `baseline` text NOT NULL,\n  `agent` text DEFAULT 'build' NOT NULL,\n  `snapshot` text NOT NULL,\n  `baseline_seq` integer NOT NULL,\n  `replacement_seq` integer,\n  `revision` integer DEFAULT 0 NOT NULL,\n  CONSTRAINT `fk_session_context_epoch_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `session_input` (\n  `id` text PRIMARY KEY,\n  `session_id` text NOT NULL,\n  `prompt` text NOT NULL,\n  `delivery` text NOT NULL,\n  `admitted_seq` integer NOT NULL,\n  `promoted_seq` integer,\n  `time_created` integer NOT NULL,\n  CONSTRAINT `fk_session_input_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `session_message` (\n  `id` text PRIMARY KEY,\n  `session_id` text NOT NULL,\n  `type` text NOT NULL,\n  `seq` integer NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_session_message_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `session` (\n  `id` text PRIMARY KEY,\n  `project_id` text NOT NULL,\n  `workspace_id` text,\n  `parent_id` text,\n  `slug` text NOT NULL,\n  `directory` text NOT NULL,\n  `path` text,\n  `title` text NOT NULL,\n  `version` text NOT NULL,\n  `share_url` text,\n  `summary_additions` integer,\n  `summary_deletions` integer,\n  `summary_files` integer,\n  `summary_diffs` text,\n  `metadata` text,\n  `cost` real DEFAULT 0 NOT NULL,\n  `tokens_input` integer DEFAULT 0 NOT NULL,\n  `tokens_output` integer DEFAULT 0 NOT NULL,\n  `tokens_reasoning` integer DEFAULT 0 NOT NULL,\n  `tokens_cache_read` integer DEFAULT 0 NOT NULL,\n  `tokens_cache_write` integer DEFAULT 0 NOT NULL,\n  `revert` text,\n  `permission` text,\n  `agent` text,\n  `model` text,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `time_compacting` integer,\n  `time_archived` integer,\n  CONSTRAINT `fk_session_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `todo` (\n  `session_id` text NOT NULL,\n  `content` text NOT NULL,\n  `status` text NOT NULL,\n  `priority` text NOT NULL,\n  `position` integer NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  CONSTRAINT `todo_pk` PRIMARY KEY(`session_id`, `position`),\n  CONSTRAINT `fk_todo_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE TABLE IF NOT EXISTS `session_share` (\n  `session_id` text PRIMARY KEY,\n  `id` text NOT NULL,\n  `secret` text NOT NULL,\n  `url` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  CONSTRAINT `fk_session_share_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\n",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `event_aggregate_seq_idx` ON `event` (`aggregate_id`,`seq`);\n",
+            "CREATE INDEX IF NOT EXISTS `event_aggregate_type_seq_idx` ON `event` (`aggregate_id`,`type`,`seq`);\n",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `permission_project_action_resource_idx` ON `permission` (`project_id`,`action`,`resource`);\n",
+            "CREATE INDEX IF NOT EXISTS `message_session_time_created_id_idx` ON `message` (`session_id`,`time_created`,`id`);\n",
+            "CREATE INDEX IF NOT EXISTS `part_message_id_id_idx` ON `part` (`message_id`,`id`);\n",
+            "CREATE INDEX IF NOT EXISTS `part_session_idx` ON `part` (`session_id`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_input_session_pending_delivery_seq_idx` ON `session_input` (`session_id`,`promoted_seq`,`delivery`,`admitted_seq`);\n",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `session_input_session_admitted_seq_idx` ON `session_input` (`session_id`,`admitted_seq`);\n",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `session_input_session_promoted_seq_idx` ON `session_input` (`session_id`,`promoted_seq`);\n",
+            "CREATE UNIQUE INDEX IF NOT EXISTS `session_message_session_seq_idx` ON `session_message` (`session_id`,`seq`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_message_session_type_seq_idx` ON `session_message` (`session_id`,`type`,`seq`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_message_session_time_created_id_idx` ON `session_message` (`session_id`,`time_created`,`id`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_message_time_created_idx` ON `session_message` (`time_created`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_project_idx` ON `session` (`project_id`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_workspace_idx` ON `session` (`workspace_id`);\n",
+            "CREATE INDEX IF NOT EXISTS `session_parent_idx` ON `session` (`parent_id`);\n",
+            "CREATE INDEX IF NOT EXISTS `todo_session_idx` ON `todo` (`session_id`);\n",
+        )
+    },
 };
 
-/// All migrations in order.
-pub const ALL_MIGRATIONS: &[Migration] = &[INITIAL_MIGRATION];
+/// All 35 migrations from opencode, in dependency order.
+///
+/// # Source
+/// Ported from `packages/core/src/database/migration.gen.ts`
+pub const ALL_MIGRATIONS: &[Migration] = &[
+    INITIAL_MIGRATION,
+    Migration {
+        id: "20260211171708_add_project_commands",
+        sql: "ALTER TABLE `project` ADD `commands` text;",
+    },
+    Migration {
+        id: "20260213144116_wakeful_the_professor",
+        sql: "CREATE TABLE IF NOT EXISTS `control_account` (\n  `email` text NOT NULL,\n  `url` text NOT NULL,\n  `access_token` text NOT NULL,\n  `refresh_token` text NOT NULL,\n  `token_expiry` integer,\n  `active` integer NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  CONSTRAINT `control_account_pk` PRIMARY KEY(`email`, `url`)\n);",
+    },
+    Migration {
+        id: "20260225215848_workspace",
+        sql: "CREATE TABLE IF NOT EXISTS `workspace` (\n  `id` text PRIMARY KEY,\n  `branch` text,\n  `project_id` text NOT NULL,\n  `config` text NOT NULL,\n  CONSTRAINT `fk_workspace_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);",
+    },
+    Migration {
+        id: "20260227213759_add_session_workspace_id",
+        sql: "ALTER TABLE `session` ADD `workspace_id` text;\nCREATE INDEX IF NOT EXISTS `session_workspace_idx` ON `session` (`workspace_id`);",
+    },
+    Migration {
+        id: "20260228203230_blue_harpoon",
+        sql: "CREATE TABLE IF NOT EXISTS `account` (\n  `id` text PRIMARY KEY,\n  `email` text NOT NULL,\n  `url` text NOT NULL,\n  `access_token` text NOT NULL,\n  `refresh_token` text NOT NULL,\n  `token_expiry` integer,\n  `selected_org_id` text,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL\n);\nCREATE TABLE IF NOT EXISTS `account_state` (\n  `id` integer PRIMARY KEY NOT NULL,\n  `active_account_id` text,\n  FOREIGN KEY (`active_account_id`) REFERENCES `account`(`id`) ON UPDATE no action ON DELETE set null\n);",
+    },
+    Migration {
+        id: "20260303231226_add_workspace_fields",
+        sql: "ALTER TABLE `workspace` ADD `type` text NOT NULL;\nALTER TABLE `workspace` ADD `name` text;\nALTER TABLE `workspace` ADD `directory` text;\nALTER TABLE `workspace` ADD `extra` text;\nALTER TABLE `workspace` DROP COLUMN `config`;",
+    },
+    Migration {
+        id: "20260309230000_move_org_to_state",
+        sql: "ALTER TABLE `account_state` ADD `active_org_id` text;\nUPDATE `account_state` SET `active_org_id` = (SELECT `selected_org_id` FROM `account` WHERE `account`.`id` = `account_state`.`active_account_id`);\nALTER TABLE `account` DROP COLUMN `selected_org_id`;",
+    },
+    Migration {
+        id: "20260312043431_session_message_cursor",
+        sql: "DROP INDEX IF EXISTS `message_session_idx`;\nDROP INDEX IF EXISTS `part_message_idx`;\nCREATE INDEX IF NOT EXISTS `message_session_time_created_id_idx` ON `message` (`session_id`,`time_created`,`id`);\nCREATE INDEX IF NOT EXISTS `part_message_id_id_idx` ON `part` (`message_id`,`id`);",
+    },
+    Migration {
+        id: "20260323234822_events",
+        sql: "CREATE TABLE IF NOT EXISTS `event_sequence` (\n  `aggregate_id` text PRIMARY KEY,\n  `seq` integer NOT NULL\n);\nCREATE TABLE IF NOT EXISTS `event` (\n  `id` text PRIMARY KEY,\n  `aggregate_id` text NOT NULL,\n  `seq` integer NOT NULL,\n  `type` text NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_event_aggregate_id_event_sequence_aggregate_id_fk` FOREIGN KEY (`aggregate_id`) REFERENCES `event_sequence`(`aggregate_id`) ON DELETE CASCADE\n);",
+    },
+    Migration {
+        id: "20260410174513_workspace-name",
+        sql: "PRAGMA foreign_keys=OFF;\nCREATE TABLE IF NOT EXISTS `__new_workspace` (\n  `id` text PRIMARY KEY,\n  `type` text NOT NULL,\n  `name` text DEFAULT '' NOT NULL,\n  `branch` text,\n  `directory` text,\n  `extra` text,\n  `project_id` text NOT NULL,\n  CONSTRAINT `fk_workspace_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\nINSERT INTO `__new_workspace`(`id`, `type`, `branch`, `name`, `directory`, `extra`, `project_id`) SELECT `id`, `type`, `branch`, `name`, `directory`, `extra`, `project_id` FROM `workspace`;\nDROP TABLE `workspace`;\nALTER TABLE `__new_workspace` RENAME TO `workspace`;\nPRAGMA foreign_keys=ON;",
+    },
+    Migration {
+        id: "20260413175956_chief_energizer",
+        sql: "CREATE TABLE IF NOT EXISTS `session_entry` (\n  `id` text PRIMARY KEY,\n  `session_id` text NOT NULL,\n  `type` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_session_entry_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\nCREATE INDEX IF NOT EXISTS `session_entry_session_idx` ON `session_entry` (`session_id`);\nCREATE INDEX IF NOT EXISTS `session_entry_session_type_idx` ON `session_entry` (`session_id`,`type`);\nCREATE INDEX IF NOT EXISTS `session_entry_time_created_idx` ON `session_entry` (`time_created`);",
+    },
+    Migration {
+        id: "20260423070820_add_icon_url_override",
+        sql: "ALTER TABLE `project` ADD `icon_url_override` text;\nUPDATE `project` SET `icon_url_override` = `icon_url` WHERE `icon_url` IS NOT NULL;",
+    },
+    Migration {
+        id: "20260427172553_slow_nightmare",
+        sql: "CREATE TABLE IF NOT EXISTS `session_message` (\n  `id` text PRIMARY KEY,\n  `session_id` text NOT NULL,\n  `type` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  `data` text NOT NULL,\n  CONSTRAINT `fk_session_message_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\nDROP INDEX IF EXISTS `session_entry_session_idx`;\nDROP INDEX IF EXISTS `session_entry_session_type_idx`;\nDROP INDEX IF EXISTS `session_entry_time_created_idx`;\nCREATE INDEX IF NOT EXISTS `session_message_session_idx` ON `session_message` (`session_id`);\nCREATE INDEX IF NOT EXISTS `session_message_session_type_idx` ON `session_message` (`session_id`,`type`);\nCREATE INDEX IF NOT EXISTS `session_message_time_created_idx` ON `session_message` (`time_created`);\nDROP TABLE IF EXISTS `session_entry`;",
+    },
+    Migration {
+        id: "20260428004200_add_session_path",
+        sql: "ALTER TABLE `session` ADD `path` text;",
+    },
+    Migration {
+        id: "20260501142318_next_venus",
+        sql: "ALTER TABLE `session` ADD `agent` text;\nALTER TABLE `session` ADD `model` text;",
+    },
+    Migration {
+        id: "20260504145000_add_sync_owner",
+        sql: "ALTER TABLE `event_sequence` ADD `owner_id` text;",
+    },
+    Migration {
+        id: "20260507164347_add_workspace_time",
+        sql: "ALTER TABLE `workspace` ADD `time_used` integer NOT NULL DEFAULT 0;",
+    },
+    Migration {
+        id: "20260510033149_session_usage",
+        sql: "ALTER TABLE `session` ADD `cost` real DEFAULT 0 NOT NULL;\nALTER TABLE `session` ADD `tokens_input` integer DEFAULT 0 NOT NULL;\nALTER TABLE `session` ADD `tokens_output` integer DEFAULT 0 NOT NULL;\nALTER TABLE `session` ADD `tokens_reasoning` integer DEFAULT 0 NOT NULL;\nALTER TABLE `session` ADD `tokens_cache_read` integer DEFAULT 0 NOT NULL;\nALTER TABLE `session` ADD `tokens_cache_write` integer DEFAULT 0 NOT NULL;\nUPDATE session SET cost = coalesce((SELECT sum(coalesce(json_extract(message.data, '$.cost'), 0)) FROM message WHERE message.session_id = session.id AND json_extract(message.data, '$.role') = 'assistant'), 0), tokens_input = coalesce((SELECT sum(coalesce(json_extract(message.data, '$.tokens.input'), 0)) FROM message WHERE message.session_id = session.id AND json_extract(message.data, '$.role') = 'assistant'), 0), tokens_output = coalesce((SELECT sum(coalesce(json_extract(message.data, '$.tokens.output'), 0)) FROM message WHERE message.session_id = session.id AND json_extract(message.data, '$.role') = 'assistant'), 0), tokens_reasoning = coalesce((SELECT sum(coalesce(json_extract(message.data, '$.tokens.reasoning'), 0)) FROM message WHERE message.session_id = session.id AND json_extract(message.data, '$.role') = 'assistant'), 0), tokens_cache_read = coalesce((SELECT sum(coalesce(json_extract(message.data, '$.tokens.cache.read'), 0)) FROM message WHERE message.session_id = session.id AND json_extract(message.data, '$.role') = 'assistant'), 0), tokens_cache_write = coalesce((SELECT sum(coalesce(json_extract(message.data, '$.tokens.cache.write'), 0)) FROM message WHERE message.session_id = session.id AND json_extract(message.data, '$.role') = 'assistant'), 0);",
+    },
+    Migration {
+        id: "20260511000411_data_migration_state",
+        sql: "CREATE TABLE IF NOT EXISTS `data_migration` (\n  `name` text PRIMARY KEY,\n  `time_completed` integer NOT NULL\n);",
+    },
+    Migration {
+        id: "20260511173437_session-metadata",
+        sql: "ALTER TABLE `session` ADD `metadata` text;",
+    },
+    Migration {
+        id: "20260601010001_normalize_storage_paths",
+        sql: "UPDATE project SET worktree = REPLACE(worktree, char(92), '/') WHERE worktree GLOB '[A-Za-z]:' || char(92) || '*' OR worktree LIKE char(92) || char(92) || '%';\nUPDATE project SET sandboxes = REPLACE(sandboxes, char(92) || char(92), '/') WHERE instr(sandboxes, char(92)) > 0 AND (worktree GLOB '[A-Za-z]:*' OR worktree LIKE '//%');\nUPDATE session SET directory = REPLACE(directory, char(92), '/') WHERE directory GLOB '[A-Za-z]:' || char(92) || '*' OR directory LIKE char(92) || char(92) || '%';\nUPDATE session SET path = REPLACE(path, char(92), '/') WHERE path IS NOT NULL AND instr(path, char(92)) > 0 AND (directory GLOB '[A-Za-z]:*' OR directory LIKE '//%');",
+    },
+    Migration {
+        id: "20260601202201_amazing_prowler",
+        sql: "DROP TABLE IF EXISTS `permission`;",
+    },
+    Migration {
+        id: "20260602002951_lowly_union_jack",
+        sql: "CREATE TABLE IF NOT EXISTS `permission` (\n  `id` text PRIMARY KEY,\n  `project_id` text NOT NULL,\n  `action` text NOT NULL,\n  `resource` text NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL,\n  CONSTRAINT `fk_permission_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\nCREATE UNIQUE INDEX IF NOT EXISTS `permission_project_action_resource_idx` ON `permission` (`project_id`,`action`,`resource`);",
+    },
+    Migration {
+        id: "20260602182828_add_project_directories",
+        sql: "CREATE TABLE IF NOT EXISTS `project_directory` (\n  `project_id` text NOT NULL,\n  `directory` text NOT NULL,\n  `type` text NOT NULL,\n  `time_created` integer NOT NULL,\n  CONSTRAINT `project_directory_pk` PRIMARY KEY(`project_id`, `directory`),\n  CONSTRAINT `fk_project_directory_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);",
+    },
+    Migration {
+        id: "20260603001617_session_message_projection_indexes",
+        sql: "DROP INDEX IF EXISTS `session_message_session_idx`;\nDROP INDEX IF EXISTS `session_message_session_type_idx`;\nCREATE INDEX IF NOT EXISTS `event_aggregate_seq_idx` ON `event` (`aggregate_id`,`seq`);\nCREATE INDEX IF NOT EXISTS `session_message_session_time_created_id_idx` ON `session_message` (`session_id`,`time_created`,`id`);\nCREATE INDEX IF NOT EXISTS `session_message_session_type_time_created_id_idx` ON `session_message` (`session_id`,`type`,`time_created`,`id`);",
+    },
+    Migration {
+        id: "20260603040000_session_message_projection_order",
+        sql: "DELETE FROM `session_message`;\nALTER TABLE `session_message` ADD COLUMN `seq` integer NOT NULL;\nDROP INDEX IF EXISTS `session_message_session_type_time_created_id_idx`;\nCREATE INDEX IF NOT EXISTS `session_message_session_seq_idx` ON `session_message` (`session_id`,`seq`);\nCREATE INDEX IF NOT EXISTS `session_message_session_type_seq_idx` ON `session_message` (`session_id`,`type`,`seq`);",
+    },
+    Migration {
+        id: "20260603141458_session_input_inbox",
+        sql: "CREATE TABLE IF NOT EXISTS `session_input` (\n  `seq` integer PRIMARY KEY AUTOINCREMENT,\n  `id` text NOT NULL UNIQUE,\n  `session_id` text NOT NULL,\n  `prompt` text NOT NULL,\n  `delivery` text NOT NULL,\n  `promoted_seq` integer,\n  `time_created` integer NOT NULL,\n  CONSTRAINT `fk_session_input_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\nCREATE INDEX IF NOT EXISTS `session_input_session_pending_seq_idx` ON `session_input` (`session_id`,`promoted_seq`,`seq`);",
+    },
+    Migration {
+        id: "20260603160727_jittery_ezekiel_stane",
+        sql: "DROP INDEX IF EXISTS `session_input_session_pending_seq_idx`;\nCREATE INDEX IF NOT EXISTS `event_aggregate_type_seq_idx` ON `event` (`aggregate_id`,`type`,`seq`);\nCREATE INDEX IF NOT EXISTS `session_input_session_pending_delivery_seq_idx` ON `session_input` (`session_id`,`promoted_seq`,`delivery`,`seq`);\nCREATE INDEX IF NOT EXISTS `session_message_session_time_created_id_idx` ON `session_message` (`session_id`,`time_created`,`id`);",
+    },
+    Migration {
+        id: "20260604172448_event_sourced_session_input",
+        sql: "DELETE FROM `session_input`;\nDELETE FROM `session_message`;\nDELETE FROM `event`;\nDELETE FROM `event_sequence`;\nUPDATE `session` SET `workspace_id` = NULL;\nDELETE FROM `workspace`;\nDROP INDEX IF EXISTS `event_aggregate_seq_idx`;\nCREATE UNIQUE INDEX IF NOT EXISTS `event_aggregate_seq_idx` ON `event` (`aggregate_id`,`seq`);\nDROP INDEX IF EXISTS `session_message_session_seq_idx`;\nCREATE UNIQUE INDEX IF NOT EXISTS `session_message_session_seq_idx` ON `session_message` (`session_id`,`seq`);\nPRAGMA foreign_keys=OFF;\nCREATE TABLE IF NOT EXISTS `__new_session_input` (\n  `id` text PRIMARY KEY,\n  `session_id` text NOT NULL,\n  `prompt` text NOT NULL,\n  `delivery` text NOT NULL,\n  `admitted_seq` integer NOT NULL,\n  `promoted_seq` integer,\n  `time_created` integer NOT NULL,\n  CONSTRAINT `fk_session_input_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);\nDROP TABLE `session_input`;\nALTER TABLE `__new_session_input` RENAME TO `session_input`;\nPRAGMA foreign_keys=ON;\nCREATE INDEX IF NOT EXISTS `session_input_session_pending_delivery_seq_idx` ON `session_input` (`session_id`,`promoted_seq`,`delivery`,`admitted_seq`);\nCREATE UNIQUE INDEX IF NOT EXISTS `session_input_session_admitted_seq_idx` ON `session_input` (`session_id`,`admitted_seq`);\nCREATE UNIQUE INDEX IF NOT EXISTS `session_input_session_promoted_seq_idx` ON `session_input` (`session_id`,`promoted_seq`);",
+    },
+    Migration {
+        id: "20260605003541_add_session_context_snapshot",
+        sql: "CREATE TABLE IF NOT EXISTS `session_context_epoch` (\n  `session_id` text PRIMARY KEY,\n  `baseline` text NOT NULL,\n  `snapshot` text NOT NULL,\n  `baseline_seq` integer NOT NULL,\n  `replacement_seq` integer,\n  `revision` integer DEFAULT 0 NOT NULL,\n  CONSTRAINT `fk_session_context_epoch_session_id_session_id_fk` FOREIGN KEY (`session_id`) REFERENCES `session`(`id`) ON DELETE CASCADE\n);",
+    },
+    Migration {
+        id: "20260605042240_add_context_epoch_agent",
+        sql: "ALTER TABLE `session_context_epoch` ADD `agent` text DEFAULT 'build' NOT NULL;",
+    },
+    Migration {
+        id: "20260611035744_credential",
+        sql: "CREATE TABLE IF NOT EXISTS `credential` (\n  `id` text PRIMARY KEY,\n  `connector_id` text NOT NULL,\n  `method_id` text NOT NULL,\n  `label` text NOT NULL,\n  `value` text NOT NULL,\n  `active` integer DEFAULT false NOT NULL,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL\n);\nCREATE UNIQUE INDEX IF NOT EXISTS `credential_connector_active_idx` ON `credential` (`connector_id`) WHERE \"credential\".\"active\" = 1;",
+    },
+    Migration {
+        id: "20260611192811_lush_chimera",
+        sql: "DROP INDEX IF EXISTS `credential_connector_active_idx`;\nDROP TABLE IF EXISTS `credential`;\nCREATE TABLE IF NOT EXISTS `credential` (\n  `id` text PRIMARY KEY,\n  `integration_id` text,\n  `label` text NOT NULL,\n  `value` text NOT NULL,\n  `connector_id` text,\n  `method_id` text,\n  `active` integer,\n  `time_created` integer NOT NULL,\n  `time_updated` integer NOT NULL\n);",
+    },
+    Migration {
+        id: "20260612174303_project_dir_strategy",
+        sql: "ALTER TABLE `project_directory` ADD `strategy` text;\nPRAGMA foreign_keys=OFF;\nCREATE TABLE IF NOT EXISTS `__new_project_directory` (\n  `project_id` text NOT NULL,\n  `directory` text NOT NULL,\n  `type` text,\n  `strategy` text,\n  `time_created` integer NOT NULL,\n  CONSTRAINT `project_directory_pk` PRIMARY KEY(`project_id`, `directory`),\n  CONSTRAINT `fk_project_directory_project_id_project_id_fk` FOREIGN KEY (`project_id`) REFERENCES `project`(`id`) ON DELETE CASCADE\n);\nINSERT INTO `__new_project_directory`(`project_id`, `directory`, `type`, `time_created`) SELECT `project_id`, `directory`, `type`, `time_created` FROM `project_directory`;\nDROP TABLE `project_directory`;\nALTER TABLE `__new_project_directory` RENAME TO `project_directory`;\nPRAGMA foreign_keys=ON;",
+    },
+];
 
 /// A migration that always fails — for testing rollback behavior.
 ///
@@ -605,10 +1067,14 @@ mod tests {
         assert!(names.contains(&"message"));
         assert!(names.contains(&"part"));
         assert!(names.contains(&"session_input"));
-        assert!(names.contains(&"_migration"));
+        assert!(names.contains(&"migration"));
+        assert!(names.contains(&"workspace"));
+        assert!(names.contains(&"account"));
+        assert!(names.contains(&"todo"));
+        assert!(names.contains(&"session_share"));
 
         // Verify migration was recorded
-        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _migration")
+        let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM migration")
             .fetch_one(db.pool())
             .await
             .unwrap();
@@ -616,7 +1082,7 @@ mod tests {
 
         // Running migrations again should be idempotent
         db.run_migrations(ALL_MIGRATIONS).await.unwrap();
-        let count2: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM _migration")
+        let count2: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM migration")
             .fetch_one(db.pool())
             .await
             .unwrap();
@@ -642,23 +1108,27 @@ mod tests {
 
         // Insert a project
         sqlx::query(
-            "INSERT INTO project (id, vcs, time_created, time_initialized) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO project (id, worktree, time_created, time_updated, sandboxes) VALUES (?1, ?2, ?3, ?4, ?5)",
         )
         .bind("proj-1")
-        .bind("git")
+        .bind("/home/test")
         .bind(now)
         .bind(now)
+        .bind("[]")
         .execute(db.pool())
         .await
         .unwrap();
 
         // Insert a session
         sqlx::query(
-            "INSERT INTO session (id, project_id, title, time_created, time_updated) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO session (id, project_id, slug, directory, title, version, time_created, time_updated) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         )
         .bind("sess-1")
         .bind("proj-1")
+        .bind("slug-1")
+        .bind("/home/test")
         .bind("Test Session")
+        .bind("1.0")
         .bind(now)
         .bind(now)
         .execute(db.pool())
@@ -868,9 +1338,9 @@ mod tests {
             "this_should_rollback table should not exist after rollback"
         );
 
-        // The migration should NOT be recorded in _migration
+        // The migration should NOT be recorded in migration
         let count: (i64,) =
-            sqlx::query_as("SELECT COUNT(*) FROM _migration WHERE id = '99999999_test_failing'")
+            sqlx::query_as("SELECT COUNT(*) FROM migration WHERE id = '99999999_test_failing'")
                 .fetch_one(db.pool())
                 .await
                 .expect("count migration should succeed");
@@ -902,13 +1372,14 @@ mod tests {
 
         // Insert test data
         sqlx::query(
-            "INSERT INTO project (id, vcs, name, time_created, time_initialized) VALUES (?1, ?2, ?3, ?4, ?5)",
+            "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         )
         .bind("proj-qr")
-        .bind("git")
+        .bind("/home/test")
         .bind("query-test")
         .bind(now)
         .bind(now)
+        .bind("[]")
         .execute(db.pool())
         .await
         .expect("insert project");
@@ -977,13 +1448,14 @@ mod tests {
                 .expect("system time")
                 .as_millis() as i64;
             sqlx::query(
-                "INSERT INTO project (id, vcs, name, time_created, time_initialized) VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO project (id, worktree, name, time_created, time_updated, sandboxes) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )
             .bind("persist-1")
-            .bind("git")
+            .bind("/home/test")
             .bind("persistent test")
             .bind(now)
             .bind(now)
+            .bind("[]")
             .execute(db.pool())
             .await
             .expect("insert project");

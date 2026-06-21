@@ -10,6 +10,7 @@
 
 pub mod account;
 pub mod agent;
+pub mod auth;
 pub mod aisdk;
 pub mod background_job;
 pub mod bus;

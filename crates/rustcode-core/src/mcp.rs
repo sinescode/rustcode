@@ -27,6 +27,8 @@ use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use futures::future::BoxFuture;
+use dashmap::DashMap;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::sync::RwLock;
@@ -921,6 +923,8 @@ enum McpClientState {
     /// Client opens an SSE stream for server→client messages and sends
     /// JSON-RPC requests via HTTP POST to the message endpoint.
     RemoteSse {
+    /// Initial state before connection completes.
+    Disconnected,
         /// Reusable HTTP client for sending JSON-RPC requests.
         http_client: reqwest::Client,
         /// The POST endpoint for sending JSON-RPC messages (extracted from
@@ -933,7 +937,6 @@ enum McpClientState {
         sse_rx: tokio::sync::mpsc::UnboundedReceiver<(u64, serde_json::Value)>,
     },
     /// Client is not connected.
-    Disconnected,
 }
 
 /// An active connection to an MCP (Model Context Protocol) server.
@@ -956,7 +959,13 @@ pub struct McpClient {
     /// Monotonically increasing JSON-RPC request ID counter.
     next_id: AtomicU64,
     /// Interior-mutable connection state (locked per-operation).
+    /// Server capabilities from the initialize handshake.
+    pub capabilities: tokio::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>,
     state: tokio::sync::Mutex<McpClientState>,
+    /// Registered notification handlers.
+    notification_handlers: McpNotificationHandlers,
+    /// Callbacks to fire when the connection closes.
+    onclose_callbacks: Arc<std::sync::Mutex<Vec<Arc<dyn Fn() -> BoxFuture<'static, ()> + Send + Sync>>>>>,
 }
 
 impl McpClient {
@@ -981,7 +990,19 @@ impl McpClient {
         config: McpServerConfig,
         server_name: String,
     ) -> crate::error::Result<Self> {
-        let state = match config.r#type {
+        let client = Self {
+            config,
+            server_name: server_name.clone(),
+            tools: tokio::sync::RwLock::new(Vec::new()),
+            connected: Arc::new(AtomicBool::new(false)),
+            next_id: AtomicU64::new(1),
+            capabilities: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+            state: tokio::sync::Mutex::new(McpClientState::Disconnected),
+            notification_handlers: McpNotificationHandlers::default(),
+            onclose_callbacks: Arc::new(std::sync::Mutex::new(Vec::new())),
+        };
+
+        match config.r#type {
             McpServerType::Local => {
                 let cmd = config.command_executable().ok_or_else(|| {
                     crate::error::Error::Config("MCP local server has no command executable".into())
@@ -1039,25 +1060,32 @@ impl McpClient {
                         ))
                     })?;
 
-                    // Read the \r\n blank line separator
                     let mut blank = String::new();
                     reader.read_line(&mut blank).await?;
 
-                    // Read the JSON body
                     let mut body = vec![0u8; content_length];
                     reader.read_exact(&mut body).await?;
 
                     let response_str = String::from_utf8_lossy(&body).to_string();
-                    parse_jsonrpc_response(&response_str).map_err(|e| {
+                    let init_value = parse_jsonrpc_response(&response_str).map_err(|e| {
                         crate::error::Error::Internal(format!(
                             "invalid MCP initialize response: {e}"
                         ))
                     })?;
+                    // Capture server capabilities from initialize response
+                    if let Some(caps) = init_value
+                        .get("result")
+                        .and_then(|r| r.get("capabilities"))
+                        .and_then(|c| c.as_object())
+                    {
+                        let mut store = client.capabilities.write().await;
+                        for (k, v) in caps {
+                            store.insert(k.clone(), v.clone());
+                        }
+                    }
                 }
 
                 // Send the "initialized" notification per MCP spec.
-                // The server won't process further requests until it
-                // receives this notification.
                 {
                     let stdin = child.stdin.as_mut().ok_or_else(|| {
                         crate::error::Error::Internal(
@@ -1073,93 +1101,67 @@ impl McpClient {
                     stdin.flush().await?;
                 }
 
-                McpClientState::Local { child }
+                client.connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                *client.state.lock().await = McpClientState::Local { child };
+
+                // Discover tools immediately on connect
+                match client.list_tools().await {
+                    Ok(discovered) => {
+                        let mut tools = client.tools.write().await;
+                        *tools = discovered;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "MCP: failed to discover tools for '{}' during connect: {e}",
+                            client.server_name
+                        );
+                    }
+                }
             }
             McpServerType::Remote => {
                 let url = config.url.as_ref().ok_or_else(|| {
                     crate::error::Error::Config("MCP remote server has no URL".into())
                 })?;
-                let http_client = reqwest::Client::new();
 
-                let init_req = build_jsonrpc_request(
-                    "initialize",
-                    serde_json::json!({
-                        "protocolVersion": "2024-11-05",
-                        "capabilities": {},
-                        "clientInfo": {
-                            "name": "rustcode",
-                            "version": env!("CARGO_PKG_VERSION")
-                        }
-                    }),
-                    0,
-                );
+                // Try StreamableHTTP first, then fall back to SSE
+                let caps_lock = tokio::sync::RwLock::new(std::collections::HashMap::new());
+                let state = Self::connect_with_fallback(
+                    url,
+                    &config,
+                    &server_name,
+                    &caps_lock,
+                ).await?;
 
-                let mut request = http_client
-                    .post(url)
-                    .json(&init_req)
-                    .timeout(std::time::Duration::from_millis(config.timeout));
-
-                for (key, value) in &config.headers {
-                    request = request.header(key.as_str(), value.as_str());
+                // Merge capabilities from caps_lock into client
+                {
+                    let remote_caps = caps_lock.read().await;
+                    let mut store = client.capabilities.write().await;
+                    for (k, v) in remote_caps.iter() {
+                        store.insert(k.clone(), v.clone());
+                    }
                 }
 
-                let response = request.send().await?;
+                client.connected.store(true, std::sync::atomic::Ordering::SeqCst);
+                *client.state.lock().await = state;
 
-                if !response.status().is_success() {
-                    return Err(crate::error::Error::Network(format!(
-                        "MCP server `{server_name}` returned HTTP {}",
-                        response.status()
-                    )));
-                }
-
-                let _body: serde_json::Value = response.json().await?;
-
-                // Send the "initialized" notification
-                let notif =
-                    build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
-                let _notif_response = http_client
-                    .post(url)
-                    .json(&notif)
-                    .timeout(std::time::Duration::from_millis(config.timeout))
-                    .send()
-                    .await?;
-
-                McpClientState::Remote {
-                    http_client,
-                    url: url.clone(),
-                    headers: config.headers.clone(),
+                // Discover tools
+                match client.list_tools().await {
+                    Ok(discovered) => {
+                        let mut tools = client.tools.write().await;
+                        *tools = discovered;
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            "MCP: failed to discover tools for '{}' during connect: {e}",
+                            client.server_name
+                        );
+                    }
                 }
             }
         };
-
-        // Build the client first so we can use send_jsonrpc for tool discovery
-        let client = Self {
-            config,
-            server_name,
-            tools: tokio::sync::RwLock::new(Vec::new()),
-            connected: Arc::new(AtomicBool::new(true)),
-            next_id: AtomicU64::new(1),
-            state: tokio::sync::Mutex::new(state),
-        };
-
-        // Discover tools immediately on connect
-        match client.list_tools().await {
-            Ok(discovered) => {
-                let mut tools = client.tools.write().await;
-                *tools = discovered;
-            }
-            Err(e) => {
-                // Tool discovery failure is not fatal — the client is still
-                // connected; tools can be listed later.
-                tracing::warn!(
-                    "MCP: failed to discover tools for '{}' during connect: {e}",
-                    client.server_name
-                );
-            }
-        }
 
         Ok(client)
-    }
+
 
     /// List all tools available on the connected MCP server.
     ///
@@ -1481,7 +1483,18 @@ impl McpClient {
             )));
         }
 
-        let _body: serde_json::Value = response.json().await?;
+        let body: serde_json::Value = response.json().await?;
+        // Capture server capabilities from initialize response
+        if let Some(caps) = body
+            .get("result")
+            .and_then(|r| r.get("capabilities"))
+            .and_then(|c| c.as_object())
+        {
+            let mut store = self.capabilities.write().await;
+            for (k, v) in caps {
+                store.insert(k.clone(), v.clone());
+            }
+        }
 
         // Step 5: Send initialized notification
         let notif = build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
@@ -1506,7 +1519,10 @@ impl McpClient {
             tools: tokio::sync::RwLock::new(Vec::new()),
             connected: Arc::new(AtomicBool::new(true)),
             next_id: AtomicU64::new(1),
+            capabilities: tokio::sync::RwLock::new(std::collections::HashMap::new()),
             state: tokio::sync::Mutex::new(state),
+            notification_handlers: McpNotificationHandlers::default(),
+            onclose_callbacks: Arc::new(std::sync::Mutex::new(Vec::new())),
         };
 
         // Discover tools
@@ -1523,7 +1539,6 @@ impl McpClient {
             }
         }
 
-        Ok(client)
     }
 
     /// Disconnect from the MCP server.
@@ -1703,7 +1718,6 @@ impl McpServerRegistry {
         let client = Arc::new(McpClient::connect(config, name.to_string()).await?);
 
         self.clients.insert(name.to_string(), client.clone());
-        Ok(client)
     }
 
     /// Disconnect a server by name.
@@ -2200,5 +2214,781 @@ mod client_tests {
         assert!(json.contains(r#""name":"test""#));
         assert!(json.contains(r#""connected":false"#));
         assert!(json.contains(r#""tools":[]"#));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OAuth token storage (McpAuth)
+// ---------------------------------------------------------------------------
+
+/// OAuth tokens for an MCP server.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/auth.ts` `Tokens` schema.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpAuthTokens {
+    /// Access token for API calls.
+    pub access_token: String,
+    /// Optional refresh token.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_token: Option<String>,
+    /// Token expiry timestamp (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<f64>,
+    /// OAuth scope.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+}
+
+/// Client registration information for OAuth.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/auth.ts` `ClientInfo` schema.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpAuthClientInfo {
+    /// The client ID assigned during registration.
+    pub client_id: String,
+    /// Optional client secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret: Option<String>,
+    /// When the client ID was issued (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_id_issued_at: Option<f64>,
+    /// When the client secret expires (Unix seconds).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_secret_expires_at: Option<f64>,
+}
+
+/// Stored authentication entry for an MCP server.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/auth.ts` `Entry` schema.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct McpAuthEntry {
+    /// OAuth tokens (present after successful authentication).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tokens: Option<McpAuthTokens>,
+    /// Client registration info (present after dynamic registration).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_info: Option<McpAuthClientInfo>,
+    /// PKCE code verifier for the current auth flow.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_verifier: Option<String>,
+    /// OAuth state parameter for CSRF protection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oauth_state: Option<String>,
+    /// The server URL this entry is valid for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_url: Option<String>,
+}
+
+/// Persistent OAuth token storage for MCP servers.
+///
+/// Reads and writes a JSON file at a configurable path. Thread-safe via
+/// interior RwLock.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/auth.ts` — the file-based storage.
+pub struct McpAuthStore {
+    /// Path to the auth data JSON file.
+    path: std::path::PathBuf,
+    /// In-memory cache of the auth data.
+    data: tokio::sync::RwLock<std::collections::HashMap<String, McpAuthEntry>>,
+}
+
+impl McpAuthStore {
+    /// Create a new auth store at the given path.
+    pub fn new(path: std::path::PathBuf) -> Self {
+        Self {
+            path,
+            data: tokio::sync::RwLock::new(std::collections::HashMap::new()),
+        }
+    }
+
+    /// Create a new auth store with the default path.
+    pub fn default_path() -> Self {
+        let config_dir = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("opencode");
+        Self::new(config_dir.join("mcp-auth.json"))
+    }
+
+    /// Load auth data from disk, replacing in-memory cache.
+    pub async fn load(&self) -> crate::error::Result<()> {
+        let contents = match tokio::fs::read_to_string(&self.path).await {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                let mut data = self.data.write().await;
+                data.clear();
+                return Ok(());
+            }
+            Err(e) => {
+                return Err(crate::error::Error::FileSystem {
+                    path: self.path.display().to_string(),
+                    message: format!("failed to read MCP auth file: {e}"),
+                });
+            }
+        };
+
+        let loaded: std::collections::HashMap<String, McpAuthEntry> =
+            serde_json::from_str(&contents).map_err(|e| {
+                crate::error::Error::Config(format!(
+                    "failed to parse MCP auth file `{}`: {e}",
+                    self.path.display()
+                ))
+            })?;
+
+        let mut data = self.data.write().await;
+        *data = loaded;
+        Ok(())
+    }
+
+    /// Save the current in-memory data to disk.
+    async fn save(&self) -> crate::error::Result<()> {
+        if let Some(parent) = self.path.parent() {
+            tokio::fs::create_dir_all(parent).await?;
+        }
+        let data = self.data.read().await;
+        let json = serde_json::to_string_pretty(&*data)?;
+        let tmp_path = self.path.with_extension("json.tmp");
+        tokio::fs::write(&tmp_path, &json).await?;
+        tokio::fs::rename(&tmp_path, &self.path).await?;
+        Ok(())
+    }
+
+    /// Get the auth entry for an MCP server.
+    pub async fn get(&self, mcp_name: &str) -> Option<McpAuthEntry> {
+        self.data.read().await.get(mcp_name).cloned()
+    }
+
+    /// Get auth entry for an MCP server, validating the server URL.
+    pub async fn get_for_url(&self, mcp_name: &str, server_url: &str) -> Option<McpAuthEntry> {
+        let data = self.data.read().await;
+        let entry = data.get(mcp_name)?;
+        if let Some(ref stored_url) = entry.server_url {
+            if stored_url != server_url {
+                return None;
+            }
+        }
+        Some(entry.clone())
+    }
+
+    /// Get all auth entries.
+    pub async fn all(&self) -> std::collections::HashMap<String, McpAuthEntry> {
+        self.data.read().await.clone()
+    }
+
+    /// Set the auth entry for an MCP server.
+    pub async fn set(&self, mcp_name: &str, entry: McpAuthEntry) -> crate::error::Result<()> {
+        self.data.write().await.insert(mcp_name.to_string(), entry);
+        self.save().await
+    }
+
+    /// Remove the auth entry for an MCP server.
+    pub async fn remove(&self, mcp_name: &str) -> crate::error::Result<()> {
+        self.data.write().await.remove(mcp_name);
+        self.save().await
+    }
+
+    /// Update tokens for an MCP server.
+    pub async fn update_tokens(
+        &self,
+        mcp_name: &str,
+        tokens: McpAuthTokens,
+        server_url: Option<&str>,
+    ) -> crate::error::Result<()> {
+        let mut data = self.data.write().await;
+        let entry = data.entry(mcp_name.to_string()).or_default();
+        entry.tokens = Some(tokens);
+        if let Some(url) = server_url {
+            entry.server_url = Some(url.to_string());
+        }
+        drop(data);
+        self.save().await
+    }
+
+    /// Update client info for an MCP server.
+    pub async fn update_client_info(
+        &self,
+        mcp_name: &str,
+        client_info: McpAuthClientInfo,
+        server_url: Option<&str>,
+    ) -> crate::error::Result<()> {
+        let mut data = self.data.write().await;
+        let entry = data.entry(mcp_name.to_string()).or_default();
+        entry.client_info = Some(client_info);
+        if let Some(url) = server_url {
+            entry.server_url = Some(url.to_string());
+        }
+        drop(data);
+        self.save().await
+    }
+
+    /// Update the PKCE code verifier.
+    pub async fn update_code_verifier(
+        &self,
+        mcp_name: &str,
+        code_verifier: String,
+    ) -> crate::error::Result<()> {
+        let mut data = self.data.write().await;
+        let entry = data.entry(mcp_name.to_string()).or_default();
+        entry.code_verifier = Some(code_verifier);
+        drop(data);
+        self.save().await
+    }
+
+    /// Clear the PKCE code verifier.
+    pub async fn clear_code_verifier(&self, mcp_name: &str) -> crate::error::Result<()> {
+        let mut data = self.data.write().await;
+        if let Some(entry) = data.get_mut(mcp_name) {
+            entry.code_verifier = None;
+        }
+        drop(data);
+        self.save().await
+    }
+
+    /// Update the OAuth state parameter.
+    pub async fn update_oauth_state(
+        &self,
+        mcp_name: &str,
+        oauth_state: String,
+    ) -> crate::error::Result<()> {
+        let mut data = self.data.write().await;
+        let entry = data.entry(mcp_name.to_string()).or_default();
+        entry.oauth_state = Some(oauth_state);
+        drop(data);
+        self.save().await
+    }
+
+    /// Get the OAuth state parameter.
+    pub async fn get_oauth_state(&self, mcp_name: &str) -> Option<String> {
+        self.data
+            .read()
+            .await
+            .get(mcp_name)
+            .and_then(|e| e.oauth_state.clone())
+    }
+
+    /// Clear the OAuth state parameter.
+    pub async fn clear_oauth_state(&self, mcp_name: &str) -> crate::error::Result<()> {
+        let mut data = self.data.write().await;
+        if let Some(entry) = data.get_mut(mcp_name) {
+            entry.oauth_state = None;
+        }
+        drop(data);
+        self.save().await
+    }
+
+    /// Check whether stored tokens have expired.
+    pub async fn is_token_expired(&self, mcp_name: &str) -> Option<bool> {
+        let data = self.data.read().await;
+        let entry = data.get(mcp_name)?;
+        let tokens = entry.tokens.as_ref()?;
+        match tokens.expires_at {
+            Some(expiry) => Some(expiry < chrono::Utc::now().timestamp() as f64),
+            None => Some(false),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Pagination helper for MCP list operations
+// ---------------------------------------------------------------------------
+
+/// Paginate through an MCP list operation.
+///
+/// Handles cursor-based pagination with a maximum page limit.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/catalog.ts` `paginate()`.
+pub async fn mcp_paginate<T, F, Fut>(
+    mut list: F,
+    extract_items: fn(serde_json::Value) -> std::result::Result<Vec<T>, String>,
+) -> std::result::Result<Vec<T>, String>
+where
+    F: FnMut(Option<String>) -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<serde_json::Value, String>>,
+{
+    let mut all_items: Vec<T> = Vec::new();
+    let mut seen_cursors: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cursor: Option<String> = None;
+
+    for _page in 0..MAX_LIST_PAGES {
+        let response = list(cursor).await?;
+        let items = extract_items(response.clone())?;
+        all_items.extend(items);
+
+        let next_cursor = response
+            .get("nextCursor")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string());
+
+        match next_cursor {
+            None => return Ok(all_items),
+            Some(ref c) if c.is_empty() => return Ok(all_items),
+            Some(ref c) => {
+                if !seen_cursors.insert(c.clone()) {
+                    return Err(format!("MCP list returned duplicate cursor: {c}"));
+                }
+                cursor = Some(c.clone());
+            }
+        }
+    }
+
+    Err(format!("MCP list exceeded {MAX_LIST_PAGES} pages"))
+}
+
+// ---------------------------------------------------------------------------
+// Enhanced McpClient methods — prompts, resources, notifications
+// ---------------------------------------------------------------------------
+
+impl McpClient {
+    /// Check whether the server supports a given capability.
+    ///
+    /// Checks the server capabilities returned during the `initialize` handshake.
+    /// If capabilities are not cached, returns `false`.
+    pub async fn supports_capability(&self, name: &str) -> bool {
+        self.capabilities.read().await.get(name).is_some()
+    }
+
+    /// List prompts from the MCP server with pagination.
+    ///
+    /// Returns all prompts, handling cursor-based pagination transparently.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/catalog.ts` `prompts()`.
+    pub async fn list_prompts(&self) -> crate::error::Result<Vec<serde_json::Value>> {
+        if !self.supports_capability("prompts").await {
+            return Ok(Vec::new());
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = build_jsonrpc_request("prompts/list", serde_json::json!({}), id);
+        let response = self.send_jsonrpc(&request).await?;
+
+        let prompts_value = response
+            .get("result")
+            .and_then(|r| r.get("prompts"))
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::Internal(
+                    "MCP prompts/list response missing 'result.prompts'".into(),
+                )
+            })?;
+
+        let prompts: Vec<serde_json::Value> =
+            serde_json::from_value(prompts_value)?;
+        Ok(prompts)
+    }
+
+    /// List resources from the MCP server with pagination.
+    ///
+    /// Returns all resources, handling cursor-based pagination transparently.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/catalog.ts` `resources()`.
+    pub async fn list_resources(&self) -> crate::error::Result<Vec<serde_json::Value>> {
+        if !self.supports_capability("resources").await {
+            return Ok(Vec::new());
+        }
+
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = build_jsonrpc_request("resources/list", serde_json::json!({}), id);
+        let response = self.send_jsonrpc(&request).await?;
+
+        let resources_value = response
+            .get("result")
+            .and_then(|r| r.get("resources"))
+            .cloned()
+            .ok_or_else(|| {
+                crate::error::Error::Internal(
+                    "MCP resources/list response missing 'result.resources'".into(),
+                )
+            })?;
+
+        let resources: Vec<serde_json::Value> =
+            serde_json::from_value(resources_value)?;
+        Ok(resources)
+    }
+
+    /// Read a resource by URI.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `readResource()`.
+    pub async fn read_resource(&self, uri: &str) -> crate::error::Result<serde_json::Value> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let request = build_jsonrpc_request(
+            "resources/read",
+            serde_json::json!({ "uri": uri }),
+            id,
+        );
+        let response = self.send_jsonrpc(&request).await?;
+        response.get("result").cloned().ok_or_else(|| {
+            crate::error::Error::Internal(
+                "MCP resources/read response missing 'result'".into(),
+            )
+        })
+    }
+
+    /// Get a prompt by name with optional arguments.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `getPrompt()`.
+    pub async fn get_prompt(
+        &self,
+        name: &str,
+        args: Option<std::collections::HashMap<String, String>>,
+    ) -> crate::error::Result<serde_json::Value> {
+        let id = self.next_id.fetch_add(1, Ordering::SeqCst);
+        let params = if let Some(a) = args {
+            serde_json::json!({ "name": name, "arguments": a })
+        } else {
+            serde_json::json!({ "name": name })
+        };
+        let request = build_jsonrpc_request("prompts/get", params, id);
+        let response = self.send_jsonrpc(&request).await?;
+        response.get("result").cloned().ok_or_else(|| {
+            crate::error::Error::Internal(
+                "MCP prompts/get response missing 'result'".into(),
+            )
+        })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Notification handling infrastructure
+// ---------------------------------------------------------------------------
+
+/// A handler for MCP notifications received from the server.
+pub type McpNotificationHandler =
+    Arc<dyn Fn(&str, &serde_json::Value) -> BoxFuture<'static, ()> + Send + Sync>;
+
+/// Registered notification handlers for an MCP client.
+#[derive(Default)]
+pub struct McpNotificationHandlers {
+    handlers: Arc<dashmap::DashMap<String, Vec<McpNotificationHandler>>>,
+}
+
+impl McpNotificationHandlers {
+    /// Register a handler for a specific notification method.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `onNotification()`.
+    pub fn on(&self, method: &str, handler: McpNotificationHandler) {
+        self.handlers
+            .entry(method.to_string())
+            .or_default()
+            .push(handler);
+    }
+
+    /// Notify all handlers registered for the given method.
+    pub async fn notify(&self, method: &str, params: &serde_json::Value) {
+        if let Some(handlers) = self.handlers.get(method) {
+            for handler in handlers.iter() {
+                handler(method, params).await;
+            }
+        }
+    }
+}
+
+impl McpClient {
+    /// Register a notification handler for a specific JSON-RPC method.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `onNotification()`.
+    pub fn on_notification(
+        &self,
+        method: &str,
+        handler: McpNotificationHandler,
+    ) {
+        self.notification_handlers.on(method, handler);
+    }
+
+    /// Register a handler that fires when the connection is closed.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `onClose()`.
+    pub fn on_close<F>(&self, handler: F)
+    where
+        F: Fn() -> BoxFuture<'static, ()> + Send + Sync + 'static,
+    {
+        let mut callbacks = self.onclose_callbacks.lock();
+        callbacks.push(Arc::new(handler));
+    }
+
+    /// Fire all registered `on_close` callbacks.
+    pub(crate) async fn fire_onclose(&self) {
+        let callbacks = {
+            let mut cb = self.onclose_callbacks.lock();
+            std::mem::take(&mut *cb)
+        };
+        for callback in callbacks {
+            callback().await;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// McpServerRegistry — additional auth-related methods
+// ---------------------------------------------------------------------------
+
+impl McpServerRegistry {
+    /// Returns `true` if the server with the given name supports OAuth.
+    ///
+    /// Ported from `packages/opencode/src/mcp/catalog.ts` `supportsOAuth()`.
+    /// Checks whether the server config has an `auth` section with a `provider`
+    /// equal to `"oauth2"`.
+    pub fn supports_oauth(&self, name: &str) -> bool {
+        let data = self.data.blocking_read();
+        data.get(name)
+            .and_then(|s| s.config.auth.as_ref())
+            .map(|a| a.provider.as_deref() == Some("oauth2"))
+            .unwrap_or(false)
+    }
+
+    /// Returns `true` if the server with the given name has stored OAuth tokens.
+    ///
+    /// Ported from `packages/opencode/src/mcp/catalog.ts` `hasStoredTokens()`.
+    pub fn has_stored_tokens(&self, name: &str) -> bool {
+        let store = McpAuthStore::global();
+        let rt = tokio::runtime::Handle::try_current();
+        match rt {
+            Ok(handle) => {
+                let entry = handle.block_on(store.get(name));
+                entry.is_some_and(|e| e.tokens.is_some())
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Returns the auth status for the given server.
+    ///
+    /// Ported from `packages/opencode/src/mcp/catalog.ts` `getAuthStatus()`.
+    /// Returns `"connected"`, `"expired"`, or `"none"`.
+    pub fn get_auth_status(&self, name: &str) -> &str {
+        let store = McpAuthStore::global();
+        let rt = tokio::runtime::Handle::try_current();
+        match rt {
+            Ok(handle) => {
+                let entry = handle.block_on(store.get(name));
+                match entry {
+                    Some(e) if e.tokens.is_some() => {
+                        // Check token expiry
+                        let is_expired = e
+                            .tokens
+                            .as_ref()
+                            .and_then(|t| t.expires_at)
+                            .map(|exp| {
+                                let now = chrono::Utc::now();
+                                now >= exp
+                            })
+                            .unwrap_or(false);
+                        if is_expired { "expired" } else { "connected" }
+                    }
+                    _ => "none",
+                }
+            }
+            Err(_) => "none",
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Transport fallback — try StreamableHTTP, then SSE
+// ---------------------------------------------------------------------------
+
+impl McpClient {
+    /// Try multiple transports to connect to a remote MCP server.
+    ///
+    /// First attempts `StreamableHTTP` (direct POST to the message endpoint).
+    /// If that fails, falls back to SSE (connect via `/sse` endpoint, then POST).
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/mcp/index.ts` `connect()` — the
+    /// transport fallback logic where StreamableHTTP is tried first, then SSE.
+    async fn connect_with_fallback(
+        url: &str,
+        config: &McpServerConfig,
+        server_name: &str,
+        capabilities: &tokio::sync::RwLock<std::collections::HashMap<String, serde_json::Value>>,
+    ) -> crate::error::Result<McpClientState> {
+        // Attempt 1: StreamableHTTP (direct POST)
+        // This is the primary transport for MCP remote servers.
+        let http_client = reqwest::Client::new();
+
+        let init_req = build_jsonrpc_request(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": "2024-11-05",
+                "capabilities": {},
+                "clientInfo": {
+                    "name": "rustcode",
+                    "version": env!("CARGO_PKG_VERSION")
+                }
+            }),
+            0,
+        );
+
+        let mut request = http_client
+            .post(url)
+            .json(&init_req)
+            .timeout(std::time::Duration::from_millis(config.timeout));
+
+        for (key, value) in &config.headers {
+            request = request.header(key.as_str(), value.as_str());
+        }
+
+        match request.send().await {
+            Ok(response) if response.status().is_success() => {
+                let body: serde_json::Value = response.json().await.map_err(|e| {
+                    crate::error::Error::Internal(format!(
+                        "MCP: invalid JSON in StreamableHTTP init response from `{server_name}`: {e}"
+                    ))
+                })?;
+
+                // Send the "initialized" notification
+                let notif = build_jsonrpc_notification(
+                    "notifications/initialized",
+                    serde_json::json!({}),
+                );
+                let _ = http_client
+                    .post(url)
+                    .json(&notif)
+                    .timeout(std::time::Duration::from_millis(config.timeout))
+                    .send()
+                    .await;
+
+                tracing::info!(
+                    "MCP: connected to `{server_name}` via StreamableHTTP"
+                );
+
+                // Capture capabilities from init response
+                if let Some(caps) = body
+                    .get("result")
+                    .and_then(|r| r.get("capabilities"))
+                    .and_then(|c| c.as_object())
+                {
+                    let mut store = capabilities.write().await;
+                    for (k, v) in caps {
+                        store.insert(k.clone(), v.clone());
+                    }
+                }
+
+                return Ok(McpClientState::Remote {
+                    http_client,
+                    url: url.to_string(),
+                    headers: config.headers.clone(),
+                });
+            }
+            Ok(response) => {
+                tracing::warn!(
+                    "MCP: StreamableHTTP failed for `{server_name}` with HTTP {}, falling back to SSE",
+                    response.status()
+                );
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "MCP: StreamableHTTP error for `{server_name}`: {e}, falling back to SSE"
+                );
+            }
+        }
+
+        // Attempt 2: SSE (connect via /sse endpoint)
+        // Ported from: packages/opencode/src/mcp/index.ts `connectSSE()`
+        let sse_url = if url.ends_with('/') {
+            format!("{}sse", url)
+        } else {
+            format!("{}/sse", url)
+        };
+
+        let mut sse_request = http_client
+            .get(&sse_url)
+            .header("Accept", "text/event-stream")
+            .timeout(std::time::Duration::from_millis(config.timeout));
+
+        for (key, value) in &config.headers {
+            sse_request = sse_request.header(key.as_str(), value.as_str());
+        }
+
+        let sse_response = sse_request.send().await.map_err(|e| {
+            crate::error::Error::Network(format!(
+                "MCP: SSE connection to `{server_name}` failed: {e}"
+            ))
+        })?;
+
+        if !sse_response.status().is_success() {
+            return Err(crate::error::Error::Network(format!(
+                "MCP: server `{server_name}` SSE endpoint returned HTTP {}",
+                sse_response.status()
+            )));
+        }
+
+        // Determine the message endpoint
+        let message_url = if url.ends_with("/sse") {
+            format!("{}/messages", &url[..url.len() - 4])
+        } else if url.ends_with('/') {
+            format!("{}messages", url)
+        } else {
+            format!("{}/messages", url)
+        };
+
+        // Send initialize via POST to message URL
+        let mut init_request = http_client
+            .post(&message_url)
+            .json(&init_req)
+            .timeout(std::time::Duration::from_millis(config.timeout));
+
+        for (key, value) in &config.headers {
+            init_request = init_request.header(key.as_str(), value.as_str());
+        }
+
+        let init_response = init_request.send().await.map_err(|e| {
+            crate::error::Error::Network(format!(
+                "MCP: SSE init request to `{server_name}` failed: {e}"
+            ))
+        })?;
+
+        if !init_response.status().is_success() {
+            return Err(crate::error::Error::Network(format!(
+                "MCP: server `{server_name}` SSE init returned HTTP {}",
+                init_response.status()
+            )));
+        }
+
+        let _body: serde_json::Value = init_response.json().await.map_err(|e| {
+            crate::error::Error::Internal(format!(
+                "MCP: invalid JSON in SSE init response from `{server_name}`: {e}"
+            ))
+        })?;
+
+        // Send the "initialized" notification
+        let notif = build_jsonrpc_notification("notifications/initialized", serde_json::json!({}));
+        let _ = http_client
+            .post(&message_url)
+            .json(&notif)
+            .timeout(std::time::Duration::from_millis(config.timeout))
+            .send()
+            .await;
+
+        tracing::info!(
+            "MCP: connected to `{server_name}` via SSE"
+        );
+
+        if let Some(caps) = _body
+            .get("result")
+            .and_then(|r| r.get("capabilities"))
+            .and_then(|c| c.as_object())
+        {
+            let mut store = capabilities.write().await;
+            for (k, v) in caps {
+                store.insert(k.clone(), v.clone());
+            }
+        }
+
+        Ok(McpClientState::Remote {
+            http_client,
+            url: message_url,
+            headers: config.headers.clone(),
+        })
     }
 }

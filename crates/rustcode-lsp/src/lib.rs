@@ -113,6 +113,37 @@ impl From<serde_json::Error> for LspError {
 pub type Result<T> = std::result::Result<T, LspError>;
 
 // =============================================================================
+// Global LSP manager singleton
+// =============================================================================
+
+use std::sync::OnceLock;
+
+/// Global LSP manager that can be initialized once and accessed from tool code.
+///
+/// This provides a singleton-style access pattern for the LSP manager,
+/// similar to how opencode's Effect-based LSP service is globally available.
+///
+/// # Source
+/// Ported from the singleton pattern in `packages/opencode/src/lsp/lsp.ts`
+/// where the LSP service is provided via Effect's `Context.Service`.
+static GLOBAL_LSP_MANAGER: OnceLock<LspManager> = OnceLock::new();
+
+/// Initialize the global LSP manager.
+///
+/// This must be called once at application startup before using LSP features.
+/// Returns `Ok(())` on success, or `Err` if already initialized.
+pub fn init_global_lsp_manager() -> std::result::Result<(), &'static str> {
+    GLOBAL_LSP_MANAGER.set(LspManager::new()).map_err(|_| "LSP manager already initialized")
+}
+
+/// Get a reference to the global LSP manager.
+///
+/// Returns `None` if [`init_global_lsp_manager`] has not been called yet.
+pub fn global_lsp_manager() -> Option<&'static LspManager> {
+    GLOBAL_LSP_MANAGER.get()
+}
+
+// =============================================================================
 // Constants
 // =============================================================================
 
@@ -389,6 +420,7 @@ fn server(id: &str, extensions: &[&str], command: &[&str]) -> LspServerInfo {
         command: Some(command.iter().map(|s| s.to_string()).collect()),
         env: None,
         initialization: None,
+        root: None,
     }
 }
 
@@ -531,6 +563,16 @@ struct LspClientState {
     alive: AtomicBool,
     /// Server ID for diagnostics and error messages.
     server_id: String,
+    /// Initialization options sent with the initialize request.
+    initialization_options: Mutex<Option<serde_json::Value>>,
+    /// Pull-based diagnostic registrations (from client/registerCapability).
+    diagnostic_registrations: RwLock<HashMap<String, serde_json::Value>>,
+    /// Synchronization kind for text document sync.
+    sync_kind: RwLock<Option<i64>>,
+    /// Whether the server supports pull diagnostics (static capability).
+    has_static_pull_diagnostics: RwLock<bool>,
+    /// Root URI for workspace/workspaceFolders responses.
+    root_uri: String,
 }
 
 impl LspClientState {
@@ -587,6 +629,11 @@ impl LspClientState {
             diagnostics: RwLock::new(Vec::new()),
             alive: AtomicBool::new(true),
             server_id: server_info.id.clone(),
+            initialization_options: Mutex::new(server_info.initialization.clone()),
+            diagnostic_registrations: RwLock::new(HashMap::new()),
+            sync_kind: RwLock::new(None),
+            has_static_pull_diagnostics: RwLock::new(false),
+            root_uri: root_uri.clone(),
         });
 
         // --- Spawn stderr logger ---
@@ -607,6 +654,24 @@ impl LspClientState {
             "processId": null,
             "rootUri": root_uri,
             "capabilities": {
+                "window": {
+                    "workDoneProgress": true
+                },
+                "workspace": {
+                    "workspaceFolders": true,
+                    "configuration": true,
+                    "didChangeWatchedFiles": {
+                        "dynamicRegistration": true
+                    },
+                    "symbol": {
+                        "symbolKind": {
+                            "valueSet": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]
+                        }
+                    },
+                    "diagnostics": {
+                        "refreshSupport": false
+                    }
+                },
                 "textDocument": {
                     "publishDiagnostics": { "versionSupport": false },
                     "synchronization": {
@@ -614,14 +679,10 @@ impl LspClientState {
                         "didChange": true,
                         "didSave": true,
                         "didClose": true
-                    }
-                },
-                "workspace": {
-                    "workspaceFolders": true,
-                    "symbol": {
-                        "symbolKind": {
-                            "valueSet": [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26]
-                        }
+                    },
+                    "diagnostic": {
+                        "dynamicRegistration": true,
+                        "relatedDocumentSupport": true
                     }
                 }
             },
@@ -635,12 +696,28 @@ impl LspClientState {
             }
         }
 
-        state
+        let init_result = state
             .send_request_timeout("initialize", init_params, INITIALIZE_TIMEOUT)
             .await
             .map_err(|e| {
                 LspError::Initialize(format!("failed to initialize '{}': {e}", server_info.id))
             })?;
+
+        // Capture sync kind and pull diagnostics support from capabilities
+        if let Some(caps) = init_result.get("capabilities") {
+            if let Some(sync) = caps.get("textDocumentSync") {
+                let kind = if let Some(n) = sync.as_i64() {
+                    Some(n)
+                } else if let Some(change) = sync.get("change").and_then(|c| c.as_i64()) {
+                    Some(change)
+                } else {
+                    None
+                };
+                *state.sync_kind.write().await = kind;
+            }
+            let has_pull = caps.get("diagnosticProvider").is_some();
+            *state.has_static_pull_diagnostics.write().await = has_pull;
+        }
 
         // Send `initialized` notification
         state
@@ -879,86 +956,215 @@ async fn read_stdout_loop(state: Arc<LspClientState>, stdout: tokio::process::Ch
 }
 
 /// Route a single JSON-RPC message from the server.
+///
+/// Distinguishes three message types:
+/// 1. Response to our request: has "id", no "method" — resolved against pending requests.
+/// 2. Server request to client: has both "id" and "method" — handled as incoming request.
+/// 3. Notification: has "method", no "id" — one-way dispatch.
 async fn dispatch_message(state: &LspClientState, message: Value) {
-    // --- Response (has "id") ---
-    if let Some(id) = message.get("id").and_then(|i| i.as_u64()) {
-        let mut pending = state.pending_requests.lock().await;
-        if let Some(tx) = pending.remove(&id) {
-            if let Some(err) = message.get("error") {
-                let msg = err
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .unwrap_or("unknown LSP error");
-                let _ = tx.send(Err(LspError::Shutdown(msg.into())));
-            } else {
-                let result = message.get("result").cloned().unwrap_or(Value::Null);
-                let _ = tx.send(Ok(result));
+    let has_id = message.get("id").and_then(|i| i.as_u64());
+    let has_method = message.get("method").and_then(|m| m.as_str());
+
+    match (has_id, has_method) {
+        // --- Response to our request: has "id" but no "method" ---
+        (Some(id), None) => {
+            let mut pending = state.pending_requests.lock().await;
+            if let Some(tx) = pending.remove(&id) {
+                if let Some(err) = message.get("error") {
+                    let msg = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or("unknown LSP error");
+                    let _ = tx.send(Err(LspError::Shutdown(msg.into())));
+                } else {
+                    let result = message.get("result").cloned().unwrap_or(Value::Null);
+                    let _ = tx.send(Ok(result));
+                }
             }
         }
-        return;
-    }
 
-    // --- Notification (has "method", no "id") ---
-    if let Some(method) = message.get("method").and_then(|m| m.as_str()) {
-        match method {
-            "textDocument/publishDiagnostics" => {
-                if let Some(params) = message.get("params") {
-                    let uri = params
-                        .get("uri")
-                        .and_then(|u| u.as_str())
-                        .unwrap_or("")
-                        .to_string();
+        // --- Server request to client: has both "id" and "method" ---
+        (Some(_id), Some(method)) => {
+            handle_server_request(state, message, method).await;
+        }
 
-                    let raw_diags = params
-                        .get("diagnostics")
-                        .and_then(|d| d.as_array())
-                        .cloned()
-                        .unwrap_or_default();
+        // --- Notification: has "method", no "id" ---
+        (None, Some(method)) => {
+            handle_notification(state, message, method).await;
+        }
 
-                    let new_diags: Vec<LspDiagnostic> =
-                        serde_json::from_value(Value::Array(raw_diags)).unwrap_or_default();
-
-                    let mut cache = state.diagnostics.write().await;
-                    cache.retain(|d| d.uri != uri);
-                    cache.extend(new_diags);
-
-                    debug!(
-                        server_id = %state.server_id,
-                        uri = %uri,
-                        count = cache.iter().filter(|d| d.uri == uri).count(),
-                        "Received diagnostics"
-                    );
-                }
-            }
-            "window/logMessage" => {
-                if let Some(params) = message.get("params") {
-                    let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or("");
-                    let level = params.get("type").and_then(|t| t.as_u64()).unwrap_or(4);
-                    match level {
-                        1 => error!(server_id = %state.server_id, "[LSP] {msg}"),
-                        2 => warn!(server_id = %state.server_id, "[LSP] {msg}"),
-                        _ => debug!(server_id = %state.server_id, "[LSP] {msg}"),
-                    }
-                }
-            }
-            "telemetry/event"
-            | "$/progress"
-            | "window/workDoneProgress/create"
-            | "$/cancelRequest" => {
-                // Progress / telemetry — silently ignored
-            }
-            other => {
-                debug!(
-                    server_id = %state.server_id,
-                    method = %other,
-                    "Unhandled LSP notification"
-                );
-            }
+        // --- Malformed: neither id nor method ---
+        (None, None) => {
+            warn!(
+                server_id = %state.server_id,
+                "Received malformed LSP message (no id, no method)"
+            );
         }
     }
 }
 
-// =============================================================================
+/// Handle a server-to-client request (has both "id" and "method").
+async fn handle_server_request(state: &LspClientState, message: Value, method: &str) {
+    // Helper to send a JSON-RPC response with the given result
+    async fn send_result(state: &LspClientState, id_val: u64, result: Value) {
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": id_val,
+            "result": result
+        });
+        let framed = frame_lsp_message(&response.to_string());
+        let mut stdin = state.stdin.lock().await;
+        if let Some(stdin) = stdin.as_mut() {
+            let _ = stdin.write_all(framed.as_bytes()).await;
+            let _ = stdin.flush().await;
+        }
+    }
+
+    let req_id = message.get("id").and_then(|i| i.as_u64()).unwrap_or(0);
+
+    match method {
+        "workspace/configuration" => {
+            // Return the server's initialization options as workspace configuration.
+            // Mirrors the TS client's `workspace/configuration` handler (client.ts lines 176-179).
+            let init_opts = state.initialization_options.lock().unwrap();
+            let config_value: Vec<Option<serde_json::Value>> = if let Some(params) = message.get("params") {
+                if let Some(items) = params.get("items").and_then(|i| i.as_array()) {
+                    items.iter().map(|item| {
+                        let section = item.get("section").and_then(|s| s.as_str());
+                        if let (Some(section), Some(opts)) = (section, init_opts.as_ref()) {
+                            section.split('.').fold(Some(opts.clone()), |acc, key| {
+                                acc.and_then(|v| v.get(key).cloned())
+                            })
+                        } else {
+                            init_opts.clone()
+                        }
+                    }).collect()
+                } else {
+                    vec![init_opts.clone()]
+                }
+            } else {
+                vec![init_opts.clone()]
+            };
+            send_result(state, req_id, serde_json::json!(config_value)).await;
+        }
+        "client/registerCapability" => {
+            // Register capabilities (e.g., pull diagnostics).
+            // Mirrors the TS client's handler (client.ts lines 180-188).
+            if let Some(params) = message.get("params") {
+                if let Some(registrations) = params.get("registrations").and_then(|r| r.as_array()) {
+                    let mut diag_regs = state.diagnostic_registrations.write().await;
+                    for reg in registrations {
+                        if let Some(id) = reg.get("id").and_then(|i| i.as_str()) {
+                            let method_name = reg.get("method").and_then(|m| m.as_str()).unwrap_or("");
+                            if method_name == "textDocument/diagnostic" {
+                                diag_regs.insert(id.to_string(), reg.clone());
+                                debug!(server_id = %state.server_id, id = %id, "Registered diagnostic capability");
+                            }
+                        }
+                    }
+                }
+            }
+            send_result(state, req_id, Value::Null).await;
+        }
+        "client/unregisterCapability" => {
+            // Unregister capabilities.
+            // Mirrors the TS client's handler (client.ts lines 190-199).
+            if let Some(params) = message.get("params") {
+                if let Some(unregs) = params.get("unregisterations").and_then(|u| u.as_array()) {
+                    let mut diag_regs = state.diagnostic_registrations.write().await;
+                    for unreg in unregs {
+                        if let Some(id) = unreg.get("id").and_then(|i| i.as_str()) {
+                            diag_regs.remove(id);
+                            debug!(server_id = %state.server_id, id = %id, "Unregistered diagnostic capability");
+                        }
+                    }
+                }
+            }
+            send_result(state, req_id, Value::Null).await;
+        }
+        "workspace/workspaceFolders" => {
+            // Return the workspace folder list.
+            // Mirrors the TS client's handler (client.ts lines 200-205).
+            send_result(state, req_id, serde_json::json!([{
+                "name": "workspace",
+                "uri": state.root_uri
+            }])).await;
+        }
+        "workspace/diagnostic/refresh" => {
+            // Acknowledge diagnostic refresh request.
+            // Mirrors the TS client's handler (client.ts line 206).
+            send_result(state, req_id, Value::Null).await;
+        }
+        other => {
+            debug!(
+                server_id = %state.server_id,
+                method = %other,
+                "Unhandled LSP server request (sending null response)"
+            );
+            // Respond with null to prevent the server from hanging
+            send_result(state, req_id, Value::Null).await;
+        }
+    }
+}
+
+/// Handle a notification from the server (has "method", no "id").
+async fn handle_notification(state: &LspClientState, message: Value, method: &str) {
+    match method {
+        "textDocument/publishDiagnostics" => {
+            if let Some(params) = message.get("params") {
+                let uri = params
+                    .get("uri")
+                    .and_then(|u| u.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let raw_diags = params
+                    .get("diagnostics")
+                    .and_then(|d| d.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+
+                let new_diags: Vec<LspDiagnostic> =
+                    serde_json::from_value(Value::Array(raw_diags)).unwrap_or_default();
+
+                let mut cache = state.diagnostics.write().await;
+                cache.retain(|d| d.uri != uri);
+                cache.extend(new_diags);
+
+                debug!(
+                    server_id = %state.server_id,
+                    uri = %uri,
+                    count = cache.iter().filter(|d| d.uri == uri).count(),
+                    "Received diagnostics"
+                );
+            }
+        }
+        "window/logMessage" => {
+            if let Some(params) = message.get("params") {
+                let msg = params.get("message").and_then(|m| m.as_str()).unwrap_or("");
+                let level = params.get("type").and_then(|t| t.as_u64()).unwrap_or(4);
+                match level {
+                    1 => error!(server_id = %state.server_id, "[LSP] {msg}"),
+                    2 => warn!(server_id = %state.server_id, "[LSP] {msg}"),
+                    _ => debug!(server_id = %state.server_id, "[LSP] {msg}"),
+                }
+            }
+        }
+        "telemetry/event"
+        | "$/progress"
+        | "window/workDoneProgress/create"
+        | "$/cancelRequest" => {
+            // Progress / telemetry — silently ignored
+        }
+        other => {
+            debug!(
+                server_id = %state.server_id,
+                method = %other,
+                "Unhandled LSP notification"
+            );
+        }
+    }
+}// =============================================================================
 // LspClient
 // =============================================================================
 
@@ -975,6 +1181,8 @@ pub struct LspClient {
     pub directory: String,
     /// Internal connection state.
     state: Arc<LspClientState>,
+    /// Tracked open files (file path -> version number).
+    open_files: RwLock<HashMap<String, u32>>,
 }
 
 impl LspClient {
@@ -991,6 +1199,7 @@ impl LspClient {
             root: root_str.clone(),
             directory: root_str,
             state,
+            open_files: RwLock::new(HashMap::new()),
         })
     }
 
@@ -1051,8 +1260,230 @@ impl LspClient {
         Ok(serde_json::from_value(result)?)
     }
 
+    /// Open a file and send textDocument/didOpen notification.
+    ///
+    /// Returns the version number assigned to the file.
+    /// If the file is already open, sends textDocument/didChange instead.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/client.ts` `notify.open()` (lines 554–621).
+    pub async fn open_file(&self, file_path: &str) -> Result<u32> {
+        use tokio::io::AsyncReadExt;
+
+        let uri = path_to_uri(Path::new(file_path));
+        let mut file = tokio::fs::File::open(file_path).await
+            .map_err(|e| LspError::Io(e))?;
+        let mut text = String::new();
+        file.read_to_string(&mut text).await
+            .map_err(|e| LspError::Io(e))?;
+
+        let ext = Path::new(file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+        let language_id = rustcode_core::lsp::language_id_for_extension(&ext);
+
+        let mut open_files = self.open_files.write().await;
+
+        if let Some(version) = open_files.get(file_path) {
+            // File already open — send didChange
+            let next_version = version + 1;
+
+            // Send workspace/didChangeWatchedFiles (change type)
+            let _ = self.state.send_notification(
+                "workspace/didChangeWatchedFiles",
+                serde_json::json!({
+                    "changes": [{
+                        "uri": uri,
+                        "type": 2  // FILE_CHANGE_CHANGED
+                    }]
+                }),
+            ).await;
+
+            // Send textDocument/didChange
+            let sync_kind = *self.state.sync_kind.read().await;
+            let content_changes = if sync_kind == Some(2) {
+                // Incremental sync — send full replacement range
+                let lines: Vec<&str> = text.split('
+').collect();
+                let end_line = lines.len().saturating_sub(1);
+                let end_char = lines.last().map(|l| l.len()).unwrap_or(0);
+                serde_json::json!([{
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": end_line, "character": end_char }
+                    },
+                    "text": text
+                }])
+            } else {
+                serde_json::json!([{ "text": text }])
+            };
+
+            let _ = self.state.send_notification(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "version": next_version
+                    },
+                    "contentChanges": content_changes
+                }),
+            ).await;
+
+            open_files.insert(file_path.to_string(), next_version);
+            return Ok(next_version);
+        }
+
+        // New file — send didOpen
+        // Send workspace/didChangeWatchedFiles (create type)
+        let _ = self.state.send_notification(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({
+                "changes": [{
+                    "uri": uri,
+                    "type": 1  // FILE_CHANGE_CREATED
+                }]
+            }),
+        ).await;
+
+        // Send textDocument/didOpen
+        let _ = self.state.send_notification(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": language_id,
+                    "version": 0,
+                    "text": text
+                }
+            }),
+        ).await;
+
+        open_files.insert(file_path.to_string(), 0);
+        Ok(0)
+    }
+
+    /// Request textDocument/hover information.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `hover()` (lines 379–388).
+    pub async fn hover(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        let uri = path_to_uri(Path::new(file));
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        });
+        self.state.send_request("textDocument/hover", params).await
+    }
+
+    /// Request textDocument/definition (go-to-definition).
+    ///
+    /// Returns either a Location or a Vec of LocationLink.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `definition()` (lines 390–400).
+    pub async fn definition(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        let uri = path_to_uri(Path::new(file));
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        });
+        self.state.send_request("textDocument/definition", params).await
+    }
+
+    /// Request textDocument/references.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `references()` (lines 402–413).
+    pub async fn references(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        let uri = path_to_uri(Path::new(file));
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character },
+            "context": { "includeDeclaration": true }
+        });
+        self.state.send_request("textDocument/references", params).await
+    }
+
+    /// Request textDocument/implementation.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `implementation()` (lines 415–425).
+    pub async fn implementation(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        let uri = path_to_uri(Path::new(file));
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        });
+        self.state.send_request("textDocument/implementation", params).await
+    }
+
+    /// Request textDocument/completion.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` (completion protocol).
+    pub async fn completions(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        let uri = path_to_uri(Path::new(file));
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        });
+        self.state.send_request("textDocument/completion", params).await
+    }
+
+    /// Request textDocument/prepareCallHierarchy.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `prepareCallHierarchy()` (lines 445–455).
+    pub async fn prepare_call_hierarchy(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        let uri = path_to_uri(Path::new(file));
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri },
+            "position": { "line": line, "character": character }
+        });
+        self.state.send_request("textDocument/prepareCallHierarchy", params).await
+    }
+
+    /// Request callHierarchy/incomingCalls.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `incomingCalls()` (lines 474–476).
+    pub async fn incoming_calls(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        // First, prepare the call hierarchy to get the item
+        let items = self.prepare_call_hierarchy(file, line, character).await?;
+        let item = items.as_array()
+            .and_then(|arr| arr.first().cloned())
+            .unwrap_or(Value::Null);
+        if item.is_null() {
+            return Ok(serde_json::json!([]));
+        }
+        self.state.send_request("callHierarchy/incomingCalls", serde_json::json!({
+            "item": item
+        })).await
+    }
+
+    /// Request callHierarchy/outgoingCalls.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `outgoingCalls()` (lines 478–480).
+    pub async fn outgoing_calls(&self, file: &str, line: u32, character: u32) -> Result<Value> {
+        // First, prepare the call hierarchy to get the item
+        let items = self.prepare_call_hierarchy(file, line, character).await?;
+        let item = items.as_array()
+            .and_then(|arr| arr.first().cloned())
+            .unwrap_or(Value::Null);
+        if item.is_null() {
+            return Ok(serde_json::json!([]));
+        }
+        self.state.send_request("callHierarchy/outgoingCalls", serde_json::json!({
+            "item": item
+        })).await
+    }
+
     /// Gracefully shut down the language server.
     pub async fn shutdown(&self) -> Result<()> {
+        self.open_files.write().await.clear();
         self.state.shutdown().await
     }
 }
@@ -1156,6 +1587,68 @@ impl LspManager {
             .collect()
     }
 
+    /// Find and connect to a server that supports the given file.
+    ///
+    /// Looks up servers that handle the file's extension, determines the
+    /// project root for that file, and spawns the server if not already running.
+    ///
+    /// Returns the matching client, or `None` if no server handles the file.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/lsp/lsp.ts` `getClients()` (lines 210–299).
+    pub async fn get_client_for_file(&self, file_path: &str, workspace_root: &Path) -> Result<Option<Arc<LspClient>>> {
+        let ext = Path::new(file_path)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| format!(".{e}"))
+            .unwrap_or_default();
+
+        let servers = get_server_for_file(&ext);
+        if servers.is_empty() {
+            return Ok(None);
+        }
+
+        // Try each candidate server
+        for server_info in servers {
+            // Check if already connected
+            {
+                let clients = self.clients.read().expect("lock poisoned");
+                if let Some(existing) = clients.get(&server_info.id) {
+                    return Ok(Some(Arc::clone(existing)));
+                }
+            }
+
+            // Determine root for this file.
+            // Use server_info.root hint if set, otherwise use workspace_root.
+            let root_dir = if let Some(root_str) = &server_info.root {
+                let candidate = Path::new(root_str);
+                if candidate.is_absolute() {
+                    candidate.to_path_buf()
+                } else {
+                    workspace_root.join(root_str)
+                }
+            } else {
+                workspace_root.to_path_buf()
+            };
+
+            // Connect to the server
+            match self.connect(server_info, &root_dir).await {
+                Ok(client) => return Ok(Some(client)),
+                Err(e) => {
+                    warn!(
+                        server_id = %server_info.id,
+                        error = %e,
+                        "Failed to connect LSP server for file"
+                    );
+                    // Try next server
+                    continue;
+                }
+            }
+        }
+
+        Ok(None)
+    }
+
     /// Scan the workspace and update the server fleet.
     ///
     /// Detects required servers, starts missing ones, and stops servers
@@ -1243,9 +1736,58 @@ impl Default for LspManager {
 // =============================================================================
 
 /// Convert a filesystem path to a `file://` URI.
+///
+/// Properly percent-encodes special characters in the path (spaces, unicode, etc.)
+/// matching the behavior of Node.js `pathToFileURL()`.
+///
+/// # Source
+/// Ported from `packages/opencode/src/lsp/lsp.ts` `pathToFileURL()` usage.
 fn path_to_uri(path: &Path) -> String {
     let abs = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-    format!("file://{}", abs.display())
+    let path_str = abs.to_string_lossy();
+    // Encode characters that are not valid in a file:// URI
+    let encoded: String = path_str
+        .chars()
+        .flat_map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '/' | '_' | '-' | '.' | ':' | '@' | '!' | '~' | '*' | ''' | '(' | ')' => {
+                vec![c]
+            }
+            ' ' => vec!['%', '2', '0'],
+            '#' => vec!['%', '2', '3'],
+            '%' => vec!['%', '2', '5'],
+            '&' => vec!['%', '2', '6'],
+            '+' => vec!['%', '2', 'B'],
+            ',' => vec!['%', '2', 'C'],
+            ';' => vec!['%', '3', 'B'],
+            '?' => vec!['%', '3', 'F'],
+            '[' => vec!['%', '5', 'B'],
+            ']' => vec!['%', '5', 'D'],
+            other => {
+                let mut buf = [0u8; 4];
+                let s = other.encode_utf8(&mut buf);
+                s.bytes().flat_map(|b| {
+                    vec!['%', hex_digit(b >> 4), hex_digit(b & 0x0f)]
+                }).collect()
+            }
+        })
+        .collect();
+    // Ensure three slashes after "file:"
+    if cfg!(windows) {
+        format!("file:///{}", encoded.trim_start_matches('/'))
+    } else {
+        if encoded.starts_with("//") {
+            format!("file:{}", encoded)
+        } else {
+            format!("file://{}", encoded)
+        }
+    }
+}
+
+fn hex_digit(v: u8) -> char {
+    match v {
+        0..=9 => (b'0' + v) as char,
+        _ => (b'A' + v - 10) as char,
+    }
 }
 
 // =============================================================================

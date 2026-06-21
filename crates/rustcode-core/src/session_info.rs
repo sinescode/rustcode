@@ -96,6 +96,10 @@ pub struct SessionInfoV2 {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<serde_json::Value>,
 
+    /// Session version string
+    #[serde(default)]
+    pub version: String,
+
     /// Revert information
     #[serde(skip_serializing_if = "Option::is_none")]
     pub revert: Option<RevertInfo>,
@@ -345,6 +349,7 @@ mod tests {
             share_url: None,
             summary: None,
             metadata: None,
+            version: String::new(),
             revert: None,
             permission: None,
         };

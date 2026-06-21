@@ -180,6 +180,13 @@ pub struct PtyAttachInput {
     /// Absolute output cursor to replay from.
     /// -1 tails from current end; omitted replays the full retained buffer.
     pub cursor: Option<i64>,
+    /// Optional callback for incoming data chunks (called synchronously from data path).
+    /// Use this for live streaming; consider keeping this lightweight/non-blocking.
+    #[cfg(feature = "pty_callbacks")]
+    pub on_data: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
+    /// Optional callback for when the session ends (process exit or teardown).
+    #[cfg(feature = "pty_callbacks")]
+    pub on_end: Option<std::sync::Arc<dyn Fn(Option<u64>) + Send + Sync>>,
 }
 
 /// Attachment handle — replay, write, activate, detach.
@@ -299,12 +306,16 @@ impl PtySession {
 impl PtyAttachment {
     pub fn write(&self, data: &[u8]) -> Result<(), PtyError> {
         let _ = data;
-        Ok(())
+        Err(PtyError::Other("PtyAttachment is a stub; use PtyLiveAttachment instead".into()))
     }
 
-    pub fn activate(&self) {}
+    pub fn activate(&self) {
+        // Stub
+    }
 
-    pub fn detach(&self) {}
+    pub fn detach(&self) {
+        // Stub
+    }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -463,14 +474,13 @@ pub fn encode_meta_frame(cursor: i64) -> Vec<u8> {
 
 /// Decode an incoming WebSocket data frame.
 ///
-/// If the first byte is `0x01`, the payload is everything after the control
-/// byte. Otherwise the raw bytes are treated as UTF-8 text.
+/// Inbound frames are treated as raw UTF-8 text, matching the OpenCode PTY
+/// protocol where all client-to-server data is plain text or binary UTF-8.
+///
+/// # Source
+///  lines 30–37 .
 pub fn decode_input(data: &[u8]) -> Option<String> {
-    if data.first() == Some(&0x01) {
-        String::from_utf8(data[1..].to_vec()).ok()
-    } else {
-        String::from_utf8(data.to_vec()).ok()
-    }
+    String::from_utf8(data.to_vec()).ok()
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -663,6 +673,17 @@ pub trait PtyService: Send + Sync {
         id: PtyId,
         data: String,
     ) -> impl std::future::Future<Output = Result<(), PtyError>> + Send;
+
+    /// Attach to a PTY session to receive live output and send input.
+    /// Returns an attachment handle with replay buffer, cursor, write, activate, and detach capabilities.
+    ///
+    /// # Source
+    ///  lines 289–340 .
+    fn attach(
+        &self,
+        id: PtyId,
+        input: PtyAttachInput,
+    ) -> impl std::future::Future<Output = Result<PtyLiveAttachment, PtyError>> + Send;
 }
 
 /// PTY service error.
@@ -956,10 +977,8 @@ mod tests {
     // ── decode_input tests ────────────────────────────────────────────────
 
     #[test]
-    fn test_decode_input_data_frame() {
-        let mut data = vec![0x01];
-        data.extend_from_slice(b"hello");
-        assert_eq!(decode_input(&data).as_deref(), Some("hello"));
+    fn test_decode_input_plain_text() {
+        assert_eq!(decode_input(b"hello").as_deref(), Some("hello"));
     }
 
     #[test]
@@ -978,7 +997,8 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_input_data_frame_invalid_utf8() {
+    fn test_decode_input_invalid_utf8_after_ctrl() {
+        // 0x01 followed by 0xFF is invalid UTF-8 (0xFF is never valid)
         assert_eq!(decode_input(&[0x01, 0xFF]), None);
     }
 
@@ -1163,5 +1183,168 @@ mod tests {
         let _t3 = svc.issue("pty_c");
         // Still at or below capacity (one evicted)
         assert!(svc.tickets.len() <= 2);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PTY Opts / Proc (portable-pty interface types)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Options for spawning a PTY.
+///
+/// # Source
+/// `packages/core/src/pty/pty.ts` lines 10–16 `Opts`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyOpts {
+    /// Terminal type name (e.g. "xterm-256color")
+    pub name: String,
+    /// Number of columns
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cols: Option<u32>,
+    /// Number of rows
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows: Option<u32>,
+    /// Working directory
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    /// Environment variables
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub env: Option<HashMap<String, String>>,
+}
+
+impl PtyOpts {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            cols: None,
+            rows: None,
+            cwd: None,
+            env: None,
+        }
+    }
+}
+
+/// Exit event from a PTY process.
+///
+/// # Source
+/// `packages/core/src/pty/pty.ts` lines 5–8 `Exit`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PtyExit {
+    /// Exit code
+    pub exit_code: i32,
+    /// Signal number or name (Unix)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signal: Option<i32>,
+}
+
+/// A disposable handle (subscription cleanup).
+///
+/// # Source
+/// `packages/core/src/pty/pty.ts` lines 1–3 `Disp`.
+pub trait PtyDisp: Send + Sync {
+    fn dispose(&self);
+}
+
+/// PTY process handle interface.
+///
+/// # Source
+/// `packages/core/src/pty/pty.ts` lines 18–25 `Proc`.
+pub trait PtyProc: Send + Sync {
+    /// Process ID
+    fn pid(&self) -> u32;
+    /// Register a data listener; returns a disposable
+    fn on_data(&self, listener: Box<dyn Fn(String) + Send + Sync>) -> Box<dyn PtyDisp>;
+    /// Register an exit listener; returns a disposable
+    fn on_exit(&self, listener: Box<dyn Fn(PtyExit) + Send + Sync>) -> Box<dyn PtyDisp>;
+    /// Write data to the PTY stdin
+    fn write(&self, data: &str);
+    /// Resize the terminal
+    fn resize(&self, cols: u32, rows: u32);
+    /// Kill the process with an optional signal
+    fn kill(&self, signal: Option<&str>);
+}
+
+impl std::fmt::Debug for dyn PtyProc {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PtyProc").field("pid", &self.pid()).finish()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PTY Attachment — replay, write, activate, detach (real implementation)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// A live PTY attachment handle with actual process interaction.
+///
+/// # Source
+/// `packages/core/src/pty.ts` lines 84–93 `Attachment`.
+#[derive(Clone)]
+pub struct PtyLiveAttachment {
+    /// Retained output from the requested cursor to current end
+    pub replay: String,
+    /// Absolute output cursor after replay
+    pub cursor: u64,
+    /// Channel to send writes to the PTY process
+    write_tx: mpsc::UnboundedSender<String>,
+    /// Whether this attachment has been activated
+    active: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Whether this attachment has been detached
+    detached: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PtyLiveAttachment {
+    pub fn new(
+        replay: String,
+        cursor: u64,
+        write_tx: mpsc::UnboundedSender<String>,
+    ) -> Self {
+        Self {
+            replay,
+            cursor,
+            write_tx,
+            active: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            detached: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        }
+    }
+
+    /// Write data to the PTY process stdin.
+    pub fn write(&self, data: &str) -> Result<(), PtyError> {
+        if self.detached.load(std::sync::atomic::Ordering::SeqCst) {
+            return Err(PtyError::Other("attachment is detached".into()));
+        }
+        self.write_tx.send(data.to_string()).map_err(|_| {
+            PtyError::Io("failed to send write to PTY process".into())
+        })
+    }
+
+    /// Activate the attachment — start live data delivery.
+    /// After activation, the subscriber will receive live data.
+    pub fn activate(&self) {
+        self.active.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Detach the attachment — stop live data delivery.
+    pub fn detach(&self) {
+        self.detached.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Check if this attachment is active.
+    pub fn is_active(&self) -> bool {
+        self.active.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Check if this attachment is detached.
+    pub fn is_detached(&self) -> bool {
+        self.detached.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl std::fmt::Debug for PtyLiveAttachment {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PtyLiveAttachment")
+            .field("cursor", &self.cursor)
+            .field("active", &self.is_active())
+            .field("detached", &self.is_detached())
+            .finish()
     }
 }

@@ -427,7 +427,28 @@ pub fn unref(_child: &mut tokio::process::Child) {}
 // ProcessService
 // ---------------------------------------------------------------------------
 
+/// Create an `Error` from an abort signal reason.
+///
+/// Ported from: `process.ts` — `abortError()`
+pub fn abort_error(message: &str) -> AppProcessError {
+    AppProcessError::Exited {
+        command: String::new(),
+        exit_code: None,
+        stderr: Some("aborted".into()),
+        cause: Some(message.into()),
+    }
+}
+
+/// Wait for an abort signal, returning an error when it fires.
+///
+/// Ported from: `process.ts` — `waitForAbort()`
+pub async fn wait_for_abort(token: &tokio_util::sync::CancellationToken) -> AppProcessError {
+    token.cancelled().await;
+    abort_error("process aborted via cancellation token")
+}
+
 /// Service for spawning and managing child processes.
+
 ///
 /// Ported from: `process.ts` — main service
 pub struct ProcessService;
@@ -484,8 +505,23 @@ impl ProcessService {
                     StdinInput::Binary(b) => {
                         drop(stdin.write_all(b));
                     }
-                    StdinInput::Stream(_rx) => {
-                        // Stream stdin is handled by spawn_with_stream_stdin
+                    StdinInput::Stream(rx) => {
+                        // Stream stdin: forward chunks from the receiver to stdin
+                        let mut rx = rx.lock().unwrap();
+                        while let Ok(chunk) = rx.try_recv() {
+                            let _ = stdin.write_all(&chunk);
+                        }
+                        // Spawn a task to forward remaining chunks
+                        let mut stdin_clone = child.stdin.take();
+                        if let Some(mut s) = stdin_clone {
+                            tokio::spawn(async move {
+                                use tokio::io::AsyncWriteExt;
+                                while let Some(chunk) = rx.recv().await {
+                                    let _ = s.write_all(&chunk).await;
+                                }
+                                let _ = s.shutdown().await;
+                            });
+                        }
                     }
                 }
             }

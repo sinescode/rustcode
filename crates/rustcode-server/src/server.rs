@@ -8,6 +8,7 @@ use std::sync::Arc;
 use std::time::Instant;
 use tokio::net::TcpListener;
 use tokio::signal;
+use tower_http::compression::CompressionLayer;
 use tracing::info;
 
 use crate::cors::cors_layer;
@@ -128,11 +129,17 @@ impl Default for ServerConfig {
 /// # Source
 /// Ported from `packages/opencode/src/server/routes/instance/httpapi/server.ts`
 /// `createRoutes()` function (lines 261–285) which merges all route layers and middleware.
-pub fn build_router(state: Arc<AppState>) -> Router {
-    let cors = cors_layer(&[]);
+pub fn build_router(state: Arc<AppState>, config: &ServerConfig) -> Router {
+    // Build CORS layer from config — no longer hardcoded empty
+    let cors = match &config.cors_origins {
+        Some(origins) => cors_layer(origins),
+        None => cors_layer(&[]), // None means allow all
+    };
+
+    // Auth is handled by the auth middleware (which reads env vars at request time)
 
     Router::new()
-        // ── Global routes (no auth middleware) ──────────────────────────
+        // ── Global routes (no auth — health, global/health) ────────────
         .merge(routes::global::global_routes(state.clone()))
         .merge(routes::health::health_routes(state.clone()))
         // ── Control routes ──────────────────────────────────────────────
@@ -168,7 +175,15 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .merge(routes::metadata::metadata_routes(state.clone()))
         // ── Structured query ─────────────────────────────────────────────
         .merge(routes::query::query_routes(state.clone()))
-        // ── CORS ────────────────────────────────────────────────────────
+        // ── V2 API routes (under /api/) ──────────────────────────────────
+        .merge(routes::api::api_routes(state.clone()))
+        // ── Compression (gzip/deflate for compressible responses) ──────
+        .layer(CompressionLayer::new())
+        // ── Auth middleware (checks OPENCODE_SERVER_PASSWORD) ──────────
+        // Apply auth as a route layer so public routes bypass it.
+        // The auth middleware itself skips public paths.
+        .layer(axum::middleware::from_fn(crate::auth::auth_middleware))
+        // ── CORS (wired from ServerConfig) ──────────────────────────────
         .layer(cors)
 }
 
@@ -181,7 +196,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
 /// # Errors
 /// Returns an error if the server fails to bind to the address.
 pub async fn serve(state: Arc<AppState>, config: ServerConfig) -> anyhow::Result<()> {
-    let router = build_router(state);
+    let router = build_router(state, &config);
     let host: std::net::IpAddr = config
         .hostname
         .parse()

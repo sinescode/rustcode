@@ -1213,30 +1213,38 @@ enum SessionCommand {
 fn main() {
     let cli = Cli::parse();
 
-    // Initialize tracing subscriber.
+    // Set environment variables for observability (matching opencode middleware).
     //
-    // Ported from: `packages/opencode/src/index.ts` — middleware sets
-    // OPENCODE_PRINT_LOGS and OPENCODE_LOG_LEVEL env vars. We mirror that
-    // via clap args and configure tracing accordingly.
-    let env_filter = if cli.print_logs {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(cli.log_level.to_string()))
-    } else {
-        tracing_subscriber::EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("off"))
-    };
+    // Ported from: `packages/opencode/src/index.ts` lines 66-68 — middleware sets
+    // OPENCODE_PRINT_LOGS and OPENCODE_LOG_LEVEL env vars before the observability
+    // layer reads them, so it sees the CLI overrides.
+    if cli.print_logs {
+        std::env::set_var("OPENCODE_PRINT_LOGS", "1");
+    }
+    std::env::set_var("OPENCODE_LOG_LEVEL", cli.log_level.to_string());
 
-    tracing_subscriber::fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .init();
-
-    tracing::info!(
-        "rustcode starting (version={}, pure={}, print_logs={})",
-        env!("CARGO_PKG_VERSION"),
-        cli.pure,
-        cli.print_logs
-    );
+    // Initialize the observability subsystem.
+    //
+    // Ported from: `packages/core/src/observability.ts` — the `layer` composition
+    // that sets up file logging, optional stderr output, and OTLP export.
+    let mut observability = rustcode_core::observability::ObservabilityService::new();
+    match observability.init() {
+        Ok(true) => {
+            tracing::info!(
+                "rustcode starting (version={}, pure={}, print_logs={}, log_level={})",
+                env!("CARGO_PKG_VERSION"),
+                cli.pure,
+                cli.print_logs,
+                cli.log_level,
+            );
+        }
+        Ok(false) => {
+            // Already initialized — fall through
+        }
+        Err(e) => {
+            eprintln!("Warning: failed to initialize observability: {e}");
+        }
+    }
 
     // Build the async runtime and dispatch.
     //
