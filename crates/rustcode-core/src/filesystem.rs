@@ -1278,6 +1278,14 @@ pub fn grep_search(root: &Path, input: &GrepInput) -> Result<Vec<Match>, FileSys
         }
 
         let absolute = root.join(file_entry.path.as_str());
+
+        // Skip files larger than 10MB to prevent OOM
+        if let Ok(meta) = std::fs::metadata(&absolute) {
+            if meta.len() > 10 * 1024 * 1024 {
+                continue;
+            }
+        }
+
         let content = match std::fs::read_to_string(&absolute) {
             Ok(c) => c,
             Err(_) => continue, // Skip binary/unreadable files

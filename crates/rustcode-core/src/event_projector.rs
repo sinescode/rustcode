@@ -282,6 +282,8 @@ pub async fn commit_sync_event(
     data: &serde_json::Value,
     sync_version: u32,
 ) -> Result<(u64, EventPayload), EventError> {
+    use sqlx::Transaction;
+
     // Get the next sequence number
     let current_seq = db
         .get_event_sequence(aggregate_id)
@@ -302,15 +304,37 @@ pub async fn commit_sync_event(
         event_type.to_string()
     };
 
-    // Insert event record
-    db.insert_event(event_id, aggregate_id, next_seq, &versioned_type, &data_str)
-        .await
-        .map_err(|e| EventError::Internal(format!("DB error inserting event: {e}")))?;
+    // Use a transaction to atomically insert event + update sequence
+    let mut tx = db.begin().await
+        .map_err(|e| EventError::Internal(format!("DB error starting transaction: {e}")))?;
 
-    // Update event sequence
-    db.upsert_event_sequence(aggregate_id, next_seq, None)
-        .await
-        .map_err(|e| EventError::Internal(format!("DB error updating sequence: {e}")))?;
+    // Insert event record within transaction
+    sqlx::query(
+        "INSERT INTO event (id, aggregate_id, seq, type, data) VALUES (?1, ?2, ?3, ?4, ?5)"
+    )
+    .bind(event_id)
+    .bind(aggregate_id)
+    .bind(next_seq as i64)
+    .bind(&versioned_type)
+    .bind(&data_str)
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| EventError::Internal(format!("DB error inserting event: {e}")))?;
+
+    // Update event sequence within transaction
+    sqlx::query(
+        "INSERT INTO event_sequence (aggregate_id, seq, time_updated) VALUES (?1, ?2, ?3)
+         ON CONFLICT(aggregate_id) DO UPDATE SET seq = ?2, time_updated = ?3"
+    )
+    .bind(aggregate_id)
+    .bind(next_seq as i64)
+    .bind(chrono::Utc::now().timestamp_millis())
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| EventError::Internal(format!("DB error updating sequence: {e}")))?;
+
+    tx.commit().await
+        .map_err(|e| EventError::Internal(format!("DB error committing transaction: {e}")))?;
 
     // Build the event payload for projection
     let payload = EventPayload {
@@ -324,7 +348,7 @@ pub async fn commit_sync_event(
         replay: false,
     };
 
-    // Project the event
+    // Project the event (outside the transaction to avoid long-held locks)
     projector.project_event(&payload).await?;
 
     Ok((next_seq as u64, payload))

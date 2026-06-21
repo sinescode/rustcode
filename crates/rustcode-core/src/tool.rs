@@ -43,8 +43,8 @@ pub struct ToolContext {
     pub call_id: Option<String>,
     /// Extra context data
     pub extra: HashMap<String, serde_json::Value>,
-    /// Current message history
-    pub messages: Vec<crate::provider::ChatMessage>,
+    /// Current message history (Arc<[]> for zero-copy sharing across tool calls)
+    pub messages: Arc<[crate::provider::ChatMessage]>,
     /// Optional callback to ask the user for permission.
     ///
     /// The callback receives (permission_name, resource_pattern) and

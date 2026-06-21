@@ -98,9 +98,9 @@ impl TruncateService {
     pub async fn write(&self, session_id: &str, tool_call_id: &str, content: &str) -> std::io::Result<String> {
         let opts = self.options.read().await;
         let dir = opts.dir.join(session_id);
-        std::fs::create_dir_all(&dir)?;
+        tokio::fs::create_dir_all(&dir).await?;
         let file_path = dir.join(format!("{}.txt", tool_call_id));
-        std::fs::write(&file_path, content)?;
+        tokio::fs::write(&file_path, content).await?;
         Ok(file_path.to_string_lossy().to_string())
     }
 
@@ -108,7 +108,7 @@ impl TruncateService {
     pub async fn output(&self, session_id: &str, tool_call_id: &str) -> std::io::Result<String> {
         let opts = self.options.read().await;
         let file_path = opts.dir.join(session_id).join(format!("{}.txt", tool_call_id));
-        std::fs::read_to_string(&file_path)
+        tokio::fs::read_to_string(&file_path).await
     }
 
     /// Truncate tool output to fit within configured limits.
@@ -131,10 +131,10 @@ impl TruncateService {
             };
         }
 
-        let output_path = match std::fs::create_dir_all(opts.dir.join(session_id)) {
+        let output_path = match tokio::fs::create_dir_all(opts.dir.join(session_id)).await {
             Ok(()) => {
                 let file_path = opts.dir.join(session_id).join(format!("{}.txt", tool_call_id));
-                match std::fs::write(&file_path, output) {
+                match tokio::fs::write(&file_path, output).await {
                     Ok(()) => Some(file_path.to_string_lossy().to_string()),
                     Err(_) => None,
                 }

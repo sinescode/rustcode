@@ -24,7 +24,10 @@ use crate::session_info::SessionId;
 use crate::session_input_inbox::{InputInboxError, SessionInputInbox};
 use crate::session_prompt::{PromptPart, SessionPromptBuilder, SessionPromptInput};
 use crate::tool::{ToolContext, ToolRegistry};
+use crate::truncate::TruncateService;
+use crate::permission::PermissionSource;
 use futures::StreamExt;
+use std::time::Duration;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Constants
@@ -41,6 +44,12 @@ const DEFAULT_MAX_ITERATIONS: usize = 25;
 
 /// How many identical (tool, input) calls before we consider it a doom-loop.
 const DOOM_LOOP_THRESHOLD: usize = 3;
+
+/// Timeout for provider streaming responses (5 minutes).
+const PROVIDER_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Timeout for individual provider stream chunks (2 minutes).
+const PROVIDER_CHUNK_TIMEOUT: Duration = Duration::from_secs(120);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Public types
@@ -130,6 +139,8 @@ pub struct SessionRunner {
     compaction: Arc<SessionCompaction>,
     /// Database service
     db: Arc<DatabaseService>,
+    /// Truncation service for tool output
+    truncate: Arc<TruncateService>,
     /// Maximum number of turns (step limit)
     max_steps: usize,
     /// Maximum number of LLM→tool round-trips (doom-loop guard, V1)
@@ -145,6 +156,7 @@ impl SessionRunner {
         agent_service: Arc<AgentService>,
         compaction: Arc<SessionCompaction>,
         db: Arc<DatabaseService>,
+        truncate: Arc::new(TruncateService::new()),
     ) -> Self {
         Self {
             tool_registry,
@@ -622,21 +634,38 @@ impl SessionRunner {
         let mut overflow_detected = false;
         let mut assistant_started = false;
 
-        let mut stream = match provider.stream(model, &messages, &tool_defs).await {
-            Ok(s) => s,
-            Err(e) => {
+        let mut stream = match tokio::time::timeout(PROVIDER_TIMEOUT, provider.stream(model, &messages, &tool_defs)).await {
+            Ok(Ok(s)) => s,
+            Ok(Err(e)) => {
                 let msg = e.to_string();
                 if crate::error::is_context_overflow(&msg) {
                     overflow_detected = true;
                 }
                 return Err(e);
             }
+            Err(_) => {
+                return Err(Error::Provider("provider stream timed out after 300s".into()));
+            }
         };
 
         let mut pending_tool_calls: HashMap<String, PendingToolCall> = HashMap::new();
         let mut step_text = String::new();
 
-        while let Some(result) = stream.next().await {
+        loop {
+            let chunk = match tokio::time::timeout(PROVIDER_CHUNK_TIMEOUT, stream.next()).await {
+                Ok(Some(result)) => result,
+                Ok(None) => break,
+                Err(_) => {
+                    all_events.push(LlmEvent::ProviderErrorEvent {
+                        message: "provider stream chunk timed out after 120s".into(),
+                        classification: Some("timeout".into()),
+                        retryable: Some(true),
+                        provider_metadata: None,
+                    });
+                    break;
+                }
+            };
+            let result = chunk;
             match result {
                 Ok(event) => {
                     match &event {
@@ -700,14 +729,14 @@ impl SessionRunner {
                     .await
                     .map_err(|e| Error::Session(format!("overflow compaction: {e}")))?;
 
-                if compact_result.is_some() {
+                if let Some(ref compact) = compact_result {
                     // Update epoch with the compacted state
                     let snapshot_val = serde_json::json!({
-                        "summary": compact_result.as_ref().map(|r| r.summary.clone()),
-                        "recent": compact_result.as_ref().map(|r| r.recent.clone()),
+                        "summary": compact.summary,
+                        "recent": compact.recent,
                     });
                     self.epoch_manager
-                        .prepare_epoch(session_id, &compact_result.as_ref().unwrap().summary, &snapshot_val)
+                        .prepare_epoch(session_id, &compact.summary, &snapshot_val)
                         .await
                         .map_err(|e| Error::Session(format!("epoch prepare after compact: {e}")))?;
 
@@ -746,14 +775,16 @@ impl SessionRunner {
                     abort: tokio_util::sync::CancellationToken::new(),
                     call_id: Some(tc.call_id.clone()),
                     extra: HashMap::new(),
-                    messages: messages.clone(),
+                    messages: Arc::from(messages.as_slice()),
                     ask_fn: None,
-                    permission_source: None,
+                    permission_source: Some(PermissionSource::Session {
+                        session_id: session_id.to_string(),
+                    }),
                 };
 
                 let result = self
                     .tool_registry
-                    .execute_by_name(&tc.name, tc.input.clone(), &ctx)
+                    .execute_with_pipeline(&tc.name, tc.input.clone(), &ctx, &self.truncate)
                     .await;
 
                 match result {
@@ -987,10 +1018,13 @@ impl SessionRunner {
                 break;
             }
 
-            let mut stream = match provider.stream(model, messages, tool_defs).await {
-                Ok(s) => s,
-                Err(e) => {
+            let mut stream = match tokio::time::timeout(PROVIDER_TIMEOUT, provider.stream(model, messages, tool_defs)).await {
+                Ok(Ok(s)) => s,
+                Ok(Err(e)) => {
                     return Err(e);
+                }
+                Err(_) => {
+                    return Err(Error::Provider("provider stream timed out after 300s".into()));
                 }
             };
 
@@ -1090,13 +1124,15 @@ impl SessionRunner {
                     abort: tokio_util::sync::CancellationToken::new(),
                     call_id: Some(tc.call_id.clone()),
                     extra: HashMap::new(),
-                    messages: messages.clone(),
+                    messages: Arc::from(messages.as_slice()),
                     ask_fn: None,
-                    permission_source: None,
+                    permission_source: Some(PermissionSource::Session {
+                        session_id: input.session_id.clone(),
+                    }),
                 };
                 let result = self
                     .tool_registry
-                    .execute_by_name(&tc.name, tc.input.clone(), &ctx)
+                    .execute_with_pipeline(&tc.name, tc.input.clone(), &ctx, &self.truncate)
                     .await;
                 match result {
                     Ok(exec_result) => {

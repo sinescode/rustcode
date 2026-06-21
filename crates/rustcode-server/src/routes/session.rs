@@ -1241,7 +1241,7 @@ async fn post_command(
                 abort: tokio_util::sync::CancellationToken::new(),
                 call_id: None,
                 extra: std::collections::HashMap::new(),
-                messages: vec![],
+                messages: std::sync::Arc::from([] as [rustcode_core::provider::ChatMessage; 0]),
                 ask_fn: None,
                 permission_source: None,
             };

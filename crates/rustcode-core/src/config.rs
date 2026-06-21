@@ -2728,7 +2728,7 @@ pub fn substitute_variables(
     let mut cursor = 0;
 
     for caps in file_re.captures_iter(&result) {
-        let m = caps.get(0).unwrap();
+        let m = caps.get(0).expect("capture group 0 always exists for a regex match");
         let file_path_str = &caps[1];
 
         // Copy text before this match
@@ -2759,8 +2759,22 @@ pub fn substitute_variables(
             dir.join(file_path_str)
         };
 
+        // Security check: canonicalize and verify the resolved path
+        // is within the config/project directory to prevent path traversal.
+        let canonical = resolved.canonicalize().map_err(|_| {
+            crate::error::Error::Config(format!(
+                "Path traversal blocked: {file_path_str} resolved to {resolved:?} which does not exist or is inaccessible"
+            ))
+        })?;
+        let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());
+        if !canonical.starts_with(&canonical_dir) && !canonical.starts_with(dirs::home_dir().as_ref().unwrap_or(&canonical_dir)) {
+            return Err(crate::error::Error::Config(format!(
+                "Path traversal blocked: {file_path_str} resolves to {canonical:?} outside config directory {canonical_dir:?}"
+            )));
+        }
+
         // Read the file
-        match std::fs::read_to_string(&resolved) {
+        match std::fs::read_to_string(&canonical) {
             Ok(content) => {
                 // JSON-escape the content and strip surrounding quotes
                 let escaped = serde_json::to_string(&content.trim())

@@ -1181,6 +1181,13 @@ impl DatabaseService {
         &self.pool
     }
 
+    /// Begin a new database transaction.
+    ///
+    /// Returns `None` if the pool is closed or an error occurs.
+    pub async fn begin(&self) -> Result<sqlx::Transaction<'_, sqlx::Sqlite>, DatabaseServiceError> {
+        self.pool.begin().await.map_err(|e| DatabaseServiceError::Database(e.to_string()))
+    }
+
     // ── Migration status ─────────────────────────────────────────────
 
     /// Query the migration journal and return the list of applied migrations.
@@ -1727,20 +1734,73 @@ impl DatabaseService {
 
     // ── Messages with parts (joined query) ──────────────────────────
     /// Get messages for a session, each with its parts.
+    ///
+    /// Uses a single LEFT JOIN query to avoid N+1.
+    /// Ported from: `packages/core/src/database/message.ts`
     pub async fn get_messages_with_parts(
         &self,
         session_id: &str,
         limit: Option<u32>,
     ) -> Result<Vec<(MessageRow, Vec<PartRow>)>, DatabaseServiceError> {
-        let messages = self.list_messages(session_id, limit).await?;
-
-        let mut result = Vec::with_capacity(messages.len());
-        for msg in messages {
-            let parts = self.list_parts(&msg.id).await?;
-            result.push((msg, parts));
+        let limit = limit.unwrap_or(100) as i64;
+        // Single query with LEFT JOIN to fetch messages and their parts together
+        #[derive(sqlx::FromRow)]
+        struct MsgPartRaw {
+            id: String,
+            session_id: String,
+            data: String,
+            time_created: i64,
+            time_updated: i64,
+            part_id: Option<String>,
+            part_message_id: Option<String>,
+            part_data: Option<String>,
+            part_time_created: Option<i64>,
         }
 
-        Ok(result)
+        let rows: Vec<MsgPartRaw> = sqlx::query_as(
+            "SELECT m.id, m.session_id, m.data, m.time_created, m.time_updated,
+                    p.id AS part_id, p.message_id AS part_message_id,
+                    p.data AS part_data, p.time_created AS part_time_created
+             FROM message m
+             LEFT JOIN part p ON p.message_id = m.id
+             WHERE m.session_id = ?1
+             ORDER BY m.time_created ASC, p.time_created ASC
+             LIMIT ?2"
+        )
+        .bind(session_id)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get messages with parts: {e}")))?;
+
+        // Group parts by message ID, preserving insertion order
+        let mut msg_order: Vec<String> = Vec::new();
+        let mut msg_map: std::collections::HashMap<String, (MessageRow, Vec<PartRow>)> = std::collections::HashMap::new();
+        for row in rows {
+            if !msg_map.contains_key(&row.id) {
+                let msg = MessageRow {
+                    id: row.id.clone(),
+                    session_id: row.session_id.clone(),
+                    data: row.data,
+                    time_created: row.time_created,
+                    time_updated: row.time_updated,
+                };
+                msg_map.insert(row.id.clone(), (msg, Vec::new()));
+                msg_order.push(row.id.clone());
+            }
+            if let (Some(pid), Some(pmid), Some(pdata), Some(ptime)) = (row.part_id, row.part_message_id, row.part_data, row.part_time_created) {
+                if let Some((_, parts)) = msg_map.get_mut(&row.id) {
+                    parts.push(PartRow {
+                        id: pid,
+                        message_id: pmid,
+                        data: pdata,
+                        time_created: ptime,
+                    });
+                }
+            }
+        }
+
+        Ok(msg_order.into_iter().filter_map(|id| msg_map.remove(&id)).collect())
     }
 
     // ── Message v2 (structured JSON data) ────────────────────────────

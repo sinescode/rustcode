@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-#![allow(dead_code, unused_imports, unused_variables)]
 #![warn(clippy::all)]
+#![cfg_attr(test, allow(dead_code, unused_imports, unused_variables))]
 
 //! Core library for rustcode — AI-powered development tool.
 //!
@@ -19,6 +19,7 @@ pub mod command;
 pub mod config;
 pub mod credential;
 pub mod database;
+pub mod encryption;
 pub mod env;
 pub mod error;
 pub mod event;

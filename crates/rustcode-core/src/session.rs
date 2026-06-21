@@ -1205,8 +1205,8 @@ impl SessionManager {
     /// `packages/opencode/src/session/session.ts` lines 828–830.
     pub async fn clear_revert(&self, id: &str) -> Result<(), SessionError> {
         let now = Utc::now().timestamp_millis();
-        // To clear revert, we set it to an empty string which will be serialized
-        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, Some("null"), None, None, None, None)
+        // To clear revert, we set it to None which serializes as SQL NULL
+        self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
             serde_json::json!({"type": "session.updated", "session_id": id}),
@@ -2249,7 +2249,7 @@ impl SessionProcessor {
             abort: CancellationToken::new(),
             call_id: Some(tool_call_id.to_string()),
             extra: std::collections::HashMap::new(),
-            messages: vec![],
+            messages: Arc::from([] as [crate::provider::ChatMessage; 0]),
             ask_fn: None,
             permission_source: None,
         };

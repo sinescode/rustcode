@@ -245,7 +245,7 @@ struct WhitespaceNormalizedReplacer;
 impl Replacer for WhitespaceNormalizedReplacer {
     fn search(&self, content: &str, find: &str) -> Vec<String> {
         let normalize = |text: &str| -> String {
-            let re = regex::Regex::new(r"\s+").unwrap();
+            let re = regex::Regex::new(r"\s+").expect("hardcoded regex is valid");
             re.replace_all(text, " ").trim().to_string()
         };
         let normalized_find = normalize(find);
@@ -2894,7 +2894,7 @@ impl ApplyPatchTool {
                 if let Some(stripped) = line.strip_prefix(' ') {
                     current_hunk
                         .as_mut()
-                        .unwrap()
+                        .expect("hunk is Some; checked by enclosing is_some() guard")
                         .lines
                         .push(HunkLine::Context(stripped.to_string()));
                     old_count_actual += 1;
@@ -2902,14 +2902,14 @@ impl ApplyPatchTool {
                 } else if line.starts_with('-') && !line.starts_with("---") {
                     current_hunk
                         .as_mut()
-                        .unwrap()
+                        .expect("hunk is Some; checked by enclosing is_some() guard")
                         .lines
                         .push(HunkLine::Removed(line[1..].to_string()));
                     old_count_actual += 1;
                 } else if line.starts_with('+') && !line.starts_with("+++") {
                     current_hunk
                         .as_mut()
-                        .unwrap()
+                        .expect("hunk is Some; checked by enclosing is_some() guard")
                         .lines
                         .push(HunkLine::Added(line[1..].to_string()));
                     new_count_actual += 1;

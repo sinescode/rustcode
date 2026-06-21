@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
-#![allow(dead_code, unused_imports)]
 #![warn(clippy::all)]
+#![cfg_attr(test, allow(dead_code, unused_imports))]
 
 //! rustcode — AI-powered development tool.
 //!
@@ -1275,7 +1275,38 @@ fn main() {
         .build()
         .expect("Failed to build tokio runtime");
 
-    rt.block_on(async_main(cli));
+    // Set up Ctrl+C signal handler for graceful shutdown
+    let shutdown_token = tokio_util::sync::CancellationToken::new();
+    let token = shutdown_token.clone();
+    tokio::spawn(async move {
+        loop {
+            tokio::signal::ctrl_c().await.ok();
+            tracing::info!("Received SIGINT, initiating graceful shutdown...");
+            token.cancel();
+            // Second Ctrl+C forces immediate exit
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {
+                    tracing::warn!("Forced shutdown on second SIGINT");
+                    std::process::exit(130);
+                }
+                _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                    tracing::warn!("Graceful shutdown timeout, exiting");
+                    std::process::exit(130);
+                }
+            }
+        }
+    });
+
+    rt.block_on(async {
+        tokio::select! {
+            _ = async_main(cli) => {},
+            _ = shutdown_token.cancelled() => {
+                tracing::info!("Shutdown requested, waiting for cleanup...");
+                // Give in-flight operations a chance to complete
+                tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            }
+        }
+    });
 }
 
 /// Main async entry point.
