@@ -240,13 +240,20 @@ impl SessionRevert {
             remove_msgs.push(id.to_string());
         }
 
-        // Remove collected messages from session_message table
-        for remove_id in &remove_msgs {
-            let _ = sqlx::query("DELETE FROM session_message WHERE id = ?1 AND session_id = ?2")
-                .bind(remove_id)
-                .bind(session_id)
-                .execute(self.db.pool())
-                .await;
+        // Remove collected messages in a single transaction for atomicity
+        if !remove_msgs.is_empty() {
+            let mut tx = self.db.pool().begin().await
+                .map_err(|e| RevertError::Other(format!("begin tx: {e}")))?;
+            for remove_id in &remove_msgs {
+                sqlx::query("DELETE FROM session_message WHERE id = ?1 AND session_id = ?2")
+                    .bind(remove_id)
+                    .bind(session_id)
+                    .execute(&mut *tx)
+                    .await
+                    .ok();
+            }
+            tx.commit().await
+                .map_err(|e| RevertError::Other(format!("commit tx: {e}")))?;
         }
 
         // Handle part-level revert

@@ -1202,9 +1202,49 @@ pub fn glob_search(root: &Path, input: &GlobInput) -> Result<Vec<Entry>, FileSys
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `grep()` method.
+// Simple regex cache to avoid recompiling patterns on every search call.
+use std::sync::Mutex;
+
+const REGEX_CACHE_SIZE: usize = 64;
+
+fn cached_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    use std::collections::VecDeque;
+    use std::collections::HashMap;
+    struct RegexCache {
+        map: HashMap<String, regex::Regex>,
+        order: VecDeque<String>,
+    }
+    impl RegexCache {
+        fn new() -> Self {
+            Self { map: HashMap::new(), order: VecDeque::new() }
+        }
+        fn get(&mut self, key: &str) -> Option<regex::Regex> {
+            self.map.get(key).cloned()
+        }
+        fn insert(&mut self, key: String, re: regex::Regex) {
+            if self.map.len() >= REGEX_CACHE_SIZE {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.map.remove(&oldest);
+                }
+            }
+            self.map.insert(key.clone(), re);
+            self.order.push_back(key);
+        }
+    }
+    static CACHE: once_cell::sync::Lazy<Mutex<RegexCache>> =
+        once_cell::sync::Lazy::new(|| Mutex::new(RegexCache::new()));
+    let mut cache = CACHE.lock().unwrap();
+    if let Some(re) = cache.get(pattern) {
+        return Ok(re);
+    }
+    let re = regex::Regex::new(pattern)?;
+    cache.insert(pattern.to_string(), re.clone());
+    Ok(re)
+}
+
 pub fn grep_search(root: &Path, input: &GrepInput) -> Result<Vec<Match>, FileSystemError> {
     let limit = input.limit.unwrap_or(50) as usize;
-    let re = regex::Regex::new(&input.pattern)
+    let re = cached_regex(&input.pattern)
         .map_err(|e| FileSystemError::InvalidPattern(format!("regex error: {e}")))?;
     let mut results: Vec<Match> = Vec::new();
 

@@ -451,7 +451,20 @@ impl Storage {
         }
         let content = serde_json::to_string_pretty(value)
             .map_err(|e| Error::Config(format!("storage serialization error: {e}")))?;
-        std::fs::write(&path, content)?;
+        // Write atomically: write to temp file, fsync, then rename
+        let tmp_path = path.with_extension("tmp");
+        {
+            let mut file = std::fs::File::create(&tmp_path)?;
+            std::io::Write::write_all(&mut file, content.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, &path)?;
+        // Ensure directory metadata is flushed
+        if let Some(parent) = path.parent() {
+            if let Ok(parent_file) = std::fs::File::open(parent) {
+                parent_file.sync_all().ok();
+            }
+        }
         Ok(())
     }
 
@@ -473,7 +486,14 @@ impl Storage {
         f(&mut value);
         let out = serde_json::to_string_pretty(&value)
             .map_err(|e| Error::Config(format!("storage serialization error: {e}")))?;
-        std::fs::write(&path, out)?;
+        // Atomic write with fsync
+        let tmp_path = path.with_extension("tmp");
+        {
+            let mut file = std::fs::File::create(&tmp_path)?;
+            std::io::Write::write_all(&mut file, out.as_bytes())?;
+            file.sync_all()?;
+        }
+        std::fs::rename(&tmp_path, &path)?;
         Ok(value)
     }
 
