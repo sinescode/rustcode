@@ -1125,7 +1125,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"touched": true}}),
         ))?;
         Ok(())
     }
@@ -1169,7 +1169,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, meta_str.as_deref(), None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"metadata_changed": true}}),
         ))?;
         Ok(())
     }
@@ -1184,7 +1184,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, perm_str.as_deref(), None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"permission_changed": true}}),
         ))?;
         Ok(())
     }
@@ -1205,7 +1205,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, revert_str.as_deref(), None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"revert_changed": true, "summary_changed": summary.is_some()}}),
         ))?;
         Ok(())
     }
@@ -1220,7 +1220,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"revert": null}}),
         ))?;
         Ok(())
     }
@@ -1241,7 +1241,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, None, sum_add, sum_del, sum_files, sum_diffs.as_deref(), None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"summary_changed": true}}),
         ))?;
         Ok(())
     }
@@ -1255,7 +1255,7 @@ impl SessionManager {
         self.db.update_session(id, now, None, None, None, None, None, None, None, share_url, None, None, None, None, None, None, None, None, None)
             .await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"share_url_changed": true}}),
         ))?;
         Ok(())
     }
@@ -1267,7 +1267,7 @@ impl SessionManager {
     pub async fn set_workspace(&self, id: &str, workspace_id: Option<&str>) -> Result<(), SessionError> {
         self.db.update_session_workspace(id, workspace_id).await?;
         self.bus.publish(GlobalEvent::new(
-            serde_json::json!({"type": "session.updated", "session_id": id}),
+            serde_json::json!({"type": "session.updated", "session_id": id, "delta": {"workspace_id_changed": true}}),
         ))?;
         Ok(())
     }

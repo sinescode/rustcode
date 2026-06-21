@@ -1588,8 +1588,19 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
             }
         }
     } else {
-        let id = providers.keys().next().unwrap().clone();
-        let p = Arc::clone(providers.get(&id).unwrap());
+        let id = providers.keys().next()
+            .ok_or_else(|| {
+                error_fmt.format_error("No providers configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.");
+                1
+            })?;
+        let id = id.clone();
+        let p = match providers.get(&id) {
+            Some(p) => Arc::clone(p),
+            None => {
+                error_fmt.format_error(&format!("Provider '{id}' disappeared from registry"));
+                return 1;
+            }
+        };
         (id, p)
     };
 

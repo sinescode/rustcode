@@ -84,6 +84,17 @@ impl From<String> for EventId {
     }
 }
 
+impl std::str::FromStr for EventId {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if s.starts_with("evt_") || s.starts_with("evt") {
+            Ok(Self(s.to_string()))
+        } else {
+            Err(format!("invalid EventId: '{s}' — must start with 'evt_'"))
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // EventCursor — durable aggregate continuation position
 // ---------------------------------------------------------------------------
