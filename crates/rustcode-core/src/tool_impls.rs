@@ -45,6 +45,7 @@ use crate::question::{
     format_model_output, QuestionAnswer, QuestionInfo, QuestionOption, QuestionPrompt,
     QuestionService,
 };
+use crate::shell_parser::ShellParser;
 use crate::tool::{
     truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry,
 };
@@ -546,14 +547,27 @@ pub fn trim_diff(diff: &str) -> String {
 
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// 1. BashTool — shell command execution
+// 1. BashTool — shell command execution with AST-based permission scanning
 // ═══════════════════════════════════════════════════════════════════════════════
 
 const DEFAULT_TIMEOUT_MS: u64 = 2 * 60 * 1000; // 2 minutes
 const MAX_TIMEOUT_MS: u64 = 10 * 60 * 1000; // 10 minutes
 const MAX_CAPTURE_BYTES: usize = 1024 * 1024; // 1 MB
 
-/// Executes a shell command via the system shell.
+/// WARNING
+/// ═══════
+/// BashTool grants the host user's full filesystem, process, and network
+/// authority. It is **not sandboxed**. Use with caution.
+///
+/// Executes a shell command via the system shell with:
+/// - **AST parsing** — command is parsed with tree-sitter-bash before execution
+///   to detect dangerous operations (rm -rf /, mkfs, dd to /dev, etc.).
+/// - **Permission scanning** — flagged commands trigger `ctx.ask()` for the
+///   user to allow/deny before the command is spawned.
+/// - **Multi-shell support** — uses `shell.rs` to detect the user's preferred
+///   shell (bash, zsh, fish, powershell) instead of hard-coded `/bin/sh`.
+/// - **Real-time streaming** — stdout/stderr are read line-by-line during
+///   execution and buffered for output.
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/bash.ts` and `packages/opencode/src/tool/shell.ts`.
@@ -568,7 +582,8 @@ impl Tool for BashTool {
 
     fn description(&self) -> &str {
         "Execute one shell command string with the host user's filesystem, process, and network authority.\
-         Uses /bin/sh on POSIX and COMSPEC or cmd.exe on Windows.\
+         Multi-shell support (bash, zsh, fish, powershell).\
+         Commands are scanned for dangerous operations before execution.\
          Timeout values are milliseconds (default: 120000; maximum: 600000)."
     }
 
@@ -614,37 +629,70 @@ impl Tool for BashTool {
 
         let description = args["description"].as_str().unwrap_or(command);
 
-        // Resolve working directory
-        let cwd = std::path::Path::new(workdir);
-        let cwd_str = if cwd.is_absolute() {
-            cwd.to_path_buf()
+        // ── Step 1: AST parsing and permission scanning ──────────────────
+        let parser = ShellParser::new();
+        let parsed = parser.parse(command);
+
+        // Flagged commands (rm -rf /, mkfs, dd to /dev, etc.)
+        if parsed.is_flagged {
+            let allowed = ctx.ask("bash", &format!("command: {}", command)).await?;
+            if !allowed {
+                return Ok(denied_result(description, command));
+            }
+        }
+
+        // File operations touching external paths
+        for op in &parsed.file_operations {
+            if op.path.starts_with('/') || op.path.starts_with("..") {
+                let resource = format!("file operation: {} {}", op.op, op.path);
+                let allowed = ctx.ask("bash", &resource).await?;
+                if !allowed {
+                    return Ok(denied_result(description, command));
+                }
+            }
+        }
+
+        // CWD changes to external directories
+        for cd_target in &parsed.cwd_changes {
+            if cd_target.starts_with('/') || cd_target.starts_with('~') {
+                let resource = format!("cd {}", cd_target);
+                let allowed = ctx.ask("bash", &resource).await?;
+                if !allowed {
+                    return Ok(denied_result(description, command));
+                }
+            }
+        }
+
+        // ── Step 2: Resolve working directory ────────────────────────────
+        let cwd_path = std::path::Path::new(workdir);
+        let cwd_buf = if cwd_path.is_absolute() {
+            cwd_path.to_path_buf()
         } else {
             std::env::current_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                .join(cwd)
+                .join(cwd_path)
         };
-        let cwd_str = cwd_str.to_string_lossy().to_string();
+        let cwd = cwd_buf.to_string_lossy().to_string();
 
-        // Determine shell
-        let shell = if cfg!(target_os = "windows") {
-            std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into())
-        } else {
-            "/bin/sh".into()
-        };
+        // ── Step 3: Detect preferred shell via shell.rs ──────────────────
+        let shell = crate::shell::cached_preferred()
+            .cloned()
+            .or_else(|| crate::shell::select(None))
+            .unwrap_or_else(|| crate::shell::ShellItem {
+                path: std::path::PathBuf::from("/bin/sh"),
+                name: "sh".into(),
+                acceptable: true,
+            });
 
-        // Build the tokio process
-        let mut cmd = tokio::process::Command::new(&shell);
-        if cfg!(not(target_os = "windows")) {
-            cmd.arg("-c").arg(command);
-        } else {
-            cmd.arg("/C").arg(command);
-        }
-        cmd.current_dir(&cwd_str);
+        let shell_args = crate::shell::args(&shell, command, &cwd);
+
+        // ── Step 4: Spawn process ────────────────────────────────────────
+        let mut cmd = tokio::process::Command::new(&shell.path);
+        cmd.args(&shell_args);
+        cmd.current_dir(&cwd);
         cmd.stdin(std::process::Stdio::null());
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        
-        // Environment sanitization (matching OC's pty_env pattern)
         cmd.env("TERM", "xterm-256color");
         cmd.env("OPENCODE_TERMINAL", "1");
         #[cfg(target_os = "windows")]
@@ -654,63 +702,93 @@ impl Tool for BashTool {
             cmd.env("LANG", "C.UTF-8");
         }
 
-        // Spawn and wait with timeout
-        let child = cmd.spawn().map_err(|e| Error::Process {
+        let mut child = cmd.spawn().map_err(|e| Error::Process {
             message: format!("failed to spawn process: {}", e),
             exit_code: None,
         })?;
 
         let child_pid = child.id();
 
-        // Wait for the child with timeout, checking abort signal
+        // Take stdout/stderr for streaming reads
+        let stdout = child.stdout.take().ok_or_else(|| Error::Process {
+            message: "failed to capture stdout".into(),
+            exit_code: None,
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| Error::Process {
+            message: "failed to capture stderr".into(),
+            exit_code: None,
+        })?;
+
+        // ── Step 5: Stream output in real-time ──────────────────────────
+        let output_buf: Arc<tokio::sync::Mutex<String>> =
+            Arc::new(tokio::sync::Mutex::new(String::new()));
+        let stderr_buf: Arc<tokio::sync::Mutex<String>> =
+            Arc::new(tokio::sync::Mutex::new(String::new()));
+
+        let stdout_task = {
+            use tokio::io::AsyncBufReadExt;
+            let buf = Arc::clone(&output_buf);
+            tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stdout);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let mut guard = buf.lock().await;
+                    guard.push_str(&line);
+                    guard.push('\n');
+                }
+            })
+        };
+
+        let stderr_task = {
+            use tokio::io::AsyncBufReadExt;
+            let buf = Arc::clone(&stderr_buf);
+            tokio::spawn(async move {
+                let mut reader = tokio::io::BufReader::new(stderr);
+                let mut lines = reader.lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let mut guard = buf.lock().await;
+                    guard.push_str(&line);
+                    guard.push('\n');
+                }
+            })
+        };
+
+        // ── Step 6: Wait with timeout and abort ──────────────────────────
         let result = tokio::select! {
             biased;
 
             _ = ctx.abort.cancelled() => {
-                // Best-effort kill (child handle dropped, allows OS to clean up)
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
                 return Ok(ExecuteResult {
                     title: description.to_string(),
                     output: "Command aborted by user.".into(),
                     truncated: false,
                     output_path: None,
                     attachments: None,
-                    metadata: HashMap::new(),
+                    metadata: {
+                        let mut m = HashMap::new();
+                        m.insert("command".into(), serde_json::Value::String(command.to_string()));
+                        m.insert("cwd".into(), serde_json::Value::String(cwd));
+                        m
+                    },
                 });
             }
 
-            timed_out = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
-                // Force-kill escalation: SIGTERM -> 3s wait -> SIGKILL (matching OC's forceKillAfter)
-                if let Some(pid) = child_pid {
-                    #[cfg(unix)]
-                    {
-                        let _ = std::process::Command::new("kill")
-                            .arg("-TERM")
-                            .arg(format!("-{}", pid))
-                            .output();
-                    }
-                    #[cfg(not(unix))]
-                    {
-                        let _ = std::process::Command::new("taskkill")
-                            .args(["/pid", &pid.to_string(), "/f", "/t"])
-                            .output();
-                    }
-                    // Wait 3 seconds for graceful termination
-                    tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-                    // Escalate to SIGKILL if still running
-                    #[cfg(unix)]
-                    {
-                        let _ = std::process::Command::new("kill")
-                            .arg("-KILL")
-                            .arg(format!("-{}", pid))
-                            .output();
-                    }
-                }
-                
+            _ = tokio::time::sleep(std::time::Duration::from_millis(timeout_ms)) => {
+                kill_process_group(child_pid);
+                // Wait 3 seconds then escalate to SIGKILL (matching OC's forceKillAfter)
+                let _ = tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                force_kill_process_group(child_pid);
+
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
+
                 let mut meta = HashMap::new();
                 meta.insert("command".into(), serde_json::Value::String(command.to_string()));
-                meta.insert("cwd".into(), serde_json::Value::String(cwd_str));
+                meta.insert("cwd".into(), serde_json::Value::String(cwd));
                 meta.insert("timedOut".into(), serde_json::Value::Bool(true));
-                
+
                 Ok(ExecuteResult {
                     title: description.to_string(),
                     output: format!(
@@ -724,26 +802,35 @@ impl Tool for BashTool {
                 })
             }
 
-            output_result = child.wait_with_output() => {
-                let output = output_result.map_err(|e| Error::Process {
-                    message: format!("process wait error: {}", e),
-                    exit_code: None,
-                })?;
+            status = child.wait() => {
+                let _ = stdout_task.await;
+                let _ = stderr_task.await;
 
-                let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-                let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+                let stdout_text = {
+                    let guard = output_buf.lock().await;
+                    guard.clone()
+                };
+                let stderr_text = {
+                    let guard = stderr_buf.lock().await;
+                    guard.clone()
+                };
 
-                let stdout_truncated = stdout.len() > MAX_CAPTURE_BYTES;
-                let stderr_truncated = stderr.len() > MAX_CAPTURE_BYTES;
+                let exit_code = status
+                    .ok()
+                    .and_then(|s| s.code())
+                    .unwrap_or(-1);
+
+                let stdout_truncated = stdout_text.len() > MAX_CAPTURE_BYTES;
+                let stderr_truncated = stderr_text.len() > MAX_CAPTURE_BYTES;
                 let stdout_display = if stdout_truncated {
-                    stdout.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
+                    stdout_text.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
                 } else {
-                    stdout.clone()
+                    stdout_text
                 };
                 let stderr_display = if stderr_truncated {
-                    stderr.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
+                    stderr_text.chars().take(MAX_CAPTURE_BYTES).collect::<String>()
                 } else {
-                    stderr.clone()
+                    stderr_text
                 };
 
                 let mut warnings = Vec::new();
@@ -767,7 +854,7 @@ impl Tool for BashTool {
                 let mut full_output = format!(
                     "{}\n\nCommand exited with code {}.",
                     compact,
-                    output.status.code().unwrap_or(-1)
+                    exit_code,
                 );
                 if !warnings.is_empty() {
                     full_output.push_str("\n\nWarnings:\n");
@@ -776,17 +863,19 @@ impl Tool for BashTool {
                     }
                 }
 
+                let truncated = stdout_truncated || stderr_truncated;
+
                 Ok(ExecuteResult {
                     title: description.to_string(),
                     output: full_output,
-                    truncated: stdout_truncated || stderr_truncated,
+                    truncated,
                     output_path: None,
                     attachments: None,
                     metadata: {
                         let mut m = HashMap::new();
                         m.insert("command".into(), serde_json::Value::String(command.to_string()));
-                        m.insert("cwd".into(), serde_json::Value::String(cwd_str));
-                        m.insert("exitCode".into(), serde_json::json!(output.status.code()));
+                        m.insert("cwd".into(), serde_json::Value::String(cwd));
+                        m.insert("exitCode".into(), serde_json::json!(exit_code));
                         if stdout_truncated { m.insert("stdoutTruncated".into(), serde_json::Value::Bool(true)); }
                         if stderr_truncated { m.insert("stderrTruncated".into(), serde_json::Value::Bool(true)); }
                         m
@@ -796,6 +885,63 @@ impl Tool for BashTool {
         };
 
         result
+    }
+}
+
+/// Build a denied result for the bash tool.
+fn denied_result(description: &str, command: &str) -> ExecuteResult {
+    ExecuteResult {
+        title: description.to_string(),
+        output: format!("Command denied by user: {}", command),
+        truncated: false,
+        output_path: None,
+        attachments: None,
+        metadata: {
+            let mut m = HashMap::new();
+            m.insert("command".into(), serde_json::Value::String(command.to_string()));
+            m.insert("denied".into(), serde_json::Value::Bool(true));
+            m
+        },
+    }
+}
+
+/// Send SIGTERM to a process group on Unix, or taskkill on Windows.
+#[cfg(unix)]
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("kill")
+            .arg("-TERM")
+            .arg(format!("-{}", pid))
+            .output();
+    }
+}
+
+/// Force-kill (SIGKILL) a process group on Unix, or taskkill /f on Windows.
+#[cfg(unix)]
+fn force_kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("kill")
+            .arg("-KILL")
+            .arg(format!("-{}", pid))
+            .output();
+    }
+}
+
+#[cfg(windows)]
+fn kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/pid", &pid.to_string(), "/t"])
+            .output();
+    }
+}
+
+#[cfg(windows)]
+fn force_kill_process_group(pid: Option<u32>) {
+    if let Some(pid) = pid {
+        let _ = std::process::Command::new("taskkill")
+            .args(["/pid", &pid.to_string(), "/f", "/t"])
+            .output();
     }
 }
 
@@ -2671,10 +2817,16 @@ impl WebSearchTool {
 // 9. ApplyPatchTool — unified diff patch application
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/// Applies a unified diff patch to a single file.
+/// Applies patches with add, delete, move, and update (unified diff) operations.
 ///
-/// Parses unified diff format, locates each hunk in the target file
-/// with offset adjustment, and applies the changes.
+/// Detects the operation type from the patch content:
+/// - `--- /dev/null` → add file
+/// - `+++ /dev/null` or `deleted file mode` → delete file
+/// - `rename from` / `rename to` → move file
+/// - Otherwise → update (unified diff hunk application)
+///
+/// Also supports the opencode marker format:
+/// `*** Begin Patch` / `*** Add/Delete/Update File:` / `*** End Patch`.
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/apply-patch.ts` and
@@ -2699,6 +2851,19 @@ enum HunkLine {
     Removed(String),
 }
 
+/// Detected patch operation type.
+#[derive(Debug, Clone)]
+enum PatchOp {
+    /// Create a new file with the given content.
+    Add { file_path: String, content: String },
+    /// Delete an existing file.
+    Delete { file_path: String },
+    /// Rename a file from source_path to target_path.
+    Move { source_path: String, target_path: String },
+    /// Apply a unified diff patch to update an existing file.
+    Update { file_path: String, patch: String },
+}
+
 impl ApplyPatchTool {
     /// Parse a unified diff string into a vector of hunks.
     fn parse_unified_diff(patch: &str) -> std::result::Result<Vec<DiffHunk>, String> {
@@ -2714,20 +2879,18 @@ impl ApplyPatchTool {
 
         for line in normalized.lines() {
             if line.starts_with("@@") {
-                // Save previous hunk
                 if let Some(mut hunk) = current_hunk.take() {
                     hunk.old_count = old_count_actual;
                     hunk.new_count = new_count_actual;
                     hunks.push(hunk);
                 }
 
-                // Parse @@ -l,s +l,s @@
                 if let Some(hunk) = Self::parse_hunk_header(line) {
                     current_hunk = Some(hunk);
                     old_count_actual = 0;
                     new_count_actual = 0;
                 }
-            } else if let Some(ref _existing) = current_hunk {
+            } else if current_hunk.is_some() {
                 if let Some(stripped) = line.strip_prefix(' ') {
                     current_hunk
                         .as_mut()
@@ -2751,12 +2914,9 @@ impl ApplyPatchTool {
                         .push(HunkLine::Added(line[1..].to_string()));
                     new_count_actual += 1;
                 }
-                // Skip "No newline at end of file" markers
             }
-            // Skip --- and +++ file headers (outside hunks)
         }
 
-        // Final hunk
         if let Some(mut hunk) = current_hunk.take() {
             hunk.old_count = old_count_actual;
             hunk.new_count = new_count_actual;
@@ -2777,12 +2937,10 @@ impl ApplyPatchTool {
             return None;
         }
 
-        // Extract the part between @@ and @@
         let rest = line.strip_prefix("@@")?.trim();
         let parts: Vec<&str> = rest.split("@@").collect();
         let header_part = parts.first()?.trim();
 
-        // Parse "-old_start,old_count +new_start,new_count"
         let segments: Vec<&str> = header_part.split_whitespace().collect();
         if segments.len() < 2 {
             return None;
@@ -2834,15 +2992,12 @@ impl ApplyPatchTool {
     ) -> std::result::Result<String, String> {
         let mut result: Vec<String> = file_content.lines().map(|s| s.to_string()).collect();
 
-        // Track cumulative line offset from prior hunks
         let mut line_offset: isize = 0;
 
         for hunk in hunks {
-            // Expected 1-indexed position in current result
             let expected_line = (hunk.old_start as isize + line_offset).max(1) as usize;
             let context_lines = Self::hunk_context(hunk);
 
-            // Locate the hunk context, allowing offset adjustment
             let actual_line = if context_lines.is_empty() {
                 expected_line
             } else {
@@ -2858,7 +3013,6 @@ impl ApplyPatchTool {
             let remove_start = actual_line.saturating_sub(1);
             let old_end = (remove_start + hunk.old_count).min(result.len());
 
-            // Build replacement lines: keep Context and Added, skip Removed
             let new_lines: Vec<String> = hunk
                 .lines
                 .iter()
@@ -2868,7 +3022,6 @@ impl ApplyPatchTool {
                 })
                 .collect();
 
-            // Drain old lines and splice in new lines
             if remove_start <= result.len() {
                 let drain_end = old_end.min(result.len());
                 let removed_count = drain_end - remove_start;
@@ -2881,7 +3034,6 @@ impl ApplyPatchTool {
         }
 
         let mut output = result.join("\n");
-        // Preserve trailing newline if original had one
         if file_content.ends_with('\n') && !output.ends_with('\n') {
             output.push('\n');
         }
@@ -2896,12 +3048,10 @@ impl ApplyPatchTool {
 
         let search_window: isize = 20;
 
-        // Try exact match first
         if Self::context_matches(result, context, expected_line) {
             return Some(expected_line);
         }
 
-        // Scan nearby lines
         for delta in 1..=search_window {
             let before = expected_line as isize - delta;
             if before >= 1 && Self::context_matches(result, context, before as usize) {
@@ -2916,39 +3066,6 @@ impl ApplyPatchTool {
         None
     }
 
-    /// Parse opencode patchText format (*** Begin Patch ... *** End Patch).
-    fn parse_opencode_patch(patch_text: &str) -> std::result::Result<(String, String), Error> {
-        let text = patch_text.trim();
-        // Extract file path from "*** Begin Patch /path/to/file ***"
-        let begin_marker = "*** Begin Patch ";
-        let end_marker = "***";
-        if let Some(after_begin) = text.strip_prefix(begin_marker) {
-            if let Some(end_pos) = after_begin.find(end_marker) {
-                let file_path = after_begin[..end_pos].trim().to_string();
-                // Find the actual patch content between End Patch markers or to end
-                let patch_start = end_pos + end_marker.len();
-                let patch_body = if let Some(end_patch) = after_begin[patch_start..].find("*** End Patch") {
-                    &after_begin[patch_start..patch_start + end_patch]
-                } else {
-                    &after_begin[patch_start..]
-                };
-                Ok((file_path, patch_body.trim().to_string()))
-            } else {
-                Err(Error::Tool("apply_patch: invalid patchText format - expected '*** Begin Patch <path> ***'".into()))
-            }
-        } else {
-            // Fallback: try to extract file path from --- a/path or +++ b/path
-            for line in text.lines() {
-                if let Some(path) = line.strip_prefix("--- a/").or_else(|| line.strip_prefix("+++ b/")) {
-                    // Strip everything after first tab or space
-                    let clean_path = path.split_once(['\t', ' ']).map(|(p, _)| p).unwrap_or(path);
-                    return Ok((clean_path.to_string(), text.to_string()));
-                }
-            }
-            Err(Error::Tool("apply_patch: missing 'patchText' field or invalid format".into()))
-        }
-    }
-
     /// Check if context lines match at a given 1-indexed line.
     fn context_matches(result: &[String], context: &[String], line: usize) -> bool {
         let idx = line.saturating_sub(1);
@@ -2960,6 +3077,453 @@ impl ApplyPatchTool {
             .enumerate()
             .all(|(i, ctx_line)| result[idx + i] == *ctx_line)
     }
+
+    // ── Operation classification ───────────────────────────────────────────
+
+    /// Parse a patch string and detect the operation type.
+    ///
+    /// Handles three formats:
+    /// 1. TS-style opencode markers (`*** Begin Patch` / `*** Add File:` / etc.)
+    /// 2. Legacy rustcode format (`*** Begin Patch <path> ***` / body / `*** End Patch`)
+    /// 3. Standard unified diff (detects `--- /dev/null`, `rename from/to`, etc.)
+    fn parse_patch_operation(patch_text: &str) -> Result<PatchOp> {
+        let text = patch_text.trim();
+        let normalized = text.replace("\r\n", "\n");
+        let lines: Vec<&str> = normalized.lines().collect();
+
+        // TS-style: "*** Begin Patch" on its own line
+        let begin_idx = lines.iter().position(|l| l.trim() == "*** Begin Patch");
+        let end_idx = lines.iter().position(|l| l.trim() == "*** End Patch");
+        if let (Some(begin), Some(end)) = (begin_idx, end_idx) {
+            if begin < end {
+                return Self::parse_opencode_marker_patch(&lines[begin + 1..end]);
+            }
+        }
+
+        // Legacy: "*** Begin Patch /path ***" on one line
+        if let Some(after_begin) = text.strip_prefix("*** Begin Patch ") {
+            if let Some(end_pos) = after_begin.find("***") {
+                let file_path = after_begin[..end_pos].trim();
+                let patch_start = end_pos + 3;
+                let patch_body = if let Some(p) = after_begin[patch_start..].find("*** End Patch") {
+                    &after_begin[patch_start..patch_start + p]
+                } else {
+                    &after_begin[patch_start..]
+                };
+                return Self::classify_standard_patch(patch_body.trim(), file_path);
+            }
+        }
+
+        // Fallback: standard unified diff — try to extract path from ---/+++
+        let path = lines
+            .iter()
+            .find_map(|l| {
+                l.strip_prefix("--- a/")
+                    .or_else(|| l.strip_prefix("+++ b/"))
+            })
+            .and_then(|p| {
+                p.split_once(['\t', ' '])
+                    .map(|(x, _)| x)
+                    .or(Some(p))
+            })
+            .unwrap_or("")
+            .to_string();
+
+        Self::classify_standard_patch(text, &path)
+    }
+
+    /// Parse TS-style opencode marker patch content.
+    ///
+    /// Input lines are the body between `*** Begin Patch` and `*** End Patch`:
+    /// ```text
+    /// *** Add File: /path/to/file
+    /// +line1
+    /// +line2
+    /// ```
+    /// or:
+    /// ```text
+    /// *** Delete File: /path/to/file
+    /// ```
+    /// or:
+    /// ```text
+    /// *** Update File: /path/to/file
+    /// *** Move to: /new/path
+    /// @@ ... @@
+    /// ```
+    fn parse_opencode_marker_patch(lines: &[&str]) -> Result<PatchOp> {
+        if lines.is_empty() {
+            return Err(Error::Tool("apply_patch: empty patch content".into()));
+        }
+
+        let first = lines[0].trim();
+
+        // ── Add file ────────────────────────────────────────────────────
+        if let Some(path) = first.strip_prefix("*** Add File:") {
+            let file_path = path.trim().to_string();
+            if file_path.is_empty() {
+                return Err(Error::Tool("apply_patch: empty add file path".into()));
+            }
+            let mut content_parts = Vec::new();
+            for line in &lines[1..] {
+                let trimmed = line.trim();
+                if trimmed.starts_with("***") {
+                    break;
+                }
+                if let Some(content_line) = trimmed.strip_prefix('+') {
+                    content_parts.push(content_line.to_string());
+                } else {
+                    return Err(Error::Tool(format!(
+                        "apply_patch: invalid add file line, expected '+' prefix: {}",
+                        line
+                    )));
+                }
+            }
+            return Ok(PatchOp::Add {
+                file_path,
+                content: content_parts.join("\n"),
+            });
+        }
+
+        // ── Delete file ─────────────────────────────────────────────────
+        if let Some(path) = first.strip_prefix("*** Delete File:") {
+            let file_path = path.trim().to_string();
+            if file_path.is_empty() {
+                return Err(Error::Tool("apply_patch: empty delete file path".into()));
+            }
+            return Ok(PatchOp::Delete { file_path });
+        }
+
+        // ── Update file (with optional move) ────────────────────────────
+        if let Some(path) = first.strip_prefix("*** Update File:") {
+            let file_path = path.trim().to_string();
+            if file_path.is_empty() {
+                return Err(Error::Tool("apply_patch: empty update file path".into()));
+            }
+
+            let patch_start = 1;
+            if patch_start < lines.len() {
+                if let Some(move_str) = lines[patch_start].trim().strip_prefix("*** Move to:") {
+                    let target_path = move_str.trim().to_string();
+                    if target_path.is_empty() {
+                        return Err(Error::Tool("apply_patch: empty move target path".into()));
+                    }
+                    parse_move_patch(file_path, target_path, &lines[patch_start + 1..])
+                } else {
+                    let patch_body = lines[patch_start..].join("\n");
+                    Ok(PatchOp::Update {
+                        file_path,
+                        patch: patch_body,
+                    })
+                }
+            } else {
+                Ok(PatchOp::Update {
+                    file_path,
+                    patch: String::new(),
+                })
+            }
+        } else {
+            Err(Error::Tool(format!(
+                "apply_patch: unknown operation marker: {}",
+                first
+            )))
+        }
+    }
+
+    /// Classify a standard unified diff as add / delete / move / update.
+    ///
+    /// Detection rules:
+    /// - `--- /dev/null` on its own line → add
+    /// - `+++ /dev/null` or `deleted file mode` → delete
+    /// - `rename from` / `rename to` → move
+    /// - Otherwise → update
+    fn classify_standard_patch(patch: &str, default_path: &str) -> Result<PatchOp> {
+        let lines: Vec<&str> = patch.lines().collect();
+
+        // ── Move (rename from / rename to) ──────────────────────────────
+        let mut src = None;
+        let mut dst = None;
+        for line in &lines {
+            let t = line.trim();
+            if let Some(p) = t.strip_prefix("rename from ") {
+                src = Some(p.to_string());
+            }
+            if let Some(p) = t.strip_prefix("rename to ") {
+                dst = Some(p.to_string());
+            }
+        }
+        if let (Some(source), Some(target)) = (src, dst) {
+            return Ok(PatchOp::Move {
+                source_path: source,
+                target_path: target,
+            });
+        }
+
+        // ── Add (--- /dev/null) ─────────────────────────────────────────
+        if lines.iter().any(|l| l.trim() == "--- /dev/null") {
+            let new_path = lines
+                .iter()
+                .find_map(|l| l.trim().strip_prefix("+++ b/"))
+                .and_then(|p| {
+                    p.split_once(['\t', ' '])
+                        .map(|(x, _)| x)
+                        .or(Some(p))
+                })
+                .unwrap_or(default_path)
+                .to_string();
+            let content = Self::extract_add_content(&lines);
+            return Ok(PatchOp::Add {
+                file_path: new_path,
+                content,
+            });
+        }
+
+        // ── Delete (+++ /dev/null or deleted file mode) ─────────────────
+        if lines.iter().any(|l| l.trim() == "+++ /dev/null")
+            || lines.iter().any(|l| l.trim().contains("deleted file mode"))
+        {
+            let old_path = lines
+                .iter()
+                .find_map(|l| l.trim().strip_prefix("--- a/"))
+                .and_then(|p| {
+                    p.split_once(['\t', ' '])
+                        .map(|(x, _)| x)
+                        .or(Some(p))
+                })
+                .unwrap_or(default_path)
+                .to_string();
+            return Ok(PatchOp::Delete { file_path: old_path });
+        }
+
+        // ── Update (default) ────────────────────────────────────────────
+        Ok(PatchOp::Update {
+            file_path: default_path.to_string(),
+            patch: patch.to_string(),
+        })
+    }
+
+    /// Extract file content from `+` lines inside hunks of an add-file diff.
+    fn extract_add_content(lines: &[&str]) -> String {
+        let mut parts = Vec::new();
+        let mut in_hunk = false;
+        for line in lines {
+            let t = line.trim();
+            if t.starts_with("@@") {
+                in_hunk = true;
+                continue;
+            }
+            if in_hunk {
+                if let Some(l) = t.strip_prefix('+') {
+                    parts.push(l.to_string());
+                }
+            }
+        }
+        parts.join("\n")
+    }
+
+    // ── Operation execution ─────────────────────────────────────────────
+
+    /// Execute an add-file operation: create parent directories, write content.
+    fn execute_add(file_path: &str, content: &str) -> Result<ExecuteResult> {
+        let path = std::path::Path::new(file_path);
+
+        // Create parent directories
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| Error::FileSystem {
+                    path: parent.to_string_lossy().into(),
+                    message: format!("failed to create parent directories: {}", e),
+                })?;
+            }
+        }
+
+        let content = if content.ends_with('\n') || content.is_empty() {
+            content.to_string()
+        } else {
+            format!("{}\n", content)
+        };
+
+        std::fs::write(path, &content).map_err(|e| Error::FileSystem {
+            path: file_path.to_string(),
+            message: format!("failed to write file: {}", e),
+        })?;
+
+        Ok(ExecuteResult {
+            title: format!("Created: {}", file_path),
+            output: format!("Created file: {}", file_path),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String("add".into()),
+                );
+                m.insert(
+                    "file".into(),
+                    serde_json::Value::String(file_path.to_string()),
+                );
+                m
+            },
+        })
+    }
+
+    /// Execute a delete-file operation: remove the file.
+    fn execute_delete(file_path: &str) -> Result<ExecuteResult> {
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
+            return Err(Error::Tool(format!("File not found: {}", file_path)));
+        }
+        if path.is_dir() {
+            return Err(Error::Tool(format!(
+                "Path is a directory, not a file: {}",
+                file_path
+            )));
+        }
+
+        std::fs::remove_file(path).map_err(|e| Error::FileSystem {
+            path: file_path.to_string(),
+            message: format!("failed to delete file: {}", e),
+        })?;
+
+        Ok(ExecuteResult {
+            title: format!("Deleted: {}", file_path),
+            output: format!("Deleted file: {}", file_path),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String("delete".into()),
+                );
+                m.insert(
+                    "file".into(),
+                    serde_json::Value::String(file_path.to_string()),
+                );
+                m
+            },
+        })
+    }
+
+    /// Execute a move-file operation: rename source to target.
+    fn execute_move(source_path: &str, target_path: &str) -> Result<ExecuteResult> {
+        let source = std::path::Path::new(source_path);
+        let target = std::path::Path::new(target_path);
+
+        if !source.exists() {
+            return Err(Error::Tool(format!("Source file not found: {}", source_path)));
+        }
+        if source.is_dir() {
+            return Err(Error::Tool(format!(
+                "Source is a directory, not a file: {}",
+                source_path
+            )));
+        }
+        if target.exists() {
+            return Err(Error::Tool(format!("Target already exists: {}", target_path)));
+        }
+
+        // Create parent directories for target
+        if let Some(parent) = target.parent() {
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| Error::FileSystem {
+                    path: parent.to_string_lossy().into(),
+                    message: format!("failed to create parent directories: {}", e),
+                })?;
+            }
+        }
+
+        std::fs::rename(source, target).map_err(|e| Error::FileSystem {
+            path: source_path.to_string(),
+            message: format!("failed to move file: {}", e),
+        })?;
+
+        Ok(ExecuteResult {
+            title: format!("Moved: {} → {}", source_path, target_path),
+            output: format!("Moved file: {} → {}", source_path, target_path),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String("move".into()),
+                );
+                m.insert(
+                    "source".into(),
+                    serde_json::Value::String(source_path.to_string()),
+                );
+                m.insert(
+                    "target".into(),
+                    serde_json::Value::String(target_path.to_string()),
+                );
+                m
+            },
+        })
+    }
+
+    /// Execute an update operation: apply unified diff hunks to an existing file.
+    fn execute_update(file_path: &str, patch: &str) -> Result<ExecuteResult> {
+        let path = std::path::Path::new(file_path);
+        if !path.exists() {
+            return Err(Error::Tool(format!("File not found: {}", file_path)));
+        }
+        if path.is_dir() {
+            return Err(Error::Tool(format!(
+                "Path is a directory, not a file: {}",
+                file_path
+            )));
+        }
+
+        let file_content = std::fs::read_to_string(path).map_err(Error::Io)?;
+        let hunks = Self::parse_unified_diff(patch).map_err(Error::Tool)?;
+        let patched = Self::apply_hunks(&file_content, &hunks, file_path).map_err(Error::Tool)?;
+
+        std::fs::write(path, &patched).map_err(|e| Error::FileSystem {
+            path: file_path.to_string(),
+            message: format!("failed to write patched file: {}", e),
+        })?;
+
+        Ok(ExecuteResult {
+            title: format!("Patched: {}", file_path),
+            output: format!(
+                "Applied patch to {}: {} hunk(s) applied successfully.",
+                file_path,
+                hunks.len()
+            ),
+            truncated: false,
+            output_path: None,
+            attachments: None,
+            metadata: {
+                let mut m = HashMap::new();
+                m.insert(
+                    "operation".into(),
+                    serde_json::Value::String("update".into()),
+                );
+                m.insert(
+                    "file".into(),
+                    serde_json::Value::String(file_path.to_string()),
+                );
+                m.insert("hunks".into(), serde_json::json!(hunks.len()));
+                m
+            },
+        })
+    }
+}
+
+/// Helper: construct a PatchOp::Move from the opencode format.
+fn parse_move_patch(
+    source_path: String,
+    target_path: String,
+    _tail_lines: &[&str],
+) -> Result<PatchOp> {
+    Ok(PatchOp::Move {
+        source_path,
+        target_path,
+    })
 }
 
 #[async_trait]
@@ -2969,9 +3533,10 @@ impl Tool for ApplyPatchTool {
     }
 
     fn description(&self) -> &str {
-        "Apply a unified diff patch to a file. Parses the diff, locates each hunk in the\
-         target file with offset adjustment, and applies the changes. Handles failures\
-         gracefully with clear error messages."
+        "Apply a patch with add, delete, move, and update operations. \
+         Detects add (--- /dev/null), delete (+++ /dev/null or deleted file mode), \
+         move (rename from/to), and update (unified diff) from the patch body. \
+         Also supports the opencode marker format."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -2980,22 +3545,27 @@ impl Tool for ApplyPatchTool {
             "properties": {
                 "file_path": {
                     "type": "string",
-                    "description": "The absolute path to the file to patch"
+                    "description": "The absolute path to the file to patch (for update/delete) or create (for add)"
                 },
                 "patch": {
                     "type": "string",
-                    "description": "The unified diff patch to apply"
+                    "description": "The patch content — unified diff or opencode marker format"
+                },
+                "patchText": {
+                    "type": "string",
+                    "description": "Full patch text with *** Begin Patch and *** End Patch markers (alternative to file_path + patch)"
                 }
             },
-            "required": ["file_path", "patch"]
+            "anyOf": [
+                { "required": ["file_path", "patch"] },
+                { "required": ["patchText"] }
+            ]
         })
     }
 
     async fn execute(&self, args: serde_json::Value, _ctx: &ToolContext) -> Result<ExecuteResult> {
-        // Support both opencode format (patchText with *** Begin/End Patch markers)
-        // and rustcode format (file_path + patch separately)
-        let (file_path, patch) = if let Some(patch_text) = args["patchText"].as_str() {
-            Self::parse_opencode_patch(patch_text)?
+        let operation = if let Some(patch_text) = args["patchText"].as_str() {
+            Self::parse_patch_operation(patch_text)?
         } else {
             let file_path = args["file_path"]
                 .as_str()
@@ -3011,54 +3581,18 @@ impl Tool for ApplyPatchTool {
                     detail: "missing 'patch' field".into(),
                 })?
                 .to_string();
-            (file_path, patch)
+            Self::classify_standard_patch(&patch, &file_path)?
         };
 
-        let path = std::path::Path::new(&file_path);
-        if !path.exists() {
-            return Err(Error::Tool(format!("File not found: {}", file_path)));
+        match operation {
+            PatchOp::Add { file_path, content } => Self::execute_add(&file_path, &content),
+            PatchOp::Delete { file_path } => Self::execute_delete(&file_path),
+            PatchOp::Move {
+                source_path,
+                target_path,
+            } => Self::execute_move(&source_path, &target_path),
+            PatchOp::Update { file_path, patch } => Self::execute_update(&file_path, &patch),
         }
-
-        if path.is_dir() {
-            return Err(Error::Tool(format!(
-                "Path is a directory, not a file: {}",
-                file_path
-            )));
-        }
-
-        let file_content = std::fs::read_to_string(path).map_err(Error::Io)?;
-
-        let hunks = Self::parse_unified_diff(&patch).map_err(Error::Tool)?;
-
-        let patched = Self::apply_hunks(&file_content, &hunks, &file_path).map_err(Error::Tool)?;
-
-        std::fs::write(path, &patched).map_err(|e| Error::FileSystem {
-            path: file_path.to_string(),
-            message: format!("failed to write patched file: {}", e),
-        })?;
-
-        let output = format!(
-            "Applied patch to {}: {} hunk(s) applied successfully.",
-            file_path,
-            hunks.len()
-        );
-
-        Ok(ExecuteResult {
-            title: format!("Patched: {}", file_path),
-            output,
-            truncated: false,
-            output_path: None,
-            attachments: None,
-            metadata: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "file".into(),
-                    serde_json::Value::String(file_path.to_string()),
-                );
-                m.insert("hunks".into(), serde_json::json!(hunks.len()));
-                m
-            },
-        })
     }
 }
 

@@ -44,3 +44,5 @@ urlencoding.workspace = true
 walkdir.workspace = true
 image.workspace = true
 notify.workspace = true
+tree-sitter.workspace = true
+tree-sitter-bash.workspace = true

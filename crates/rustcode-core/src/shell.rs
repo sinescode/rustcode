@@ -420,6 +420,38 @@ pub const COMMON_SHELLS: &[&str] = &[
     "powershell",
 ];
 
+/// Shell family/kind for multi-shell support.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellKind {
+    Bash,
+    Zsh,
+    Fish,
+    Dash,
+    Ksh,
+    Nu,
+    PowerShell,
+    Pwsh,
+    Sh,
+    Other,
+}
+
+impl ShellKind {
+    pub fn from_name(name: &str) -> Self {
+        match name {
+            "bash" => ShellKind::Bash,
+            "zsh" => ShellKind::Zsh,
+            "fish" => ShellKind::Fish,
+            "dash" => ShellKind::Dash,
+            "ksh" => ShellKind::Ksh,
+            "nu" => ShellKind::Nu,
+            "powershell" => ShellKind::PowerShell,
+            "pwsh" => ShellKind::Pwsh,
+            "sh" => ShellKind::Sh,
+            _ => ShellKind::Other,
+        }
+    }
+}
+
 /// Service for shell detection and command execution.
 pub struct ShellService {
     config: ShellConfig,

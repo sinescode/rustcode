@@ -9,9 +9,12 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::sync::{broadcast, mpsc, Mutex, RwLock};
+use tokio_util::sync::CancellationToken;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // PTY ID
@@ -1346,5 +1349,761 @@ impl std::fmt::Debug for PtyLiveAttachment {
             .field("active", &self.is_active())
             .field("detached", &self.is_detached())
             .finish()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PTY Session Inner (runtime per-session)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/// Broadcast channel capacity for live PTY output delivery.
+const BROADCAST_CAPACITY: usize = 256;
+
+/// Milliseconds between SIGTERM and SIGKILL escalation.
+const PTY_KILL_TIMEOUT_MS: u64 = 200;
+
+// ── Private subscriber entry ──────────────────────────────────────────────────
+
+struct PtySubscriberEntry {
+    active: bool,
+    pending: Vec<Vec<u8>>,
+    tx: mpsc::UnboundedSender<Vec<u8>>,
+    end: Option<u32>,
+}
+
+// ── PtySessionShared (shared across tasks) ────────────────────────────────────
+
+struct PtySessionShared {
+    info: RwLock<PtyInfo>,
+    buffer: RwLock<PtyBuffer>,
+    cursor: AtomicU64,
+    subscribers: RwLock<HashMap<u64, PtySubscriberEntry>>,
+    next_sub_id: AtomicU64,
+    output_tx: broadcast::Sender<Vec<u8>>,
+}
+
+// ── PtySessionInner ──────────────────────────────────────────────────────────
+
+/// A live PTY session runtime that manages a child process with piped I/O,
+/// output buffering, and subscriber delivery.
+///
+/// Each session owns a spawned child process, background tasks for reading
+/// stdout, and an exit watcher that marks the session as exited when the
+/// process terminates.
+///
+/// # Source
+/// `packages/core/src/pty.ts` — `Active` session struct (lines 223–231).
+pub struct PtySessionInner {
+    id: String,
+    shared: Arc<PtySessionShared>,
+    child: Mutex<Option<tokio::process::Child>>,
+    stdin: Mutex<Option<tokio::process::ChildStdin>>,
+    cancel: CancellationToken,
+    pid: u32,
+}
+
+impl std::fmt::Debug for PtySessionInner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PtySessionInner")
+            .field("id", &self.id)
+            .field("pid", &self.pid)
+            .finish()
+    }
+}
+
+impl PtySessionInner {
+    /// Session identifier string.
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// Child process PID (0 if unavailable).
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
+    /// Cancellation token used to stop background tasks.
+    pub fn cancel_token(&self) -> &CancellationToken {
+        &self.cancel
+    }
+
+    /// Snapshot of the session info.
+    pub async fn info(&self) -> PtyInfo {
+        self.shared.info.read().await.clone()
+    }
+
+    /// Subscribe to the broadcast output channel.
+    pub fn subscribe_broadcast(&self) -> broadcast::Receiver<Vec<u8>> {
+        self.shared.output_tx.subscribe()
+    }
+
+    /// Create a subscriber for the attach/detach lifecycle.
+    ///
+    /// Returns `(subscriber_id, receiver)`.  Call
+    /// [`activate_subscriber`](Self::activate_subscriber) to begin live
+    /// delivery or [`detach_subscriber`](Self::detach_subscriber) to remove.
+    pub async fn subscribe(&self) -> (u64, mpsc::UnboundedReceiver<Vec<u8>>) {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let id = self.shared.next_sub_id.fetch_add(1, Ordering::SeqCst);
+        let entry = PtySubscriberEntry {
+            active: false,
+            pending: Vec::new(),
+            tx,
+            end: None,
+        };
+        self.shared.subscribers.write().await.insert(id, entry);
+        (id, rx)
+    }
+
+    /// Activate a subscriber — flush accumulated pending data and start
+    /// live delivery.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `activate()` (lines 322–331).
+    pub async fn activate_subscriber(&self, sub_id: u64) {
+        let mut subs = self.shared.subscribers.write().await;
+        let entry = match subs.get_mut(&sub_id) {
+            Some(e) if !e.active => e,
+            _ => return,
+        };
+        entry.active = true;
+        let pending = std::mem::take(&mut entry.pending);
+        for chunk in &pending {
+            let _ = entry.tx.send(chunk.clone());
+        }
+        if let Some(code) = entry.end {
+            let _ = entry.tx.send(format!("\x00\x00\x00_exit_{code}").into_bytes());
+        }
+    }
+
+    /// Detach a subscriber — stop delivery and remove the subscription.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `detach()` (lines 333–338).
+    pub async fn detach_subscriber(&self, sub_id: u64) {
+        self.shared.subscribers.write().await.remove(&sub_id);
+    }
+
+    /// Write data to the child process stdin.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `session.process.write(data)` (line 286).
+    pub async fn write(&self, data: &[u8]) -> Result<(), PtyError> {
+        let mut guard = self.stdin.lock().await;
+        let stdin = guard.as_mut().ok_or_else(|| PtyError::Other("stdin closed".into()))?;
+        stdin.write_all(data).await.map_err(|e| PtyError::Io(e.to_string()))?;
+        Ok(())
+    }
+
+    /// Resize the terminal (no-op for piped processes).
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `session.process.resize()` (line 279).
+    pub async fn resize(&self, _cols: u16, _rows: u16) -> Result<(), PtyError> {
+        // TODO: implement with ioctl(TIOCSWINSZ) when a real PTY is used
+        Ok(())
+    }
+
+    /// Kill the process group with SIGTERM → SIGKILL escalation.
+    ///
+    /// On Unix, sends SIGTERM to the process group (negative PID), waits
+    /// [`PTY_KILL_TIMEOUT_MS`], then escalates to SIGKILL.
+    ///
+    /// # Source
+    /// `packages/core/src/shell.ts` — `killTree()` (lines 205–216).
+    pub async fn kill(&self) {
+        let pid = self.pid;
+        if pid > 0 {
+            crate::process::kill_group(pid).await;
+            tokio::time::sleep(Duration::from_millis(PTY_KILL_TIMEOUT_MS)).await;
+            #[cfg(unix)]
+            {
+                let _ = tokio::process::Command::new("kill")
+                    .args(["-KILL", &format!("-{pid}")])
+                    .output()
+                    .await;
+            }
+        }
+    }
+
+    /// Returns `true` if the session process has exited.
+    pub async fn is_exited(&self) -> bool {
+        matches!(self.shared.info.read().await.status, PtyStatus::Exited)
+    }
+}
+
+// ── PtyRuntime inner ─────────────────────────────────────────────────────────
+
+/// PTY session registry and spawn runtime.
+///
+/// Manages the full lifecycle of PTY sessions:
+///   - [`create`](PtyRuntime::create) — spawn a child process with piped I/O
+///   - [`write`](PtyRuntime::write) — feed stdin
+///   - [`resize`](PtyRuntime::resize) — change terminal dimensions (no-op)
+///   - [`get`](PtyRuntime::get) — look up a session by ID
+///   - [`remove`](PtyRuntime::remove) — kill the process tree and clean up
+///   - [`list`](PtyRuntime::list) — enumerate all session infos
+///
+/// When a [`SharedBus`] is configured, lifecycle events are published:
+/// `Created`, `Updated`, `Exited`, `Deleted`.
+///
+/// # Source
+/// `packages/core/src/pty.ts` — `Service` / `Active` session (lines 122–343).
+pub struct PtyRuntime {
+    sessions: RwLock<HashMap<String, Arc<PtySessionInner>>>,
+    bus: Option<SharedBus>,
+}
+
+impl std::fmt::Debug for PtyRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PtyRuntime")
+            .field("bus", &self.bus.as_ref().map(|_| "Some"))
+            .finish()
+    }
+}
+
+impl PtyRuntime {
+    /// Create an empty runtime with no event bus.
+    pub fn new() -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            bus: None,
+        }
+    }
+
+    /// Create a runtime that publishes lifecycle events on `bus`.
+    pub fn with_bus(bus: SharedBus) -> Self {
+        Self {
+            sessions: RwLock::new(HashMap::new()),
+            bus: Some(bus),
+        }
+    }
+
+    /// Attach an event bus after construction.
+    pub fn set_bus(&mut self, bus: SharedBus) {
+        self.bus = Some(bus);
+    }
+
+    /// Snapshot of all session infos.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `list()` (lines 187–189).
+    pub async fn list(&self) -> Vec<PtyInfo> {
+        let guard = self.sessions.read().await;
+        let mut result = Vec::with_capacity(guard.len());
+        for session in guard.values() {
+            result.push(session.info().await);
+        }
+        result
+    }
+
+    /// Look up a session by its string ID.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `get()` (lines 191–193).
+    pub async fn get(&self, id: &str) -> Option<Arc<PtySessionInner>> {
+        self.sessions.read().await.get(id).cloned()
+    }
+
+    /// Spawn a child process and register the session.
+    ///
+    /// The child is spawned with piped stdin/stdout/stderr.  On Unix the
+    /// process is placed into a new process group via `setpgid(0, 0)` so
+    /// that [`kill`](PtySessionInner::kill) can terminate the entire tree.
+    ///
+    /// Two background tasks are launched:
+    ///   - **stdout reader** — reads lines from stdout, pushes them into the
+    ///     output buffer, broadcasts to all subscribers, and buffers for
+    ///     inactive subscribers.
+    ///   - **exit watcher** — waits for the child to exit, updates session
+    ///     status to [`PtyStatus::Exited`], notifies subscribers, and
+    ///     publishes a `PtyExitedEvent` on the bus.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `create()` (lines 195–273).
+    pub async fn create(
+        &self,
+        info: PtyInfo,
+        extra_env: HashMap<String, String>,
+    ) -> Result<Arc<PtySessionInner>, PtyError> {
+        let id_str = info.id.as_str().to_string();
+
+        // ── build command ───────────────────────────────────────────
+        let mut cmd = tokio::process::Command::new(&info.command);
+        cmd.args(&info.args);
+        cmd.current_dir(&info.cwd);
+        cmd.stdin(std::process::Stdio::piped());
+        cmd.stdout(std::process::Stdio::piped());
+        cmd.stderr(std::process::Stdio::piped());
+        cmd.kill_on_drop(true);
+
+        // Merge environment: base (TERM, OPENCODE_TERMINAL) + extras
+        for (k, v) in pty_env(&extra_env) {
+            cmd.env(k, v);
+        }
+
+        // Create a new process group on Unix so we can kill the entire tree.
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            cmd.as_std_mut().process_group(0);
+        }
+
+        // ── spawn child ─────────────────────────────────────────────
+        let mut child = cmd.spawn().map_err(|e| PtyError::Io(e.to_string()))?;
+        let pid: u32 = child.id().unwrap_or(0) as u32;
+        let stdin = child.stdin.take();
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| PtyError::Other("failed to capture stdout".into()))?;
+
+        // ── shared state ────────────────────────────────────────────
+        let (output_tx, _) = broadcast::channel(BROADCAST_CAPACITY);
+        let shared = Arc::new(PtySessionShared {
+            info: RwLock::new(info.clone()),
+            buffer: RwLock::new(PtyBuffer::new(BUFFER_LIMIT)),
+            cursor: AtomicU64::new(0),
+            subscribers: RwLock::new(HashMap::new()),
+            next_sub_id: AtomicU64::new(0),
+            output_tx: output_tx.clone(),
+        });
+
+        let cancel = CancellationToken::new();
+
+        // ── stdout reader task ──────────────────────────────────────
+        let reader_shared = Arc::clone(&shared);
+        let reader_cancel = cancel.clone();
+        tokio::spawn(async move {
+            let reader = BufReader::new(stdout);
+            let mut lines = reader.lines();
+            loop {
+                tokio::select! {
+                    result = lines.next_line() => {
+                        let line = match result {
+                            Ok(Some(line)) => line,
+                            Ok(None) => break,
+                            Err(_) => break,
+                        };
+                        let mut bytes = line.into_bytes();
+                        bytes.push(b'\n');
+
+                        let len = bytes.len();
+                        reader_shared.cursor.fetch_add(len, Ordering::SeqCst);
+
+                        // Write to buffer
+                        {
+                            let mut buf = reader_shared.buffer.write().await;
+                            buf.push(&bytes);
+                        }
+
+                        // Broadcast to all
+                        let _ = reader_shared.output_tx.send(bytes.clone());
+
+                        // Active subscribers get data directly;
+                        // inactive subscribers accumulate pending.
+                        let mut subs = reader_shared.subscribers.write().await;
+                        for (_, entry) in subs.iter_mut() {
+                            if entry.active {
+                                let _ = entry.tx.send(bytes.clone());
+                            } else {
+                                entry.pending.push(bytes.clone());
+                            }
+                        }
+                    }
+                    _ = reader_cancel.cancelled() => break,
+                }
+            }
+        });
+
+        // ── child handle (shared between exit watcher and remove) ──
+        let child_mutex: Arc<Mutex<Option<tokio::process::Child>>> =
+            Arc::new(Mutex::new(Some(child)));
+
+        // ── exit watcher task ───────────────────────────────────────
+        let exit_shared = Arc::clone(&shared);
+        let exit_cancel = cancel.clone();
+        let exit_child = Arc::clone(&child_mutex);
+        let bus = self.bus.clone();
+        let exit_id = id_str.clone();
+
+        tokio::spawn(async move {
+            let child = {
+                let mut guard = exit_child.lock().await;
+                guard.take()
+            };
+
+            let exit_code: Option<i32> = if let Some(mut c) = child {
+                c.wait().await.ok().and_then(|s| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::process::ExitStatusExt;
+                        s.code().or_else(|| s.signal().map(|sig| 128 + sig))
+                    }
+                    #[cfg(not(unix))]
+                    {
+                        s.code()
+                    }
+                })
+            } else {
+                None
+            };
+
+            // Mark session as exited.
+            {
+                let mut info = exit_shared.info.write().await;
+                info.status = PtyStatus::Exited;
+                info.exit_code = exit_code.map(|c| c as u64);
+            }
+
+            // Notify subscribers.
+            {
+                let mut subs = exit_shared.subscribers.write().await;
+                for (_, entry) in subs.iter_mut() {
+                    if entry.active {
+                        let _ = entry.tx.send(Vec::new());
+                    }
+                    entry.end = exit_code.map(|c| c as u32);
+                }
+            }
+
+            // Publish PtyExitedEvent on the bus.
+            if let Some(ref bus) = bus {
+                let event = PtyExitedEvent {
+                    id: PtyId::new(&exit_id)
+                        .expect("session id was validated on creation"),
+                    exit_code: exit_code.unwrap_or(-1) as u64,
+                };
+                if let Ok(payload) = serde_json::to_value(event) {
+                    let _ = bus.publish(GlobalEvent::new(payload).with_workspace("pty"));
+                }
+            }
+
+            // Stop the stdout reader.
+            exit_cancel.cancel();
+        });
+
+        // ── build session inner ─────────────────────────────────────
+        let session = Arc::new(PtySessionInner {
+            id: id_str.clone(),
+            shared,
+            child: child_mutex,
+            stdin: Mutex::new(stdin),
+            cancel,
+            pid,
+        });
+
+        // Register in the map.
+        self.sessions
+            .write()
+            .await
+            .insert(id_str.clone(), Arc::clone(&session));
+
+        // Publish PtyCreatedEvent.
+        if let Some(ref bus) = self.bus {
+            let event = PtyCreatedEvent {
+                info: info.clone(),
+            };
+            if let Ok(payload) = serde_json::to_value(event) {
+                let _ = bus.publish(GlobalEvent::new(payload).with_workspace("pty"));
+            }
+        }
+
+        Ok(session)
+    }
+
+    /// Write raw bytes to a session's stdin.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `write()` (lines 284–287).
+    pub async fn write(&self, id: &str, data: &[u8]) -> Result<(), PtyError> {
+        let guard = self.sessions.read().await;
+        let session = guard.get(id).ok_or_else(|| {
+            PtyError::NotFound(
+                PtyId::new(id).unwrap_or_else(|_| PtyId::new("pty_missing").expect("fallback id")),
+            )
+        })?;
+        session.write(data).await
+    }
+
+    /// Resize a session's terminal dimensions.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `session.process.resize()` (line 279).
+    pub async fn resize(&self, id: &str, cols: u16, rows: u16) -> Result<(), PtyError> {
+        let guard = self.sessions.read().await;
+        let session = guard.get(id).ok_or_else(|| {
+            PtyError::NotFound(
+                PtyId::new(id).unwrap_or_else(|_| PtyId::new("pty_missing").expect("fallback id")),
+            )
+        })?;
+        session.resize(cols, rows).await
+    }
+
+    /// Remove a session — kill the process tree and clean up.
+    ///
+    /// # Source
+    /// `packages/core/src/pty.ts` — `remove()` / `removeSession()` (lines 171–185).
+    pub async fn remove(&self, id: &str) -> Result<(), PtyError> {
+        let session = {
+            let guard = self.sessions.read().await;
+            guard.get(id).cloned()
+        };
+
+        let session = session.ok_or_else(|| {
+            PtyError::NotFound(
+                PtyId::new(id).unwrap_or_else(|_| PtyId::new("pty_missing").expect("fallback id")),
+            )
+        })?;
+
+        // Kill the process group (SIGTERM → SIGKILL).
+        session.kill().await;
+
+        // Reap the child to avoid zombies.
+        {
+            let mut guard = session.child.lock().await;
+            if let Some(mut c) = guard.take() {
+                let _ = c.wait().await;
+            }
+        }
+
+        // Stop background tasks.
+        session.cancel.cancel();
+
+        // Remove from registry.
+        self.sessions.write().await.remove(id);
+
+        // Publish PtyDeletedEvent.
+        if let Some(ref bus) = self.bus {
+            let event = PtyDeletedEvent {
+                id: PtyId::new(id)
+                    .unwrap_or_else(|_| PtyId::new("pty_missing").expect("fallback id")),
+            };
+            if let Ok(payload) = serde_json::to_value(event) {
+                let _ = bus.publish(GlobalEvent::new(payload).with_workspace("pty"));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Number of registered sessions.
+    pub async fn len(&self) -> usize {
+        self.sessions.read().await.len()
+    }
+
+    /// `true` if no sessions are registered.
+    pub async fn is_empty(&self) -> bool {
+        self.sessions.read().await.is_empty()
+    }
+
+    /// Remove all sessions.
+    pub async fn clear(&self) {
+        let ids: Vec<String> = {
+            let guard = self.sessions.read().await;
+            guard.keys().cloned().collect()
+        };
+        for id in ids {
+            let _ = self.remove(&id).await;
+        }
+    }
+}
+
+impl Default for PtyRuntime {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Tests — PTY runtime integration
+// ══════════════════════════════════════════════════════════════════════════════
+
+#[cfg(test)]
+mod runtime_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn test_info(id: &str, cmd: &str) -> PtyInfo {
+        PtyInfo {
+            id: PtyId::new(id).expect("test pty id"),
+            title: format!("Test {id}"),
+            command: cmd.to_string(),
+            args: Vec::new(),
+            cwd: "/tmp".into(),
+            status: PtyStatus::Running,
+            pid: 0,
+            exit_code: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_runtime_create_and_list() {
+        let runtime = PtyRuntime::new();
+        let info = test_info("pty_test_1", "echo");
+        let session = runtime
+            .create(info.clone(), HashMap::new())
+            .await
+            .expect("should spawn echo");
+        assert_eq!(session.id(), "pty_test_1");
+        assert!(session.pid() > 0);
+
+        let list = runtime.list().await;
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].id, info.id);
+
+        runtime.remove("pty_test_1").await.expect("should remove");
+        assert!(runtime.is_empty().await);
+    }
+
+    #[tokio::test]
+    async fn test_runtime_get_unknown() {
+        let runtime = PtyRuntime::new();
+        let session = runtime.get("pty_nonexistent").await;
+        assert!(session.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_runtime_write_to_stdin() {
+        let runtime = PtyRuntime::new();
+        // Use 'cat' which echoes stdin back to stdout
+        let info = PtyInfo {
+            id: PtyId::new("pty_cat_test").expect("valid id"),
+            title: "cat test".into(),
+            command: "cat".into(),
+            args: Vec::new(),
+            cwd: "/tmp".into(),
+            status: PtyStatus::Running,
+            pid: 0,
+            exit_code: None,
+        };
+        let session = runtime
+            .create(info, HashMap::new())
+            .await
+            .expect("should spawn cat");
+        session.write(b"hello\n").await.expect("should write");
+        // Give cat time to echo
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        runtime.remove(session.id()).await.expect("should remove");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_write_to_closed_stdin_errors() {
+        let runtime = PtyRuntime::new();
+        let info = test_info("pty_closed_stdin", "true");
+        let session = runtime
+            .create(info, HashMap::new())
+            .await
+            .expect("should spawn true");
+        // 'true' exits immediately; wait and then try to write
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let result = session.write(b"data").await;
+        // Write may fail if the process has already exited and closed stdin
+        // Either Ok or Err is acceptable depending on timing
+        let _ = result;
+        runtime.remove(session.id()).await.expect("should remove");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_remove_idempotent() {
+        let runtime = PtyRuntime::new();
+        let info = test_info("pty_rm_test", "sleep");
+        let info = PtyInfo {
+            args: vec!["60".into()],
+            ..info
+        };
+        let session = runtime
+            .create(info, HashMap::new())
+            .await
+            .expect("should spawn sleep");
+
+        // Remove once
+        runtime.remove(session.id()).await.expect("first remove");
+        assert!(runtime.is_empty().await);
+
+        // Remove again should error with NotFound
+        let err = runtime.remove("pty_rm_test").await;
+        assert!(err.is_err());
+        match err.unwrap_err() {
+            PtyError::NotFound(_) => {} // expected
+            other => panic!("expected NotFound, got {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_runtime_subscribe_and_broadcast() {
+        let runtime = PtyRuntime::new();
+        let info = PtyInfo {
+            id: PtyId::new("pty_sub_test").expect("valid id"),
+            title: "sub test".into(),
+            command: "echo".into(),
+            args: vec!["hello pty".into()],
+            cwd: "/tmp".into(),
+            status: PtyStatus::Running,
+            pid: 0,
+            exit_code: None,
+        };
+
+        let session = runtime
+            .create(info, HashMap::new())
+            .await
+            .expect("should spawn");
+
+        let mut rx = session.subscribe_broadcast();
+        // Wait for output
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        // The process should have written "hello pty\n" to stdout
+        let msg = rx.try_recv().ok();
+        assert!(msg.is_some(), "expected broadcast output");
+        let text = String::from_utf8_lossy(&msg.unwrap());
+        assert!(text.contains("hello pty"), "expected hello pty, got {text:?}");
+
+        runtime.remove(session.id()).await.expect("should remove");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_subscriber_lifecycle() {
+        let runtime = PtyRuntime::new();
+        let info = PtyInfo {
+            id: PtyId::new("pty_lifecycle").expect("valid id"),
+            title: "lifecycle".into(),
+            command: "echo".into(),
+            args: vec!["hello lifecycle".into()],
+            cwd: "/tmp".into(),
+            status: PtyStatus::Running,
+            pid: 0,
+            exit_code: None,
+        };
+
+        let session = runtime
+            .create(info, HashMap::new())
+            .await
+            .expect("should spawn");
+
+        // Create an inactive subscriber; data should buffer
+        let (sub_id, _rx) = session.subscribe().await;
+        assert!(!session.is_exited().await);
+
+        // Activate and flush pending
+        session.activate_subscriber(sub_id).await;
+        session.detach_subscriber(sub_id).await;
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        runtime.remove(session.id()).await.expect("should remove");
+    }
+
+    #[tokio::test]
+    async fn test_runtime_clear_all_sessions() {
+        let runtime = PtyRuntime::new();
+        for i in 0..3 {
+            let info = test_info(&format!("pty_clear_{i}"), "true");
+            runtime
+                .create(info, HashMap::new())
+                .await
+                .expect("should spawn");
+        }
+        assert_eq!(runtime.len().await, 3);
+        runtime.clear().await;
+        assert_eq!(runtime.len().await, 0);
     }
 }

@@ -36,7 +36,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 pin-project-lite = "0.2"
 dashmap = "6"
 tower = "0.5"
-tokio-util = { version = "0.7", features = ["rt"] }
+tokio-util = { version = "0.7", features = ["rt", "sync"] }
 bytes = "1"
 url = "2"
 base64 = "0.22"
@@ -52,6 +52,8 @@ urlencoding = "2"
 walkdir = "2"
 image = "0.25"
 notify = { version = "6", default-features = false, features = [] }
+tree-sitter = "0.24"
+tree-sitter-bash = "0.23"
 rustcode-core = { path = "crates/rustcode-core" }
 rustcode-server = { path = "crates/rustcode-server" }
 rustcode-tui = { path = "crates/rustcode-tui" }

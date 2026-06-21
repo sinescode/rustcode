@@ -69,6 +69,7 @@ pub mod session_prompt;
 pub mod session_runner;
 pub mod session_todo;
 pub mod shell;
+pub mod shell_parser;
 pub mod share;
 pub mod skill;
 pub mod snapshot;
