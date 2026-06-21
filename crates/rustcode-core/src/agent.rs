@@ -27,7 +27,7 @@
 
 use crate::config::{self, AgentMode};
 use crate::permission::{self, PermissionRuleset};
-use crate::provider;
+use crate::provider::{self, ChatMessage, MessageContent, Provider};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -527,38 +527,74 @@ impl AgentService {
 
     /// Generate a new agent definition via LLM.
     ///
-    /// This sends a prompt to the configured LLM asking it to design an agent
+    /// Sends a prompt to the configured LLM asking it to design an agent
     /// based on a user's natural-language description. The LLM returns a JSON
     /// object with `identifier`, `whenToUse`, and `systemPrompt`.
     ///
+    /// The generated agent is saved as a Markdown file with YAML frontmatter
+    /// in `.opencode/agents/{identifier}.md` within the data directory.
+    ///
     /// # Source
     /// Ported from `packages/opencode/src/agent/agent.ts` lines 366–435 (`generate`).
-    ///
-    /// # Note
-    /// This is a stub — the actual LLM call requires the full provider pipeline
-    /// (auth, model resolution, streaming). The stub returns a basic generated
-    /// agent for now. The full implementation will be wired when the provider
-    /// catalog is complete.
-    #[allow(unused_variables)]
     pub async fn generate(
         &self,
         description: &str,
-        model: Option<&provider::ModelRef>,
-        _existing_names: &[String],
+        provider: &dyn Provider,
+        model: &provider::Model,
+        existing_names: &[String],
     ) -> Result<GeneratedAgent, crate::error::Error> {
-        // TODO: Full implementation requires:
-        // 1. Resolve model (default or provided)
-        // 2. Get auth for provider
-        // 3. Build system prompt with PROMPT_GENERATE
-        // 4. Send generateObject request with GeneratedAgent schema
-        // 5. Handle OpenAI OAuth special case
-        // 6. Return the parsed GeneratedAgent
+        let existing_list = if existing_names.is_empty() {
+            "None".to_string()
+        } else {
+            existing_names.join(", ")
+        };
 
-        // For now, return a placeholder — the caller should use the
-        // provider pipeline directly until this is wired.
-        Err(crate::error::Error::NotImplemented(
-            "Agent.generate requires full provider pipeline — use provider directly".into(),
-        ))
+        let system = PROMPT_GENERATE.to_string();
+
+        let user_content = format!(
+            "Create an agent configuration based on this request: \"{description}\".\n\n\
+             IMPORTANT: The following identifiers already exist and must NOT be used: \
+             {existing_list}\n\
+             Return ONLY the JSON object, no other text, do not wrap in backticks"
+        );
+
+        let messages = vec![
+            ChatMessage::System {
+                content: MessageContent::Text(system),
+            },
+            ChatMessage::User {
+                content: MessageContent::Text(user_content),
+            },
+        ];
+
+        let response = provider.complete(model, &messages, &[]).await?;
+        let text = response.text();
+
+        if text.is_empty() {
+            return Err(crate::error::Error::Internal(
+                "empty response from provider during agent generation".into(),
+            ));
+        }
+
+        let generated: GeneratedAgent = serde_json::from_str(&text)
+            .map_err(crate::error::Error::Json)?;
+
+        let agents_dir = self.data_dir.join(".opencode").join("agents");
+        tokio::fs::create_dir_all(&agents_dir).await?;
+
+        let frontmatter = serde_yaml::to_string(&serde_json::json!({
+            "identifier": generated.identifier,
+            "whenToUse": generated.when_to_use,
+        }))
+        .map_err(|e| {
+            crate::error::Error::Internal(format!("failed to serialize frontmatter: {e}"))
+        })?;
+
+        let file_content = format!("---\n{}---\n\n{}", frontmatter, generated.system_prompt);
+        let file_path = agents_dir.join(format!("{}.md", generated.identifier));
+        tokio::fs::write(&file_path, file_content).await?;
+
+        Ok(generated)
     }
 
     // -- Accessors ---------------------------------------------------------
@@ -1232,17 +1268,125 @@ mod tests {
         assert!(carries_deny, "should carry parent deny rules");
     }
 
+    /// Mock provider that returns a hardcoded JSON response for agent generation.
+    #[cfg(test)]
+    struct MockGenerateProvider {
+        response_json: String,
+    }
+
+    #[cfg(test)]
+    #[async_trait::async_trait]
+    impl Provider for MockGenerateProvider {
+        fn provider_id(&self) -> &str {
+            "mock"
+        }
+
+        fn npm(&self) -> &str {
+            "@mock/provider"
+        }
+
+        async fn list_models(&self) -> crate::error::Result<Vec<provider::Model>> {
+            Ok(Vec::new())
+        }
+
+        async fn get_model(&self, _id: &str) -> crate::error::Result<provider::Model> {
+            Err(crate::error::Error::NotImplemented("mock".into()))
+        }
+
+        async fn stream(
+            &self,
+            _model: &provider::Model,
+            _messages: &[ChatMessage],
+            _tools: &[provider::ToolDefinition],
+        ) -> crate::error::Result<
+            Box<dyn futures::Stream<Item = crate::error::Result<provider::LlmEvent>> + Send + Unpin>,
+        > {
+            Err(crate::error::Error::NotImplemented("mock".into()))
+        }
+
+        async fn complete(
+            &self,
+            _model: &provider::Model,
+            _messages: &[ChatMessage],
+            _tools: &[provider::ToolDefinition],
+        ) -> crate::error::Result<provider::LlmResponse> {
+            Ok(provider::LlmResponse {
+                events: vec![
+                    provider::LlmEvent::TextStart {
+                        id: "text-0".into(),
+                        provider_metadata: None,
+                    },
+                    provider::LlmEvent::TextDelta {
+                        id: "text-0".into(),
+                        text: self.response_json.clone(),
+                        provider_metadata: None,
+                    },
+                    provider::LlmEvent::TextEnd {
+                        id: "text-0".into(),
+                        provider_metadata: None,
+                    },
+                    provider::LlmEvent::StepStart { index: 0 },
+                    provider::LlmEvent::StepFinish {
+                        index: 0,
+                        reason: provider::FinishReason::Stop,
+                        usage: None,
+                        provider_metadata: None,
+                    },
+                    provider::LlmEvent::Finish {
+                        reason: provider::FinishReason::Stop,
+                        usage: None,
+                        provider_metadata: None,
+                    },
+                ],
+                usage: None,
+            })
+        }
+    }
+
     #[test]
-    fn test_generate_returns_not_implemented() {
+    fn test_generate_returns_generated_agent() {
         let (worktree, data_dir, _tmp_dir) = test_dirs();
         let svc = AgentService::empty(worktree, data_dir);
+        let provider = MockGenerateProvider {
+            response_json: r#"{
+                "identifier": "test-reviewer",
+                "whenToUse": "When reviewing pull requests",
+                "systemPrompt": "You are a code review specialist."
+            }"#
+            .into(),
+        };
+        let model = provider::Model {
+            id: "mock-model".into(),
+            provider_id: "mock".into(),
+            name: "Mock Model".into(),
+            api: provider::ApiInfo {
+                id: "mock-model".into(),
+                url: "https://api.mock.com/v1".into(),
+                npm: "@mock/provider".into(),
+            },
+            family: None,
+            capabilities: provider::Capabilities::default(),
+            cost: provider::Cost::default(),
+            limit: provider::TokenLimit {
+                context: 128_000,
+                input: None,
+                output: 16_384,
+            },
+            status: provider::ModelStatus::Active,
+            options: std::collections::HashMap::new(),
+            headers: std::collections::HashMap::new(),
+            release_date: "2026".into(),
+            variants: None,
+        };
         let rt = tokio::runtime::Runtime::new().unwrap();
-        let result = rt.block_on(svc.generate("test description", None, &[]));
-        assert!(result.is_err());
-        match result {
-            Err(crate::error::Error::NotImplemented(_)) => {} // expected
-            _ => panic!("expected NotImplemented error"),
-        }
+        let result = rt.block_on(svc.generate("test description", &provider, &model, &[]));
+        let generated = result.expect("generate should succeed");
+        assert_eq!(generated.identifier, "test-reviewer");
+        assert_eq!(generated.when_to_use, "When reviewing pull requests");
+        assert_eq!(
+            generated.system_prompt,
+            "You are a code review specialist."
+        );
     }
 
     // ── Prompt content tests ─────────────────────────────────────────────

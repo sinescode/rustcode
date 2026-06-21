@@ -426,6 +426,39 @@ pub fn sanitize_name(value: &str) -> String {
         .collect()
 }
 
+/// Extract human-readable text content from an MCP `tools/call` response.
+///
+/// The MCP protocol returns `result.content` as an array of content blocks.
+/// Each text block has `{type: "text", text: "..."}`. This function joins
+/// all text blocks with newlines. If the result does not contain a `content`
+/// array, the entire result is serialized as a JSON string.
+///
+/// # Source
+/// Ported from `packages/opencode/src/mcp/catalog.ts` `convertTool` execute
+/// handler content extraction.
+pub fn extract_mcp_content(result: &serde_json::Value) -> String {
+    if let Some(content) = result.get("content").and_then(|c| c.as_array()) {
+        let texts: Vec<&str> = content
+            .iter()
+            .filter_map(|block| {
+                if block.get("type").and_then(|t| t.as_str()) == Some("text") {
+                    block.get("text").and_then(|t| t.as_str())
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        if texts.is_empty() {
+            serde_json::to_string_pretty(&content).unwrap_or_else(|_| format!("{content:?}"))
+        } else {
+            texts.join("\n")
+        }
+    } else {
+        serde_json::to_string_pretty(result).unwrap_or_else(|_| format!("{result}"))
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Resource definition
 // ---------------------------------------------------------------------------
@@ -1589,10 +1622,9 @@ impl McpClient {
     /// registration in the [`ToolRegistry`](crate::tool::ToolRegistry).
     ///
     /// Each tool gets a key of the form `{sanitized_server_name}_{sanitized_tool_name}`
-    /// and a stub execute function — actual execution is handled by the
-    /// session runner which dispatches MCP tool calls through the active
-    /// MCP client.
-    pub async fn to_plugin_defs(&self) -> Vec<crate::tool::PluginToolDef> {
+    /// and an execute closure that calls [`McpClient::call_tool`] to dispatch
+    /// the tool to the MCP server.
+    pub async fn to_plugin_defs(self: Arc<McpClient>) -> Vec<crate::tool::PluginToolDef> {
         let tools = self.tools.read().await;
         let mut defs = Vec::with_capacity(tools.len());
 
@@ -1607,19 +1639,28 @@ impl McpClient {
                 .clone()
                 .unwrap_or_else(|| format!("MCP tool: {}", tool.name));
 
+            let client = Arc::clone(&self);
+            let tool_name = tool.name.clone();
+
             let plugin = crate::tool::PluginToolDef::new(
                 tool_id,
                 description,
                 input_schema,
-                |_args, _ctx| async move {
-                    Ok(crate::tool::ExecuteResult {
-                        title: "mcp".into(),
-                        output: "MCP tool execution routed through session runner".into(),
-                        truncated: false,
-                        output_path: None,
-                        attachments: None,
-                        metadata: HashMap::new(),
-                    })
+                move |args, _ctx: crate::tool::ToolContext| {
+                    let client = Arc::clone(&client);
+                    let tool_name = tool_name.clone();
+                    async move {
+                        let result = client.call_tool(&tool_name, args).await?;
+                        let output = extract_mcp_content(&result);
+                        Ok(crate::tool::ExecuteResult {
+                            title: tool_name.clone(),
+                            output,
+                            truncated: false,
+                            output_path: None,
+                            attachments: None,
+                            metadata: HashMap::new(),
+                        })
+                    }
                 },
             );
             defs.push(plugin);

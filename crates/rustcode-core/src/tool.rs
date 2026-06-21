@@ -17,6 +17,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
+use crate::session_prompt::{PromptPart, SessionPromptInput};
+
 // Re-export truncation types from the truncate module.
 pub use crate::truncate::{TruncateOptions, TruncateResult, TruncateService, truncate_output};
 
@@ -59,6 +61,11 @@ pub struct ToolContext {
     >,
     /// Permission source identifying the origin of the request.
     pub permission_source: Option<crate::permission::PermissionSource>,
+    /// Callbacks for the TaskTool to delegate work to subagents.
+    ///
+    /// Set by the session processor to allow the TaskTool to resolve prompt
+    /// templates, run prompts against child sessions, and cancel them.
+    pub prompt_ops: Option<Arc<TaskPromptOps>>,
 }
 
 impl std::fmt::Debug for ToolContext {
@@ -72,6 +79,7 @@ impl std::fmt::Debug for ToolContext {
             .field("messages", &self.messages.len())
             .field("ask_fn", &self.ask_fn.as_ref().map(|_| "Some(..)"))
             .field("permission_source", &self.permission_source)
+            .field("prompt_ops", &self.prompt_ops.as_ref().map(|_| "Some(..)"))
             .finish()
     }
 }
@@ -130,6 +138,22 @@ pub struct FileAttachment {
     pub mime: String,
     /// Data URL or file URL
     pub url: String,
+}
+
+/// Callbacks provided by the session processor for the TaskTool to run subagent prompts.
+///
+/// These carry the three operations the TaskTool needs to delegate work to a subagent:
+/// resolving prompt template variables, running a prompt on a session, and cancelling a
+/// running session.
+///
+/// Ported from `packages/opencode/src/tool/task.ts` lines 18–22 (`TaskPromptOps` interface).
+pub struct TaskPromptOps {
+    /// Resolve template variables in a prompt string into a list of PromptParts.
+    pub resolve_prompt_parts: Arc<dyn Fn(&str) -> crate::error::Result<Vec<PromptPart>> + Send + Sync>,
+    /// Run a prompt on a session and return the resulting text.
+    pub prompt: Arc<dyn Fn(SessionPromptInput) -> Pin<Box<dyn Future<Output = crate::error::Result<String>> + Send>> + Send + Sync>,
+    /// Cancel a running session by its ID.
+    pub cancel: Arc<dyn Fn(String) -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync>,
 }
 
 /// Tool definition trait.

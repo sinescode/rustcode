@@ -29,6 +29,7 @@
 //! - [`QuestionEvent`] — events published on the bus
 //! - Error types for rejection and not-found conditions
 
+use crate::bus::{GlobalEvent, SharedBus};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -544,20 +545,30 @@ struct PendingEntry {
 /// called, a [`QuestionRequest`] is stored and a oneshot channel is created.
 /// The caller awaits the receiver. When the user replies (via `reply()`) or
 /// dismisses (via `reject()`), the corresponding sender is resolved.
+///
+/// Events are published on the shared bus so that the UI (TUI, CLI, etc.)
+/// can display questions and route answers back.
 pub struct QuestionService {
     pending: Arc<Mutex<HashMap<QuestionId, PendingEntry>>>,
+    bus: SharedBus,
 }
 
 impl QuestionService {
-    /// Create a new empty question service.
-    pub fn new() -> Self {
+    /// Create a new question service backed by the given event bus.
+    ///
+    /// The bus is used to publish `QuestionEvent::Asked` / `Replied` / `Rejected`
+    /// so that the UI layer can present questions to the user.
+    pub fn new(bus: SharedBus) -> Self {
         Self {
             pending: Arc::new(Mutex::new(HashMap::new())),
+            bus,
         }
     }
 
     /// Ask one or more questions. Returns the answers when the user replies,
     /// or a [`QuestionRejectedError`] if the user dismisses the question.
+    ///
+    /// Publishes a `QuestionEvent::Asked` on the bus so the UI can display it.
     pub async fn ask(
         &self,
         session_id: impl Into<String>,
@@ -565,9 +576,10 @@ impl QuestionService {
         tool: Option<QuestionTool>,
     ) -> Result<Vec<QuestionAnswer>, QuestionRejectedError> {
         let id = QuestionId::ascending(None);
+        let session_id: String = session_id.into();
         let request = QuestionRequest {
             id: id.clone(),
-            session_id: session_id.into(),
+            session_id: session_id.clone(),
             questions,
             tool,
         };
@@ -579,10 +591,16 @@ impl QuestionService {
             pending.insert(
                 id.clone(),
                 PendingEntry {
-                    request,
+                    request: request.clone(),
                     sender: tx,
                 },
             );
+        }
+
+        // Publish the Asked event so the UI can display the question
+        let asked = QuestionEvent::Asked { request };
+        if let Ok(payload) = serde_json::to_value(asked) {
+            let _ = self.bus.publish(GlobalEvent::new(payload));
         }
 
         match rx.await {
@@ -592,6 +610,8 @@ impl QuestionService {
     }
 
     /// Reply to a pending question with answers.
+    ///
+    /// Publishes a `QuestionEvent::Replied` on the bus before resolving.
     pub async fn reply(
         &self,
         request_id: &QuestionId,
@@ -604,6 +624,16 @@ impl QuestionService {
 
         match entry {
             Some(entry) => {
+                // Publish Replied event before resolving
+                let replied = QuestionEvent::Replied {
+                    session_id: entry.request.session_id.clone(),
+                    request_id: entry.request.id.clone(),
+                    answers: answers.clone(),
+                };
+                if let Ok(payload) = serde_json::to_value(replied) {
+                    let _ = self.bus.publish(GlobalEvent::new(payload));
+                }
+
                 let _ = entry.sender.send(Ok(answers));
                 Ok(())
             }
@@ -614,6 +644,8 @@ impl QuestionService {
     }
 
     /// Reject/dismiss a pending question.
+    ///
+    /// Publishes a `QuestionEvent::Rejected` on the bus before resolving.
     pub async fn reject(&self, request_id: &QuestionId) -> Result<(), QuestionNotFoundError> {
         let entry = {
             let mut pending = self.pending.lock().await;
@@ -622,6 +654,15 @@ impl QuestionService {
 
         match entry {
             Some(entry) => {
+                // Publish Rejected event before resolving
+                let rejected = QuestionEvent::Rejected {
+                    session_id: entry.request.session_id.clone(),
+                    request_id: entry.request.id.clone(),
+                };
+                if let Ok(payload) = serde_json::to_value(rejected) {
+                    let _ = self.bus.publish(GlobalEvent::new(payload));
+                }
+
                 let _ = entry.sender.send(Err(QuestionRejectedError));
                 Ok(())
             }
@@ -643,11 +684,7 @@ impl QuestionService {
     }
 }
 
-impl Default for QuestionService {
-    fn default() -> Self {
-        Self::new()
-    }
-}
+
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -656,6 +693,11 @@ impl Default for QuestionService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bus::SharedBus;
+
+    fn test_svc() -> QuestionService {
+        QuestionService::new(SharedBus::new(16))
+    }
 
     // -- QuestionId ---------------------------------------------------------
 
@@ -960,7 +1002,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_ask_and_reply() {
-        let svc = Arc::new(QuestionService::new());
+        let svc = Arc::new(test_svc());
         let questions = vec![QuestionInfo::new("Color?", "Pick Color")
             .with_options(vec![QuestionOption::new("Red", "The red one")])];
 
@@ -999,7 +1041,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_reject() {
-        let svc = Arc::new(QuestionService::new());
+        let svc = Arc::new(test_svc());
         let questions = vec![QuestionInfo::new("Confirm?", "Confirm")];
 
         let svc_clone = Arc::clone(&svc);
@@ -1025,7 +1067,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_reply_to_unknown() {
-        let svc = QuestionService::new();
+        let svc = test_svc();
         let unknown_id = QuestionId::new_unchecked("que_nonexistent");
         let answer = QuestionAnswer::new(vec!["X".into()]);
 
@@ -1039,7 +1081,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_reject_unknown() {
-        let svc = QuestionService::new();
+        let svc = test_svc();
         let unknown_id = QuestionId::new_unchecked("que_ghost");
 
         let err = svc
@@ -1052,7 +1094,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_question_service_list() {
-        let svc = Arc::new(QuestionService::new());
+        let svc = Arc::new(test_svc());
 
         // Ask two questions concurrently
         let svc1 = Arc::clone(&svc);
@@ -1105,7 +1147,7 @@ mod tests {
     #[tokio::test]
     async fn test_question_service_concurrent() {
         use std::sync::Arc;
-        let svc = Arc::new(QuestionService::new());
+        let svc = Arc::new(test_svc());
         let question_count = 5usize;
 
         // Spawn multiple concurrent asks

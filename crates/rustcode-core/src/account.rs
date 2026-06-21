@@ -7,6 +7,7 @@
 
 use chrono::Duration;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 // ---------------------------------------------------------------------------
@@ -391,6 +392,21 @@ pub struct AccountStateTableRow {
     pub active_org_id: Option<OrgId>,
 }
 
+/// Internal response type for the `/api/user` endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct UserInfo {
+    /// Unique account identifier returned by the server.
+    pub id: AccountId,
+    /// Email address of the authenticated user.
+    pub email: String,
+}
+
+/// How many milliseconds before actual expiry to eagerly refresh a token.
+///
+/// Ported from: `packages/opencode/src/account/account.ts` —
+/// `eagerRefreshThresholdMs`.
+const EAGER_REFRESH_THRESHOLD_MS: i64 = 300_000;
+
 // ---------------------------------------------------------------------------
 // Service layer
 // ---------------------------------------------------------------------------
@@ -408,6 +424,12 @@ pub struct AccountService {
     accounts: Arc<tokio::sync::RwLock<Vec<AccountTableRow>>>,
     /// Singleton state row tracking the active account/org.
     state: Arc<tokio::sync::RwLock<AccountStateTableRow>>,
+    /// Per-account mutexes that serialise concurrent token refreshes so only
+    /// one request hits the wire at a time (dedup).
+    ///
+    /// Ported from: `packages/opencode/src/account/account.ts` —
+    /// `refreshTokenCache` (`Cache.make` with `capacity: Infinity`).
+    refresh_locks: Arc<tokio::sync::Mutex<HashMap<AccountId, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 impl AccountService {
@@ -438,26 +460,33 @@ impl AccountService {
                 active_account_id: None,
                 active_org_id: None,
             })),
+            refresh_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 
     /// Initiate the OAuth device authorisation flow.
     ///
-    /// POSTs to `{server}/device/code` and returns the login data
+    /// POSTs to `{server}/auth/device/code` and returns the login data
     /// containing the device code, user code, and verification URL.
     ///
     /// Ported from: `packages/core/src/account.ts` — `login()`.
     pub async fn login(&self) -> Result<AccountLogin, AccountError> {
-        let url = format!("{}/device/code", self.server_url);
+        let url = format!("{}/auth/device/code", self.server_url);
 
-        let response = self.http_client.post(&url).send().await.map_err(|e| {
-            AccountError::TransportError(AccountTransportError {
-                method: "POST".to_string(),
-                url: url.clone(),
-                description: Some(e.to_string()),
-                cause: Some(e.to_string()),
-            })
-        })?;
+        let response = self
+            .http_client
+            .post(&url)
+            .json(&serde_json::json!({ "client_id": "opencode-cli" }))
+            .send()
+            .await
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "POST".to_string(),
+                    url: url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
 
         let status = response.status();
         if !status.is_success() {
@@ -480,17 +509,23 @@ impl AccountService {
 
     /// Poll the server for device authorisation completion.
     ///
-    /// POSTs to `{server}/device/token` with the device code and returns
-    /// the tagged `PollResult` union.
+    /// POSTs to `{server}/auth/device/token` with the device code and
+    /// returns the tagged `PollResult` union. On success the account is
+    /// automatically persisted into the in-memory store along with the
+    /// active organisation.
     ///
     /// Ported from: `packages/core/src/account.ts` — `poll()`.
     pub async fn poll(&self, code: DeviceCode) -> Result<PollResult, AccountError> {
-        let url = format!("{}/device/token", self.server_url);
+        let url = format!("{}/auth/device/token", self.server_url);
 
         let response = self
             .http_client
             .post(&url)
-            .json(&serde_json::json!({ "code": code }))
+            .json(&serde_json::json!({
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+                "device_code": code,
+                "client_id": "opencode-cli",
+            }))
             .send()
             .await
             .map_err(|e| {
@@ -511,58 +546,247 @@ impl AccountService {
             }));
         }
 
-        let result: PollResult = response.json().await.map_err(|e| {
+        let value: serde_json::Value = response.json().await.map_err(|e| {
             AccountError::ServiceError(AccountServiceError {
                 message: "failed to parse poll response".to_string(),
                 cause: Some(e.to_string()),
             })
         })?;
 
-        Ok(result)
+        // Check for OAuth error response
+        if let Some(error) = value.get("error").and_then(|v| v.as_str()) {
+            return Ok(match error {
+                "authorization_pending" => PollResult::Pending(PollPending {}),
+                "slow_down" => PollResult::Slow(PollSlow {}),
+                "expired_token" => PollResult::Expired(PollExpired {}),
+                "access_denied" => PollResult::Denied(PollDenied {}),
+                _ => PollResult::Error(PollError {
+                    cause: error.to_string(),
+                }),
+            });
+        }
+
+        // Success path — extract tokens
+        let access_token = value
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AccountError::ServiceError(AccountServiceError {
+                    message: "poll response missing access_token".to_string(),
+                    cause: None,
+                })
+            })?
+            .to_string();
+
+        let refresh_token = value
+            .get("refresh_token")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                AccountError::ServiceError(AccountServiceError {
+                    message: "poll response missing refresh_token".to_string(),
+                    cause: None,
+                })
+            })?
+            .to_string();
+
+        let expires_in = value
+            .get("expires_in")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(3600);
+
+        // Fetch user info and orgs concurrently
+        let (user_info, orgs) = tokio::try_join!(
+            self.fetch_user(&access_token),
+            self.fetch_orgs(&access_token),
+        )?;
+
+        let first_org_id = orgs.first().map(|o| o.id.clone());
+
+        let now_ms = chrono::Utc::now().timestamp_millis();
+        let expiry = now_ms + expires_in * 1000;
+        let now_str = now_ms.to_string();
+
+        // Persist account into in-memory store
+        let mut accounts = self.accounts.write().await;
+        accounts.push(AccountTableRow {
+            id: user_info.id.clone(),
+            email: user_info.email.clone(),
+            url: self.server_url.clone(),
+            access_token: access_token.clone(),
+            refresh_token: refresh_token.clone(),
+            token_expiry: Some(expiry),
+            time_created: now_str.clone(),
+            time_updated: now_str,
+        });
+        drop(accounts);
+
+        // Set active account and org
+        let mut state = self.state.write().await;
+        state.active_account_id = Some(user_info.id);
+        state.active_org_id = first_org_id;
+
+        Ok(PollResult::Success(PollSuccess {
+            email: user_info.email,
+        }))
+    }
+
+    /// Fetch user info from the server using an access token.
+    ///
+    /// GETs `{server}/api/user` with a Bearer token.
+    ///
+    /// Ported from: `packages/opencode/src/account/account.ts` — `fetchUser`.
+    async fn fetch_user(&self, access_token: &str) -> Result<UserInfo, AccountError> {
+        let url = format!("{}/api/user", self.server_url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "GET".to_string(),
+                    url: url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("fetch user failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        let user: UserInfo = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse user response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        Ok(user)
+    }
+
+    /// Fetch organisations for the authenticated user.
+    ///
+    /// GETs `{server}/api/orgs` with a Bearer token.
+    ///
+    /// Ported from: `packages/opencode/src/account/account.ts` — `fetchOrgs`.
+    async fn fetch_orgs(&self, access_token: &str) -> Result<Vec<AccountOrg>, AccountError> {
+        let url = format!("{}/api/orgs", self.server_url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "GET".to_string(),
+                    url: url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("fetch orgs failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        let orgs: Vec<AccountOrg> = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse orgs response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        Ok(orgs)
     }
 
     /// Retrieve the access token for `account_id`, refreshing it if expired.
     ///
     /// Checks `token_expiry` against the current Unix timestamp (milliseconds).
     /// If the token is expired or missing, attempts a refresh using the
-    /// stored refresh token via `{server}/device/refresh`.
+    /// stored refresh token via `{server}/auth/device/token`.
     ///
     /// Ported from: `packages/core/src/account.ts` — `token()`.
     pub async fn token(&self, account_id: &AccountId) -> Result<AccessToken, AccountError> {
-        let accounts = self.accounts.read().await;
-        let account = accounts
-            .iter()
-            .find(|a| a.id == *account_id)
-            .ok_or_else(|| {
-                AccountError::RepoError(AccountRepoError {
-                    message: format!("account {account_id} not found"),
-                    cause: None,
-                })
-            })?;
-
-        let now_ms = chrono::Utc::now().timestamp_millis();
-        let needs_refresh = account
-            .token_expiry
-            .map(|exp| exp <= now_ms)
-            .unwrap_or(true);
-
-        if needs_refresh {
-            drop(accounts);
-            self.refresh_token(account_id).await?;
+        // Check current token freshness (eager refresh window matches TS)
+        let (needs_refresh, current_token) = {
             let accounts = self.accounts.read().await;
             let account = accounts
                 .iter()
                 .find(|a| a.id == *account_id)
                 .ok_or_else(|| {
                     AccountError::RepoError(AccountRepoError {
-                        message: format!("account {account_id} not found after refresh"),
+                        message: format!("account {account_id} not found"),
                         cause: None,
                     })
                 })?;
-            Ok(account.access_token.clone())
-        } else {
-            Ok(account.access_token.clone())
+
+            let now_ms = chrono::Utc::now().timestamp_millis();
+            let needs = account
+                .token_expiry
+                .map(|exp| exp <= now_ms + EAGER_REFRESH_THRESHOLD_MS)
+                .unwrap_or(true);
+
+            (needs, account.access_token.clone())
+        };
+
+        if !needs_refresh {
+            return Ok(current_token);
         }
+
+        // Serialise refreshes per account so concurrent callers share one
+        // in-flight refresh (port of Cache.make with capacity: Infinity).
+        let lock = {
+            let mut locks = self.refresh_locks.lock().await;
+            locks
+                .entry(account_id.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = lock.lock().await;
+
+        // Double-check: another thread may have refreshed while we waited
+        let still_needs = {
+            let accounts = self.accounts.read().await;
+            accounts
+                .iter()
+                .find(|a| a.id == *account_id)
+                .map(|a| {
+                    let now_ms = chrono::Utc::now().timestamp_millis();
+                    a.token_expiry
+                        .map(|exp| exp <= now_ms + EAGER_REFRESH_THRESHOLD_MS)
+                        .unwrap_or(true)
+                })
+                .unwrap_or(false)
+        };
+
+        if still_needs {
+            self.refresh_token(account_id).await?;
+        }
+
+        let accounts = self.accounts.read().await;
+        let account = accounts.iter().find(|a| a.id == *account_id).ok_or_else(|| {
+            AccountError::RepoError(AccountRepoError {
+                message: format!("account {account_id} not found after refresh"),
+                cause: None,
+            })
+        })?;
+
+        Ok(account.access_token.clone())
     }
 
     /// Return the currently active account as an `AccountInfo`, if any.
@@ -730,6 +954,8 @@ impl AccountService {
     }
 
     /// (Internal) Refresh an expired access token.
+    ///
+    /// POSTs to `{url}/auth/device/token` with `grant_type: refresh_token`.
     async fn refresh_token(&self, account_id: &AccountId) -> Result<(), AccountError> {
         let (refresh_token, url) = {
             let accounts = self.accounts.read().await;
@@ -745,11 +971,15 @@ impl AccountService {
             (account.refresh_token.clone(), account.url.clone())
         };
 
-        let refresh_url = format!("{url}/device/refresh");
+        let refresh_url = format!("{url}/auth/device/token");
         let response = self
             .http_client
             .post(&refresh_url)
-            .json(&serde_json::json!({ "refresh_token": refresh_token }))
+            .json(&serde_json::json!({
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": "opencode-cli",
+            }))
             .send()
             .await
             .map_err(|e| {
@@ -1399,6 +1629,7 @@ mod tests {
                 active_account_id,
                 active_org_id,
             })),
+            refresh_locks: Arc::new(tokio::sync::Mutex::new(HashMap::new())),
         }
     }
 

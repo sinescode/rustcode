@@ -38,7 +38,7 @@ use rustcode_core::lsp::{
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, Command};
-use tokio::sync::{oneshot, Mutex, RwLock};
+use tokio::sync::{oneshot, watch, Mutex, RwLock};
 use tracing::{debug, error, info, warn};
 
 // =============================================================================
@@ -155,6 +155,26 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// Grace period between sending `exit` and force-killing the process.
 const SHUTDOWN_GRACE_MS: u64 = 500;
+
+/// Timeout for `textDocument/diagnostic` and `workspace/diagnostic` requests.
+///
+/// Ported from `packages/opencode/src/lsp/client.ts` `DIAGNOSTICS_REQUEST_TIMEOUT_MS` (line 16).
+const DIAGNOSTICS_REQUEST_TIMEOUT_MS: u64 = 3_000;
+
+/// Debounce delay for diagnostic push notifications.
+///
+/// Ported from `packages/opencode/src/lsp/client.ts` `DIAGNOSTICS_DEBOUNCE_MS` (line 13).
+const _DIAGNOSTICS_DEBOUNCE_MS: u64 = 150;
+
+/// Maximum wait for document-level diagnostics (push + pull).
+///
+/// Ported from `packages/opencode/src/lsp/client.ts` `DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS` (line 14).
+const DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS: u64 = 5_000;
+
+/// Maximum wait for full diagnostics (workspace + document).
+///
+/// Ported from `packages/opencode/src/lsp/client.ts` `DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS` (line 15).
+const DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS: u64 = 10_000;
 
 // =============================================================================
 // JSON-RPC framing helpers
@@ -571,6 +591,16 @@ struct LspClientState {
     sync_kind: RwLock<Option<i64>>,
     /// Whether the server supports pull diagnostics (static capability).
     has_static_pull_diagnostics: RwLock<bool>,
+    /// Pull-based diagnostic results cache (URI -> diagnostics list).
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `pullDiagnostics` (line 140).
+    pull_diagnostics: RwLock<HashMap<String, Vec<LspDiagnostic>>>,
+    /// Watch channel sender — incremented on each diagnostic arrival (push or pull).
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `diagnosticListeners` / `registrationListeners`.
+    diagnostic_version_tx: watch::Sender<u64>,
+    /// Monotonic version counter for diagnostic changes.
+    diagnostic_version: AtomicU64,
     /// Root URI for workspace/workspaceFolders responses.
     root_uri: String,
 }
@@ -621,6 +651,7 @@ impl LspClientState {
             .ok_or_else(|| LspError::Spawn("failed to capture stderr".into()))?;
 
         // --- Build shared state ---
+        let (diagnostic_version_tx, _) = watch::channel(0u64);
         let state = Arc::new(Self {
             child: Mutex::new(Some(child)),
             stdin: Mutex::new(Some(stdin)),
@@ -633,6 +664,9 @@ impl LspClientState {
             diagnostic_registrations: RwLock::new(HashMap::new()),
             sync_kind: RwLock::new(None),
             has_static_pull_diagnostics: RwLock::new(false),
+            pull_diagnostics: RwLock::new(HashMap::new()),
+            diagnostic_version_tx,
+            diagnostic_version: AtomicU64::new(0),
             root_uri: format!("file://{}", root_dir.display()),
         });
 
@@ -1052,6 +1086,7 @@ async fn handle_server_request(state: &LspClientState, message: Value, method: &
         "client/registerCapability" => {
             // Register capabilities (e.g., pull diagnostics).
             // Mirrors the TS client's handler (client.ts lines 180-188).
+            let mut changed = false;
             if let Some(params) = message.get("params") {
                 if let Some(registrations) = params.get("registrations").and_then(|r| r.as_array()) {
                     let mut diag_regs = state.diagnostic_registrations.write().await;
@@ -1061,16 +1096,23 @@ async fn handle_server_request(state: &LspClientState, message: Value, method: &
                             if method_name == "textDocument/diagnostic" {
                                 diag_regs.insert(id.to_string(), reg.clone());
                                 debug!(server_id = %state.server_id, id = %id, "Registered diagnostic capability");
+                                changed = true;
                             }
                         }
                     }
                 }
+            }
+            if changed {
+                let _ = state.diagnostic_version_tx.send(
+                    state.diagnostic_version.fetch_add(1, Ordering::SeqCst) + 1
+                );
             }
             send_result(state, req_id, Value::Null).await;
         }
         "client/unregisterCapability" => {
             // Unregister capabilities.
             // Mirrors the TS client's handler (client.ts lines 190-199).
+            let mut changed = false;
             if let Some(params) = message.get("params") {
                 if let Some(unregs) = params.get("unregisterations").and_then(|u| u.as_array()) {
                     let mut diag_regs = state.diagnostic_registrations.write().await;
@@ -1078,9 +1120,15 @@ async fn handle_server_request(state: &LspClientState, message: Value, method: &
                         if let Some(id) = unreg.get("id").and_then(|i| i.as_str()) {
                             diag_regs.remove(id);
                             debug!(server_id = %state.server_id, id = %id, "Unregistered diagnostic capability");
+                            changed = true;
                         }
                     }
                 }
+            }
+            if changed {
+                let _ = state.diagnostic_version_tx.send(
+                    state.diagnostic_version.fetch_add(1, Ordering::SeqCst) + 1
+                );
             }
             send_result(state, req_id, Value::Null).await;
         }
@@ -1095,6 +1143,9 @@ async fn handle_server_request(state: &LspClientState, message: Value, method: &
         "workspace/diagnostic/refresh" => {
             // Acknowledge diagnostic refresh request.
             // Mirrors the TS client's handler (client.ts line 206).
+            let _ = state.diagnostic_version_tx.send(
+                state.diagnostic_version.fetch_add(1, Ordering::SeqCst) + 1
+            );
             send_result(state, req_id, Value::Null).await;
         }
         other => {
@@ -1138,6 +1189,11 @@ async fn handle_notification(state: &LspClientState, message: Value, method: &st
                     uri = %uri,
                     count = cache.iter().filter(|d| d.uri == uri).count(),
                     "Received diagnostics"
+                );
+
+                // Notify any waiters that diagnostics have arrived
+                let _ = state.diagnostic_version_tx.send(
+                    state.diagnostic_version.fetch_add(1, Ordering::SeqCst) + 1
                 );
             }
         }
@@ -1205,13 +1261,292 @@ impl LspClient {
         })
     }
 
-    /// Return the cached diagnostics.
+    /// Return the cached push diagnostics.
     ///
     /// All diagnostics received via `textDocument/publishDiagnostics` are
     /// appended here. Each [`LspDiagnostic`] carries a `uri` field so
     /// callers can filter by file.
     pub fn diagnostics(&self) -> &RwLock<Vec<LspDiagnostic>> {
         &self.state.diagnostics
+    }
+
+    // ------------------------------------------------------------------
+    // Pull diagnostics
+    // ------------------------------------------------------------------
+    //
+    // Ported from `packages/opencode/src/lsp/client.ts` lines 139–541.
+
+    /// Return merged push + pull diagnostics for all files.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `diagnostics` getter (lines 623–629).
+    pub async fn get_diagnostics(&self) -> Vec<LspDiagnostic> {
+        let push = self.state.diagnostics.read().await;
+        let pull = self.state.pull_diagnostics.read().await;
+        let mut all: Vec<LspDiagnostic> = push.clone();
+        for diags in pull.values() {
+            all.extend(diags.iter().cloned());
+        }
+        drop(push);
+        drop(pull);
+        Self::dedupe_diagnostics(&all)
+    }
+
+    /// Check whether pull diagnostics are supported (static capability or dynamic registration).
+    async fn supports_pull_diagnostics(&self) -> bool {
+        if *self.state.has_static_pull_diagnostics.read().await {
+            return true;
+        }
+        !self.state.diagnostic_registrations.read().await.is_empty()
+    }
+
+    /// Whether document-scoped pull diagnostics are supported.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `documentPullState()` (lines 355–365).
+    async fn document_pull_supported(&self) -> bool {
+        if *self.state.has_static_pull_diagnostics.read().await {
+            return true;
+        }
+        let regs = self.state.diagnostic_registrations.read().await;
+        regs.iter().any(|(_, v)| {
+            v.get("registerOptions")
+                .and_then(|o| o.get("workspaceDiagnostics"))
+                .and_then(|w| w.as_bool())
+                != Some(true)
+        })
+    }
+
+    /// Whether workspace-scoped pull diagnostics are supported.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `workspacePullState()` (lines 367–377).
+    async fn workspace_pull_supported(&self) -> bool {
+        let regs = self.state.diagnostic_registrations.read().await;
+        regs.iter().any(|(_, v)| {
+            v.get("registerOptions")
+                .and_then(|o| o.get("workspaceDiagnostics"))
+                .and_then(|w| w.as_bool())
+                == Some(true)
+        })
+    }
+
+    /// Deduplicate diagnostics by comparing (code, severity, message, source, range).
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `dedupeDiagnostics()` (lines 91–105).
+    fn dedupe_diagnostics(diags: &[LspDiagnostic]) -> Vec<LspDiagnostic> {
+        let mut seen = std::collections::HashSet::new();
+        let mut result = Vec::new();
+        for d in diags {
+            let key = format!(
+                "{:?}:{:?}:{}:{:?}:{:?}",
+                d.code, d.severity as u32, d.message, d.source, d.range
+            );
+            if seen.insert(key) {
+                result.push(d.clone());
+            }
+        }
+        result
+    }
+
+    /// Cache pull diagnostics results and notify waiters.
+    async fn cache_pull_diagnostics(&self, by_file: HashMap<String, Vec<LspDiagnostic>>) {
+        let mut cache = self.state.pull_diagnostics.write().await;
+        for (uri, diags) in by_file {
+            cache.insert(uri, diags);
+        }
+        let _ = self.state.diagnostic_version_tx.send(
+            self.state.diagnostic_version.fetch_add(1, Ordering::SeqCst) + 1,
+        );
+    }
+
+    /// Parse a `textDocument/diagnostic` response into per-file diagnostic lists.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `requestDiagnosticReport()` (lines 293–327).
+    fn parse_document_diagnostic_report(
+        report: &Value,
+        uri: &str,
+    ) -> HashMap<String, Vec<LspDiagnostic>> {
+        let mut by_file = HashMap::new();
+
+        if let Some(items) = report.get("items").and_then(|v| v.as_array()) {
+            let diags: Vec<LspDiagnostic> =
+                serde_json::from_value(Value::Array(items.clone())).unwrap_or_default();
+            by_file.insert(uri.to_string(), diags);
+        }
+
+        if let Some(related) = report.get("relatedDocuments").and_then(|v| v.as_object()) {
+            for (related_uri, related_report) in related {
+                if let Some(items) = related_report.get("items").and_then(|v| v.as_array()) {
+                    let diags: Vec<LspDiagnostic> =
+                        serde_json::from_value(Value::Array(items.clone())).unwrap_or_default();
+                    by_file.insert(related_uri.clone(), diags);
+                }
+            }
+        }
+
+        by_file
+    }
+
+    /// Parse a `workspace/diagnostic` response into per-file diagnostic lists.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `requestWorkspaceDiagnosticReport()` (lines 329–353).
+    fn parse_workspace_diagnostic_report(report: &Value) -> HashMap<String, Vec<LspDiagnostic>> {
+        let mut by_file = HashMap::new();
+
+        if let Some(items) = report.get("items").and_then(|v| v.as_array()) {
+            for item in items {
+                let item_uri = match item.get("uri").and_then(|u| u.as_str()) {
+                    Some(u) => u.to_string(),
+                    None => continue,
+                };
+                if let Some(diag_items) = item.get("items").and_then(|v| v.as_array()) {
+                    let diags: Vec<LspDiagnostic> =
+                        serde_json::from_value(Value::Array(diag_items.clone())).unwrap_or_default();
+                    by_file.insert(item_uri, diags);
+                }
+            }
+        }
+
+        by_file
+    }
+
+    /// Send `textDocument/diagnostic` for a single URI and return per-file results.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `requestDiagnosticReport()` (lines 293–327).
+    pub async fn request_document_diagnostics(&self, uri: &str) -> Result<Vec<LspDiagnostic>> {
+        let params = serde_json::json!({
+            "textDocument": { "uri": uri }
+        });
+
+        let result = self
+            .state
+            .send_request_timeout(
+                "textDocument/diagnostic",
+                params,
+                Duration::from_millis(DIAGNOSTICS_REQUEST_TIMEOUT_MS),
+            )
+            .await?;
+
+        let by_file = Self::parse_document_diagnostic_report(&result, uri);
+        let my_diags = by_file.get(uri).cloned().unwrap_or_default();
+        self.cache_pull_diagnostics(by_file).await;
+        Ok(my_diags)
+    }
+
+    /// Send `workspace/diagnostic` with empty `previousResultIds`.
+    ///
+    /// Returns a map of URI -> diagnostics for all files with diagnostics.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `requestWorkspaceDiagnosticReport()` (lines 329–353).
+    pub async fn request_workspace_diagnostics(
+        &self,
+    ) -> Result<HashMap<String, Vec<LspDiagnostic>>> {
+        let params = serde_json::json!({
+            "previousResultIds": []
+        });
+
+        let result = self
+            .state
+            .send_request_timeout(
+                "workspace/diagnostic",
+                params,
+                Duration::from_millis(DIAGNOSTICS_REQUEST_TIMEOUT_MS),
+            )
+            .await?;
+
+        let by_file = Self::parse_workspace_diagnostic_report(&result);
+        self.cache_pull_diagnostics(by_file.clone()).await;
+        Ok(by_file)
+    }
+
+    /// Request both document and workspace diagnostics, combining results for the given URI.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `requestFullDiagnostics()` (lines 429–444).
+    pub async fn request_full_diagnostics(&self, uri: &str) -> Result<Vec<LspDiagnostic>> {
+        let document_supported = self.document_pull_supported().await;
+        let workspace_supported = self.workspace_pull_supported().await;
+
+        if !document_supported && !workspace_supported {
+            return Ok(Vec::new());
+        }
+
+        let mut all_diagnostics = Vec::new();
+
+        if document_supported {
+            if let Ok(diags) = self.request_document_diagnostics(uri).await {
+                all_diagnostics.extend(diags);
+            }
+        }
+
+        if workspace_supported {
+            if let Ok(by_file) = self.request_workspace_diagnostics().await {
+                for diags in by_file.into_values() {
+                    all_diagnostics.extend(diags);
+                }
+            }
+        }
+
+        all_diagnostics = Self::dedupe_diagnostics(&all_diagnostics);
+        Ok(all_diagnostics)
+    }
+
+    /// Wait for diagnostics to arrive (push or pull) for the given URI.
+    ///
+    /// Tries pull diagnostics first (if supported), then waits for a diagnostic
+    /// version change notification before retrying. Returns `true` once
+    /// diagnostics are available for `uri`, or `false` on timeout.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `waitForDocumentDiagnostics()` (lines 499–519)
+    /// and `waitForFullDiagnostics()` (lines 521–541).
+    pub async fn wait_for_diagnostics(&self, uri: &str, timeout_ms: u64) -> bool {
+        let deadline = tokio::time::Instant::now() + Duration::from_millis(timeout_ms);
+        let mut rx = self.state.diagnostic_version_tx.subscribe();
+
+        loop {
+            let remaining = deadline
+                .checked_duration_since(tokio::time::Instant::now())
+                .unwrap_or_default();
+            if remaining.is_zero() {
+                return false;
+            }
+
+            // Try pull diagnostics if supported
+            if self.supports_pull_diagnostics().await {
+                if let Ok(diags) = self.request_full_diagnostics(uri).await {
+                    if !diags.is_empty() {
+                        return true;
+                    }
+                }
+            }
+
+            // Check push diagnostics cache
+            {
+                let push = self.state.diagnostics.read().await;
+                if push.iter().any(|d| d.uri == uri) {
+                    return true;
+                }
+            }
+            {
+                let pull = self.state.pull_diagnostics.read().await;
+                if let Some(diags) = pull.get(uri) {
+                    if !diags.is_empty() {
+                        return true;
+                    }
+                }
+            }
+
+            // Wait for a version change or timeout
+            let _ = tokio::time::timeout(remaining, rx.changed()).await;
+        }
+    }
+
+    /// Trigger a full diagnostics refresh: sends pull requests and waits for results.
+    ///
+    /// Uses [`DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS`] as the default timeout.
+    ///
+    /// Ported from `packages/opencode/src/lsp/client.ts` `waitForDiagnostics()` (lines 630–639).
+    pub async fn refresh_diagnostics(&self, uri: &str) -> Result<Vec<LspDiagnostic>> {
+        self.wait_for_diagnostics(uri, DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS)
+            .await;
+        Ok(self.get_diagnostics().await)
     }
 
     /// Return metadata describing this client connection.

@@ -249,6 +249,220 @@ pub fn image_size_ok(width: u32, height: u32, base64_bytes: u64) -> Result<(), I
     Ok(())
 }
 
+// ── ImageNormalizer ─────────────────────────────────────────────────
+
+/// Normalized image result.
+///
+/// # Source
+/// Ported from `packages/opencode/src/image/image.ts` — the return value
+/// of the `normalize()` method (lines 63–164).
+#[derive(Debug, Clone)]
+pub struct NormalizedImage {
+    /// Raw image bytes (encoded as JPEG or PNG).
+    pub bytes: Vec<u8>,
+    /// MIME type of the encoded image (e.g. "image/jpeg" or "image/png").
+    pub mime_type: String,
+    /// Image width in pixels.
+    pub width: u32,
+    /// Image height in pixels.
+    pub height: u32,
+}
+
+/// Progressive image normalizer that resizes/compresses images to fit
+/// within configured size limits.
+///
+/// Ported from the `Image` service in `packages/opencode/src/image/image.ts`
+/// — the `normalize()` method (lines 63–164).
+///
+/// Algorithm (matching the TS source):
+/// 1. Decode base64 → raw bytes, then decode the image.
+/// 2. If dimensions and base64 size are within limits, return unchanged.
+/// 3. Generate up to 32 progressively smaller sizes (0.75× scale steps).
+/// 4. For each size, try PNG then JPEG at 5 quality levels (80, 85, 70, 55, 40).
+/// 5. Return the first combination that fits within `max_base64_bytes`.
+#[derive(Debug, Clone)]
+pub struct ImageNormalizer {
+    /// Whether to automatically resize when limits are exceeded.
+    pub auto_resize: bool,
+    /// Maximum image width in pixels.
+    pub max_width: u32,
+    /// Maximum image height in pixels.
+    pub max_height: u32,
+    /// Maximum base64-encoded image bytes accepted.
+    pub max_base64_bytes: u64,
+}
+
+impl Default for ImageNormalizer {
+    fn default() -> Self {
+        Self {
+            auto_resize: true,
+            max_width: MAX_WIDTH,
+            max_height: MAX_HEIGHT,
+            max_base64_bytes: MAX_BASE64_BYTES,
+        }
+    }
+}
+
+impl ImageNormalizer {
+    /// Create a new normalizer with the given limits.
+    pub fn new(
+        auto_resize: bool,
+        max_width: u32,
+        max_height: u32,
+        max_base64_bytes: u64,
+    ) -> Self {
+        Self {
+            auto_resize,
+            max_width,
+            max_height,
+            max_base64_bytes,
+        }
+    }
+
+    /// Normalize a base64-encoded image, resizing/compressing as necessary
+    /// to fit within the configured limits.
+    ///
+    /// # Arguments
+    /// * `base64_data` — Raw base64-encoded image data (without the
+    ///   `data:...;base64,` prefix).
+    /// * `mime_type` — Original MIME type of the image.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/image/image.ts` lines 75–163.
+    pub fn normalize(&self, base64_data: &str, mime_type: &str) -> Result<NormalizedImage, ImageError> {
+        use base64::Engine;
+
+        let raw_bytes = base64::engine::general_purpose::STANDARD
+            .decode(base64_data)
+            .map_err(|_| ImageError::Decode)?;
+
+        let img = image::load_from_memory(&raw_bytes)
+            .map_err(|_| ImageError::Decode)?;
+
+        let (w, h) = (img.width(), img.height());
+        let base64_len = base64_data.len() as u64;
+
+        if w <= self.max_width && h <= self.max_height && base64_len <= self.max_base64_bytes {
+            return Ok(NormalizedImage {
+                bytes: raw_bytes,
+                mime_type: mime_type.to_string(),
+                width: w,
+                height: h,
+            });
+        }
+
+        if !self.auto_resize {
+            return Err(ImageError::Size { width: w, height: h });
+        }
+
+        // Scale factor to fit within max dimensions (never upscale)
+        let scale = (self.max_width as f64 / w as f64)
+            .min(self.max_height as f64 / h as f64)
+            .min(1.0);
+
+        let init_w = (w as f64 * scale).round().max(1.0) as u32;
+        let init_h = (h as f64 * scale).round().max(1.0) as u32;
+
+        // Generate up to 32 step-down sizes (matching TS reduce loop)
+        let mut sizes: Vec<(u32, u32)> = Vec::new();
+        sizes.push((init_w, init_h));
+
+        for _ in 0..31 {
+            let (prev_w, prev_h) = sizes[sizes.len() - 1];
+            let next_w = if prev_w == 1 { 1 } else { (prev_w as f64 * 0.75).floor().max(1.0) as u32 };
+            let next_h = if prev_h == 1 { 1 } else { (prev_h as f64 * 0.75).floor().max(1.0) as u32 };
+            if sizes.iter().any(|&s| s == (next_w, next_h)) {
+                break;
+            }
+            sizes.push((next_w, next_h));
+        }
+
+        let jpeg_qualities: [u8; 5] = [80, 85, 70, 55, 40];
+
+        for &(size_w, size_h) in &sizes {
+            let resized = img.resize_exact(size_w, size_h, image::imageops::FilterType::Lanczos3);
+
+            // Try PNG first (matches TS: PNG before JPEG qualities)
+            let mut png_bytes = Vec::new();
+            if resized
+                .write_to(&mut png_bytes, image::ImageOutputFormat::Png)
+                .is_ok()
+            {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
+                if (b64.len() as u64) <= self.max_base64_bytes {
+                    return Ok(NormalizedImage {
+                        bytes: png_bytes,
+                        mime_type: "image/png".to_string(),
+                        width: size_w,
+                        height: size_h,
+                    });
+                }
+            }
+
+            // Try JPEG at each quality level
+            for &quality in &jpeg_qualities {
+                let mut jpeg_bytes = Vec::new();
+                if resized
+                    .write_to(
+                        &mut jpeg_bytes,
+                        image::ImageOutputFormat::Jpeg(quality),
+                    )
+                    .is_ok()
+                {
+                    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+                    if (b64.len() as u64) <= self.max_base64_bytes {
+                        return Ok(NormalizedImage {
+                            bytes: jpeg_bytes,
+                            mime_type: "image/jpeg".to_string(),
+                            width: size_w,
+                            height: size_h,
+                        });
+                    }
+                }
+            }
+        }
+
+        Err(ImageError::Size { width: w, height: h })
+    }
+
+    /// Normalize a [`FilePart`](crate::session::FilePart) by decoding its
+    /// data URL, resizing as needed, and returning a new [`FilePart`] with
+    /// updated URL and MIME type.
+    ///
+    /// # Source
+    /// Ported from `packages/opencode/src/image/image.ts` lines 75–164.
+    pub fn normalize_file_part(
+        &self,
+        part: &crate::session::FilePart,
+    ) -> Result<crate::session::FilePart, ImageError> {
+        use base64::Engine;
+
+        let url = &part.url;
+
+        if !url.starts_with("data:") || !url.contains(";base64,") {
+            return Err(ImageError::InvalidDataUrl);
+        }
+
+        let base64_prefix = ";base64,";
+        let base64_start = url.find(base64_prefix).ok_or(ImageError::InvalidDataUrl)?;
+        let base64_data = &url[base64_start + base64_prefix.len()..];
+
+        let normalized = self.normalize(base64_data, &part.mime)?;
+
+        let encoded = base64::engine::general_purpose::STANDARD.encode(&normalized.bytes);
+        let new_url = format!("data:{};base64,{}", normalized.mime_type, encoded);
+
+        Ok(crate::session::FilePart {
+            id: part.id.clone(),
+            message_id: part.message_id.clone(),
+            session_id: part.session_id.clone(),
+            url: new_url,
+            mime: normalized.mime_type,
+            filename: part.filename.clone(),
+        })
+    }
+}
+
 // ── Tests ────────────────────────────────────────────────────────────
 
 #[cfg(test)]

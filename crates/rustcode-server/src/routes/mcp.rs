@@ -206,7 +206,7 @@ async fn mcp_connect(
 
     // 2. Register discovered tools in the ToolRegistry
     let tools = client.cached_tools().await;
-    let tools_registered = register_mcp_tools(&state.tools, &client).await;
+    let tools_registered = register_mcp_tools(&state.tools, Arc::clone(&client)).await;
 
     info!(
         "MCP: connected to '{name}' — discovered {} tools ({} registered in ToolRegistry)",
@@ -311,7 +311,7 @@ async fn mcp_auth_remove(
 /// Returns the number of tools successfully registered.
 async fn register_mcp_tools(
     tool_registry: &rustcode_core::tool::ToolRegistry,
-    client: &rustcode_core::mcp::McpClient,
+    client: std::sync::Arc<rustcode_core::mcp::McpClient>,
 ) -> usize {
     let plugin_defs = client.to_plugin_defs().await;
     let count = plugin_defs.len();

@@ -19,6 +19,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use crate::agent::AgentService;
+use crate::background_job::BackgroundJobService;
 use crate::bus;
 use crate::config::Config;
 use crate::database::DatabaseService;
@@ -28,6 +30,8 @@ use crate::question::QuestionService;
 use crate::session::SessionManager;
 use crate::session_runner::SessionRunner;
 use crate::tool::ToolRegistry;
+use crate::tool_impls::{TaskTool, TaskToolServices};
+use crate::tool_impls::QuestionTool;
 
 /// Fully-initialised runtime with all backend services wired together.
 ///
@@ -126,8 +130,29 @@ pub fn initialize_runtime_with_path(
     let sessions = Arc::new(SessionManager::new(bus.clone(), db.clone()));
     let tools = Arc::new(ToolRegistry::new());
     tools.register_builtins();
+
+    // Build services needed by TaskTool for subagent delegation.
+    let agent_service = {
+        let worktree = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let data_dir = dirs::data_dir()
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("opencode");
+        let tmp_dir = std::env::temp_dir();
+        let skill_dirs = Vec::new();
+        Arc::new(AgentService::new(config, worktree, data_dir, tmp_dir, skill_dirs))
+    };
+    let background_jobs = Arc::new(BackgroundJobService::new());
+
+    // Wire TaskTool services so it can create child sessions and run subagents.
+    TaskTool::init_services(TaskToolServices {
+        agent_service,
+        session_manager: sessions.clone(),
+        background_jobs,
+    });
+
     let permissions = Arc::new(PermissionService::new(bus.clone()));
-    let questions = Arc::new(QuestionService::default());
+    let questions = Arc::new(QuestionService::new(bus.clone()));
+    tools.register(Arc::new(QuestionTool::new(questions.clone())));
     let runner = Arc::new(SessionRunner::new(tools.clone()));
 
     // Use the provider initialization pipeline (plugin-aware).

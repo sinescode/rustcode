@@ -7593,6 +7593,12 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             // (In the full implementation, a dedicated `gh_api` tool would
             // be registered here that wraps `octokit` calls.)
 
+            // Note: the `question` tool is NOT registered in this headless
+            // mode — it requires a QuestionService wired to a session bus
+            // with a reply path (TUI or similar).  The runtime.rs
+            // `initialize_runtime_with_path()` registers it for interactive
+            // sessions.
+
             let runner = rustcode_core::session_runner::SessionRunner::new(tool_registry);
 
             // ── run the agent ────────────────────────────────────────

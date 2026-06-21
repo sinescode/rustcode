@@ -42,3 +42,4 @@ tempfile.workspace = true
 shlex.workspace = true
 urlencoding.workspace = true
 walkdir.workspace = true
+image.workspace = true

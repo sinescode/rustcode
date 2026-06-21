@@ -40,6 +40,11 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{Error, Result, SkillError};
+use crate::bus::SharedBus;
+use crate::question::{
+    format_model_output, QuestionAnswer, QuestionInfo, QuestionOption, QuestionPrompt,
+    QuestionService,
+};
 use crate::tool::{
     truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry,
 };
@@ -2326,14 +2331,105 @@ impl WebFetchTool {
 
 /// Performs a web search via configurable search provider.
 ///
-/// Returns structured results with titles, URLs, and snippets.
-/// Currently returns a placeholder response since real search providers
-/// (Exa, Parallel) require API keys and MCP infrastructure.
+/// Makes JSON-RPC 2.0 calls to MCP-compatible search endpoints (Exa, Parallel)
+/// and returns formatted results with titles, URLs, and snippets.
+///
+/// # Configuration
+/// - `OPENCODE_WEBSEARCH_PROVIDER` — set to "exa" or "parallel" (optional)
+/// - `EXA_API_KEY` — Exa API key
+/// - `PARALLEL_API_KEY` — Parallel API key
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/websearch.ts` and `packages/opencode/src/tool/websearch.ts`.
 #[derive(Debug, Clone)]
 pub struct WebSearchTool;
+
+// MCP endpoint URLs
+const EXA_MCP_URL: &str = "https://mcp.exa.ai/mcp";
+const PARALLEL_MCP_URL: &str = "https://search.parallel.ai/mcp";
+
+// Search provider constants
+const PROVIDER_EXA: &str = "exa";
+const PROVIDER_PARALLEL: &str = "parallel";
+
+// Default search parameters
+const DEFAULT_NUM_RESULTS: u32 = 8;
+const MAX_RESPONSE_BYTES: usize = 256 * 1024;
+const NO_RESULTS_MSG: &str = "No search results found. Please try a different query.";
+
+/// Configuration for a selected search provider.
+struct SearchConfig {
+    provider: &'static str,
+    url: String,
+    tool_name: &'static str,
+    api_key: Option<String>,
+}
+
+impl SearchConfig {
+    /// Select and configure a search provider based on environment variables.
+    fn from_env() -> Self {
+        let provider_override = std::env::var("OPENCODE_WEBSEARCH_PROVIDER").ok();
+        let exa_key = std::env::var("EXA_API_KEY").ok();
+        let parallel_key = std::env::var("PARALLEL_API_KEY").ok();
+
+        // Check OPENCODE_WEBSEARCH_PROVIDER override first
+        match provider_override.as_deref() {
+            Some(PROVIDER_PARALLEL) if parallel_key.is_some() => {
+                return Self::parallel(parallel_key);
+            }
+            Some(PROVIDER_EXA) => {
+                return Self::exa(exa_key);
+            }
+            _ => {}
+        }
+
+        // Fall back to whichever API key is available, preferring exa
+        if exa_key.is_some() {
+            return Self::exa(exa_key);
+        }
+        if let Some(key) = parallel_key {
+            return Self::parallel(Some(key));
+        }
+
+        // Default to Exa even without a key — the MCP endpoint will use its own key
+        Self::exa(exa_key)
+    }
+
+    fn exa(api_key: Option<String>) -> Self {
+        let url = if let Some(ref key) = api_key {
+            format!("{}?exaApiKey={}", EXA_MCP_URL, urlencoding::encode(key))
+        } else {
+            EXA_MCP_URL.to_string()
+        };
+        Self {
+            provider: PROVIDER_EXA,
+            url,
+            tool_name: "web_search_exa",
+            api_key,
+        }
+    }
+
+    fn parallel(api_key: Option<String>) -> Self {
+        Self {
+            provider: PROVIDER_PARALLEL,
+            url: PARALLEL_MCP_URL.to_string(),
+            tool_name: "web_search",
+            api_key,
+        }
+    }
+
+    /// Build the extra HTTP headers for the provider.
+    fn headers(&self) -> Vec<(String, String)> {
+        let mut headers = Vec::new();
+        if self.provider == PROVIDER_PARALLEL {
+            if let Some(ref key) = self.api_key {
+                headers.push(("Authorization".into(), format!("Bearer {}", key)));
+            }
+            headers.push(("User-Agent".into(), "opencode".into()));
+        }
+        headers
+    }
+}
 
 #[async_trait]
 impl Tool for WebSearchTool {
@@ -2385,42 +2481,189 @@ impl Tool for WebSearchTool {
             })
             .unwrap_or_default();
 
-        // Web search requires external API keys (Exa, Brave, Tavily) and MCP infrastructure.
-        // Provide a structured placeholder result indicating the search would be done
-        // via an external provider.
-        let domain_info = if !allowed_domains.is_empty() {
-            format!("\nDomain filter: {}", allowed_domains.join(", "))
+        let config = SearchConfig::from_env();
+
+        // Build the JSON-RPC 2.0 request body
+        let request_body = Self::build_request(&config, query, &allowed_domains);
+
+        // Make the HTTP POST call
+        let body = Self::call_mcp(&config, &request_body).await?;
+
+        // Parse the MCP response into search result text
+        let result_text = Self::parse_mcp_response(&body)
+            .unwrap_or_else(|| NO_RESULTS_MSG.to_string());
+
+        let provider_label = if config.provider == PROVIDER_PARALLEL {
+            "Parallel Web Search"
         } else {
-            String::new()
+            "Exa Web Search"
         };
 
-        let output = format!(
-            "Web search results for: \"{}\"{}\n\n\
-             ## Search Results\n\
-             Search would be performed via an external provider (Exa, Brave, Tavily, etc.).\n\
-             Results would include titles, URLs, and snippets matching the query.\n\
-             \n\
-             Note: Web search provider not configured. To enable web search,\n\
-             set OPENCODE_WEBSEARCH_PROVIDER and the corresponding API key.\n\
-             Alternatively, use the webfetch tool to fetch specific URLs directly.",
-            query, domain_info
-        );
-
         Ok(ExecuteResult {
-            title: format!("Web Search: {}", query),
-            output,
-            truncated: false,
+            title: format!("{}: {}", provider_label, query),
+            output: result_text,
+            truncated: body.len() > MAX_RESPONSE_BYTES,
             output_path: None,
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
                 m.insert("query".into(), serde_json::Value::String(query.to_string()));
+                m.insert("provider".into(), serde_json::Value::String(config.provider.to_string()));
                 if !allowed_domains.is_empty() {
                     m.insert("allowed_domains".into(), serde_json::json!(allowed_domains));
                 }
                 m
             },
         })
+    }
+}
+
+impl WebSearchTool {
+    /// Build JSON-RPC 2.0 request body for the search provider.
+    fn build_request(config: &SearchConfig, query: &str, allowed_domains: &[String]) -> serde_json::Value {
+        match config.provider {
+            PROVIDER_PARALLEL => {
+                let mut search_queries = vec![query.to_string()];
+                if !allowed_domains.is_empty() {
+                    // Append domain restrictions to search queries
+                    let domain_filter = allowed_domains.join(" OR site:");
+                    search_queries.push(format!("site:{} {}", domain_filter, query));
+                }
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": config.tool_name,
+                        "arguments": {
+                            "objective": query,
+                            "search_queries": search_queries
+                        }
+                    }
+                })
+            }
+            _ => {
+                // Exa — supports livecrawl, type, numResults, contextMaxCharacters, allowed_domains
+                let mut args = serde_json::json!({
+                    "query": query,
+                    "type": "auto",
+                    "numResults": DEFAULT_NUM_RESULTS,
+                    "livecrawl": "fallback"
+                });
+                if let Some(obj) = args.as_object_mut() {
+                    if !allowed_domains.is_empty() {
+                        // Exa uses includeDomains filter
+                        obj.insert(
+                            "includeDomains".into(),
+                            serde_json::json!(allowed_domains),
+                        );
+                    }
+                }
+                serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": config.tool_name,
+                        "arguments": args
+                    }
+                })
+            }
+        }
+    }
+
+    /// Make the MCP JSON-RPC call and return the raw response body.
+    async fn call_mcp(config: &SearchConfig, request_body: &serde_json::Value) -> Result<String> {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()
+            .map_err(|e| Error::Network(format!("failed to create HTTP client: {}", e)))?;
+
+        let mut req = client
+            .post(&config.url)
+            .header("Accept", "application/json, text/event-stream")
+            .header("Content-Type", "application/json");
+
+        // Add provider-specific headers
+        for (name, value) in config.headers() {
+            req = req.header(&name, &value);
+        }
+
+        let response = req
+            .json(request_body)
+            .send()
+            .await
+            .map_err(|e| Error::Network(format!("HTTP request failed: {}", e)))?;
+
+        if !response.status().is_success() {
+            return Err(Error::Network(format!(
+                "search provider returned HTTP {}",
+                response.status()
+            )));
+        }
+
+        let body = response
+            .text()
+            .await
+            .map_err(|e| Error::Network(format!("failed to read response body: {}", e)))?;
+
+        if body.len() > MAX_RESPONSE_BYTES {
+            return Err(Error::Network(format!(
+                "search response exceeded {} bytes",
+                MAX_RESPONSE_BYTES
+            )));
+        }
+
+        Ok(body)
+    }
+
+    /// Parse an MCP response body, handling both direct JSON and SSE streams.
+    ///
+    /// The response may be:
+    /// 1. A direct JSON-RPC response with `result.content[].text`
+    /// 2. An SSE stream with `data: {...}` lines containing the JSON-RPC response
+    ///
+    /// Returns the extracted text content, or None if no valid result found.
+    fn parse_mcp_response(body: &str) -> Option<String> {
+        let trimmed = body.trim();
+
+        // Try direct JSON first
+        if trimmed.starts_with('{') {
+            if let Some(text) = Self::extract_text_from_json(trimmed) {
+                return Some(text);
+            }
+        }
+
+        // Try SSE format: look for lines starting with "data: "
+        for line in trimmed.lines() {
+            let line = line.trim();
+            if let Some(data) = line.strip_prefix("data: ") {
+                if data.starts_with('{') {
+                    if let Some(text) = Self::extract_text_from_json(data) {
+                        return Some(text);
+                    }
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Extract text content from a JSON-RPC response body.
+    fn extract_text_from_json(json_str: &str) -> Option<String> {
+        let parsed: serde_json::Value = serde_json::from_str(json_str).ok()?;
+
+        // Navigate to result.content[].text
+        let content = parsed.get("result")?.get("content")?.as_array()?;
+        for item in content {
+            if let Some(text) = item.get("text").and_then(|v| v.as_str()) {
+                if !text.is_empty() {
+                    return Some(text.to_string());
+                }
+            }
+        }
+
+        None
     }
 }
 
@@ -2830,8 +3073,80 @@ impl Tool for ApplyPatchTool {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/tool/task.ts` (346 lines).
+use std::sync::OnceLock;
+
+use crate::agent::{derive_subagent_session_permission, AgentService};
+use crate::background_job::{BackgroundJobService, JobStartInput};
+use crate::id::{self, IdPrefix};
+use crate::session::{CreateSessionInput, ModelSelection, SessionInfo, SessionManager};
+use crate::session_prompt::{PromptPart, SessionPromptInput};
+use crate::tool::TaskPromptOps;
+
+/// Services required by TaskTool for subagent session lifecycle management.
+///
+/// Initialised once at startup via [`TaskTool::init_services`].
+pub struct TaskToolServices {
+    pub agent_service: Arc<AgentService>,
+    pub session_manager: Arc<SessionManager>,
+    pub background_jobs: Arc<BackgroundJobService>,
+}
+
+static TASK_TOOL_SERVICES: OnceLock<TaskToolServices> = OnceLock::new();
+
+/// Background-task instruction text (TS `BACKGROUND_STARTED`).
+const BACKGROUND_STARTED: &str = "\
+The task is working in the background. You will be notified automatically when it finishes.\n\
+DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — \
+avoid working with the same files or topics it is using.\n\
+Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.";
+
+/// Background-updated instruction text (TS `BACKGROUND_UPDATED`).
+const BACKGROUND_UPDATED: &str = "\
+Additional context sent to the running background task.\n\
+The task is still working in the background. You will be notified automatically when it finishes.\n\
+DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — \
+avoid working with the same files or topics it is using.\n\
+Work on non-overlapping tasks, or briefly tell the user what you sent and end your response.";
+
 #[derive(Debug, Clone)]
 pub struct TaskTool;
+
+impl TaskTool {
+    /// Initialise the global service references used by every TaskTool instance.
+    ///
+    /// Must be called once during runtime startup, before any tool execution.
+    /// Subsequent calls are no-ops.
+    pub fn init_services(services: TaskToolServices) {
+        let _ = TASK_TOOL_SERVICES.set(services);
+    }
+
+    fn services(&self) -> Result<&'static TaskToolServices, Error> {
+        TASK_TOOL_SERVICES.get().ok_or_else(|| {
+            Error::Tool(
+                "TaskTool services not initialised — call TaskTool::init_services() before first use"
+                    .into(),
+            )
+        })
+    }
+}
+
+/// Render a subagent result as XML-structured output.
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/task.ts` lines 64–79 (`renderOutput`).
+fn render_output(session_id: &str, state: &str, summary: Option<&str>, text: &str) -> String {
+    let tag = if state == "error" {
+        "task_error"
+    } else {
+        "task_result"
+    };
+    let mut output = format!("<task id=\"{session_id}\" state=\"{state}\">\n");
+    if let Some(s) = summary {
+        output.push_str(&format!("<summary>{s}</summary>\n"));
+    }
+    output.push_str(&format!("<{tag}>\n{text}\n</{tag}>\n</task>"));
+    output
+}
 
 #[async_trait]
 impl Tool for TaskTool {
@@ -2882,66 +3197,273 @@ impl Tool for TaskTool {
     }
 
     async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<ExecuteResult> {
-        let description =
-            args["description"]
-                .as_str()
-                .ok_or_else(|| Error::ToolInvalidArguments {
-                    tool: "task".into(),
-                    detail: "missing 'description' field".into(),
-                })?;
+        let description = args["description"].as_str().ok_or_else(|| {
+            Error::ToolInvalidArguments {
+                tool: "task".into(),
+                detail: "missing 'description' field".into(),
+            }
+        })?;
 
-        let prompt = args["prompt"]
-            .as_str()
-            .ok_or_else(|| Error::ToolInvalidArguments {
+        let prompt = args["prompt"].as_str().ok_or_else(|| {
+            Error::ToolInvalidArguments {
                 tool: "task".into(),
                 detail: "missing 'prompt' field".into(),
-            })?;
+            }
+        })?;
 
         let subagent_type = args["subagent_type"].as_str().unwrap_or("general-purpose");
-
+        let task_id = args["task_id"].as_str();
+        let command = args["command"].as_str();
         let is_background = args["background"].as_bool().unwrap_or(false);
 
-        // Task delegation requires session management infrastructure (session creation,
-        // prompt execution, background jobs). This stub returns a placeholder indicating
-        // the task was received.
-        let output = if is_background {
-            format!(
-                "Task \"{}\" launched in background.\nAgent type: {}\nThe task is working in the background.\
-                 You will be notified automatically when it finishes.",
-                description, subagent_type
-            )
+        // 1. Ask for permission (unless bypassed via extra)
+        let bypass = ctx
+            .extra
+            .get("bypassAgentCheck")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+        if !bypass {
+            ctx.ask("task", subagent_type).await?;
+        }
+
+        // 2. Resolve services
+        let svc = self.services()?;
+
+        // 3. Look up the subagent type
+        let agent = svc
+            .agent_service
+            .get(subagent_type)
+            .ok_or_else(|| Error::Tool(format!("Unknown agent type: {subagent_type}")))?;
+
+        // 4. Resolve or create the child session
+        let existing_session: Option<SessionInfo> = if let Some(tid) = task_id {
+            svc.session_manager.get(tid).await.ok()
         } else {
-            format!(
-                "<task id=\"{}\" state=\"completed\">\n<summary>Task completed: {}</summary>\n<task_result>\n\
-                 Task execution is pending full session management infrastructure.\
-                 \nPrompt received: {}\n</task_result>\n</task>",
-                ctx.session_id, description, prompt
-            )
+            None
         };
+
+        let parent = svc.session_manager.get(&ctx.session_id).await.map_err(|e| {
+            Error::Tool(format!("failed to get parent session: {e}"))
+        })?;
+
+        // 5. Derive child permissions
+        let child_permission = derive_subagent_session_permission(
+            parent.permission.as_ref().unwrap_or(&vec![]),
+            agent,
+        );
+
+        // 6. Build the child permission rules
+        let child_tool_denies = build_child_tool_denies(agent.permission.as_ref());
+        let merged_permission: Vec<crate::permission::PermissionRule> = {
+            let mut rules = child_permission;
+            for deny in &child_tool_denies {
+                if !rules.iter().any(|r| {
+                    r.permission == deny.permission
+                        && r.pattern == deny.pattern
+                        && r.action == deny.action
+                }) {
+                    rules.push(deny.clone());
+                }
+            }
+            rules
+        };
+
+        // 7. Resolve model for the subagent session
+        let child_model = agent.model.as_ref().map(|m| ModelSelection {
+            id: m.model_id.clone(),
+            provider_id: m.provider_id.clone(),
+            variant: None,
+        });
+
+        // 8. Create or reuse child session
+        let child_session = if let Some(sess) = existing_session {
+            sess
+        } else {
+            let session_id = id::descending(IdPrefix::Session, None)
+                .map_err(|e| Error::Tool(format!("session id generation failed: {e}")))?;
+            let title = format!("{description} (@{} subagent)", agent.name);
+
+            let create_input = CreateSessionInput {
+                project_id: parent.project_id.clone(),
+                workspace_id: parent.workspace_id.clone(),
+                directory: parent.directory.clone(),
+                path: parent.path.clone(),
+                parent_id: Some(ctx.session_id.clone()),
+                title: Some(title),
+                agent: Some(agent.name.clone()),
+                model: child_model.clone(),
+                metadata: Some(serde_json::json!({
+                    "parentSessionId": ctx.session_id,
+                    "sessionId": session_id,
+                    "model": child_model,
+                })),
+                permission: Some(merged_permission),
+            };
+
+            svc.session_manager.create(create_input).await.map_err(|e| {
+                Error::Tool(format!("failed to create child session: {e}"))
+            })?
+        };
+
+        let child_session_id = child_session.id.clone();
+
+        // 9. Read the prompt ops from the tool context
+        let prompt_ops = ctx.prompt_ops.clone().ok_or_else(|| {
+            Error::Tool(
+                "TaskTool requires prompt_ops in ToolContext — set by the session processor"
+                    .into(),
+            )
+        })?;
+
+        // 10. Metadata used across all return paths
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "subagent_type".into(),
+            serde_json::Value::String(subagent_type.to_string()),
+        );
+        metadata.insert(
+            "sessionID".into(),
+            serde_json::Value::String(child_session_id.clone()),
+        );
+        if is_background {
+            metadata.insert("background".into(), serde_json::Value::Bool(true));
+        }
+        if let Some(cmd) = command {
+            metadata.insert("command".into(), serde_json::Value::String(cmd.to_string()));
+        }
+
+        // 11. Build the prompt parts from the user's prompt text
+        let prompt_parts = (prompt_ops.resolve_prompt_parts)(prompt)?;
+
+        // 12. Build the SessionPromptInput for running the subagent
+        let session_model = agent.model.as_ref().map(|m| crate::session_info::ModelRef {
+            id: m.model_id.clone(),
+            provider_id: m.provider_id.clone(),
+            variant: None,
+        });
+        let session_prompt_input = SessionPromptInput {
+            session_id: child_session_id.clone(),
+            message_id: Some(
+                id::ascending(IdPrefix::Message, None)
+                    .unwrap_or_else(|_| "msg_fallback".to_string()),
+            ),
+            model: session_model,
+            agent: Some(agent.name.clone()),
+            no_reply: false,
+            tools: None,
+            format: None,
+            system: None,
+            variant: None,
+            parts: prompt_parts,
+        };
+
+        // 13. Background path
+        if is_background {
+            let bg_id = child_session_id.clone();
+            let bg_desc = description.to_string();
+            let bg_metadata = metadata.clone();
+            let prompt_input = session_prompt_input;
+            let ops_arc = prompt_ops.clone();
+
+            let run_fn = move || {
+                let ops = ops_arc.clone();
+                let input = prompt_input.clone();
+                async move {
+                    (ops.prompt)(input).await.map_err(|e| e.to_string())
+                }
+            };
+
+            let job_info = svc
+                .background_jobs
+                .start(
+                    JobStartInput {
+                        id: Some(bg_id.clone()),
+                        type_: "task".into(),
+                        title: Some(bg_desc.clone()),
+                        metadata: Some(serde_json::json!(bg_metadata)),
+                        on_promote: None,
+                    },
+                    run_fn,
+                )
+                .await;
+
+            metadata.insert(
+                "jobId".into(),
+                serde_json::Value::String(job_info.id.clone()),
+            );
+
+            return Ok(ExecuteResult {
+                title: description.to_string(),
+                output: render_output(
+                    &child_session_id,
+                    "running",
+                    Some("Background task started"),
+                    BACKGROUND_STARTED,
+                ),
+                truncated: false,
+                output_path: None,
+                attachments: None,
+                metadata,
+            });
+        }
+
+        // 14. Foreground path — run the prompt and wait
+        let result = (prompt_ops.prompt)(session_prompt_input)
+            .await
+            .map_err(|e| Error::Tool(format!("subagent execution failed: {e}")))?;
 
         Ok(ExecuteResult {
             title: description.to_string(),
-            output,
+            output: render_output(
+                &child_session_id,
+                "completed",
+                Some("Task completed"),
+                &result,
+            ),
             truncated: false,
             output_path: None,
             attachments: None,
-            metadata: {
-                let mut m = HashMap::new();
-                m.insert(
-                    "subagent_type".into(),
-                    serde_json::Value::String(subagent_type.to_string()),
-                );
-                m.insert(
-                    "sessionID".into(),
-                    serde_json::Value::String(ctx.session_id.clone()),
-                );
-                if is_background {
-                    m.insert("background".into(), serde_json::Value::Bool(true));
-                }
-                m
-            },
+            metadata,
         })
     }
+}
+
+/// Build deny rules for tools that the subagent should not use.
+///
+/// Blocks `todowrite` and `task` unless the subagent's own permission ruleset
+/// already allows them. Also blocks any tools listed as `primary_tools` in the
+/// experimental config (placeholder — user config not accessible here).
+///
+/// # Source
+/// Ported from `packages/opencode/src/tool/task.ts` lines 129–141.
+fn build_child_tool_denies(
+    subagent_permission: &[crate::permission::PermissionRule],
+) -> Vec<crate::permission::PermissionRule> {
+    let mut denies = Vec::new();
+
+    let can_todo = subagent_permission
+        .iter()
+        .any(|r| r.permission == "todowrite");
+    if !can_todo {
+        denies.push(crate::permission::PermissionRule {
+            permission: "todowrite".into(),
+            pattern: "*".into(),
+            action: crate::permission::PermissionAction::Deny,
+        });
+    }
+
+    let can_task = subagent_permission
+        .iter()
+        .any(|r| r.permission == "task");
+    if !can_task {
+        denies.push(crate::permission::PermissionRule {
+            permission: "task".into(),
+            pattern: "*".into(),
+            action: crate::permission::PermissionAction::Deny,
+        });
+    }
+
+    denies
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -2950,15 +3472,30 @@ impl Tool for TaskTool {
 
 /// Asks the user questions during execution.
 ///
-/// Publishes a question event on the event bus and returns a pending state.
-/// The actual answer arrives asynchronously — this tool indicates the question
-/// has been queued for user response.
+/// Publishes a question event on the event bus and awaits the user's answer.
+/// The answer is returned once received (not immediately with "pending" state).
 ///
 /// # Source
 /// Ported from `packages/core/src/tool/question.ts` and
 /// `packages/opencode/src/tool/question.ts`.
-#[derive(Debug, Clone)]
-pub struct QuestionTool;
+#[derive(Clone)]
+pub struct QuestionTool {
+    /// The question service used to create deferred questions and await answers.
+    pub service: Arc<QuestionService>,
+}
+
+impl std::fmt::Debug for QuestionTool {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("QuestionTool").finish()
+    }
+}
+
+impl QuestionTool {
+    /// Create a new question tool backed by the given question service.
+    pub fn new(service: Arc<QuestionService>) -> Self {
+        Self { service }
+    }
+}
 
 #[async_trait]
 impl Tool for QuestionTool {
@@ -2969,7 +3506,7 @@ impl Tool for QuestionTool {
     fn description(&self) -> &str {
         "Ask the user one or more questions during execution.\
          Questions are published as events on the session bus and the user's\
-         answers arrive asynchronously. This tool returns a pending state.\
+         answers are collected and returned.\
          \n\n\
          Each question can include header text, predefined options with labels\
          and descriptions, allow multiple selection, and support custom answers."
@@ -3039,51 +3576,77 @@ impl Tool for QuestionTool {
 
         let question_count = questions.len();
 
-        // Build the question event payload. When the event bus infrastructure
-        // is connected, this payload is published on the bus as a GlobalEvent.
-        // The session runner subscribes and delivers the question to the user.
-        // Answers arrive asynchronously and are injected into the session.
-        let _event_payload = serde_json::json!({
-            "type": "question",
-            "session_id": ctx.session_id,
-            "message_id": ctx.message_id,
-            "questions": questions,
-        });
-
-        // Questions are published on the event bus and answers arrive asynchronously.
-        // Return a pending state indicating the questions were queued.
-        let mut formatted = Vec::new();
-        for q in questions.iter() {
-            let question_text = q["question"].as_str().unwrap_or("Unnamed question");
-            let header = q["header"].as_str();
-            let label = match header {
-                Some(h) => format!("[{}] {}", h, question_text),
-                None => question_text.to_string(),
-            };
-            let has_options = q["options"].as_array().map(|o| o.len()).unwrap_or(0) > 0;
-            let status = if has_options {
-                "awaiting selection"
-            } else {
-                "awaiting response"
-            };
-            formatted.push(format!("\"{}\"=\"{}\"", label, status));
+        // Permission check — mirrors the TS `permission.assert()`
+        let allowed = ctx.ask("question", "*").await?;
+        if !allowed {
+            return Err(Error::Permission(crate::error::PermissionError::Denied));
         }
 
-        let output = format!(
-            "Questions published on event bus (awaiting user response):\n{}\n\n\
-             The session will resume once the user provides answers.",
-            formatted
-                .iter()
-                .enumerate()
-                .map(|(i, s)| format!("  {}. {}", i + 1, s))
-                .collect::<Vec<_>>()
-                .join("\n")
-        );
+        // Convert raw JSON questions to QuestionInfo
+        let infos: Vec<QuestionInfo> = questions
+            .iter()
+            .map(|q| {
+                let question = q["question"].as_str().unwrap_or("Question").to_string();
+                let header = q["header"].as_str().unwrap_or("Question").to_string();
+                let mut info = QuestionInfo::new(question, header);
+                if let Some(options) = q["options"].as_array() {
+                    info = info.with_options(
+                        options
+                            .iter()
+                            .map(|o| {
+                                QuestionOption::new(
+                                    o["label"].as_str().unwrap_or(""),
+                                    o["description"].as_str().unwrap_or(""),
+                                )
+                            })
+                            .collect(),
+                    );
+                }
+                if q.get("multiple")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false)
+                {
+                    info = info.with_multiple(true);
+                }
+                if let Some(custom) = q.get("custom").and_then(|v| v.as_bool()) {
+                    info = info.with_custom(custom);
+                }
+                info
+            })
+            .collect();
+
+        // Build the tool context for the question metadata
+        let question_tool = crate::question::QuestionTool {
+            message_id: ctx.message_id.clone(),
+            call_id: ctx.call_id.clone().unwrap_or_default(),
+        };
+
+        // Ask the user and await the answer (blocks until the user replies)
+        let answers = match self
+            .service
+            .ask(&ctx.session_id, infos.clone(), Some(question_tool))
+            .await
+        {
+            Ok(a) => a,
+            Err(e) => {
+                return Ok(ExecuteResult {
+                    title: "Question dismissed".into(),
+                    output: format!("The user dismissed the question: {e}"),
+                    truncated: false,
+                    output_path: None,
+                    attachments: None,
+                    metadata: HashMap::new(),
+                });
+            }
+        };
+
+        // Format the output matching the TS `toModelOutput()` function
+        let prompts: Vec<QuestionPrompt> = infos.into_iter().map(Into::into).collect();
+        let output = format_model_output(&prompts, &answers);
 
         Ok(ExecuteResult {
             title: format!(
-                "Question{} pending ({} item{})",
-                if question_count > 1 { "s" } else { "" },
+                "Asked {} question{}",
                 question_count,
                 if question_count > 1 { "s" } else { "" }
             ),
@@ -3093,8 +3656,10 @@ impl Tool for QuestionTool {
             attachments: None,
             metadata: {
                 let mut m = HashMap::new();
-                m.insert("state".into(), serde_json::Value::String("pending".into()));
-                m.insert("question_count".into(), serde_json::json!(question_count));
+                let _ = m.insert(
+                    "answers".into(),
+                    serde_json::to_value(&answers).unwrap_or_default(),
+                );
                 m
             },
         })
@@ -4644,7 +5209,8 @@ impl ToolRegistry {
         self.register(Arc::new(WebSearchTool));
         self.register(Arc::new(ApplyPatchTool));
         self.register(Arc::new(TaskTool));
-        self.register(Arc::new(QuestionTool));
+        // QuestionTool requires a QuestionService — registered separately in
+        // the runtime / caller.
         self.register(Arc::new(SkillTool));
         self.register(Arc::new(TodoWriteTool));
         self.register(Arc::new(StashTool));
@@ -4680,6 +5246,14 @@ mod tests {
             ask_fn: None,
             permission_source: None,
         }
+    }
+
+    /// Helper: create a QuestionTool backed by a throwaway bus + service
+    /// for meta-tests that only check schema / description / ID.
+    fn question_tool() -> QuestionTool {
+        let bus = SharedBus::new(16);
+        let svc = Arc::new(QuestionService::new(bus));
+        QuestionTool::new(svc)
     }
 
     // ── BashTool tests ──────────────────────────────────────────────────
@@ -5431,7 +6005,31 @@ mod tests {
     // ── TaskTool tests ──────────────────────────────────────────────────
 
     #[tokio::test]
-    async fn test_task_basic() {
+    async fn test_task_missing_required() {
+        let tool = TaskTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(serde_json::json!({"description": "test"}), &ctx)
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_task_missing_prompt() {
+        let tool = TaskTool;
+        let ctx = test_ctx();
+        let result = tool
+            .execute(serde_json::json!({"description": "test"}), &ctx)
+            .await;
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("missing") || err.contains("prompt") || err.contains("description"));
+    }
+
+    #[tokio::test]
+    async fn test_task_requires_services() {
+        // Without init_services(), the TaskTool should return an error
+        // explaining that services are not initialised.
         let tool = TaskTool;
         let ctx = test_ctx();
         let result = tool
@@ -5443,23 +6041,14 @@ mod tests {
                 }),
                 &ctx,
             )
-            .await
-            .unwrap();
-        assert!(result.output.contains("test task"));
-    }
-
-    #[tokio::test]
-    async fn test_task_missing_required() {
-        let tool = TaskTool;
-        let ctx = test_ctx();
-        let result = tool
-            .execute(serde_json::json!({"description": "test"}), &ctx)
             .await;
         assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("services") || err.contains("not initialised") || err.contains("TaskTool"));
     }
 
     #[tokio::test]
-    async fn test_task_background() {
+    async fn test_task_background_requires_services() {
         let tool = TaskTool;
         let ctx = test_ctx();
         let result = tool
@@ -5472,57 +6061,95 @@ mod tests {
                 }),
                 &ctx,
             )
-            .await
-            .unwrap();
-        assert!(result.output.contains("background"));
+            .await;
+        assert!(result.is_err());
     }
 
     // ── QuestionTool tests ──────────────────────────────────────────────
 
     #[tokio::test]
     async fn test_question_basic() {
-        let tool = QuestionTool;
-        let ctx = test_ctx();
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "questions": [
-                        {"question": "What is your preference?"}
-                    ]
-                }),
-                &ctx,
-            )
+        let bus = SharedBus::new(16);
+        let svc = Arc::new(QuestionService::new(bus));
+        let tool = QuestionTool::new(svc.clone());
+        let ctx = Arc::new(test_ctx());
+
+        let tool_clone = tool.clone();
+        let ctx_clone = ctx.clone();
+        let handle = tokio::spawn(async move {
+            tool_clone
+                .execute(
+                    serde_json::json!({"questions": [{"question": "What is your preference?"}]}),
+                    &ctx_clone,
+                )
+                .await
+                .unwrap()
+        });
+
+        // Allow time for the pending entry to appear
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let pending = svc.list().await;
+        assert_eq!(pending.len(), 1);
+        svc.reply(&pending[0].id, vec![QuestionAnswer::new(vec!["Blue".into()])])
             .await
             .unwrap();
+
+        let result = handle.await.unwrap();
         assert!(result.output.contains("What is your preference?"));
-        assert!(result.output.contains("awaiting response"));
+        assert!(result.output.contains("Blue"));
+        assert!(result.title.contains("Asked 1 question"));
     }
 
     #[tokio::test]
     async fn test_question_multiple() {
-        let tool = QuestionTool;
-        let ctx = test_ctx();
-        let result = tool
-            .execute(
-                serde_json::json!({
-                    "questions": [
-                        {"question": "Q1", "header": "Header 1", "options": [{"label": "A"}, {"label": "B"}]},
-                        {"question": "Q2", "multiple": true}
-                    ]
-                }),
-                &ctx,
-            )
-            .await
-            .unwrap();
+        let bus = SharedBus::new(16);
+        let svc = Arc::new(QuestionService::new(bus));
+        let tool = QuestionTool::new(svc.clone());
+        let ctx = Arc::new(test_ctx());
+
+        let tool_clone = tool.clone();
+        let ctx_clone = ctx.clone();
+        let handle = tokio::spawn(async move {
+            tool_clone
+                .execute(
+                    serde_json::json!({
+                        "questions": [
+                            {"question": "Q1", "header": "Header 1", "options": [{"label": "A"}, {"label": "B"}]},
+                            {"question": "Q2", "multiple": true}
+                        ]
+                    }),
+                    &ctx_clone,
+                )
+                .await
+                .unwrap()
+        });
+
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+
+        let pending = svc.list().await;
+        assert_eq!(pending.len(), 1);
+        svc.reply(
+            &pending[0].id,
+            vec![
+                QuestionAnswer::new(vec!["A".into()]),
+                QuestionAnswer::new(vec!["X".into(), "Y".into()]),
+            ],
+        )
+        .await
+        .unwrap();
+
+        let result = handle.await.unwrap();
         assert!(result.output.contains("Q1"));
         assert!(result.output.contains("Q2"));
-        assert!(result.title.contains("Questions pending (2 items)"));
-        assert!(result.output.contains("awaiting selection"));
+        assert!(result.title.contains("Asked 2 questions"));
     }
 
     #[tokio::test]
     async fn test_question_missing_questions() {
-        let tool = QuestionTool;
+        let bus = SharedBus::new(16);
+        let svc = Arc::new(QuestionService::new(bus));
+        let tool = QuestionTool::new(svc);
         let ctx = test_ctx();
         let result = tool.execute(serde_json::json!({}), &ctx).await;
         assert!(result.is_err());
@@ -5762,7 +6389,7 @@ mod tests {
             ("websearch".to_string(), Arc::new(WebSearchTool)),
             ("apply_patch".to_string(), Arc::new(ApplyPatchTool)),
             ("task".to_string(), Arc::new(TaskTool)),
-            ("question".to_string(), Arc::new(QuestionTool)),
+            ("question".to_string(), Arc::new(question_tool())),
             ("skill".to_string(), Arc::new(SkillTool)),
             ("todowrite".to_string(), Arc::new(TodoWriteTool)),
             ("stash".to_string(), Arc::new(StashTool)),
@@ -5805,7 +6432,7 @@ mod tests {
             Arc::new(WebSearchTool),
             Arc::new(ApplyPatchTool),
             Arc::new(TaskTool),
-            Arc::new(QuestionTool),
+            Arc::new(question_tool()),
             Arc::new(SkillTool),
             Arc::new(TodoWriteTool),
             Arc::new(StashTool),
@@ -5847,7 +6474,7 @@ mod tests {
             Arc::new(WebSearchTool),
             Arc::new(ApplyPatchTool),
             Arc::new(TaskTool),
-            Arc::new(QuestionTool),
+            Arc::new(question_tool()),
             Arc::new(SkillTool),
             Arc::new(TodoWriteTool),
             Arc::new(StashTool),
@@ -6008,11 +6635,11 @@ mod tests {
     // ── register_builtins ───────────────────────────────────────────────
 
     #[test]
-    fn test_register_builtins_registers_all_21() {
+    fn test_register_builtins_registers_all_20() {
         let registry = ToolRegistry::new();
         registry.register_builtins();
         let ids = registry.ids();
-        assert_eq!(ids.len(), 21);
+        assert_eq!(ids.len(), 20);
         assert!(ids.contains(&"bash".to_string()));
         assert!(ids.contains(&"read".to_string()));
         assert!(ids.contains(&"write".to_string()));
@@ -6023,7 +6650,7 @@ mod tests {
         assert!(ids.contains(&"websearch".to_string()));
         assert!(ids.contains(&"apply_patch".to_string()));
         assert!(ids.contains(&"task".to_string()));
-        assert!(ids.contains(&"question".to_string()));
+        assert!(!ids.contains(&"question".to_string()));
         assert!(ids.contains(&"skill".to_string()));
         assert!(ids.contains(&"todowrite".to_string()));
         assert!(ids.contains(&"stash".to_string()));
@@ -6052,7 +6679,7 @@ mod tests {
             "websearch",
             "apply_patch",
             "task",
-            "question",
+            // question tool requires a service — registered separately
             "skill",
             "todowrite",
             "stash",

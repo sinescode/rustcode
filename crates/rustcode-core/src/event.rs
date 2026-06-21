@@ -29,6 +29,8 @@ use std::fmt;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::database::DatabaseService;
+
 // ---------------------------------------------------------------------------
 // EventId — branded string with "evt_" prefix
 // ---------------------------------------------------------------------------
@@ -790,11 +792,16 @@ pub struct EventV2 {
     sync_handlers: Arc<RwLock<Vec<SyncFn>>>,
     /// Synchronized aggregate pubsub channels for live tailing.
     synchronized_aggregates: RwLock<HashMap<String, Vec<Arc<EventPubSub>>>>,
+    /// Optional database service for persistent event storage.
+    db: Option<DatabaseService>,
+    /// Optional SQLite pool for direct queries.
+    pool: Option<sqlx::SqlitePool>,
 }
 
 impl EventV2 {
-    /// Create a new EventV2 instance with the given channel capacity.
-    pub fn new(capacity: usize) -> Self {
+    /// Create a new EventV2 instance with the given channel capacity and optional database pool.
+    pub fn new(capacity: usize, pool: Option<sqlx::SqlitePool>) -> Self {
+        let db = pool.clone().map(DatabaseService::new);
         Self {
             typed_channels: RwLock::new(HashMap::new()),
             global_channel: EventPubSub::new(capacity),
@@ -804,6 +811,8 @@ impl EventV2 {
             listeners: Arc::new(RwLock::new(Vec::new())),
             sync_handlers: Arc::new(RwLock::new(Vec::new())),
             synchronized_aggregates: RwLock::new(HashMap::new()),
+            db,
+            pool,
         }
     }
 
@@ -831,6 +840,7 @@ impl EventV2 {
     /// Publish an event through the system.
     ///
     /// For synchronized (durable) events:
+    /// - Persists to the `event_sequence` and `event` tables in a transaction
     /// - Runs commit guards before committing
     /// - Runs projectors for the event type
     /// - Notifies sync handlers after commit
@@ -870,50 +880,179 @@ impl EventV2 {
             replay: false,
         };
 
-        // For synchronized events, run projectors and guards
+        // For synchronized events, persist to DB, run guards, projectors, and commit hook
         if let Some(ref sync_config) = definition.sync {
-            // Run commit guards
-            let guards = self.commit_guards.read().await;
-            for guard in guards.iter() {
-                guard(payload.clone()).await.map_err(|e| {
-                    EventError::Internal(format!("Commit guard rejected: {e}"))
-                })?;
-            }
-            drop(guards);
-
-            // Run projectors for this event type
-            let projectors = self.get_projectors(&definition.event_type).await;
-            for projector in projectors.iter() {
-                projector(payload.clone()).await.map_err(|e| {
-                    EventError::Internal(format!("Projector failed: {e}"))
-                })?;
-            }
-
             // Extract aggregate ID from event data
-            let aggregate_id = payload.aggregate_id(sync_config);
-            if let Some(ref agg_id) = aggregate_id {
-                // Notify sync handlers
-                let handlers = self.sync_handlers.read().await;
-                for handler in handlers.iter() {
-                    handler(payload.clone()).await.map_err(|e| {
-                        EventError::Internal(format!("Sync handler failed: {e}"))
+            let aggregate_id = payload.aggregate_id(sync_config).ok_or_else(|| {
+                EventError::AggregateNotString {
+                    field: sync_config.aggregate.clone(),
+                }
+            })?;
+
+            // Determine the computed sequence and persist to DB
+            let seq = if let Some(ref pool) = self.pool {
+                let versioned_type = definition.versioned_type().ok_or_else(|| {
+                    EventError::Internal("sync event has no versioned type".into())
+                })?;
+
+                // Run everything inside a transaction
+                let mut tx = pool
+                    .begin()
+                    .await
+                    .map_err(|e| EventError::Internal(format!("tx begin: {e}")))?;
+
+                // Read current sequence for this aggregate
+                let current_seq: Option<(i64,)> = sqlx::query_as(
+                    "SELECT seq FROM event_sequence WHERE aggregate_id = ?1",
+                )
+                .bind(&aggregate_id)
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| EventError::Internal(format!("read seq: {e}")))?;
+
+                let latest = current_seq.map(|(s,)| s).unwrap_or(-1);
+                let new_seq = latest + 1;
+
+                // Check event ID uniqueness
+                let existing: Option<(String,)> = sqlx::query_as(
+                    "SELECT id FROM event WHERE id = ?1",
+                )
+                .bind(payload.id.as_str())
+                .fetch_optional(&mut *tx)
+                .await
+                .map_err(|e| EventError::Internal(format!("check event id: {e}")))?;
+
+                if existing.is_some() {
+                    return Err(EventError::EventAlreadyExists {
+                        event_id: payload.id.clone(),
+                        aggregate_id: aggregate_id.clone(),
+                        seq: new_seq as u64,
+                    });
+                }
+
+                // Run commit guards
+                let guards = self.commit_guards.read().await;
+                for guard in guards.iter() {
+                    guard(payload.clone()).await.map_err(|e| {
+                        EventError::Internal(format!("Commit guard rejected: {e}"))
+                    })?;
+                }
+                drop(guards);
+
+                // Run projectors for this event type
+                let projectors = self.get_projectors(&definition.event_type).await;
+                for projector in projectors.iter() {
+                    projector(payload.clone()).await.map_err(|e| {
+                        EventError::Internal(format!("Projector failed: {e}"))
                     })?;
                 }
 
-                // Notify synchronized aggregate subscribers
-                let aggregates = self.synchronized_aggregates.read().await;
-                if let Some(pubsubs) = aggregates.get(agg_id) {
-                    for pubsub in pubsubs.iter() {
-                        let _ = pubsub.publish(payload.clone());
-                    }
+                // Call commit hook if present
+                if let Some(ref commit) = opts.commit {
+                    commit(new_seq as u64).await;
+                }
+
+                // UPSERT event_sequence
+                sqlx::query(
+                    "INSERT INTO event_sequence (aggregate_id, seq) VALUES (?1, ?2) \
+                     ON CONFLICT(aggregate_id) DO UPDATE SET seq = excluded.seq",
+                )
+                .bind(&aggregate_id)
+                .bind(new_seq)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| EventError::Internal(format!("upsert seq: {e}")))?;
+
+                // Serialize event data as JSON
+                let data_json = serde_json::to_string(&payload.data)
+                    .map_err(|e| EventError::Internal(format!("serialize data: {e}")))?;
+
+                // INSERT into event table
+                sqlx::query(
+                    "INSERT INTO event (id, aggregate_id, seq, type, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+                )
+                .bind(payload.id.as_str())
+                .bind(&aggregate_id)
+                .bind(new_seq)
+                .bind(&versioned_type)
+                .bind(&data_json)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| EventError::Internal(format!("insert event: {e}")))?;
+
+                // Commit the transaction
+                tx.commit()
+                    .await
+                    .map_err(|e| EventError::Internal(format!("tx commit: {e}")))?;
+
+                new_seq
+            } else {
+                // No database — in-memory only: compute an approximate seq
+                let latest: i64 = -1;
+                let new_seq = latest + 1;
+
+                // Run commit guards
+                let guards = self.commit_guards.read().await;
+                for guard in guards.iter() {
+                    guard(payload.clone()).await.map_err(|e| {
+                        EventError::Internal(format!("Commit guard rejected: {e}"))
+                    })?;
+                }
+                drop(guards);
+
+                // Run projectors for this event type
+                let projectors = self.get_projectors(&definition.event_type).await;
+                for projector in projectors.iter() {
+                    projector(payload.clone()).await.map_err(|e| {
+                        EventError::Internal(format!("Projector failed: {e}"))
+                    })?;
+                }
+
+                // Call commit hook if present
+                if let Some(ref commit) = opts.commit {
+                    commit(new_seq as u64).await;
+                }
+
+                new_seq
+            };
+
+            let mut payload_with_seq = payload.clone();
+            payload_with_seq.seq = Some(seq as u64);
+
+            // Notify sync handlers
+            let handlers = self.sync_handlers.read().await;
+            for handler in handlers.iter() {
+                handler(payload_with_seq.clone()).await.map_err(|e| {
+                    EventError::Internal(format!("Sync handler failed: {e}"))
+                })?;
+            }
+            drop(handlers);
+
+            // Notify synchronized aggregate subscribers
+            let aggregates = self.synchronized_aggregates.read().await;
+            if let Some(pubsubs) = aggregates.get(&aggregate_id) {
+                for pubsub in pubsubs.iter() {
+                    let _ = pubsub.publish(payload_with_seq.clone());
                 }
             }
+
+            // Notify all listeners
+            self.notify(&payload_with_seq, false).await;
+
+            // Publish to typed channel
+            let ch = self.get_or_create_channel(&definition.event_type).await;
+            let _ = ch.publish(payload_with_seq.clone());
+
+            // Publish to global channel
+            let _ = self.global_channel.publish(payload_with_seq.clone());
+
+            return Ok(payload_with_seq);
         }
 
-        // Notify all listeners
+        // For non-synchronized events (ephemeral): notify listeners only
         self.notify(&payload, false).await;
 
-        // Publish to typed channel (for all events, including sync)
+        // Publish to typed channel
         let ch = self.get_or_create_channel(&definition.event_type).await;
         let _ = ch.publish(payload.clone());
 
@@ -1049,10 +1188,10 @@ impl EventV2 {
     /// Returns an [`EventSubscription`] that yields events committed to this
     /// aggregate. The subscription automatically unsubscribes on drop.
     ///
-    /// To match the TS `Stream`-based semantics which first replays historical
-    /// events and then subscribes to live ones, consumers should:
-    /// 1. Read historical events via the database before calling this method.
-    /// 2. Poll the returned subscription for live events.
+    /// First replays historical events from the database (if available), then
+    /// subscribes to live events via the synchronized aggregate channel.
+    /// Historical events are published with `replay: true` so projectors can
+    /// distinguish them from live events.
     ///
     /// # Source
     /// Ported from `packages/core/src/event.ts` lines 562–584 (readAfter),
@@ -1060,12 +1199,66 @@ impl EventV2 {
     pub async fn aggregate_events(
         &self,
         aggregate_id: &str,
-        _after: Option<EventCursor>,
+        after: Option<EventCursor>,
     ) -> EventSubscription {
+        let after_seq = after.map(|c| c.value()).unwrap_or(0);
+
+        // Replay historical events from the database
+        if let Some(ref pool) = self.pool {
+            let rows: Vec<(String, i64, String, String)> = sqlx::query_as(
+                "SELECT id, seq, type, data FROM event \
+                 WHERE aggregate_id = ?1 AND seq > ?2 \
+                 ORDER BY seq ASC",
+            )
+            .bind(aggregate_id)
+            .bind(after_seq as i64)
+            .fetch_all(pool)
+            .await
+            .unwrap_or_default();
+
+            for (id, seq, event_type, data_json) in rows {
+                let data: serde_json::Value =
+                    serde_json::from_str(&data_json).unwrap_or(serde_json::Value::Null);
+
+                // Find the definition to get version and original type
+                let (orig_type, version) = self
+                    .registry
+                    .get(&event_type)
+                    .await
+                    .map(|def| {
+                        (
+                            def.event_type.clone(),
+                            def.sync.as_ref().map(|s| s.version),
+                        )
+                    })
+                    .unwrap_or_else(|| (event_type.clone(), None));
+
+                let replay_payload = EventPayload {
+                    id: EventId::from(id),
+                    event_type: orig_type,
+                    seq: Some(seq as u64),
+                    version,
+                    data,
+                    location: None,
+                    metadata: None,
+                    replay: true,
+                };
+
+                // Notify listeners (error-isolated)
+                self.notify(&replay_payload, true).await;
+
+                // Publish to typed channel
+                let ch = self
+                    .get_or_create_channel(&replay_payload.event_type)
+                    .await;
+                let _ = ch.publish(replay_payload);
+            }
+        }
+
+        // Subscribe to live events
         let mut aggregates = self.synchronized_aggregates.write().await;
         let channels = aggregates.entry(aggregate_id.to_string()).or_default();
 
-        // Find an existing channel or create a new one
         let channel = if let Some(existing) = channels.first() {
             Arc::clone(existing)
         } else {
@@ -1077,7 +1270,7 @@ impl EventV2 {
         channel.subscribe()
     }
 
-    /// Remove all events and sequence data for an aggregate.
+    /// Remove all events and sequence data for an aggregate from the database.
     ///
     /// # Source
     /// Ported from `packages/core/src/event.ts` lines 518–527.
@@ -1085,19 +1278,67 @@ impl EventV2 {
         // Remove synchronized aggregate channels
         let mut aggregates = self.synchronized_aggregates.write().await;
         aggregates.remove(aggregate_id);
+
+        // Delete from database in a transaction
+        if let Some(ref pool) = self.pool {
+            let result: Result<(), EventError> = async {
+                let mut tx = pool
+                    .begin()
+                    .await
+                    .map_err(|e| EventError::Internal(format!("tx begin: {e}")))?;
+
+                sqlx::query("DELETE FROM event WHERE aggregate_id = ?1")
+                    .bind(aggregate_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| EventError::Internal(format!("delete events: {e}")))?;
+
+                sqlx::query("DELETE FROM event_sequence WHERE aggregate_id = ?1")
+                    .bind(aggregate_id)
+                    .execute(&mut *tx)
+                    .await
+                    .map_err(|e| EventError::Internal(format!("delete seq: {e}")))?;
+
+                tx.commit()
+                    .await
+                    .map_err(|e| EventError::Internal(format!("tx commit: {e}")))?;
+
+                Ok(())
+            }
+            .await;
+
+            if let Err(e) = result {
+                tracing::error!(aggregate_id, error = %e, "remove aggregate failed");
+            }
+        }
     }
 
     /// Claim ownership of an aggregate for replay ownership tracking.
     ///
-    /// In the TS source, this updates the `owner_id` in the
-    /// `EventSequenceTable`. In the in-memory-only path, this is a no-op
-    /// since there's no persistent storage.
+    /// Updates the `owner_id` in the `EventSequenceTable` when a database is
+    /// present. No-op in memory-only mode.
     ///
     /// # Source
     /// Ported from `packages/core/src/event.ts` lines 529–535.
-    pub async fn claim(&self, _aggregate_id: &str, _owner_id: &str) {
-        // No-op in memory-only mode. When a database is present, this would
-        // update EventSequenceTable.owner_id.
+    pub async fn claim(&self, aggregate_id: &str, owner_id: &str) {
+        if let Some(ref pool) = self.pool {
+            let result = sqlx::query(
+                "UPDATE event_sequence SET owner_id = ?1 WHERE aggregate_id = ?2",
+            )
+            .bind(owner_id)
+            .bind(aggregate_id)
+            .execute(pool)
+            .await;
+
+            if let Err(e) = result {
+                tracing::error!(
+                    aggregate_id,
+                    owner_id,
+                    error = %e,
+                    "claim aggregate failed"
+                );
+            }
+        }
     }
 
     /// Access the event registry.
@@ -1250,7 +1491,7 @@ impl EventV2Interface for EventV2 {
 
 impl Default for EventV2 {
     fn default() -> Self {
-        Self::new(1024)
+        Self::new(1024, None)
     }
 }
 
@@ -2349,7 +2590,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_publish_and_subscribe() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
         let def = EventDefinition::new("test.pubsub", None, json!({}));
 
         let mut sub = ev.subscribe("test.pubsub").await;
@@ -2365,7 +2606,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_global_subscription_receives_all() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
         let def_a = EventDefinition::new("test.a", None, json!({}));
         let def_b = EventDefinition::new("test.b", None, json!({}));
 
@@ -2383,7 +2624,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_multiple_typed_subscribers() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
         let def = EventDefinition::new("test.fanout", None, json!({}));
 
         let mut sub1 = ev.subscribe("test.fanout").await;
@@ -2400,7 +2641,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_listener_is_notified() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
         let def = EventDefinition::new("test.listen", None, json!({}));
 
         // Can't easily test async listener in unit test without channels.
@@ -2416,7 +2657,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_projector_registration() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
 
         ev.project(
             "test.project",
@@ -2433,7 +2674,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_commit_guard_registration() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
         ev.before_commit(Arc::new(|_payload| Box::pin(async { Ok(()) })))
             .await;
 
@@ -2443,7 +2684,7 @@ mod tests {
 
     #[tokio::test]
     async fn event_v2_sync_handler_registration() {
-        let ev = EventV2::new(64);
+        let ev = EventV2::new(64, None);
         let _unsub = ev
             .sync(Arc::new(|_payload| Box::pin(async { Ok(()) })))
             .await;
