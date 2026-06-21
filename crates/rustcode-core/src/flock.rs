@@ -202,7 +202,7 @@ async fn try_acquire_lock_dir(
                 "hostname": hostname(),
                 "createdAt": chrono::Utc::now().to_rfc3339(),
             });
-            tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap())
+            tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta).expect("meta serialization must succeed"))
                 .await
                 .map_err(|e| format!("Failed to write meta.json: {e}"))?;
 
@@ -245,7 +245,7 @@ async fn try_acquire_lock_dir(
                                 "hostname": hostname(),
                                 "createdAt": chrono::Utc::now().to_rfc3339(),
                             });
-                            tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta).unwrap())
+                            tokio::fs::write(&meta_path, serde_json::to_string_pretty(&meta).expect("meta serialization must succeed"))
                                 .await
                                 .map_err(|e| format!("Failed to write meta.json: {e}"))?;
 
