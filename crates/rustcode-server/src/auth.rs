@@ -33,13 +33,20 @@ pub struct AuthConfig {
 }
 
 impl AuthConfig {
-    /// Load auth config from environment variables.
+    /// Load auth config from environment variables or file.
     ///
     /// Reads:
-    /// - `OPENCODE_SERVER_PASSWORD` (required for auth)
+    /// - `OPENCODE_SERVER_PASSWORD` (env var, less secure — visible in /proc)
+    /// - `OPENCODE_SERVER_PASSWORD_FILE` (file path, more secure)
     /// - `OPENCODE_SERVER_USERNAME` (defaults to `"opencode"`)
     pub fn from_env() -> Self {
-        let password = std::env::var("OPENCODE_SERVER_PASSWORD").ok();
+        let password = std::env::var("OPENCODE_SERVER_PASSWORD")
+            .ok()
+            .or_else(|| {
+                std::env::var("OPENCODE_SERVER_PASSWORD_FILE").ok().and_then(|path| {
+                    std::fs::read_to_string(&path).ok().map(|s| s.trim().to_string())
+                })
+            });
         let username = std::env::var("OPENCODE_SERVER_USERNAME")
             .unwrap_or_else(|_| "opencode".to_string());
         Self { password, username }
@@ -76,12 +83,13 @@ impl Credentials {
     /// 1. `auth_token` query parameter (base64-encoded `username:password`)
     /// 2. `Authorization: Basic <base64>` header
     pub fn from_request(req: &Request) -> Self {
-        // Try query param first
+        // Try query param first (less secure — credentials can leak in logs/Referer)
         let uri = req.uri();
         if let Some(query) = uri.query() {
             for pair in query.split('&') {
                 if let Some((key, value)) = pair.split_once('=') {
                     if key == "auth_token" && !value.is_empty() {
+                        tracing::warn!("auth_token query parameter used — less secure than Authorization header");
                         let decoded = url_decode(value).unwrap_or_default();
                         return Self::from_basic(&decoded);
                     }

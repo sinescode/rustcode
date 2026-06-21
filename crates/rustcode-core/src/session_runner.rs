@@ -687,7 +687,11 @@ impl SessionRunner {
                             );
                         }
                         LlmEvent::StepFinish { reason, .. } => {
-                            let _ = reason;
+                            // If the model stopped due to length (context limit),
+                            // mark for continuation to allow overflow recovery
+                            if matches!(reason, FinishReason::Length) {
+                                needs_continuation = true;
+                            }
                         }
                         _ => {}
                     }
