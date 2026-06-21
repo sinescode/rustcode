@@ -496,10 +496,15 @@ impl ToolRegistry {
         // Evaluate the tool permission using the context's permission source.
         // If the user needs to be asked, invoke the ask_fn.
         if let Some(ref _source) = ctx.permission_source {
-            // Check permission using the context's ask_fn.
-            // The permission name is the tool name itself (e.g. "bash", "read").
-            // The resource pattern defaults to "*" for top-level tool permission.
-            let allowed = ctx.ask(name, "*").await?;
+            // Extract the actual resource being accessed from the tool arguments.
+            // This enables permission rules with specific patterns (e.g. "read /src/*")
+            // to be correctly evaluated instead of always matching "*".
+            let resource = args.get("filePath")
+                .and_then(|v| v.as_str())
+                .or_else(|| args.get("command").and_then(|v| v.as_str()))
+                .or_else(|| args.get("path").and_then(|v| v.as_str()))
+                .unwrap_or("*");
+            let allowed = ctx.ask(name, resource).await?;
             if !allowed {
                 return Err(crate::error::Error::Permission(
                     crate::error::PermissionError::Denied,

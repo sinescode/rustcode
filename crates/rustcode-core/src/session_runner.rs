@@ -697,13 +697,25 @@ impl SessionRunner {
                     if !assistant_started && crate::error::is_context_overflow(&msg) {
                         overflow_detected = true;
                     } else {
-                        // Check if the error is retryable for better recovery
-                        let is_retryable = matches!(&e, crate::error::Error::Llm { reason, .. } if reason.is_retryable());
+                        // Check if the error is retryable and extract retry_after_ms hint
+                        let (is_retryable, retry_after) = match &e {
+                            crate::error::Error::Llm { reason, .. } => {
+                                (reason.is_retryable(), reason.retry_after_ms())
+                            }
+                            _ => (false, None),
+                        };
+                        // If retryable with a retry_after hint, wait before proceeding
+                        if is_retryable {
+                            if let Some(ms) = retry_after {
+                                let delay = std::time::Duration::from_millis(ms.min(30_000));
+                                tokio::time::sleep(delay).await;
+                            }
+                        }
                         all_events.push(LlmEvent::ProviderErrorEvent {
                             message: msg,
                             classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
                             retryable: Some(is_retryable),
-                            provider_metadata: None,
+                            provider_metadata: retry_after.map(|ms| serde_json::json!({"retry_after_ms": ms})),
                         });
                     }
                 }
@@ -1074,12 +1086,23 @@ impl SessionRunner {
                             aborted = true;
                             stream_error = Some(msg);
                         } else {
-                            let is_retryable = matches!(&e, crate::error::Error::Llm { reason, .. } if reason.is_retryable());
+                            let (is_retryable, retry_after) = match &e {
+                                crate::error::Error::Llm { reason, .. } => {
+                                    (reason.is_retryable(), reason.retry_after_ms())
+                                }
+                                _ => (false, None),
+                            };
+                            if is_retryable {
+                                if let Some(ms) = retry_after {
+                                    let delay = std::time::Duration::from_millis(ms.min(30_000));
+                                    tokio::time::sleep(delay).await;
+                                }
+                            }
                             all_events.push(LlmEvent::ProviderErrorEvent {
                                 message: msg.clone(),
                                 classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
                                 retryable: Some(is_retryable),
-                                provider_metadata: None,
+                                provider_metadata: retry_after.map(|ms| serde_json::json!({"retry_after_ms": ms})),
                             });
                             stream_error = Some(msg);
                         }
