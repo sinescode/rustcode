@@ -239,6 +239,241 @@ pub struct Info {
     pub plugin_origins: Vec<PluginOrigin>,
 }
 
+// ── TUI config (tui.json / tui.jsonc) ───────────────────────────────────
+
+/// TUI configuration — theme, keybinds, display settings.
+///
+/// Ported from: `packages/tui/src/config/config.ts` — `TuiConfig.Info`.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct TuiConfigInfo {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub keybinds: HashMap<String, String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colors: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_size: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub font_family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_status_bar: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub show_minimap: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cursor_style: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scrollbar: Option<ScrollbarConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub host_attention: Option<HostAttentionConfig>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub plugin: Vec<PluginSpec>,
+    #[serde(flatten)]
+    pub extra: HashMap<String, serde_json::Value>,
+}
+
+/// Scrollbar display configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScrollbarConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub style: Option<String>,
+}
+
+/// Host attention notification configuration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostAttentionConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sounds: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flash: Option<bool>,
+}
+
+// ── V2 config schema (migration target) ─────────────────────────────────
+
+/// V2 configuration info — the target format for V1→V2 migration.
+///
+/// Ported from: `packages/core/src/v1/config/migrate.ts` lines 36–73.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct V2ConfigInfo {
+    #[serde(skip_serializing_if = "Option::is_none", alias = "$schema")]
+    pub schema: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autoupdate: Option<AutoUpdate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub share: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enterprise: Option<EnterpriseConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub username: Option<String>,
+    #[serde(default)]
+    pub permissions: Vec<V2PermissionRule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agents: Option<HashMap<String, V2AgentEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshots: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub watcher: Option<WatcherConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub formatter: Option<FormatterConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lsp: Option<LspConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<AttachmentConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_output: Option<ToolOutputConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<V2McpConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compaction: Option<V2CompactionConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub skills: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commands: Option<HashMap<String, V2CommandEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub references: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plugins: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub experimental: Option<V2ExperimentalConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub providers: Option<HashMap<String, V2ProviderEntry>>,
+}
+
+/// V2 permission rule.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2PermissionRule {
+    pub action: String,
+    pub resource: String,
+    pub effect: String,
+}
+
+/// V2 agent entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2AgentEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hidden: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub steps: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub system: Option<String>,
+}
+
+/// V2 MCP config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2McpConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    pub servers: HashMap<String, V2McpServer>,
+}
+
+/// V2 MCP server.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2McpServer {
+    pub r#type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub command: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cwd: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timeout: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<HashMap<String, String>>,
+}
+
+/// V2 compaction config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2CompactionConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub auto: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prune: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub keep_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub buffer: Option<u32>,
+}
+
+/// V2 command entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2CommandEntry {
+    pub template: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+}
+
+/// V2 experimental config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2ExperimentalConfig {
+    #[serde(default)]
+    pub policies: Vec<serde_json::Value>,
+}
+
+/// V2 provider entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2ProviderEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub env: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api: Option<V2ApiEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub models: Option<HashMap<String, V2ModelEntry>>,
+}
+
+/// V2 API entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2ApiEntry {
+    pub r#type: String,
+    #[serde(rename = "package")]
+    pub package_name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+/// V2 model entry.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct V2ModelEntry {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub family: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+}
+
 // ── Plugin origin tracking ──────────────────────────────────────────────
 
 /// Plugin origin metadata — tracks where a plugin spec was declared.
@@ -1455,6 +1690,631 @@ impl Config {
         }
         Ok(())
     }
+
+    /// Fetch remote well-known config from `{server_url}/.well-known/opencode`.
+    ///
+    /// Performs an HTTP GET to the well-known URL, parses the response, and
+    /// merges the returned config into the provided `Info`.
+    ///
+    /// Ported from: `packages/opencode/src/config/config.ts` lines 355–394.
+    pub async fn fetch_well_known(
+        server_url: &str,
+        info: &mut Info,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let wellknown_url = format!("{}/.well-known/opencode", server_url.trim_end_matches('/'));
+        let client = reqwest::Client::new();
+        let resp = client
+            .get(&wellknown_url)
+            .header("Accept", "application/json")
+            .send()
+            .await?;
+        let wellknown: serde_json::Value = resp.json().await?;
+
+        let remote_config_url = wellknown["remote_config"]["url"]
+            .as_str()
+            .map(String::from);
+        let remote_config_headers = wellknown["remote_config"]["headers"]
+            .as_object()
+            .map(|m| {
+                m.iter()
+                    .filter_map(|(k, v)| v.as_str().map(|v| (k.clone(), v.to_string())))
+                    .collect::<HashMap<String, String>>()
+            });
+
+        let mut fetched = serde_json::Map::new();
+        if let Some(url) = remote_config_url {
+            let mut req = client.get(&url).header("Accept", "application/json");
+            if let Some(ref headers) = remote_config_headers {
+                for (k, v) in headers {
+                    req = req.header(k.as_str(), v.as_str());
+                }
+            }
+            let data: serde_json::Value = req.send().await?.json().await?;
+            if let Some(cfg) = data.get("config").and_then(|v| v.as_object()) {
+                fetched = cfg.clone();
+            } else if let Some(obj) = data.as_object() {
+                fetched = obj.clone();
+            }
+        }
+
+        let local = wellknown["config"].as_object().cloned().unwrap_or_default();
+        let merged = deep_merge_json_map(local, &fetched);
+
+        if let Ok(parsed) =
+            serde_json::from_value::<Info>(serde_json::Value::Object(merged))
+        {
+            merge_info(info, &parsed);
+        }
+
+        Ok(())
+    }
+
+    /// Load TUI configuration from `tui.json`/`tui.jsonc` files in config dirs.
+    ///
+    /// Reads global config first, then OPENCODE_TUI_CONFIG override, then
+    /// project-level files, then `.opencode` directory files.
+    ///
+    /// Ported from: `packages/opencode/src/config/tui.ts` lines 81–224.
+    pub fn load_tui_config(start_dir: &std::path::Path) -> TuiConfigInfo {
+        let mut result = TuiConfigInfo::default();
+
+        // 1. Global tui config (lowest precedence)
+        if let Ok(config_dir) = global_config_dir() {
+            for file in &[config_dir.join("tui.json"), config_dir.join("tui.jsonc")] {
+                if let Ok(text) = std::fs::read_to_string(&file) {
+                    if let Ok(parsed) = parse_jsonc(&text, &file) {
+                        if let Ok(tui) = serde_json::from_value::<TuiConfigInfo>(parsed) {
+                            result = deep_merge_tui(result, tui);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 2. OPENCODE_TUI_CONFIG override
+        if let Ok(path) = std::env::var("OPENCODE_TUI_CONFIG") {
+            let file = std::path::Path::new(&path).to_path_buf();
+            if let Ok(text) = std::fs::read_to_string(&file) {
+                if let Ok(parsed) = parse_jsonc(&text, &file) {
+                    if let Ok(tui) = serde_json::from_value::<TuiConfigInfo>(parsed) {
+                        result = deep_merge_tui(result, tui);
+                    }
+                }
+            }
+        }
+
+        // 3. Project tui files (walk up from start_dir)
+        if let Ok(files) = discover_config_files("tui", start_dir, None) {
+            for file in files {
+                if let Ok(text) = std::fs::read_to_string(&file) {
+                    if let Ok(parsed) = parse_jsonc(&text, &file) {
+                        if let Ok(tui) = serde_json::from_value::<TuiConfigInfo>(parsed) {
+                            result = deep_merge_tui(result, tui);
+                        }
+                    }
+                }
+            }
+        }
+
+        // 4. .opencode directories
+        if let Ok(dirs) = discover_opencode_dirs(start_dir, None) {
+            for dir in dirs {
+                for file in &[dir.join("tui.json"), dir.join("tui.jsonc")] {
+                    if let Ok(text) = std::fs::read_to_string(&file) {
+                        if let Ok(parsed) = parse_jsonc(&text, &file) {
+                            if let Ok(tui) = serde_json::from_value::<TuiConfigInfo>(parsed) {
+                                result = deep_merge_tui(result, tui);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 5. OPENCODE_CONFIG_DIR (treated like an additional .opencode directory)
+        if let Ok(config_dir) = std::env::var("OPENCODE_CONFIG_DIR") {
+            let config_path = std::path::PathBuf::from(&config_dir);
+            for file in &[config_path.join("tui.json"), config_path.join("tui.jsonc")] {
+                if let Ok(text) = std::fs::read_to_string(&file) {
+                    if let Ok(parsed) = parse_jsonc(&text, &file) {
+                        if let Ok(tui) = serde_json::from_value::<TuiConfigInfo>(parsed) {
+                            result = deep_merge_tui(result, tui);
+                        }
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Ensure `@opencode-ai/plugin` npm dependency is installed in each
+    /// `.opencode` directory. Spawns `npm install` or `bun add` in the
+    /// background if the package is not already present.
+    ///
+    /// Ported from: `packages/opencode/src/config/config.ts` lines 437–456.
+    pub fn ensure_npm_deps(dirs: &[std::path::PathBuf]) -> Vec<std::process::Child> {
+        let mut children = Vec::new();
+
+        for dir in dirs {
+            let pkg_json = dir.join("package.json");
+            let has_pkg = pkg_json.exists();
+            let has_plugin = if has_pkg {
+                if let Ok(content) = std::fs::read_to_string(&pkg_json) {
+                    if let Ok(v) =
+                        serde_json::from_str::<serde_json::Value>(&content)
+                    {
+                        let deps = v["dependencies"].as_object();
+                        let dev = v["devDependencies"].as_object();
+                        deps.and_then(|d| d.get("@opencode-ai/plugin")).is_some()
+                            || dev.and_then(|d| d.get("@opencode-ai/plugin")).is_some()
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            };
+
+            if has_plugin {
+                continue;
+            }
+
+            // Pick the package manager: bun, then npm
+            let (cmd, add_arg) = if which("bun").is_some() {
+                ("bun", "add")
+            } else {
+                ("npm", "install --save-prod")
+            };
+
+            match std::process::Command::new(cmd)
+                .args(add_arg.split_whitespace().collect::<Vec<_>>())
+                .arg("@opencode-ai/plugin")
+                .current_dir(dir)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(child) => children.push(child),
+                Err(_) => continue,
+            }
+        }
+
+        children
+    }
+
+    /// Migrate a V1 config `Info` to V2 config format.
+    ///
+    /// Transforms fields, renames keys, and restructures providers and agents.
+    ///
+    /// Ported from: `packages/core/src/v1/config/migrate.ts` lines 36–73.
+    pub fn migrate_v1_to_v2(info: &Info) -> V2ConfigInfo {
+        let share = info.share.or_else(|| {
+            if info.autoshare == Some(true) {
+                Some(crate::config::ShareMode::Auto)
+            } else {
+                None
+            }
+        });
+        let share_str = share.map(|s| match s {
+            ShareMode::Manual => "manual".to_string(),
+            ShareMode::Auto => "auto".to_string(),
+            ShareMode::Disabled => "disabled".to_string(),
+        });
+
+        let mut v2 = V2ConfigInfo {
+            schema: info.schema.clone(),
+            shell: info.shell.clone(),
+            model: info.model.clone(),
+            default_agent: info.default_agent.clone(),
+            autoupdate: info.autoupdate.clone(),
+            share: share_str,
+            enterprise: info.enterprise.clone(),
+            username: info.username.clone(),
+            permissions: Vec::new(),
+            agents: None,
+            snapshots: info.snapshot,
+            watcher: info.watcher.clone(),
+            formatter: info.formatter.clone(),
+            lsp: info.lsp.clone(),
+            attachments: info.attachment.clone(),
+            tool_output: info.tool_output.clone(),
+            mcp: None,
+            compaction: None,
+            skills: None,
+            commands: None,
+            instructions: if info.instructions.is_empty() {
+                None
+            } else {
+                Some(info.instructions.clone())
+            },
+            references: if info.references.is_empty() && info.reference.is_empty() {
+                None
+            } else {
+                let mut refs: HashMap<String, String> = HashMap::new();
+                for (k, v) in &info.references {
+                    if let ReferenceEntry::Simple(s) = v {
+                        refs.insert(k.clone(), s.clone());
+                    }
+                }
+                for (k, v) in &info.reference {
+                    if let ReferenceEntry::Simple(s) = v {
+                        refs.entry(k.clone()).or_insert_with(|| s.clone());
+                    }
+                }
+                Some(refs)
+            },
+            plugins: None,
+            experimental: info
+                .experimental
+                .as_ref()
+                .and_then(|e| e.policies.as_ref())
+                .filter(|p| !p.is_empty())
+                .map(|p| V2ExperimentalConfig {
+                    policies: p.clone(),
+                }),
+            providers: None,
+        };
+
+        // Permissions
+        for (action, enabled) in &info.tools {
+            let normalized_action = if action == "write" || action == "patch" {
+                "edit"
+            } else {
+                action.as_str()
+            };
+            v2.permissions.push(V2PermissionRule {
+                action: normalized_action.to_string(),
+                resource: "*".to_string(),
+                effect: if *enabled { "allow" } else { "deny" }.to_string(),
+            });
+        }
+        if let Some(ref perm) = info.permission {
+            serialize_permission_rules(perm, &mut v2.permissions);
+        }
+        if v2.permissions.is_empty() {
+            v2.permissions = Vec::new();
+        }
+
+        // Agents
+        let mut agent_entries: HashMap<String, V2AgentEntry> = HashMap::new();
+        for (name, agent) in &info.agent {
+            agent_entries.insert(name.clone(), V2AgentEntry {
+                model: agent.model.clone(),
+                variant: agent.variant.clone(),
+                description: agent.description.clone(),
+                mode: agent.mode.map(|m| match m {
+                    AgentMode::Subagent => "subagent".to_string(),
+                    AgentMode::Primary => "primary".to_string(),
+                    AgentMode::All => "all".to_string(),
+                }),
+                hidden: agent.hidden,
+                color: agent.color.clone(),
+                steps: agent.steps,
+                disabled: agent.disable,
+                system: agent.prompt.clone(),
+            });
+        }
+        for (name, mode) in &info.mode {
+            agent_entries.entry(name.clone()).or_insert(V2AgentEntry {
+                model: mode.model.clone(),
+                variant: mode.variant.clone(),
+                description: mode.description.clone(),
+                mode: mode.mode.map(|m| match m {
+                    AgentMode::Subagent => "subagent".to_string(),
+                    AgentMode::Primary => "primary".to_string(),
+                    AgentMode::All => "all".to_string(),
+                }),
+                hidden: mode.hidden,
+                color: mode.color.clone(),
+                steps: mode.steps,
+                disabled: mode.disable,
+                system: mode.prompt.clone(),
+            });
+        }
+        if !agent_entries.is_empty() {
+            v2.agents = Some(agent_entries);
+        }
+
+        // MCP
+        if !info.mcp.is_empty() {
+            let mut servers = HashMap::new();
+            for (name, entry) in &info.mcp {
+                match entry {
+                    McpEntry::Full(cfg) => match cfg {
+                        McpConfig::Local { command, cwd, environment, enabled, timeout, .. } => {
+                            servers.insert(name.clone(), V2McpServer {
+                                r#type: "local".to_string(),
+                                command: Some(command.clone()),
+                                cwd: cwd.clone(),
+                                environment: environment.clone(),
+                                disabled: enabled.map(|e| !e),
+                                timeout: *timeout,
+                                url: None,
+                                headers: None,
+                            });
+                        }
+                        McpConfig::Remote { url, enabled, headers, timeout, .. } => {
+                            servers.insert(name.clone(), V2McpServer {
+                                r#type: "remote".to_string(),
+                                command: None,
+                                cwd: None,
+                                environment: None,
+                                disabled: enabled.map(|e| !e),
+                                timeout: *timeout,
+                                url: Some(url.clone()),
+                                headers: Some(headers.clone()),
+                            });
+                        }
+                    },
+                    McpEntry::Toggle { enabled } => {
+                        servers.insert(name.clone(), V2McpServer {
+                            r#type: "local".to_string(),
+                            command: None,
+                            cwd: None,
+                            environment: None,
+                            disabled: Some(!*enabled),
+                            timeout: None,
+                            url: None,
+                            headers: None,
+                        });
+                    }
+                }
+            }
+            v2.mcp = Some(V2McpConfig {
+                timeout: info.experimental.as_ref().and_then(|e| e.mcp_timeout),
+                servers,
+            });
+        }
+
+        // Compaction
+        if let Some(ref comp) = info.compaction {
+            v2.compaction = Some(V2CompactionConfig {
+                auto: comp.auto,
+                prune: comp.prune,
+                keep_tokens: comp.preserve_recent_tokens,
+                buffer: comp.reserved,
+            });
+        }
+
+        // Skills
+        if let Some(ref skills) = info.skills {
+            let mut all = Vec::new();
+            all.extend(skills.paths.iter().cloned());
+            all.extend(skills.urls.iter().cloned());
+            if !all.is_empty() {
+                v2.skills = Some(all);
+            }
+        }
+
+        // Commands
+        if !info.command.is_empty() {
+            let mut cmds = HashMap::new();
+            for (name, cmd) in &info.command {
+                cmds.insert(name.clone(), V2CommandEntry {
+                    template: cmd.template.clone(),
+                    description: cmd.description.clone(),
+                    agent: cmd.agent.clone(),
+                    model: cmd.model.clone(),
+                });
+            }
+            v2.commands = Some(cmds);
+        }
+
+        // Plugins
+        if !info.plugin.is_empty() {
+            let mut plist = Vec::new();
+            for plugin in &info.plugin {
+                match plugin {
+                    PluginSpec::Simple(s) => plist.push(s.clone()),
+                    PluginSpec::WithOptions(s, opts) => {
+                        plist.push(serde_json::json!({
+                            "package": s,
+                            "options": opts,
+                        })
+                        .to_string());
+                    }
+                }
+            }
+            v2.plugins = Some(plist);
+        }
+
+        // Providers
+        if !info.provider.is_empty() {
+            let mut provs = HashMap::new();
+            for (name, prov) in &info.provider {
+                provs.insert(name.clone(), V2ProviderEntry {
+                    name: prov.name.clone(),
+                    env: prov.env.clone(),
+                    api: prov.npm.as_ref().map(|npm| V2ApiEntry {
+                        r#type: "aisdk".to_string(),
+                        package_name: npm.clone(),
+                        url: prov.api.clone(),
+                    }),
+                    models: if prov.models.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            prov.models
+                                .iter()
+                                .map(|(k, v)| (k.clone(), V2ModelEntry {
+                                    family: v.family.clone(),
+                                    name: v.name.clone(),
+                                    id: v.id.clone(),
+                                }))
+                                .collect(),
+                        )
+                    },
+                });
+            }
+            v2.providers = Some(provs);
+        }
+
+        v2
+    }
+}
+
+/// Deep-merge two JSON maps recursively.
+fn deep_merge_json_map(
+    base: serde_json::Map<String, serde_json::Value>,
+    patch: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut result = base;
+    for (key, patch_val) in patch {
+        match (result.remove(key), patch_val) {
+            (Some(serde_json::Value::Object(base_obj)), serde_json::Value::Object(patch_obj)) => {
+                result.insert(key.clone(), serde_json::Value::Object(deep_merge_json_map(base_obj, patch_obj)));
+            }
+            (_, val) => {
+                result.insert(key.clone(), val.clone());
+            }
+        }
+    }
+    result
+}
+
+/// Deep-merge two TuiConfigInfo values (simple field-level merge).
+fn deep_merge_tui(base: TuiConfigInfo, patch: TuiConfigInfo) -> TuiConfigInfo {
+    TuiConfigInfo {
+        theme: patch.theme.or(base.theme),
+        keybinds: patch.keybinds.or(base.keybinds),
+        colors: patch.colors.or(base.colors),
+        font_size: patch.font_size.or(base.font_size),
+        font_family: patch.font_family.or(base.font_family),
+        show_status_bar: patch.show_status_bar.or(base.show_status_bar),
+        show_minimap: patch.show_minimap.or(base.show_minimap),
+        cursor_style: patch.cursor_style.or(base.cursor_style),
+        scrollbar: patch.scrollbar.or(base.scrollbar),
+        host_attention: {
+            match (base.host_attention, patch.host_attention) {
+                (Some(b), Some(p)) => {
+                    let mut merged = b;
+                    if p.sounds.is_some() {
+                        merged.sounds = p.sounds;
+                    }
+                    if p.flash.is_some() {
+                        merged.flash = p.flash;
+                    }
+                    Some(merged)
+                }
+                (Some(b), None) => Some(b),
+                (None, Some(p)) => Some(p),
+                (None, None) => None,
+            }
+        },
+        plugin: if patch.plugin.is_some() {
+            patch.plugin
+        } else {
+            base.plugin
+        },
+        extra: {
+            let mut m = base.extra;
+            m.extend(patch.extra);
+            m
+        },
+    }
+}
+
+fn serialize_permission_rules(
+    config: &PermissionConfig,
+    rules: &mut Vec<V2PermissionRule>,
+) {
+    macro_rules! push_rule {
+        ($field:expr, $action:expr) => {
+            if let Some(ref rule) = $field {
+                match rule {
+                    PermissionRule::Action(a) => {
+                        let effect = match a {
+                            PermissionAction::Ask => "ask",
+                            PermissionAction::Allow => "allow",
+                            PermissionAction::Deny => "deny",
+                        };
+                        rules.push(V2PermissionRule {
+                            action: $action.to_string(),
+                            resource: "*".to_string(),
+                            effect: effect.to_string(),
+                        });
+                    }
+                    PermissionRule::Object(map) => {
+                        for (resource, a) in map {
+                            let effect = match a {
+                                PermissionAction::Ask => "ask",
+                                PermissionAction::Allow => "allow",
+                                PermissionAction::Deny => "deny",
+                            };
+                            rules.push(V2PermissionRule {
+                                action: $action.to_string(),
+                                resource: resource.clone(),
+                                effect: effect.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        };
+    }
+
+    push_rule!(config.read, "read");
+    push_rule!(config.edit, "edit");
+    push_rule!(config.glob, "glob");
+    push_rule!(config.grep, "grep");
+    push_rule!(config.bash, "bash");
+    push_rule!(config.list, "list");
+    push_rule!(config.task, "task");
+    push_rule!(config.lsp, "lsp");
+    push_rule!(config.skill, "skill");
+    push_rule!(config.external_directory, "external_directory");
+    push_rule!(config.wildcard, "*");
+    push_rule!(config.todowrite, "todowrite");
+    push_rule!(config.question, "question");
+    push_rule!(config.webfetch, "webfetch");
+    push_rule!(config.websearch, "websearch");
+    push_rule!(config.doom_loop, "doom_loop");
+
+    for (action, rule) in &config.extra {
+        push_rule!(Some(rule), action);
+    }
+}
+
+/// Extract the entry name from a file path by stripping known prefixes
+/// and the file extension.
+///
+/// Ported from: `packages/opencode/src/config/entry-name.ts` lines 8–18.
+pub fn config_entry_name_from_path(relative_path: &str, prefixes: &[&str]) -> String {
+    let normalized = relative_path.replace('\\', "/");
+    let candidate = prefixes
+        .iter()
+        .find(|p| normalized.starts_with(*p))
+        .map(|p| normalized[p.len()..].to_string())
+        .unwrap_or_else(|| {
+            std::path::Path::new(&normalized)
+                .file_name()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| normalized.clone())
+        });
+    let path = std::path::Path::new(&candidate);
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.is_empty() {
+        candidate
+    } else {
+        let dot_ext = format!(".{ext}");
+        candidate.strip_suffix(&dot_ext).unwrap_or(&candidate).to_string()
+    }
+}
+
+fn which(name: &str) -> Option<String> {
+    std::env::var_os("PATH").and_then(|path_var| {
+        std::env::split_paths(&path_var).find_map(|dir| {
+            let path = dir.join(name);
+            if path.is_file() {
+                Some(path.to_string_lossy().to_string())
+            } else {
+                None
+            }
+        })
+    })
 }
 
 // ── Config writable helpers ──────────────────────────────────────────────
@@ -3743,5 +4603,259 @@ mod tests {
         let result = merge_writable(&source, &patch);
         assert_eq!(result.model.as_deref(), Some("new/model"));
         assert!(result.plugin_origins.is_empty());
+    }
+
+    // ── config_entry_name_from_path tests ────────────────────────────
+
+    #[test]
+    fn test_entry_name_from_path_simple() {
+        let name = config_entry_name_from_path("agent.md", &[]);
+        assert_eq!(name, "agent");
+    }
+
+    #[test]
+    fn test_entry_name_from_path_with_prefix() {
+        let name = config_entry_name_from_path(".opencode/agent/build.md", &[".opencode/agent/"]);
+        assert_eq!(name, "build");
+    }
+
+    #[test]
+    fn test_entry_name_from_path_with_dir_prefix() {
+        let name = config_entry_name_from_path("agents/deploy.md", &["agents/"]);
+        assert_eq!(name, "deploy");
+    }
+
+    #[test]
+    fn test_entry_name_from_path_no_extension() {
+        let name = config_entry_name_from_path("myfile", &[]);
+        assert_eq!(name, "myfile");
+    }
+
+    #[test]
+    fn test_entry_name_from_path_windows_sep() {
+        let name = config_entry_name_from_path(".opencode\\agent\\test.md", &[".opencode/agent/"]);
+        assert_eq!(name, "test");
+    }
+
+    #[test]
+    fn test_entry_name_from_path_prefix_not_matched() {
+        let name = config_entry_name_from_path("some/deep/path/entry.ts", &["other/"]);
+        assert_eq!(name, "entry");
+    }
+
+    // ── TuiConfigInfo round-trip ──────────────────────────────────────
+
+    #[test]
+    fn test_tui_config_info_round_trip() {
+        let info = TuiConfigInfo {
+            theme: Some("dark".into()),
+            font_size: Some(14.0),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: TuiConfigInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.theme.unwrap(), "dark");
+        assert_eq!(parsed.font_size.unwrap(), 14.0);
+        assert!(parsed.keybinds.is_empty());
+    }
+
+    #[test]
+    fn test_tui_config_info_with_keybinds() {
+        let mut info = TuiConfigInfo::default();
+        info.keybinds.insert("ctrl+q".into(), "quit".into());
+        info.keybinds.insert("ctrl+s".into(), "save".into());
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: TuiConfigInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.keybinds.get("ctrl+q").unwrap(), "quit");
+        assert_eq!(parsed.keybinds.len(), 2);
+    }
+
+    // ── V2ConfigInfo migration tests ──────────────────────────────────
+
+    #[test]
+    fn test_v2_config_info_default() {
+        let v2 = V2ConfigInfo::default();
+        assert!(v2.shell.is_none());
+        assert!(v2.permissions.is_empty());
+    }
+
+    #[test]
+    fn test_v2_serialization_round_trip() {
+        let v2 = V2ConfigInfo {
+            schema: Some("https://opencode.ai/config-v2.json".into()),
+            shell: Some("/bin/bash".into()),
+            model: Some("anthropic/claude".into()),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&v2).unwrap();
+        let parsed: V2ConfigInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed.schema.unwrap(), "https://opencode.ai/config-v2.json");
+        assert_eq!(parsed.shell.unwrap(), "/bin/bash");
+    }
+
+    #[test]
+    fn test_v2_permission_rule_serialize() {
+        let rule = V2PermissionRule {
+            action: "read".into(),
+            resource: "*.env".into(),
+            effect: "deny".into(),
+        };
+        let json = serde_json::to_value(&rule).unwrap();
+        assert_eq!(json["action"], "read");
+        assert_eq!(json["resource"], "*.env");
+        assert_eq!(json["effect"], "deny");
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_basic() {
+        let mut info = Info::default();
+        info.model = Some("anthropic/claude-sonnet-4-6".into());
+        info.shell = Some("/bin/zsh".into());
+        info.snapshot = Some(true);
+
+        let v2 = Config::migrate_v1_to_v2(&info);
+        assert_eq!(v2.model.unwrap(), "anthropic/claude-sonnet-4-6");
+        assert_eq!(v2.shell.unwrap(), "/bin/zsh");
+        assert_eq!(v2.snapshots, Some(true));
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_autoshare_conversion() {
+        let mut info = Info::default();
+        info.autoshare = Some(true);
+
+        let v2 = Config::migrate_v1_to_v2(&info);
+        assert_eq!(v2.share.unwrap(), "auto");
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_tools_to_permissions() {
+        let mut info = Info::default();
+        info.tools.insert("bash".into(), true);
+        info.tools.insert("write".into(), false);
+
+        let v2 = Config::migrate_v1_to_v2(&info);
+        assert_eq!(v2.permissions.len(), 2);
+        let bash_perm = v2.permissions.iter().find(|p| p.action == "bash").unwrap();
+        assert_eq!(bash_perm.effect, "allow");
+        let edit_perm = v2.permissions.iter().find(|p| p.action == "edit").unwrap();
+        assert_eq!(edit_perm.effect, "deny");
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_agents() {
+        let mut info = Info::default();
+        info.agent.insert("build".into(), AgentConfig {
+            model: Some("claude-sonnet".into()),
+            description: Some("Build agent".into()),
+            mode: Some(AgentMode::Primary),
+            steps: Some(25),
+            ..Default::default()
+        });
+
+        let v2 = Config::migrate_v1_to_v2(&info);
+        let agents = v2.agents.unwrap();
+        assert!(agents.contains_key("build"));
+        let build = agents.get("build").unwrap();
+        assert_eq!(build.model.as_deref(), Some("claude-sonnet"));
+        assert_eq!(build.mode.as_deref(), Some("primary"));
+        assert_eq!(build.steps, Some(25));
+    }
+
+    #[test]
+    fn test_migrate_v1_to_v2_mcp_servers() {
+        let mut info = Info::default();
+        let mut mcp_map = HashMap::new();
+        mcp_map.insert("fs".into(), McpEntry::Full(McpConfig::Local {
+            command: vec!["npx".into(), "mcp-server".into()],
+            cwd: None,
+            environment: HashMap::new(),
+            enabled: Some(true),
+            timeout: Some(5000),
+        }));
+        info.mcp = mcp_map;
+
+        let v2 = Config::migrate_v1_to_v2(&info);
+        let mcp = v2.mcp.unwrap();
+        assert!(mcp.servers.contains_key("fs"));
+        let server = mcp.servers.get("fs").unwrap();
+        assert_eq!(server.r#type, "local");
+        assert_eq!(server.command.as_ref().unwrap(), &["npx", "mcp-server"]);
+    }
+
+    // ── load_tui_config edge cases ────────────────────────────────────
+
+    #[test]
+    fn test_tui_config_info_empty() {
+        let info = TuiConfigInfo::default();
+        let json = serde_json::to_string(&info).unwrap();
+        assert_eq!(json, "{}");
+    }
+
+    #[test]
+    fn test_tui_config_info_host_attention() {
+        let mut info = TuiConfigInfo::default();
+        info.host_attention = Some(HostAttentionConfig {
+            sounds: Some(vec!["bell.wav".into()]),
+            flash: Some(true),
+        });
+        let json = serde_json::to_string(&info).unwrap();
+        let parsed: TuiConfigInfo = serde_json::from_str(&json).unwrap();
+        let ha = parsed.host_attention.unwrap();
+        assert_eq!(ha.sounds.unwrap(), vec!["bell.wav"]);
+        assert_eq!(ha.flash, Some(true));
+    }
+
+    #[test]
+    fn test_v2_compaction_config() {
+        let comp = V2CompactionConfig {
+            auto: Some(true),
+            prune: Some(false),
+            keep_tokens: Some(32000),
+            buffer: Some(4000),
+        };
+        let json = serde_json::to_value(&comp).unwrap();
+        assert_eq!(json["auto"], true);
+        assert_eq!(json["prune"], false);
+        assert_eq!(json["keep_tokens"], 32000);
+        assert_eq!(json["buffer"], 4000);
+    }
+
+    // ── ensure_npm_deps test ──────────────────────────────────────────
+
+    #[test]
+    fn test_ensure_npm_deps_empty_dirs() {
+        let children = Config::ensure_npm_deps(&[]);
+        assert!(children.is_empty());
+    }
+
+    // ── deep_merge_json_map test ──────────────────────────────────────
+
+    #[test]
+    fn test_deep_merge_json_map_objects() {
+        let mut base = serde_json::Map::new();
+        base.insert("a".into(), serde_json::json!(1));
+        let mut patch = serde_json::Map::new();
+        patch.insert("b".into(), serde_json::json!(2));
+        let result = deep_merge_json_map(base, &patch);
+        assert_eq!(result["a"], 1);
+        assert_eq!(result["b"], 2);
+    }
+
+    #[test]
+    fn test_deep_merge_json_map_nested() {
+        let mut base = serde_json::Map::new();
+        let mut inner = serde_json::Map::new();
+        inner.insert("x".into(), serde_json::json!(10));
+        base.insert("nested".into(), serde_json::Value::Object(inner));
+
+        let mut patch = serde_json::Map::new();
+        let mut patch_inner = serde_json::Map::new();
+        patch_inner.insert("y".into(), serde_json::json!(20));
+        patch.insert("nested".into(), serde_json::Value::Object(patch_inner));
+
+        let result = deep_merge_json_map(base, &patch);
+        assert_eq!(result["nested"]["x"], 10);
+        assert_eq!(result["nested"]["y"], 20);
     }
 }

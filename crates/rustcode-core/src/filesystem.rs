@@ -1014,52 +1014,107 @@ pub fn list_directory(
 
 /// Search for files by fuzzy name matching.
 ///
-/// Walks the directory tree from `root`, matching filenames against the query.
-/// Respects ignore patterns and optional type/limit filters.
+/// Uses the `ignore` crate for git-aware fast file walking, respecting
+/// `.gitignore` and the project's ignore patterns.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `find()` method.
 pub fn find_files(root: &Path, input: &FindInput) -> Result<Vec<Entry>, FileSystemError> {
     let limit = input.limit.unwrap_or(50) as usize;
     let mut results: Vec<Entry> = Vec::new();
-    let added = std::cell::Cell::new(0usize);
 
-    walk_for_entries(root, root, &mut results, &|entry| {
-        if added.get() >= limit {
-            return false;
+    let mut walk_builder = ignore::WalkBuilder::new(root);
+    walk_builder.standard_filters(true); // Respect .gitignore, hidden files, etc.
+    walk_builder.git_global(true);
+    walk_builder.git_ignore(true);
+    walk_builder.git_exclude(true);
+    walk_builder.require_git(false);
+
+    // Add custom ignore patterns from IGNORE_FOLDERS
+    for folder in IGNORE_FOLDERS {
+        walk_builder.add_custom_ignore(folder);
+    }
+    // Add custom ignore file patterns
+    for pattern in IGNORE_FILES {
+        if let Ok(p) = glob::Pattern::new(pattern) {
+            // Convert **/glob to ignore crate filter
+            let filter_pattern = pattern.to_string();
+            walk_builder.add_custom_ignore(&filter_pattern);
         }
+    }
+
+    for result in walk_builder.build() {
+        if results.len() >= limit {
+            break;
+        }
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        if path == root {
+            continue;
+        }
+
+        let file_type = match entry.file_type() {
+            Some(ft) => ft,
+            None => continue,
+        };
+
+        if !file_type.is_file() && !file_type.is_dir() {
+            continue;
+        }
+
         // Type filter
+        let entry_type = if file_type.is_dir() {
+            FileType::Directory
+        } else {
+            FileType::File
+        };
         if let Some(ref filter_type) = input.r#type {
-            if entry.entry_type != *filter_type {
-                return false;
+            if entry_type != *filter_type {
+                continue;
             }
         }
-        // Fuzzy match: check if query appears as substring of the filename
-        let file_name = std::path::Path::new(entry.path.as_str())
-            .file_name()
+
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        let rel_str = rel_path.to_string_lossy().to_string();
+
+        // Fuzzy match on filename
+        let file_name = path.file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("");
-        if fuzzy_match(&input.query, file_name) {
-            added.set(added.get() + 1);
-            true
-        } else {
-            false
+        if !fuzzy_match(&input.query, file_name) {
+            continue;
         }
-    })?;
+
+        let mime = if file_type.is_dir() {
+            "application/x-directory".to_string()
+        } else {
+            mime_type(path)
+        };
+
+        results.push(Entry {
+            path: RelativePath::new(&rel_str),
+            entry_type,
+            mime,
+        });
+    }
 
     Ok(results)
 }
 
 /// Search for files matching a glob pattern.
 ///
-/// Uses the `glob` crate for pattern matching against filesystem entries.
+/// Uses the `ignore` crate for git-aware fast file walking and the `glob`
+/// crate for pattern matching.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `glob()` method.
 pub fn glob_search(root: &Path, input: &GlobInput) -> Result<Vec<Entry>, FileSystemError> {
     let limit = input.limit.unwrap_or(100) as usize;
     let mut results: Vec<Entry> = Vec::new();
-    let added = std::cell::Cell::new(0usize);
 
     let search_root = if let Some(ref rel_path) = input.path {
         resolve_safe(root, rel_path)?
@@ -1071,25 +1126,80 @@ pub fn glob_search(root: &Path, input: &GlobInput) -> Result<Vec<Entry>, FileSys
         return Ok(results);
     }
 
-    walk_for_entries(root, &search_root, &mut results, &|entry| {
-        if added.get() >= limit {
-            return false;
+    let mut walk_builder = ignore::WalkBuilder::new(&search_root);
+    walk_builder.standard_filters(true);
+    walk_builder.git_global(true);
+    walk_builder.git_ignore(true);
+    walk_builder.git_exclude(true);
+    walk_builder.require_git(false);
+
+    for folder in IGNORE_FOLDERS {
+        walk_builder.add_custom_ignore(folder);
+    }
+    for pattern in IGNORE_FILES {
+        walk_builder.add_custom_ignore(pattern);
+    }
+
+    let glob_pat = match glob::Pattern::new(&input.pattern) {
+        Ok(p) => p,
+        Err(_) => return Ok(results),
+    };
+
+    for result in walk_builder.build() {
+        if results.len() >= limit {
+            break;
         }
-        if glob_matches(&input.pattern, entry.path.as_str()) {
-            added.set(added.get() + 1);
-            true
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        if path == &search_root {
+            continue;
+        }
+
+        let file_type = match entry.file_type() {
+            Some(ft) => ft,
+            None => continue,
+        };
+
+        if !file_type.is_file() && !file_type.is_dir() {
+            continue;
+        }
+
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        let rel_str = rel_path.to_string_lossy();
+
+        if !glob_pat.matches(&rel_str) {
+            continue;
+        }
+
+        let entry_type = if file_type.is_dir() {
+            FileType::Directory
         } else {
-            false
-        }
-    })?;
+            FileType::File
+        };
+
+        let mime = if file_type.is_dir() {
+            "application/x-directory".to_string()
+        } else {
+            mime_type(path)
+        };
+
+        results.push(Entry {
+            path: RelativePath::new(rel_str.as_ref()),
+            entry_type,
+            mime,
+        });
+    }
 
     Ok(results)
 }
 
 /// Search file contents using regex pattern matching (grep).
 ///
-/// Walks the directory tree, reading file contents and matching against
-/// the regex pattern line by line.
+/// Uses the `ignore` crate for git-aware fast file walking.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `grep()` method.
@@ -1109,19 +1219,58 @@ pub fn grep_search(root: &Path, input: &GrepInput) -> Result<Vec<Match>, FileSys
         return Ok(results);
     }
 
-    // Collect files to search (filtered by include pattern and ignore)
+    // Collect files to search using ignore::Walk (git-aware)
     let mut files: Vec<Entry> = Vec::new();
-    walk_for_entries(root, &search_root, &mut files, &|entry| {
-        if entry.entry_type != FileType::File {
-            return false;
+    let mut walk_builder = ignore::WalkBuilder::new(&search_root);
+    walk_builder.standard_filters(true);
+    walk_builder.git_global(true);
+    walk_builder.git_ignore(true);
+    walk_builder.git_exclude(true);
+    walk_builder.require_git(false);
+
+    for folder in IGNORE_FOLDERS {
+        walk_builder.add_custom_ignore(folder);
+    }
+    for pattern in IGNORE_FILES {
+        walk_builder.add_custom_ignore(pattern);
+    }
+
+    let include_pat = input.include.as_ref().and_then(|p| glob::Pattern::new(p).ok());
+
+    for result in walk_builder.build() {
+        let entry = match result {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        let path = entry.path();
+        if path == &search_root {
+            continue;
         }
-        if let Some(ref include) = input.include {
-            if !glob_matches(include, entry.path.as_str()) {
-                return false;
+
+        let file_type = match entry.file_type() {
+            Some(ft) => ft,
+            None => continue,
+        };
+        if !file_type.is_file() {
+            continue;
+        }
+
+        let rel_path = path.strip_prefix(root).unwrap_or(path);
+        let rel_str = rel_path.to_string_lossy().to_string();
+
+        if let Some(ref include_p) = include_pat {
+            if !include_p.matches(&rel_str) {
+                continue;
             }
         }
-        true
-    })?;
+
+        files.push(Entry {
+            path: RelativePath::new(&rel_str),
+            entry_type: FileType::File,
+            mime: mime_type(path),
+        });
+    }
 
     for file_entry in &files {
         if results.len() >= limit {

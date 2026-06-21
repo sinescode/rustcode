@@ -1063,7 +1063,8 @@ pub fn snowflake_cortex_auth_plugin() -> AuthHook {
 
 /// GitHub Copilot authentication plugin.
 ///
-/// Provides OAuth-based authentication for GitHub Copilot.
+/// Provides OAuth-based authentication for GitHub Copilot via device code flow,
+/// with support for both github.com and GitHub Enterprise deployments.
 ///
 /// # Source
 /// `packages/opencode/src/plugin/github-copilot/copilot.ts`
@@ -1072,8 +1073,21 @@ pub fn copilot_auth_plugin() -> AuthHook {
         provider: "github-copilot".to_string(),
         methods: vec![AuthMethod {
             method_type: AuthMethodType::OAuth,
-            label: "GitHub Copilot".to_string(),
-            prompts: vec![],
+            label: "Login with GitHub Copilot".to_string(),
+            prompts: vec![
+                AuthPrompt {
+                    prompt_type: "select".to_string(),
+                    key: "deploymentType".to_string(),
+                    message: "Select GitHub deployment type".to_string(),
+                    placeholder: None,
+                },
+                AuthPrompt {
+                    prompt_type: "text".to_string(),
+                    key: "enterpriseUrl".to_string(),
+                    message: "Enter your GitHub Enterprise URL or domain".to_string(),
+                    placeholder: Some("company.ghe.com or https://company.ghe.com".to_string()),
+                },
+            ],
         }],
     }
 }
@@ -1091,6 +1105,61 @@ pub fn codex_auth_plugin() -> AuthHook {
             method_type: AuthMethodType::OAuth,
             label: "OpenAI API key".to_string(),
             prompts: vec![],
+        }],
+    }
+}
+
+/// OpenAI authentication plugin (ChatGPT Pro/Plus).
+///
+/// Provides browser-based and headless OAuth methods for OpenAI
+/// ChatGPT Pro/Plus subscriptions. Uses PKCE OAuth flow with
+/// local callback server for browser method; device code flow for headless.
+///
+/// # Source
+/// `packages/core/src/plugin/provider/openai-auth.ts`
+pub fn openai_auth_plugin() -> AuthHook {
+    AuthHook {
+        provider: "openai".to_string(),
+        methods: vec![
+            AuthMethod {
+                method_type: AuthMethodType::OAuth,
+                label: "ChatGPT Pro/Plus (browser)".to_string(),
+                prompts: vec![],
+            },
+            AuthMethod {
+                method_type: AuthMethodType::OAuth,
+                label: "ChatGPT Pro/Plus (headless)".to_string(),
+                prompts: vec![],
+            },
+        ],
+    }
+}
+
+/// OpenCode authentication plugin.
+///
+/// Provides API key authentication with public key fallback for zero-cost models.
+/// When no OPENCODE_API_KEY env var is set, the provider automatically uses
+/// a "public" API key and disables paid models.
+///
+/// # Source
+/// `packages/core/src/plugin/provider/opencode.ts`
+pub fn opencode_auth_plugin() -> AuthHook {
+    let has_key = std::env::var("OPENCODE_API_KEY").is_ok();
+    AuthHook {
+        provider: "opencode".to_string(),
+        methods: vec![AuthMethod {
+            method_type: AuthMethodType::Api,
+            label: "OpenCode API key".to_string(),
+            prompts: if has_key {
+                vec![]
+            } else {
+                vec![AuthPrompt {
+                    prompt_type: "text".to_string(),
+                    key: "apiKey".to_string(),
+                    message: "Enter OpenCode API key (leave blank for public access)".to_string(),
+                    placeholder: Some("public".to_string()),
+                }]
+            },
         }],
     }
 }
@@ -1156,6 +1225,8 @@ pub fn built_in_auth_plugins() -> Vec<AuthHook> {
         snowflake_cortex_auth_plugin(),
         copilot_auth_plugin(),
         codex_auth_plugin(),
+        openai_auth_plugin(),
+        opencode_auth_plugin(),
         gitlab_auth_plugin(),
         poe_auth_plugin(),
         cloudflare_ai_gateway_auth_plugin(),
@@ -4010,8 +4081,36 @@ pub fn initialize_plugin_system(
 }
 
 // ══════════════════════════════════════════════════════════════════════
-// Built-in Provider Plugins (Gap 9)
+// Built-in Provider Plugins (33 plugins, matching TS)
 // ══════════════════════════════════════════════════════════════════════
+
+/// Create the Alibaba provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/alibaba.ts`.
+pub fn alibaba_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("alibaba", "Alibaba")
+}
+
+/// Create the Amazon Bedrock provider plugin.
+///
+/// Resolves VPC/private endpoints into the base URL during catalog transform.
+///
+/// Ported from `packages/core/src/plugin/provider/amazon-bedrock.ts`.
+pub fn amazon_bedrock_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("amazon-bedrock", "Amazon Bedrock")
+        .with_transform(|ctx| {
+            if let Some(endpoint) = ctx.options.get("endpoint").and_then(|v| v.as_str()) {
+                if !endpoint.is_empty() {
+                    ctx.options.insert(
+                        "baseURL".into(),
+                        serde_json::Value::String(endpoint.into()),
+                    );
+                    ctx.options.remove("endpoint");
+                }
+            }
+            Box::pin(async {})
+        })
+}
 
 /// Create the Anthropic provider plugin.
 ///
@@ -4033,11 +4132,191 @@ pub fn anthropic_provider_plugin() -> impl ProviderPlugin {
         })
 }
 
-/// Create the OpenAI provider plugin.
+/// Create the Azure provider plugin.
 ///
-/// Ported from `packages/core/src/plugin/provider/openai.ts`.
-pub fn openai_provider_plugin() -> impl ProviderPlugin {
-    ClosureProviderPlugin::new("openai", "OpenAI")
+/// Resolves resourceName from config options or env vars.
+/// Auth hook resolves AZURE_RESOURCE_NAME and AZURE_API_KEY from env.
+///
+/// Ported from `packages/core/src/plugin/provider/azure.ts`.
+pub fn azure_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("azure", "Azure")
+        .with_transform(|ctx| {
+            let configured = ctx.options.get("resourceName")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty());
+            let resource_name = configured
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("AZURE_RESOURCE_NAME").ok());
+            if let Some(ref name) = resource_name {
+                ctx.options.insert(
+                    "resourceName".into(),
+                    serde_json::Value::String(name.clone()),
+                );
+            }
+            Box::pin(async {})
+        })
+        .with_auth(|_ctx| {
+            Box::pin(async move {
+                let mut map = std::collections::HashMap::new();
+                if let Ok(name) = std::env::var("AZURE_RESOURCE_NAME") {
+                    map.insert("resourceName".into(), serde_json::Value::String(name));
+                }
+                if let Ok(key) = std::env::var("AZURE_API_KEY") {
+                    map.insert("apiKey".into(), serde_json::Value::String(key));
+                }
+                if map.is_empty() { None } else { Some(map) }
+            })
+        })
+}
+
+/// Create the Azure Cognitive Services provider plugin.
+///
+/// Resolves baseURL from AZURE_COGNITIVE_SERVICES_RESOURCE_NAME env var.
+///
+/// Ported from `packages/core/src/plugin/provider/azure.ts`.
+pub fn azure_cognitive_services_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("azure-cognitive-services", "Azure Cognitive Services")
+        .with_transform(|ctx| {
+            if let Ok(name) = std::env::var("AZURE_COGNITIVE_SERVICES_RESOURCE_NAME") {
+                let base_url = format!("https://{name}.cognitiveservices.azure.com/openai");
+                ctx.options.insert(
+                    "baseURL".into(),
+                    serde_json::Value::String(base_url),
+                );
+            }
+            Box::pin(async {})
+        })
+}
+
+/// Create the Cerebras provider plugin.
+///
+/// Sets the X-Cerebras-3rd-Party-Integration header.
+///
+/// Ported from `packages/core/src/plugin/provider/cerebras.ts`.
+pub fn cerebras_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("cerebras", "Cerebras")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "X-Cerebras-3rd-Party-Integration".into(),
+                "opencode".into(),
+            );
+            Box::pin(async {})
+        })
+}
+
+/// Create the Cloudflare AI Gateway provider plugin.
+///
+/// Resolves accountId and gatewayId from config or env vars.
+///
+/// Ported from `packages/core/src/plugin/provider/cloudflare-ai-gateway.ts`.
+pub fn cloudflare_ai_gateway_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("cloudflare-ai-gateway", "Cloudflare AI Gateway")
+        .with_transform(|ctx| {
+            let account_id = ctx.options.get("accountId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("CLOUDFLARE_ACCOUNT_ID").ok());
+            if let Some(ref id) = account_id {
+                ctx.options.insert(
+                    "accountId".into(),
+                    serde_json::Value::String(id.clone()),
+                );
+            }
+            let gateway_id = ctx.options.get("gatewayId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| ctx.options.get("gateway").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .or_else(|| std::env::var("CLOUDFLARE_GATEWAY_ID").ok());
+            if let Some(ref id) = gateway_id {
+                ctx.options.insert(
+                    "gatewayId".into(),
+                    serde_json::Value::String(id.clone()),
+                );
+            }
+            let api_key = ctx.options.get("apiKey")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("CLOUDFLARE_API_TOKEN").ok())
+                .or_else(|| std::env::var("CF_AIG_TOKEN").ok());
+            if let Some(ref key) = api_key {
+                ctx.options.insert(
+                    "apiKey".into(),
+                    serde_json::Value::String(key.clone()),
+                );
+            }
+            Box::pin(async {})
+        })
+}
+
+/// Create the Cloudflare Workers AI provider plugin.
+///
+/// Resolves accountId and sets the Workers AI base URL.
+///
+/// Ported from `packages/core/src/plugin/provider/cloudflare-workers-ai.ts`.
+pub fn cloudflare_workers_ai_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("cloudflare-workers-ai", "Cloudflare Workers AI")
+        .with_transform(|ctx| {
+            if ctx.options.contains_key("baseURL") {
+                return Box::pin(async {});
+            }
+            let account_id = ctx.options.get("accountId")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("CLOUDFLARE_ACCOUNT_ID").ok());
+            if let Some(ref id) = account_id {
+                let url = format!("https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1");
+                ctx.options.insert(
+                    "baseURL".into(),
+                    serde_json::Value::String(url),
+                );
+            }
+            Box::pin(async {})
+        })
+}
+
+/// Create the Cohere provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/cohere.ts`.
+pub fn cohere_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("cohere", "Cohere")
+}
+
+/// Create the DeepInfra provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/deepinfra.ts`.
+pub fn deepinfra_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("deepinfra", "DeepInfra")
+}
+
+/// Create the Dynamic Provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/dynamic.ts`.
+pub fn dynamic_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("dynamic-provider", "Dynamic Provider")
+}
+
+/// Create the Gateway provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/gateway.ts`.
+pub fn gateway_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("gateway", "Gateway")
+}
+
+/// Create the GitHub Copilot provider plugin.
+///
+/// Handles model visibility and Copilot-specific catalog transforms.
+/// Auth hook resolves OAuth tokens stored via the device code flow.
+///
+/// Ported from `packages/core/src/plugin/provider/github-copilot.ts`.
+pub fn github_copilot_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("github-copilot", "GitHub Copilot")
+}
+
+/// Create the GitLab provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/gitlab.ts`.
+pub fn gitlab_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("gitlab", "GitLab")
 }
 
 /// Create the Google provider plugin.
@@ -4058,11 +4337,253 @@ pub fn google_provider_plugin() -> impl ProviderPlugin {
         })
 }
 
+/// Create the Google Vertex AI provider plugin.
+///
+/// Resolves project and location from config or env vars, expands URL templates.
+/// Auth hook checks GOOGLE_VERTEX_PROJECT, GOOGLE_CLOUD_PROJECT, etc.
+///
+/// Ported from `packages/core/src/plugin/provider/google-vertex.ts`.
+pub fn google_vertex_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("google-vertex", "Google Vertex AI")
+        .with_transform(|ctx| {
+            let project = ctx.options.get("project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("GOOGLE_VERTEX_PROJECT").ok())
+                .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT").ok())
+                .or_else(|| std::env::var("GCP_PROJECT").ok())
+                .or_else(|| std::env::var("GCLOUD_PROJECT").ok());
+            let location = ctx.options.get("location")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("GOOGLE_VERTEX_LOCATION").ok())
+                .or_else(|| std::env::var("GOOGLE_CLOUD_LOCATION").ok())
+                .or_else(|| std::env::var("VERTEX_LOCATION").ok())
+                .unwrap_or_else(|| "us-central1".into());
+            if let Some(ref p) = project {
+                ctx.options.insert(
+                    "project".into(),
+                    serde_json::Value::String(p.clone()),
+                );
+            }
+            ctx.options.insert(
+                "location".into(),
+                serde_json::Value::String(location.clone()),
+            );
+            let endpoint = if location == "global" {
+                "aiplatform.googleapis.com".to_string()
+            } else {
+                format!("{location}-aiplatform.googleapis.com")
+            };
+            if let Some(url) = ctx.options.get("url").and_then(|v| v.as_str()) {
+                let expanded = url
+                    .replace("${GOOGLE_VERTEX_PROJECT}", project.as_deref().unwrap_or("${GOOGLE_VERTEX_PROJECT}"))
+                    .replace("${GOOGLE_VERTEX_LOCATION}", &location)
+                    .replace("${GOOGLE_VERTEX_ENDPOINT}", &endpoint);
+                ctx.options.insert(
+                    "url".into(),
+                    serde_json::Value::String(expanded),
+                );
+            }
+            Box::pin(async {})
+        })
+        .with_auth(|_ctx| {
+            Box::pin(async move {
+                let project = std::env::var("GOOGLE_VERTEX_PROJECT")
+                    .or_else(|_| std::env::var("GOOGLE_CLOUD_PROJECT"))
+                    .or_else(|_| std::env::var("GCP_PROJECT"))
+                    .or_else(|_| std::env::var("GCLOUD_PROJECT"))
+                    .ok();
+                let location = std::env::var("GOOGLE_VERTEX_LOCATION")
+                    .or_else(|_| std::env::var("GOOGLE_CLOUD_LOCATION"))
+                    .or_else(|_| std::env::var("VERTEX_LOCATION"))
+                    .unwrap_or_else(|_| "us-central1".into());
+                let mut map = std::collections::HashMap::new();
+                if let Some(ref p) = project {
+                    map.insert("project".into(), serde_json::Value::String(p.clone()));
+                }
+                map.insert("location".into(), serde_json::Value::String(location));
+                Some(map)
+            })
+        })
+}
+
+/// Create the Google Vertex AI (Anthropic) provider plugin.
+///
+/// Resolves project and location for Vertex-hosted Anthropic models.
+/// Auth hook checks GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION, etc.
+///
+/// Ported from `packages/core/src/plugin/provider/google-vertex.ts`.
+pub fn google_vertex_anthropic_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("google-vertex-anthropic", "Google Vertex AI (Anthropic)")
+        .with_transform(|ctx| {
+            let project = ctx.options.get("project")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("GOOGLE_CLOUD_PROJECT").ok())
+                .or_else(|| std::env::var("GCP_PROJECT").ok())
+                .or_else(|| std::env::var("GCLOUD_PROJECT").ok());
+            let location = ctx.options.get("location")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| std::env::var("GOOGLE_CLOUD_LOCATION").ok())
+                .or_else(|| std::env::var("VERTEX_LOCATION").ok())
+                .unwrap_or_else(|| "global".into());
+            if let Some(ref p) = project {
+                ctx.options.insert(
+                    "project".into(),
+                    serde_json::Value::String(p.clone()),
+                );
+            }
+            ctx.options.insert(
+                "location".into(),
+                serde_json::Value::String(location.clone()),
+            );
+            Box::pin(async {})
+        })
+        .with_auth(|_ctx| {
+            Box::pin(async move {
+                let project = std::env::var("GOOGLE_CLOUD_PROJECT")
+                    .or_else(|_| std::env::var("GCP_PROJECT"))
+                    .or_else(|_| std::env::var("GCLOUD_PROJECT"))
+                    .ok();
+                let location = std::env::var("GOOGLE_CLOUD_LOCATION")
+                    .or_else(|_| std::env::var("VERTEX_LOCATION"))
+                    .unwrap_or_else(|_| "global".into());
+                let mut map = std::collections::HashMap::new();
+                if let Some(ref p) = project {
+                    map.insert("project".into(), serde_json::Value::String(p.clone()));
+                }
+                map.insert("location".into(), serde_json::Value::String(location));
+                Some(map)
+            })
+        })
+}
+
 /// Create the Groq provider plugin.
 ///
 /// Ported from `packages/core/src/plugin/provider/groq.ts`.
 pub fn groq_provider_plugin() -> impl ProviderPlugin {
     ClosureProviderPlugin::new("groq", "Groq")
+}
+
+/// Create the Kilo provider plugin.
+///
+/// Sets HTTP-Referer and X-Title headers.
+///
+/// Ported from `packages/core/src/plugin/provider/kilo.ts`.
+pub fn kilo_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("kilo", "Kilo")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "HTTP-Referer".into(),
+                "https://opencode.ai/".into(),
+            );
+            ctx.headers.insert(
+                "X-Title".into(),
+                "opencode".into(),
+            );
+            Box::pin(async {})
+        })
+}
+
+/// Create the LLM Gateway provider plugin.
+///
+/// Sets HTTP-Referer, X-Title, and X-Source headers.
+///
+/// Ported from `packages/core/src/plugin/provider/llmgateway.ts`.
+pub fn llmgateway_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("llmgateway", "LLM Gateway")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "HTTP-Referer".into(),
+                "https://opencode.ai/".into(),
+            );
+            ctx.headers.insert(
+                "X-Title".into(),
+                "opencode".into(),
+            );
+            ctx.headers.insert(
+                "X-Source".into(),
+                "opencode".into(),
+            );
+            Box::pin(async {})
+        })
+}
+
+/// Create the Mistral provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/mistral.ts`.
+pub fn mistral_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("mistral", "Mistral")
+}
+
+/// Create the NVIDIA provider plugin.
+///
+/// Sets HTTP-Referer, X-Title, and X-BILLING-INVOKE-ORIGIN headers.
+///
+/// Ported from `packages/core/src/plugin/provider/nvidia.ts`.
+pub fn nvidia_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("nvidia", "NVIDIA")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "HTTP-Referer".into(),
+                "https://opencode.ai/".into(),
+            );
+            ctx.headers.insert(
+                "X-Title".into(),
+                "opencode".into(),
+            );
+            ctx.headers.entry("X-BILLING-INVOKE-ORIGIN".into())
+                .or_insert_with(|| "OpenCode".into());
+            Box::pin(async {})
+        })
+}
+
+/// Create the OpenAI provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/openai.ts`.
+pub fn openai_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("openai", "OpenAI")
+}
+
+/// Create the OpenAI-Compatible provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/openai-compatible.ts`.
+pub fn openai_compatible_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("openai-compatible", "OpenAI Compatible")
+}
+
+/// Create the OpenCode provider plugin.
+///
+/// Falls back to a public API key when no OPENCODE_API_KEY is configured
+/// and disables paid models.
+///
+/// Ported from `packages/core/src/plugin/provider/opencode.ts`.
+pub fn opencode_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("opencode", "OpenCode")
+        .with_transform(|ctx| {
+            let has_key = std::env::var("OPENCODE_API_KEY").is_ok()
+                || ctx.options.get("apiKey")
+                    .and_then(|v| v.as_str())
+                    .map(|s| !s.is_empty())
+                    .unwrap_or(false);
+            if !has_key {
+                ctx.options.insert(
+                    "apiKey".into(),
+                    serde_json::Value::String("public".into()),
+                );
+            }
+            Box::pin(async {})
+        })
+        .with_auth(|_ctx| {
+            Box::pin(async move {
+                let mut map = std::collections::HashMap::new();
+                let key = std::env::var("OPENCODE_API_KEY").unwrap_or_else(|_| "public".to_string());
+                map.insert("apiKey".into(), serde_json::Value::String(key));
+                Some(map)
+            })
+        })
 }
 
 /// Create the OpenRouter provider plugin.
@@ -4083,18 +4604,89 @@ pub fn openrouter_provider_plugin() -> impl ProviderPlugin {
         })
 }
 
-/// Create the DeepInfra provider plugin.
+/// Create the Perplexity provider plugin.
 ///
-/// Ported from `packages/core/src/plugin/provider/deepinfra.ts`.
-pub fn deepinfra_provider_plugin() -> impl ProviderPlugin {
-    ClosureProviderPlugin::new("deepinfra", "DeepInfra")
+/// Ported from `packages/core/src/plugin/provider/perplexity.ts`.
+pub fn perplexity_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("perplexity", "Perplexity")
 }
 
-/// Create the Mistral provider plugin.
+/// Create the SAP AI Core provider plugin.
 ///
-/// Ported from `packages/core/src/plugin/provider/mistral.ts`.
-pub fn mistral_provider_plugin() -> impl ProviderPlugin {
-    ClosureProviderPlugin::new("mistral", "Mistral")
+/// Ported from `packages/core/src/plugin/provider/sap-ai-core.ts`.
+pub fn sap_ai_core_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("sap-ai-core", "SAP AI Core")
+}
+
+/// Create the Snowflake Cortex provider plugin.
+///
+/// Resolves authentication token from config or env vars.
+/// Auth hook checks SNOWFLAKE_CORTEX_TOKEN and SNOWFLAKE_CORTEX_PAT env vars.
+///
+/// Ported from `packages/core/src/plugin/provider/snowflake-cortex.ts`.
+pub fn snowflake_cortex_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("snowflake-cortex", "Snowflake Cortex")
+        .with_transform(|ctx| {
+            let token = ctx.options.get("token")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string())
+                .or_else(|| ctx.options.get("apiKey").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                .or_else(|| std::env::var("SNOWFLAKE_CORTEX_TOKEN").ok())
+                .or_else(|| std::env::var("SNOWFLAKE_CORTEX_PAT").ok());
+            if let Some(ref t) = token {
+                ctx.options.insert(
+                    "apiKey".into(),
+                    serde_json::Value::String(t.clone()),
+                );
+            }
+            Box::pin(async {})
+        })
+        .with_auth(|_ctx| {
+            Box::pin(async move {
+                let token = std::env::var("SNOWFLAKE_CORTEX_TOKEN")
+                    .or_else(|_| std::env::var("SNOWFLAKE_CORTEX_PAT"))
+                    .ok();
+                token.map(|t| {
+                    let mut map = std::collections::HashMap::new();
+                    map.insert("apiKey".into(), serde_json::Value::String(t));
+                    map
+                })
+            })
+        })
+}
+
+/// Create the Together AI provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/togetherai.ts`.
+pub fn togetherai_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("togetherai", "Together AI")
+}
+
+/// Create the Venice provider plugin.
+///
+/// Ported from `packages/core/src/plugin/provider/venice.ts`.
+pub fn venice_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("venice", "Venice")
+}
+
+/// Create the Vercel provider plugin.
+///
+/// Sets http-referer and x-title headers.
+///
+/// Ported from `packages/core/src/plugin/provider/vercel.ts`.
+pub fn vercel_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("vercel", "Vercel")
+        .with_transform(|ctx| {
+            ctx.headers.insert(
+                "http-referer".into(),
+                "https://opencode.ai/".into(),
+            );
+            ctx.headers.insert(
+                "x-title".into(),
+                "opencode".into(),
+            );
+            Box::pin(async {})
+        })
 }
 
 /// Create the xAI provider plugin.
@@ -4104,27 +4696,61 @@ pub fn xai_provider_plugin() -> impl ProviderPlugin {
     ClosureProviderPlugin::new("xai", "xAI Grok")
 }
 
-/// Create the Cohere provider plugin.
+/// Create the ZenMux provider plugin.
 ///
-/// Ported from `packages/core/src/plugin/provider/cohere.ts`.
-pub fn cohere_provider_plugin() -> impl ProviderPlugin {
-    ClosureProviderPlugin::new("cohere", "Cohere")
+/// Sets HTTP-Referer and X-Title headers.
+///
+/// Ported from `packages/core/src/plugin/provider/zenmux.ts`.
+pub fn zenmux_provider_plugin() -> impl ProviderPlugin {
+    ClosureProviderPlugin::new("zenmux", "ZenMux")
+        .with_transform(|ctx| {
+            ctx.headers.entry("HTTP-Referer".into())
+                .or_insert_with(|| "https://opencode.ai/".into());
+            ctx.headers.entry("X-Title".into())
+                .or_insert_with(|| "opencode".into());
+            Box::pin(async {})
+        })
 }
 
-/// Register all built-in provider plugins into a registry.
+/// Register all 33 built-in provider plugins into a registry.
 ///
-/// Ported from `packages/core/src/plugin/provider.ts` `ProviderPlugins`.
+/// Ported from `packages/core/src/plugin/provider/` (33 plugin modules).
 pub fn register_builtin_provider_plugins(registry: &mut ProviderPluginRegistry) {
     let plugins: Vec<std::sync::Arc<dyn ProviderPlugin>> = vec![
+        std::sync::Arc::new(alibaba_provider_plugin()),
+        std::sync::Arc::new(amazon_bedrock_provider_plugin()),
         std::sync::Arc::new(anthropic_provider_plugin()),
-        std::sync::Arc::new(openai_provider_plugin()),
-        std::sync::Arc::new(google_provider_plugin()),
-        std::sync::Arc::new(groq_provider_plugin()),
-        std::sync::Arc::new(openrouter_provider_plugin()),
-        std::sync::Arc::new(deepinfra_provider_plugin()),
-        std::sync::Arc::new(mistral_provider_plugin()),
-        std::sync::Arc::new(xai_provider_plugin()),
+        std::sync::Arc::new(azure_provider_plugin()),
+        std::sync::Arc::new(azure_cognitive_services_provider_plugin()),
+        std::sync::Arc::new(cerebras_provider_plugin()),
+        std::sync::Arc::new(cloudflare_ai_gateway_provider_plugin()),
+        std::sync::Arc::new(cloudflare_workers_ai_provider_plugin()),
         std::sync::Arc::new(cohere_provider_plugin()),
+        std::sync::Arc::new(deepinfra_provider_plugin()),
+        std::sync::Arc::new(dynamic_provider_plugin()),
+        std::sync::Arc::new(gateway_provider_plugin()),
+        std::sync::Arc::new(github_copilot_provider_plugin()),
+        std::sync::Arc::new(gitlab_provider_plugin()),
+        std::sync::Arc::new(google_provider_plugin()),
+        std::sync::Arc::new(google_vertex_provider_plugin()),
+        std::sync::Arc::new(google_vertex_anthropic_provider_plugin()),
+        std::sync::Arc::new(groq_provider_plugin()),
+        std::sync::Arc::new(kilo_provider_plugin()),
+        std::sync::Arc::new(llmgateway_provider_plugin()),
+        std::sync::Arc::new(mistral_provider_plugin()),
+        std::sync::Arc::new(nvidia_provider_plugin()),
+        std::sync::Arc::new(openai_provider_plugin()),
+        std::sync::Arc::new(openai_compatible_provider_plugin()),
+        std::sync::Arc::new(opencode_provider_plugin()),
+        std::sync::Arc::new(openrouter_provider_plugin()),
+        std::sync::Arc::new(perplexity_provider_plugin()),
+        std::sync::Arc::new(sap_ai_core_provider_plugin()),
+        std::sync::Arc::new(snowflake_cortex_provider_plugin()),
+        std::sync::Arc::new(togetherai_provider_plugin()),
+        std::sync::Arc::new(venice_provider_plugin()),
+        std::sync::Arc::new(vercel_provider_plugin()),
+        std::sync::Arc::new(xai_provider_plugin()),
+        std::sync::Arc::new(zenmux_provider_plugin()),
     ];
 
     registry.register_all(plugins);

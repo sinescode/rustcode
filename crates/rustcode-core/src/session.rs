@@ -613,6 +613,11 @@ impl SessionManager {
         Self { db, bus }
     }
 
+    /// Get a reference to the underlying database service.
+    pub fn db(&self) -> &Arc<DatabaseService> {
+        &self.db
+    }
+
     /// Create a new session.
     ///
     /// # Source

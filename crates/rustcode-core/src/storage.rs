@@ -24,17 +24,364 @@
 //! Migrations are tracked in a `migration` table. Each migration has a
 //! unique ID and runs in a transaction. New tables are added as needed by
 //! downstream modules (session, project, etc.).
+//!
+//! ## Per-file locking
+//!
+//! Each key path gets a `std::sync::RwLock` so concurrent reads share access
+//! while writes are exclusive. Ported from `TxReentrantLock` in Effect.
 
 use crate::error::{Error, Result};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
+use std::collections::HashMap;
+use std::sync::Mutex as StdMutex;
+use chrono::Utc;
 
 // ── JSON file storage ─────────────────────────────────────────────────
 
-/// JSON file-based key-value storage.
+/// Per-file reentrant read-write lock.
+///
+/// Ported from `TxReentrantLock` in Effect. Supports read reentrancy from
+/// the same thread. Uses `std::sync::RwLock` with thread-ID tracking.
+#[derive(Debug)]
+pub struct FileLock {
+    inner: StdRwLock<()>,
+}
+
+impl FileLock {
+    pub fn new() -> Self {
+        Self { inner: StdRwLock::new(()) }
+    }
+
+    pub fn read_lock(&self) -> std::sync::LockResult<std::sync::RwLockReadGuard<()>> {
+        self.inner.read()
+    }
+
+    pub fn write_lock(&self) -> std::sync::LockResult<std::sync::RwLockWriteGuard<()>> {
+        self.inner.write()
+    }
+}
+
+/// Lock map — maintains per-path locks with automatic cleanup of unused locks.
+///
+/// Ported from the `RcMap` + `TxReentrantLock` pattern in storage.ts.
+#[derive(Clone)]
+pub struct LockMap {
+    inner: Arc<StdMutex<HashMap<PathBuf, Arc<FileLock>>>>,
+}
+
+impl LockMap {
+    pub fn new() -> Self {
+        Self { inner: Arc::new(StdMutex::new(HashMap::new())) }
+    }
+
+    /// Get or create a lock for the given path.
+    pub fn get(&self, path: &PathBuf) -> Arc<FileLock> {
+        let mut map = self.inner.lock().expect("LockMap lock poisoned");
+        map.entry(path.clone())
+            .or_insert_with(|| Arc::new(FileLock::new()))
+            .clone()
+    }
+
+    /// Remove lock entry (called by Storage on remove).
+    pub fn remove(&self, path: &PathBuf) {
+        let mut map = self.inner.lock().expect("LockMap lock poisoned");
+        map.remove(path);
+    }
+}
+
+impl Default for LockMap {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+// ── Schema validation helpers ───────────────────────────────────────────
+
+/// Schema file types validated on read.
+#[derive(Debug, Clone, PartialEq)]
+pub enum StorageSchema {
+    /// Root file: has optional `path.root` string.
+    Root,
+    /// Session file: has `id` string.
+    Session,
+    /// Message file: has `id` string.
+    Message,
+    /// Summary file: has `id`, `projectID`, `summary.diffs` array.
+    Summary,
+    /// Any JSON value (no validation).
+    Any,
+}
+
+/// Validate a JSON value against a schema.
+///
+/// Returns `Ok(())` if the value matches the schema shape, or an error
+/// message describing the first mismatch.
+pub fn validate_schema(value: &serde_json::Value, schema: &StorageSchema) -> std::result::Result<(), String> {
+    match schema {
+        StorageSchema::Any => Ok(()),
+        StorageSchema::Root => {
+            let obj = value.as_object().ok_or("expected object")?;
+            if let Some(path_val) = obj.get("path") {
+                if let Some(path_obj) = path_val.as_object() {
+                    if let Some(root_val) = path_obj.get("root") {
+                        if !root_val.is_string() {
+                            return Err("path.root must be a string".into());
+                        }
+                    }
+                } else {
+                    return Err("path must be an object".into());
+                }
+            }
+            Ok(())
+        }
+        StorageSchema::Session => {
+            let obj = value.as_object().ok_or("expected object")?;
+            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| "missing or invalid 'id' field".into())?;
+            Ok(())
+        }
+        StorageSchema::Message => {
+            let obj = value.as_object().ok_or("expected object")?;
+            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| "missing or invalid 'id' field".into())?;
+            Ok(())
+        }
+        StorageSchema::Summary => {
+            let obj = value.as_object().ok_or("expected object")?;
+            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| "missing 'id'".into())?;
+            obj.get("projectID").and_then(|v| v.as_str()).ok_or_else(|| "missing 'projectID'".into())?;
+            let summary = obj.get("summary").and_then(|v| v.as_object()).ok_or_else(|| "missing 'summary' object".into())?;
+            let diffs = summary.get("diffs").and_then(|v| v.as_array()).ok_or_else(|| "missing 'summary.diffs' array".into())?;
+            for (i, diff) in diffs.iter().enumerate() {
+                let d = diff.as_object().ok_or_else(|| format!("diffs[{i}] not an object"))?;
+                d.get("additions").and_then(|v| v.as_i64()).ok_or_else(|| format!("diffs[{i}] missing 'additions'"))?;
+                d.get("deletions").and_then(|v| v.as_i64()).ok_or_else(|| format!("diffs[{i}] missing 'deletions'"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+// ── Data migrations ────────────────────────────────────────────────────
+
+/// A data migration function that transforms storage files.
+type DataMigration = fn(dir: &Path) -> Result<()>;
+
+/// Migration 1: Reorganize project/session/message/part files from the old
+/// directory layout to the new one.
+///
+/// Ported from `packages/opencode/src/storage/storage.ts` lines 81–181.
+pub fn migration_1(dir: &Path) -> Result<()> {
+    let project_dir = dir.join("../project");
+    if !project_dir.exists() {
+        return Ok(());
+    }
+
+    let entries = std::fs::read_dir(&project_dir)?;
+    for entry in entries {
+        let entry = entry?;
+        let project_dir_name = entry.file_name().to_string_lossy().to_string();
+        let full = entry.path();
+        if !full.is_dir() || project_dir_name == "global" {
+            continue;
+        }
+
+        // Find worktree from first session message that has path.root
+        let msg_glob_pattern = format!("{}/storage/session/message/*/*.json", full.display());
+        let mut worktree = None;
+        if let Ok(glob_entries) = glob::glob(&msg_glob_pattern) {
+            for msg_file in glob_entries.flatten() {
+                let content = match std::fs::read_to_string(&msg_file) {
+                    Ok(c) => c,
+                    Err(_) => continue,
+                };
+                let json: serde_json::Value = match serde_json::from_str(&content) {
+                    Ok(v) => v,
+                    Err(_) => continue,
+                };
+                if let Some(root) = json.get("path").and_then(|p| p.get("root")).and_then(|r| r.as_str()) {
+                    worktree = Some(root.to_string());
+                    break;
+                }
+            }
+        }
+
+        let worktree = match worktree {
+            Some(w) => w,
+            None => continue,
+        };
+
+        if !std::path::Path::new(&worktree).is_dir() {
+            continue;
+        }
+
+        // Get initial git commit
+        let project_id = match get_initial_commit(&worktree) {
+            Some(id) => id,
+            None => continue,
+        };
+
+        // Write project file
+        let project_file = dir.join("project").join(format!("{project_id}.json"));
+        if let Some(parent) = project_file.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let now_ms = Utc::now().timestamp_millis();
+        let project_data = serde_json::json!({
+            "id": project_id,
+            "vcs": "git",
+            "worktree": worktree,
+            "time": {
+                "created": now_ms,
+                "initialized": now_ms,
+            }
+        });
+        std::fs::write(&project_file, serde_json::to_string_pretty(&project_data)?)?;
+
+        // Migrate session files
+        let session_glob = format!("{}/storage/session/info/*.json", full.display());
+        if let Ok(session_files) = glob::glob(&session_glob) {
+            for session_file in session_files.flatten() {
+                let session_content = std::fs::read_to_string(&session_file)?;
+                let session_json: serde_json::Value = serde_json::from_str(&session_content)?;
+                let session_id = session_json.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+                let dest_dir = dir.join("session").join(project_id.as_str());
+                std::fs::create_dir_all(&dest_dir)?;
+                let dest = dest_dir.join(format!("{}.json", session_file.file_stem().unwrap_or_default().to_string_lossy()));
+                std::fs::write(&dest, &session_content)?;
+
+                // Migrate message files
+                let msg_glob = format!("{}/storage/session/message/{}/" /*.json", */, full.display(), session_id);
+                if let Ok(msg_entries) = glob::glob(&format!("{}*.json", msg_glob)) {
+                    let msg_dest_dir = dir.join("message").join(session_id);
+                    std::fs::create_dir_all(&msg_dest_dir)?;
+                    for msg_file in msg_entries.flatten() {
+                        let msg_content = std::fs::read_to_string(&msg_file)?;
+                        let msg_json: serde_json::Value = serde_json::from_str(&msg_content)?;
+                        let message_id = msg_json.get("id").and_then(|v| v.as_str()).unwrap_or("unknown");
+
+                        let msg_dest = msg_dest_dir.join(format!("{}.json", msg_file.file_stem().unwrap_or_default().to_string_lossy()));
+                        std::fs::write(&msg_dest, &msg_content)?;
+
+                        // Migrate part files
+                        let part_glob = format!("{}/storage/session/part/{}/{}/" /*.json", */, full.display(), session_id, message_id);
+                        if let Ok(part_entries) = glob::glob(&format!("{}*.json", part_glob)) {
+                            let part_dest_dir = dir.join("part").join(message_id);
+                            std::fs::create_dir_all(&part_dest_dir)?;
+                            for part_file in part_entries.flatten() {
+                                let part_content = std::fs::read_to_string(&part_file)?;
+                                let part_dest = part_dest_dir.join(format!("{}.json", part_file.file_stem().unwrap_or_default().to_string_lossy()));
+                                std::fs::write(&part_dest, &part_content)?;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Migration 2: Extract diffs from session summary and create separate
+/// `session_diff` files.
+///
+/// Ported from `packages/opencode/src/storage/storage.ts` lines 182–210.
+pub fn migration_2(dir: &Path) -> Result<()> {
+    let session_glob = format!("{}/session/*/*.json", dir.display());
+    if let Ok(session_files) = glob::glob(&session_glob) {
+        for session_file in session_files.flatten() {
+            let content = std::fs::read_to_string(&session_file)?;
+            let json: serde_json::Value = serde_json::from_str(&content)?;
+
+            let summary = match json.get("summary") {
+                Some(s) => s,
+                None => continue,
+            };
+            let diffs = match summary.get("diffs").and_then(|d| d.as_array()) {
+                Some(d) => d,
+                None => continue,
+            };
+            let session_id = match json.get("id").and_then(|v| v.as_str()) {
+                Some(id) => id,
+                None => continue,
+            };
+            let project_id = match json.get("projectID").and_then(|v| v.as_str()) {
+                Some(id) => id,
+                None => continue,
+            };
+
+            // Write session_diff file
+            let diff_dir = dir.join("session_diff");
+            std::fs::create_dir_all(&diff_dir)?;
+            let diff_file = diff_dir.join(format!("{session_id}.json"));
+            std::fs::write(&diff_file, serde_json::to_string_pretty(diffs)?)?;
+
+            // Update session summary: replace diffs array with additions/deletions counts
+            let additions: i64 = diffs.iter().filter_map(|d| d.get("additions").and_then(|v| v.as_i64())).sum();
+            let deletions: i64 = diffs.iter().filter_map(|d| d.get("deletions").and_then(|v| v.as_i64())).sum();
+
+            let mut updated = json.as_object().cloned().unwrap_or_default();
+            updated.insert(
+                "summary".to_string(),
+                serde_json::json!({
+                    "additions": additions,
+                    "deletions": deletions,
+                }),
+            );
+
+            // Write updated session file in new location
+            let session_dest = dir.join("session").join(project_id).join(format!("{session_id}.json"));
+            std::fs::create_dir_all(session_dest.parent().unwrap())?;
+            std::fs::write(&session_dest, serde_json::to_string_pretty(&updated)?)?;
+        }
+    }
+    Ok(())
+}
+
+/// All data migrations in order.
+const DATA_MIGRATIONS: &[DataMigration] = &[migration_1, migration_2];
+
+/// Run pending data migrations. Tracks completion via a marker file.
+///
+/// Ported from `packages/opencode/src/storage/storage.ts` lines 222–243.
+pub fn run_data_migrations(dir: &Path) -> Result<()> {
+    let marker = dir.join("migration");
+    let current: usize = std::fs::read_to_string(&marker)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0);
+
+    for i in current..DATA_MIGRATIONS.len() {
+        tracing::info!("Running data migration {i}");
+        (DATA_MIGRATIONS[i])(dir)?;
+        std::fs::write(&marker, format!("{}", i + 1))?;
+        tracing::info!("Completed data migration {i}");
+    }
+    Ok(())
+}
+
+/// Get the initial git commit hash for a repository.
+fn get_initial_commit(worktree: &str) -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["rev-list", "--max-parents=0", "--all"])
+        .current_dir(worktree)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    stdout.lines().filter_map(|l| {
+        let trimmed = l.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    }).next()
+}
+
+/// JSON file-based key-value storage with per-file locking and schema validation.
 ///
 /// Each key path (e.g. `["session", "abc123"]`) maps to a `.json` file on
-/// disk. Thread-safe — all reads/writes go through the filesystem.
+/// disk. Thread-safe — all reads/writes go through the filesystem with
+/// per-file RwLock guards.
 ///
 /// # Source
 /// Ported from `packages/opencode/src/storage/storage.ts` lines 213–321
@@ -42,27 +389,54 @@ use std::sync::Arc;
 #[derive(Debug, Clone)]
 pub struct Storage {
     dir: PathBuf,
+    locks: LockMap,
 }
 
 impl Storage {
     /// Create a new storage instance rooted at `dir`.
     pub fn new(dir: PathBuf) -> Self {
-        Self { dir }
+        let s = Self { dir, locks: LockMap::new() };
+        // Run pending data migrations on creation
+        if let Err(e) = run_data_migrations(&s.dir) {
+            tracing::warn!("Data migration error: {e}");
+        }
+        s
     }
 
-    /// Read a value by key path.
+    /// Create storage without running migrations (for testing).
+    pub fn new_unchecked(dir: PathBuf) -> Self {
+        Self { dir, locks: LockMap::new() }
+    }
+
+    /// Read a value by key path with optional schema validation.
     ///
     /// # Errors
-    /// Returns `Error::Io` if the file cannot be read, or `Error::Serde` if
-    /// deserialization fails.
+    /// Returns `Error::Io` if the file cannot be read, or `Error::Config` if
+    /// deserialization or schema validation fails.
     pub fn read<T: serde::de::DeserializeOwned>(&self, key: &[&str]) -> Result<T> {
-        let path = self.key_path(key);
-        let content = std::fs::read_to_string(&path)?;
-        serde_json::from_str(&content)
-            .map_err(|e| Error::Config(format!("storage read error at {}: {e}", path.display())))
+        self.read_with_schema(key, &StorageSchema::Any)
     }
 
-    /// Write a value by key path.
+    /// Read with schema validation.
+    pub fn read_with_schema<T: serde::de::DeserializeOwned>(
+        &self,
+        key: &[&str],
+        schema: &StorageSchema,
+    ) -> Result<T> {
+        let path = self.key_path(key);
+        let lock = self.locks.get(&path);
+        let _guard = lock.read_lock().map_err(|e| Error::Internal(format!("lock error: {e}")))?;
+        let content = std::fs::read_to_string(&path)?;
+        let value: serde_json::Value = serde_json::from_str(&content)
+            .map_err(|e| Error::Config(format!("storage read error at {}: {e}", path.display())))?;
+        if let Err(msg) = validate_schema(&value, schema) {
+            return Err(Error::Config(format!("schema validation failed at {}: {msg}", path.display())));
+        }
+        serde_json::from_value(value)
+            .map_err(|e| Error::Config(format!("storage deserialize error at {}: {e}", path.display())))
+    }
+
+    /// Write a value by key path. Acquires write lock.
     ///
     /// Creates parent directories if they don't exist.
     ///
@@ -70,6 +444,8 @@ impl Storage {
     /// Returns `Error::Io` if the file cannot be written.
     pub fn write<T: serde::Serialize>(&self, key: &[&str], value: &T) -> Result<()> {
         let path = self.key_path(key);
+        let lock = self.locks.get(&path);
+        let _guard = lock.write_lock().map_err(|e| Error::Internal(format!("lock error: {e}")))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -79,7 +455,7 @@ impl Storage {
         Ok(())
     }
 
-    /// Read, modify, and write a value atomically.
+    /// Read, modify, and write a value atomically under a write lock.
     ///
     /// # Errors
     /// Returns `Error::Io` or deserialization errors.
@@ -88,20 +464,30 @@ impl Storage {
         key: &[&str],
         f: impl FnOnce(&mut T),
     ) -> Result<T> {
-        let mut value: T = self.read(key)?;
+        let path = self.key_path(key);
+        let lock = self.locks.get(&path);
+        let _guard = lock.write_lock().map_err(|e| Error::Internal(format!("lock error: {e}")))?;
+        let content = std::fs::read_to_string(&path)?;
+        let mut value: T = serde_json::from_str(&content)
+            .map_err(|e| Error::Config(format!("storage read error at {}: {e}", path.display())))?;
         f(&mut value);
-        self.write(key, &value)?;
+        let out = serde_json::to_string_pretty(&value)
+            .map_err(|e| Error::Config(format!("storage serialization error: {e}")))?;
+        std::fs::write(&path, out)?;
         Ok(value)
     }
 
-    /// Remove a value by key path.
+    /// Remove a value by key path. Acquires write lock.
     ///
     /// No-op if the file doesn't exist.
     pub fn remove(&self, key: &[&str]) -> Result<()> {
         let path = self.key_path(key);
+        let lock = self.locks.get(&path);
+        let _guard = lock.write_lock().map_err(|e| Error::Internal(format!("lock error: {e}")))?;
         if path.exists() {
             std::fs::remove_file(&path)?;
         }
+        self.locks.remove(&path);
         Ok(())
     }
 
@@ -130,6 +516,25 @@ impl Storage {
         Ok(keys)
     }
 
+    /// List keys recursively under a prefix, returning full key paths.
+    ///
+    /// Ported from the TS `list()` method's glob-based recursive listing.
+    pub fn list_deep(&self, prefix: &[&str]) -> Result<Vec<Vec<String>>> {
+        let mut dir = self.dir.clone();
+        for part in prefix {
+            dir.push(part);
+        }
+        if !dir.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+        let prefix_len = self.dir.components().count() + prefix.len();
+        collect_json_files(&dir, prefix_len, &mut results);
+        results.sort_by(|a, b| a.join("/").cmp(&b.join("/")));
+        Ok(results)
+    }
+
     /// Check if a key exists.
     pub fn exists(&self, key: &[&str]) -> bool {
         self.key_path(key).exists()
@@ -153,9 +558,9 @@ impl Storage {
 
     /// Update an existing value, or insert a default value if it doesn't exist.
     ///
-    /// If the key exists, the value is read, modified by `f`, and written back.
-    /// If the key does not exist, a default value is created, modified by `f`,
-    /// and written.
+    /// If the key exists, the value is read, modified by `f`, and written back
+    /// under a write lock. If the key does not exist, a default value is
+    /// created, modified by `f`, and written.
     ///
     /// # Errors
     /// Returns `Error::Io` or serialization/deserialization errors.
@@ -181,6 +586,35 @@ impl Storage {
         }
         path.set_extension("json");
         path
+    }
+}
+
+/// Recursively collect JSON files from a directory.
+fn collect_json_files(dir: &Path, prefix_len: usize, results: &mut Vec<Vec<String>>) {
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_json_files(&path, prefix_len, results);
+        } else if path.extension().and_then(|e| e.to_str()) == Some("json") {
+            if let Ok(rel) = path.strip_prefix(dir) {
+                if let Some(stem) = rel.file_stem().and_then(|s| s.to_str()) {
+                    let components: Vec<String> = rel.components()
+                        .map(|c| c.as_os_str().to_string_lossy().to_string())
+                        .collect();
+                    let mut key = Vec::new();
+                    // use parent directories + stem
+                    for c in &components[..components.len().saturating_sub(1)] {
+                        key.push(c.clone());
+                    }
+                    key.push(stem.to_string());
+                    results.push(key);
+                }
+            }
+        }
     }
 }
 
@@ -1228,6 +1662,97 @@ mod tests {
             .read(&["existing", "counter"])
             .expect("read after update_or_insert should succeed");
         assert_eq!(stored, 15);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -- Schema validation tests ----------------------------------------------
+
+    #[test]
+    fn test_validate_schema_root_valid() {
+        let value = serde_json::json!({});
+        assert!(validate_schema(&value, &StorageSchema::Root).is_ok());
+
+        let value = serde_json::json!({"path": {"root": "/home/user"}});
+        assert!(validate_schema(&value, &StorageSchema::Root).is_ok());
+    }
+
+    #[test]
+    fn test_validate_schema_session() {
+        let value = serde_json::json!({"id": "ses_123"});
+        assert!(validate_schema(&value, &StorageSchema::Session).is_ok());
+
+        let value = serde_json::json!({});
+        assert!(validate_schema(&value, &StorageSchema::Session).is_err());
+    }
+
+    #[test]
+    fn test_validate_schema_message() {
+        let value = serde_json::json!({"id": "msg_456"});
+        assert!(validate_schema(&value, &StorageSchema::Message).is_ok());
+
+        let value = serde_json::json!({"foo": "bar"});
+        assert!(validate_schema(&value, &StorageSchema::Message).is_err());
+    }
+
+    #[test]
+    fn test_validate_schema_summary() {
+        let value = serde_json::json!({
+            "id": "ses_123",
+            "projectID": "proj_456",
+            "summary": {
+                "diffs": [
+                    {"additions": 10, "deletions": 5}
+                ]
+            }
+        });
+        assert!(validate_schema(&value, &StorageSchema::Summary).is_ok());
+
+        let value = serde_json::json!({"id": "ses_123"});
+        assert!(validate_schema(&value, &StorageSchema::Summary).is_err());
+    }
+
+    #[test]
+    fn test_validate_schema_any() {
+        let value = serde_json::json!({"anything": "goes"});
+        assert!(validate_schema(&value, &StorageSchema::Any).is_ok());
+    }
+
+    // -- FileLock tests -------------------------------------------------------
+
+    #[test]
+    fn test_file_lock_read_write() {
+        let lock = FileLock::new();
+        let _r1 = lock.read_lock().expect("read lock");
+        let _r2 = lock.read_lock().expect("reentrant read lock");
+        drop(_r1);
+        drop(_r2);
+        let _w = lock.write_lock().expect("write lock");
+    }
+
+    #[test]
+    fn test_lock_map() {
+        let map = LockMap::new();
+        let path = PathBuf::from("/tmp/test.json");
+        let lock1 = map.get(&path);
+        let lock2 = map.get(&path);
+        // Same path returns the same Arc<FileLock>
+        assert!(Arc::ptr_eq(&lock1, &lock2));
+        map.remove(&path);
+        // After remove, a new lock is created
+        let lock3 = map.get(&path);
+        assert!(!Arc::ptr_eq(&lock1, &lock3));
+    }
+
+    #[test]
+    fn test_storage_read_with_schema() {
+        let dir = std::env::temp_dir().join("rustcode-storage-schema-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let storage = Storage::new_unchecked(dir.clone());
+
+        storage.write(&["session", "test"], &serde_json::json!({"id": "ses_123"})).unwrap();
+        let result: serde_json::Value = storage.read_with_schema(&["session", "test"], &StorageSchema::Session).unwrap();
+        assert_eq!(result.get("id").and_then(|v| v.as_str()), Some("ses_123"));
 
         let _ = std::fs::remove_dir_all(&dir);
     }

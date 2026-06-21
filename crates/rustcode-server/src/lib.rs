@@ -19,9 +19,14 @@
 pub mod auth;
 pub mod cors;
 pub mod error;
+pub mod fence;
+pub mod instance_context;
+pub mod proxy;
 pub mod routes;
+pub mod schema_error;
 pub mod server;
 pub mod sse;
+pub mod workspace_routing;
 
 pub use auth::AuthConfig;
 pub use error::ServerError;

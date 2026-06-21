@@ -923,6 +923,113 @@ impl AccountService {
         Ok(orgs)
     }
 
+    /// Fetch organisations for all stored accounts.
+    ///
+    /// Returns a list of (account, orgs) pairs. If org fetching fails for an
+    /// account, it is omitted silently.
+    ///
+    /// Ported from: `packages/opencode/src/account/account.ts` lines 329–340.
+    pub async fn orgs_by_account(&self) -> Vec<(AccountInfo, Vec<AccountOrg>)> {
+        let accounts = {
+            let list = self.accounts.read().await;
+            list.clone()
+        };
+
+        let mut results = Vec::new();
+        for account in &accounts {
+            let account_info = AccountInfo {
+                id: account.id.clone(),
+                email: account.email.clone(),
+                url: account.url.clone(),
+                active_org_id: None,
+            };
+            match self.orgs(&account.id).await {
+                Ok(orgs) => results.push((account_info, orgs)),
+                Err(_) => continue,
+            }
+        }
+        results
+    }
+
+    /// Fetch remote account configuration for a specific org.
+    ///
+    /// GETs `{server_url}/api/config` with `x-org-id` header and Bearer auth.
+    /// Returns `None` if the server responds with 404.
+    ///
+    /// Ported from: `packages/opencode/src/account/account.ts` lines 351–373.
+    pub async fn config(
+        &self,
+        account_id: &AccountId,
+        org_id: &OrgId,
+    ) -> Result<Option<HashMap<String, serde_json::Value>>, AccountError> {
+        let resolved = self.resolve_access(account_id).await?;
+        let (account, access_token) = match resolved {
+            Some(pair) => pair,
+            None => return Ok(None),
+        };
+
+        let url = format!("{}/api/config", account.url);
+
+        let response = self
+            .http_client
+            .get(&url)
+            .header("Accept", "application/json")
+            .header("x-org-id", org_id.as_str())
+            .bearer_auth(&access_token)
+            .send()
+            .await
+            .map_err(|e| {
+                AccountError::TransportError(AccountTransportError {
+                    method: "GET".to_string(),
+                    url: url.clone(),
+                    description: Some(e.to_string()),
+                    cause: Some(e.to_string()),
+                })
+            })?;
+
+        if response.status() == 404 {
+            return Ok(None);
+        }
+
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().await.unwrap_or_default();
+            return Err(AccountError::ServiceError(AccountServiceError {
+                message: format!("config fetch failed with status {status}"),
+                cause: Some(body),
+            }));
+        }
+
+        #[derive(Deserialize)]
+        struct RemoteConfigResponse {
+            #[serde(default)]
+            config: HashMap<String, serde_json::Value>,
+        }
+
+        let parsed: RemoteConfigResponse = response.json().await.map_err(|e| {
+            AccountError::ServiceError(AccountServiceError {
+                message: "failed to parse config response".to_string(),
+                cause: Some(e.to_string()),
+            })
+        })?;
+
+        Ok(Some(parsed.config))
+    }
+
+    /// Resolve account + access token for a given account ID.
+    async fn resolve_access(
+        &self,
+        account_id: &AccountId,
+    ) -> Result<Option<(AccountTableRow, AccessToken)>, AccountError> {
+        let token = self.token(account_id).await?;
+        let accounts = self.accounts.read().await;
+        let account = accounts.iter().find(|a| a.id == *account_id).cloned();
+        match account {
+            Some(acct) => Ok(Some((acct, token))),
+            None => Ok(None),
+        }
+    }
+
     /// Store or update access/refresh tokens for `account_id`.
     ///
     /// If the account already exists its tokens are overwritten; otherwise
@@ -1865,5 +1972,33 @@ mod tests {
             }
             other => panic!("expected TransportError, got {other:?}"),
         }
+    }
+
+    // ===================================================================
+    // orgs_by_account
+    // ===================================================================
+
+    #[tokio::test]
+    async fn test_orgs_by_account_empty() {
+        let svc = service_with_accounts(vec![], None, None);
+        let results = svc.orgs_by_account().await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_orgs_by_account_single_no_network() {
+        let acct = make_account("acct_1", "alice@example.com");
+        let svc = service_with_accounts(vec![acct], None, None);
+        let results = svc.orgs_by_account().await;
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_orgs_by_account_with_accounts() {
+        let acct1 = make_account("acct_1", "alice@example.com");
+        let acct2 = make_account("acct_2", "bob@example.com");
+        let svc = service_with_accounts(vec![acct1, acct2], None, None);
+        let results = svc.orgs_by_account().await;
+        assert!(results.is_empty());
     }
 }

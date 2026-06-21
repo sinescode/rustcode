@@ -54,6 +54,7 @@ use crate::keymap::{
     all_bindings, all_leader_bindings, is_leader_prefix, key_to_action, leader_chord_to_action,
     DialogTarget, TuiAction,
 };
+use crate::plugin::{SlotName, TuiPluginManager};
 use crate::theme::ThemeState;
 
 use rustcode_core::bus::SharedBus;
@@ -186,8 +187,12 @@ pub struct TuiApp {
     pinned_sessions: Vec<Option<String>>,
 
     // ── Theme system ─────────────────────────────────────────────
-    /// Current theme state (8 built-in themes, dark/light mode).
+    /// Current theme state (35 built-in themes, dark/light mode).
     theme: ThemeState,
+
+    // ── Plugin system ────────────────────────────────────────────
+    /// Manages TUI plugins (built-in + custom).
+    plugin_manager: TuiPluginManager,
 
     // ── Audio notification ───────────────────────────────────────
     /// Whether to emit the terminal bell on stream completion.
@@ -302,6 +307,12 @@ impl TuiApp {
             pinned_sessions: vec![None; 9],
             // Theme system
             theme: ThemeState::new(),
+            // Plugin system
+            plugin_manager: {
+                let mut pm = TuiPluginManager::new();
+                let _ = pm.register_builtins();
+                pm
+            },
             // Audio notification
             audio_enabled: true,
         })
@@ -395,6 +406,12 @@ impl TuiApp {
             pinned_sessions: vec![None; 9],
             // Theme system
             theme: ThemeState::new(),
+            // Plugin system
+            plugin_manager: {
+                let mut pm = TuiPluginManager::new();
+                let _ = pm.register_builtins();
+                pm
+            },
             // Audio notification
             audio_enabled: true,
         })
@@ -513,6 +530,23 @@ impl TuiApp {
 
             // Tick placeholder cycling
             self.input.tick_placeholder();
+
+            // Process pending plugin actions (toasts, dialogs)
+            let pending = self.plugin_manager.process_pending();
+            for (message, variant) in pending.toasts {
+                use crate::components::toast::ToastVariant;
+                let v = match variant.as_str() {
+                    "error" => ToastVariant::Error,
+                    "warning" => ToastVariant::Warning,
+                    "success" => ToastVariant::Success,
+                    _ => ToastVariant::Info,
+                };
+                self.toast.show(None, &message, v);
+            }
+            for _dialog in pending.dialogs {
+                // Future: push dialogs onto the dialog stack
+                self.toast.show(None, "Plugin dialog queued", ToastVariant::Info);
+            }
 
             // Compute sleep until next scheduled render
             let elapsed = last_draw.elapsed();
@@ -1429,6 +1463,15 @@ impl TuiApp {
         render_conversation(f, chunks[0], &self.conversation, self.theme.current());
         render_input(f, chunks[1], &self.input, self.theme.current());
         render_status(f, chunks[2], &self.status, self.theme.current());
+
+        // Plugin slots (render in order: home logo, prompt, app bottom)
+        if self.session_id.is_none() {
+            let _ = self.plugin_manager.slots().render(&SlotName::HomeLogo, f, area);
+            let _ = self.plugin_manager.slots().render(&SlotName::HomePrompt, f, area);
+        } else {
+            let _ = self.plugin_manager.slots().render(&SlotName::SessionPrompt, f, area);
+        }
+        let _ = self.plugin_manager.slots().render(&SlotName::AppBottom, f, chunks[2]);
 
         // Overlays (render order matters — later = on top)
         if self.permission.visible {

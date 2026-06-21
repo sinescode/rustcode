@@ -1017,6 +1017,51 @@ pub const KNOWN_MIGRATION_IDS: &[&str] = &[
     "20260612174303_project_dir_strategy",
 ];
 
+// ── Typed JSON column helpers ───────────────────────────────────────────
+
+/// Serialize a value to a JSON string for storage in a TEXT column.
+pub fn json_column_serialize<T: serde::Serialize>(value: &T) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|e| format!("JSON serialize error: {e}"))
+}
+
+/// Deserialize a value from a JSON string stored in a TEXT column.
+pub fn json_column_deserialize<'a, T: serde::Deserialize<'a>>(json: &'a str) -> Result<T, String> {
+    serde_json::from_str(json).map_err(|e| format!("JSON deserialize error: {e}"))
+}
+
+/// A JSON column that stores an array of absolute paths with validation.
+pub fn json_absolute_path_array_column(paths: &[&str]) -> Result<String, String> {
+    let validated: Vec<String> = paths
+        .iter()
+        .map(|p| db_absolute_path(p))
+        .collect::<Result<Vec<_>, _>>()?;
+    serde_json::to_string(&validated).map_err(|e| format!("JSON serialize error: {e}"))
+}
+
+/// Parse and validate a JSON array of absolute paths from a TEXT column.
+pub fn json_parse_absolute_path_array(json: &str) -> Result<Vec<String>, String> {
+    let paths: Vec<String> = serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    for path in &paths {
+        db_absolute_path(path)?;
+    }
+    Ok(paths)
+}
+
+/// A typed JSON column wrapper for SQLite storage.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JsonColumn<T: Clone>(#[serde(bound = "")] pub T);
+
+impl<T: Clone + serde::de::DeserializeOwned> JsonColumn<T> {
+    pub fn from_db(raw: &str) -> Result<Self, String> {
+        let value: T = serde_json::from_str(raw).map_err(|e| format!("JSON column parse error: {e}"))?;
+        Ok(Self(value))
+    }
+
+    pub fn to_db(&self) -> Result<String, String> {
+        serde_json::to_string(&self.0).map_err(|e| format!("JSON column serialize error: {e}"))
+    }
+}
+
 // ── Helper: list of tables discovered during migration ──────────────────
 
 /// Returns the table names that signal an existing installation.
@@ -2602,6 +2647,37 @@ impl DatabaseService {
         Ok(row.map(WorkspaceRowRaw::into_row))
     }
 
+    /// List workspaces by directory.
+    pub async fn get_workspace_by_directory(
+        &self,
+        directory: &str,
+    ) -> Result<Vec<WorkspaceRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, WorkspaceRowRaw>(
+            "SELECT id, type, name, branch, directory, extra, project_id, time_used \
+             FROM workspace WHERE directory = ?1 ORDER BY time_used DESC",
+        )
+        .bind(directory)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get workspace by directory: {e}")))?;
+
+        Ok(rows.into_iter().map(WorkspaceRowRaw::into_row).collect())
+    }
+
+    /// List all event_sequence records (aggregate_id → seq mapping).
+    pub async fn list_all_event_sequences(
+        &self,
+    ) -> Result<Vec<EventSequenceRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, EventSequenceRowRaw>(
+            "SELECT aggregate_id, seq, owner_id FROM event_sequence",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list event sequences: {e}")))?;
+
+        Ok(rows.into_iter().map(EventSequenceRowRaw::into_row).collect())
+    }
+
     /// Insert a new workspace.
     pub async fn insert_workspace(
         &self,
@@ -4021,6 +4097,49 @@ mod tests {
 
         let sessions = svc.list_sessions("proj-1", Some(3)).await.unwrap();
         assert_eq!(sessions.len(), 3);
+    }
+
+    // ── JSON column helpers ──────────────────────────────────────────
+
+    #[test]
+    fn test_json_column_serialize_deserialize() {
+        let data = vec!["hello", "world"];
+        let json = json_column_serialize(&data).unwrap();
+        assert_eq!(json, r#"["hello","world"]"#);
+        let back: Vec<String> = json_column_deserialize(&json).unwrap();
+        assert_eq!(back, vec!["hello", "world"]);
+    }
+
+    #[test]
+    fn test_json_column_roundtrip() {
+        let col: JsonColumn<Vec<String>> = JsonColumn(vec!["a".into(), "b".into()]);
+        let db = col.to_db().unwrap();
+        let parsed: JsonColumn<Vec<String>> = JsonColumn::from_db(&db).unwrap();
+        assert_eq!(parsed.0, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn test_json_absolute_path_array_column() {
+        let result = json_absolute_path_array_column(&["/home/user/proj", "/tmp/test"]);
+        assert!(result.is_ok());
+        let json = result.unwrap();
+        assert!(json.contains("/home/user/proj"));
+
+        let parsed = json_parse_absolute_path_array(&json).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0], "/home/user/proj");
+    }
+
+    #[test]
+    fn test_json_absolute_path_array_column_rejects_relative() {
+        let result = json_absolute_path_array_column(&["relative/path"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_json_parse_invalid() {
+        let result: Result<Vec<String>, String> = json_column_deserialize("not json");
+        assert!(result.is_err());
     }
 }
 

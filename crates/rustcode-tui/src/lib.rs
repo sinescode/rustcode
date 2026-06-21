@@ -22,8 +22,10 @@ pub mod components;
 pub mod editor;
 pub mod event;
 pub mod keymap;
+pub mod plugin;
 pub mod sse_client;
 pub mod theme;
 
 pub use app::TuiApp;
+pub use plugin::TuiPluginManager;
 pub use sse_client::SseClient;

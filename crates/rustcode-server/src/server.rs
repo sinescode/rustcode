@@ -124,7 +124,15 @@ impl Default for ServerConfig {
     }
 }
 
-/// Build the complete axum router with all routes.
+/// Build the complete axum router with all routes and middleware layers.
+///
+/// Layer order (innermost → outermost, applied via `.layer()` bottom-to-top):
+///   Compression → Fence → Instance context → Workspace routing →
+///   Schema error → Auth → CORS
+///
+/// Incoming request execution order:
+///   CORS → Auth → Schema error → Workspace routing →
+///   Instance context → Fence → Compression → handler
 ///
 /// # Source
 /// Ported from `packages/opencode/src/server/routes/instance/httpapi/server.ts`
@@ -177,13 +185,37 @@ pub fn build_router(state: Arc<AppState>, config: &ServerConfig) -> Router {
         .merge(routes::query::query_routes(state.clone()))
         // ── V2 API routes (under /api/) ──────────────────────────────────
         .merge(routes::api::api_routes(state.clone()))
-        // ── Compression (gzip/deflate for compressible responses) ──────
+        // ── Middleware stack (axum layers stack inside-out) ────────────
+        //
+        // Execution order: CORS → Auth → Schema error →
+        //   Workspace routing → Instance context → Fence → Compression → handler
+        //
+        // `.layer()` builds bottom-to-top: first call = innermost (wraps handler),
+        // last call = outermost (applied first to incoming request).
+
+        // Innermost: Compression (wraps response body before sending)
         .layer(CompressionLayer::new())
-        // ── Auth middleware (checks OPENCODE_SERVER_PASSWORD) ──────────
-        // Apply auth as a route layer so public routes bypass it.
-        // The auth middleware itself skips public paths.
+        // Fence — captures event_sequence before/after handler
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::fence::fence_middleware,
+        ))
+        // Instance context — injects InstanceRef/WorkspaceRef
+        .layer(axum::middleware::from_fn(
+            crate::instance_context::instance_context_middleware,
+        ))
+        // Workspace routing — resolves directory → workspace context (needs state for DB)
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            crate::workspace_routing::workspace_routing_middleware,
+        ))
+        // Schema error — catches JSON deserialization errors
+        .layer(axum::middleware::from_fn(
+            crate::schema_error::schema_error_middleware,
+        ))
+        // Auth — checks OPENCODE_SERVER_PASSWORD
         .layer(axum::middleware::from_fn(crate::auth::auth_middleware))
-        // ── CORS (wired from ServerConfig) ──────────────────────────────
+        // Outermost: CORS
         .layer(cors)
 }
 
