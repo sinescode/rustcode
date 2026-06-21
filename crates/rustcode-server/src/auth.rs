@@ -179,8 +179,8 @@ pub async fn auth_middleware(
     req: Request,
     next: Next,
 ) -> Response {
-    // Load config from env
-    let config = AuthConfig::from_env();
+    // Load config once at startup, cached for subsequent requests
+    let config = AUTH_CONFIG.get_or_init(|| AuthConfig::from_env());
 
     // Skip auth if not required or if path is public
     if !config.required() || is_public_path(&req) {

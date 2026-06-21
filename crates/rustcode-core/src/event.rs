@@ -913,23 +913,6 @@ impl EventV2 {
                 let latest = current_seq.map(|(s,)| s).unwrap_or(-1);
                 let new_seq = latest + 1;
 
-                // Check event ID uniqueness
-                let existing: Option<(String,)> = sqlx::query_as(
-                    "SELECT id FROM event WHERE id = ?1",
-                )
-                .bind(payload.id.as_str())
-                .fetch_optional(&mut *tx)
-                .await
-                .map_err(|e| EventError::Internal(format!("check event id: {e}")))?;
-
-                if existing.is_some() {
-                    return Err(EventError::EventAlreadyExists {
-                        event_id: payload.id.clone(),
-                        aggregate_id: aggregate_id.clone(),
-                        seq: new_seq as u64,
-                    });
-                }
-
                 // Run commit guards — clone payload once, share across guards
                 let payload_clone = payload.clone();
                 let guards = self.commit_guards.read().await;

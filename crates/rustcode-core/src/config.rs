@@ -1159,11 +1159,18 @@ impl Config {
 
     /// Get the current merged configuration info.
     ///
+    /// Returns default config if the lock is poisoned (recovery, not panic).
+    ///
     /// # Source
     /// Ported from `packages/opencode/src/config/config.ts` line 605
     /// (`Config.get()`).
     pub fn get(&self) -> Info {
-        self.info.read().expect("Config lock poisoned").clone()
+        self.info.read()
+            .unwrap_or_else(|poisoned| {
+                tracing::warn!("Config lock poisoned, recovering with default");
+                poisoned.into_inner()
+            })
+            .clone()
     }
 
     /// Load configuration from the global config directory.

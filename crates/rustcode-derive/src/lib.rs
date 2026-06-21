@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 //! Proc-macro derives for rustcode.
 //!
 //! Provides `#[derive(Tool)]` for zero-boilerplate tool definitions,

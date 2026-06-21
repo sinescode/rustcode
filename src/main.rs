@@ -1225,6 +1225,24 @@ enum SessionCommand {
 // ═════════════════════════════════════════════════════════════════════════════
 
 fn main() {
+    // Set panic hook to capture crash details before abort
+    std::panic::set_hook(Box::new(|panic_info| {
+        let msg = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown".to_string()
+        };
+        let location = panic_info.location()
+            .map(|l| format!("{}:{}", l.file(), l.line()))
+            .unwrap_or_else(|| "unknown".to_string());
+        eprintln!("\n\x1b[31m⚠ rustcode panicked\x1b[0m");
+        eprintln!("  message: {msg}");
+        eprintln!("  location: {location}");
+        eprintln!("  backtrace: see RUST_BACKTRACE=1 for details");
+    }));
+
     let cli = Cli::parse();
 
     // Set environment variables for observability (matching opencode middleware).
