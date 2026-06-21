@@ -226,6 +226,29 @@ impl Git {
         self.run_with_opts(args, None)
     }
 
+    /// Async version of `run` — uses tokio::process::Command to avoid
+    /// blocking the async runtime.
+    ///
+    /// # Source
+    /// `packages/opencode/src/git/index.ts` lines 110–132.
+    pub async fn run_async(&self, args: &[&str]) -> Result<GitResult, GitError> {
+        let output = tokio::process::Command::new("git")
+            .args(args)
+            .current_dir(&self.worktree)
+            .output()
+            .await
+            .map_err(|e| GitError::Command {
+                exit_code: None,
+                message: e.to_string(),
+            })?;
+        Ok(GitResult {
+            exit_code: output.status.code().unwrap_or(1),
+            stdout: output.stdout,
+            stderr: output.stderr,
+            truncated: false,
+        })
+    }
+
     /// Run git with optional env vars.
     pub fn run_with_opts(
         &self,
