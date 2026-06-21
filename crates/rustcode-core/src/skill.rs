@@ -175,11 +175,11 @@ fn extract_frontmatter(
     Ok((frontmatter, body.to_string()))
 }
 
-/// Parse a skill Markdown file, returning a [`Skill`] on success.
+/// Async parse a skill Markdown file, returning a [`Skill`] on success.
 ///
 /// Handles reading the file and extracting frontmatter + body content.
-pub fn parse_skill_file(file_path: &Path) -> Result<Option<Skill>, ParseError> {
-    let content = std::fs::read_to_string(file_path).map_err(|e| ParseError::Read {
+pub async fn parse_skill_file(file_path: &Path) -> Result<Option<Skill>, ParseError> {
+    let content = tokio::fs::read_to_string(file_path).await.map_err(|e| ParseError::Read {
         path: file_path.display().to_string(),
         source: e,
     })?;
