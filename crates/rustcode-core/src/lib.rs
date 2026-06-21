@@ -47,6 +47,7 @@ pub mod plugin;
 pub mod policy;
 pub mod process;
 pub mod project;
+pub mod publish_llm_event;
 pub mod provider;
 pub mod provider_service;
 pub mod providers;

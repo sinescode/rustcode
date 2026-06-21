@@ -26,6 +26,7 @@
 pub mod anthropic;
 pub mod azure;
 pub mod bedrock;
+pub mod chat_completions;
 pub mod cloudflare;
 pub mod gemini;
 pub mod github_copilot;

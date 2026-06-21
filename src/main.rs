@@ -21,6 +21,9 @@ use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+mod cli_error;
+use cli_error::CliErrorFormatter;
+
 use sqlx::Column;
 #[allow(unused_imports)]
 use sqlx::Row as _;
@@ -1242,7 +1245,7 @@ fn main() {
             // Already initialized — fall through
         }
         Err(e) => {
-            eprintln!("Warning: failed to initialize observability: {e}");
+            eprintln!("{}Warning: failed to initialize observability: {e}{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
         }
     }
 
@@ -1263,6 +1266,11 @@ fn main() {
 /// Ported from: `packages/opencode/src/index.ts` —
 /// `try { await cli.parse() } catch (e) { ... }`
 async fn async_main(cli: Cli) {
+    // Create the CLI error formatter for styled error output.
+    //
+    // Ported from: `packages/opencode/src/cli/error.ts` — `FormatError()`.
+    let mut error_fmt = CliErrorFormatter::new();
+
     // Load config eagerly (matches TS middleware that sets env vars).
     //
     // Ported from: `packages/opencode/src/index.ts` — middleware sets
@@ -1272,15 +1280,16 @@ async fn async_main(cli: Cli) {
 
     let print_logs = cli.print_logs;
     let exit_code = match &cli.command {
-        Some(cmd) => dispatch(cmd, print_logs, &config).await,
+        Some(cmd) => dispatch(cmd, print_logs, &config, &mut error_fmt).await,
         None => {
             // No subcommand given — show help.
             // Ported from: TS — when no subcommand is matched, yargs shows help.
-            eprintln!("Use --help for usage information.");
-            0
+            cli_error::format_cli_error("Use --help for usage information.");
+            1
         }
     };
 
+    error_fmt.has_errors |= exit_code != 0;
     if exit_code != 0 {
         std::process::exit(exit_code);
     }
@@ -1289,7 +1298,30 @@ async fn async_main(cli: Cli) {
 /// Dispatch to the appropriate subcommand handler.
 ///
 /// Each handler returns an exit code (0 = success, non-zero = failure).
-async fn dispatch(cmd: &Commands, print_logs: bool, config: &rustcode_core::config::Info) -> i32 {
+/// Errors from handlers are captured and formatted through the
+/// [`CliErrorFormatter`].
+///
+/// Ported from: `packages/opencode/src/index.ts` — `try { await cli.parse() }
+/// catch (e) { FormatError(e) }`.
+async fn dispatch(
+    cmd: &Commands,
+    print_logs: bool,
+    config: &rustcode_core::config::Info,
+    error_fmt: &mut CliErrorFormatter,
+) -> i32 {
+    let result = dispatch_inner(cmd, print_logs, config).await;
+    if result != 0 {
+        error_fmt.has_errors = true;
+    }
+    result
+}
+
+/// Inner dispatch without error formatting — called by [`dispatch`].
+async fn dispatch_inner(
+    cmd: &Commands,
+    print_logs: bool,
+    config: &rustcode_core::config::Info,
+) -> i32 {
     match cmd {
         Commands::Acp(args) => cmd_acp(args, config).await,
         Commands::Mcp { cmd: mcp_cmd } => cmd_mcp(mcp_cmd).await,
@@ -1423,33 +1455,33 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
 
     // ── validation ──────────────────────────────────────────────────
     if msg.is_empty() && args.command.is_none() && !args.interactive {
-        eprintln!("Error: You must provide a message or a command");
+        cli_error::format_cli_error("You must provide a message or a command");
         return 1;
     }
     if args.interactive && args.command.is_some() {
-        eprintln!("Error: --interactive cannot be used with --command");
+        cli_error::format_cli_error("--interactive cannot be used with --command");
         return 1;
     }
     if args.demo && !args.interactive {
-        eprintln!("Error: --demo requires --interactive");
+        cli_error::format_cli_error("--demo requires --interactive");
         return 1;
     }
     if args.interactive && args.format == "json" {
-        eprintln!("Error: --interactive cannot be used with --format json");
+        cli_error::format_cli_error("--interactive cannot be used with --format json");
         return 1;
     }
     if args.replay_limit.is_some() && !args.interactive {
-        eprintln!("Error: --replay-limit requires --interactive");
+        cli_error::format_cli_error("--replay-limit requires --interactive");
         return 1;
     }
     if let Some(limit) = args.replay_limit {
         if limit == 0 {
-            eprintln!("Error: --replay-limit must be a positive integer");
+            cli_error::format_cli_error("--replay-limit must be a positive integer");
             return 1;
         }
     }
     if args.fork && !args.r#continue && args.session.is_none() {
-        eprintln!("Error: --fork requires --continue or --session");
+        cli_error::format_cli_error("--fork requires --continue or --session");
         return 1;
     }
 
@@ -1465,21 +1497,23 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to initialize runtime: {e}");
+            cli_error::format_provider_init_error("runtime", &e.to_string());
             return 1;
         }
     };
     let providers = ctx.providers;
 
     if providers.is_empty() {
-        eprintln!("No LLM providers detected. Set an API key environment variable:");
-        eprintln!("  ANTHROPIC_API_KEY              — Claude (Anthropic)");
-        eprintln!("  OPENAI_API_KEY                 — GPT (OpenAI)");
-        eprintln!("  GOOGLE_GENERATIVE_AI_API_KEY   — Gemini (Google)");
-        eprintln!("  OPENROUTER_API_KEY             — OpenRouter (multi-provider)");
-        eprintln!("  DEEPSEEK_API_KEY               — DeepSeek");
-        eprintln!("  GROQ_API_KEY                   — Groq");
-        eprintln!("  ...and more (see docs for full list)");
+        cli_error::format_cli_error(
+            "No LLM providers detected. Set an API key environment variable.",
+        );
+        eprintln!("{}  ANTHROPIC_API_KEY              — Claude (Anthropic){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  OPENAI_API_KEY                 — GPT (OpenAI){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  GOOGLE_GENERATIVE_AI_API_KEY   — Gemini (Google){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  OPENROUTER_API_KEY             — OpenRouter (multi-provider){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  DEEPSEEK_API_KEY               — DeepSeek{}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  GROQ_API_KEY                   — Groq{}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  ...and more (see docs for full list){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
         return 1;
     }
 
@@ -1488,10 +1522,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
         match providers.get(pid) {
             Some(p) => (pid.to_string(), Arc::clone(p)),
             None => {
-                eprintln!("Error: provider '{pid}' not found. Available:");
-                for id in providers.keys() {
-                    eprintln!("  - {id}");
-                }
+                cli_error::format_provider_model_not_found("", pid);
                 return 1;
             }
         }
@@ -1508,13 +1539,13 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     let models = match provider.list_models().await {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Failed to list models for {provider_id}: {e}");
+            cli_error::format_provider_init_error(provider_id, &e.to_string());
             return 1;
         }
     };
 
     if models.is_empty() {
-        eprintln!("No models available for provider '{provider_id}'.");
+        cli_error::format_provider_model_not_found("", provider_id);
         return 1;
     }
 
@@ -1522,10 +1553,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
         match models.iter().find(|m| m.id == mf) {
             Some(m) => m,
             None => {
-                eprintln!("Model '{mf}' not found for provider '{provider_id}'. Available:");
-                for m in &models {
-                    eprintln!("  - {}", m.id);
-                }
+                cli_error::format_provider_model_not_found(mf, provider_id);
                 return 1;
             }
         }
@@ -2363,7 +2391,7 @@ fn handle_sse_event(
 /// Ported from: `packages/opencode/src/cli/cmd/tui.ts`
 async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::config::Info) -> i32 {
     if args.fork && !args.r#continue && args.session.is_none() {
-        eprintln!("Error: --fork requires --continue or --session");
+        cli_error::format_cli_error("--fork requires --continue or --session");
         return 1;
     }
 
@@ -2414,21 +2442,23 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
     let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to initialize runtime: {e}");
+            cli_error::format_provider_init_error("runtime", &e.to_string());
             return 1;
         }
     };
 
     if ctx.providers.is_empty() && !args.json {
-        eprintln!("No LLM providers detected. Set an API key environment variable:");
-        eprintln!("  ANTHROPIC_API_KEY              — Claude (Anthropic)");
-        eprintln!("  OPENAI_API_KEY                 — GPT (OpenAI)");
-        eprintln!("  GOOGLE_GENERATIVE_AI_API_KEY   — Gemini (Google)");
-        eprintln!("  OPENROUTER_API_KEY             — OpenRouter (multi-provider)");
-        eprintln!("  DEEPSEEK_API_KEY               — DeepSeek");
-        eprintln!("  GROQ_API_KEY                   — Groq");
+        cli_error::format_cli_error(
+            "No LLM providers detected. Set an API key environment variable.",
+        );
+        eprintln!("{}  ANTHROPIC_API_KEY              — Claude (Anthropic){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  OPENAI_API_KEY                 — GPT (OpenAI){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  GOOGLE_GENERATIVE_AI_API_KEY   — Gemini (Google){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  OPENROUTER_API_KEY             — OpenRouter (multi-provider){}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  DEEPSEEK_API_KEY               — DeepSeek{}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
+        eprintln!("{}  GROQ_API_KEY                   — Groq{}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
         eprintln!();
-        eprintln!("Continuing in offline mode — prompts will not call an LLM.");
+        eprintln!("{}Continuing in offline mode — prompts will not call an LLM.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
     }
 
     let bus = ctx.bus.clone();
@@ -2604,7 +2634,7 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
     };
 
     if std::env::var("OPENCODE_SERVER_PASSWORD").is_err() {
-        eprintln!("Warning: OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.");
+        eprintln!("{}Warning: OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
     }
 
     eprintln!(
@@ -2617,7 +2647,7 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
     let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to initialize runtime: {e}");
+            cli_error::format_provider_init_error("runtime", &e.to_string());
             return 1;
         }
     };
@@ -2634,11 +2664,11 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
 
     match rustcode_server::serve(state, config).await {
         Ok(_) => {
-            eprintln!("Server shut down.");
+            eprintln!("{}Server shut down.{}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
             0
         }
         Err(e) => {
-            eprintln!("Failed to start server: {e}");
+            cli_error::format_cli_error(&format!("Failed to start server: {e}"));
             1
         }
     }
@@ -2747,7 +2777,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
     };
 
     if std::env::var("OPENCODE_SERVER_PASSWORD").is_err() {
-        eprintln!("!  OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.");
+        eprintln!("{}!  OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
     }
 
     let port = if args.port == 0 { 4096u16 } else { args.port };
@@ -2776,7 +2806,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
     let ctx = match rustcode_core::runtime::initialize_runtime(config) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("Failed to initialize runtime: {e}");
+            cli_error::format_provider_init_error("runtime", &e.to_string());
             return 1;
         }
     };
@@ -2794,7 +2824,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
     match rustcode_server::serve(state, config).await {
         Ok(_) => 0,
         Err(e) => {
-            eprintln!("Server error: {e}");
+            cli_error::format_cli_error(&format!("Server error: {e}"));
             1
         }
     }
@@ -8087,7 +8117,7 @@ async fn cmd_db(args: &DbArgs) -> i32 {
 /// Ported from: `packages/opencode/src/cli/cmd/attach.ts`
 async fn cmd_attach(args: &AttachArgs) -> i32 {
     if args.fork && !args.r#continue && args.session.is_none() {
-        eprintln!("Error: --fork requires --continue or --session");
+        cli_error::format_cli_error("--fork requires --continue or --session");
         return 1;
     }
 
