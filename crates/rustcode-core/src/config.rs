@@ -28,7 +28,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 
 // ── Top-level config service ────────────────────────────────────────────
@@ -2462,27 +2462,177 @@ pub fn deduplicate_plugin_origins(plugins: Vec<PluginOrigin>) -> Vec<PluginOrigi
     result
 }
 
+// ── Frontmatter parsing for markdown config files ────────────────────
+
+/// Parse YAML frontmatter from markdown text.
+///
+/// Looks for `---\n` delimiters at the start of the content.
+/// Returns the parsed frontmatter as a HashMap and the body text.
+///
+/// Falls back to sanitizing frontmatter for unquoted colons in values
+/// (common in other coding agent configs) before retrying YAML parse.
+///
+/// # Source
+/// Ported from `packages/core/src/config/markdown.ts` `ConfigMarkdown.parse`
+/// and `packages/opencode/src/config/markdown.ts` `ConfigMarkdown.parse`.
+pub fn parse_frontmatter(text: &str) -> Option<(HashMap<String, serde_json::Value>, String)> {
+    let text = text.trim();
+    if !text.starts_with("---") {
+        return None;
+    }
+
+    // Skip past opening ---
+    let rest = &text[3..];
+    let rest = rest.strip_prefix('\n').or_else(|| rest.strip_prefix("\r\n"))?;
+
+    // Find the closing ---
+    let closing = rest.find("\n---")?;
+    let frontmatter_str = &rest[..closing];
+    let after_closing = &rest[closing + 4..];
+    let body = after_closing.trim().to_string();
+
+    // Try to parse YAML; fallback to sanitization for unquoted colons
+    match serde_yaml::from_str::<HashMap<String, serde_json::Value>>(frontmatter_str) {
+        Ok(data) => Some((data, body)),
+        Err(_) => sanitize_frontmatter(frontmatter_str)
+            .and_then(|s| serde_yaml::from_str::<HashMap<String, serde_json::Value>>(&s).ok())
+            .map(|data| (data, body)),
+    }
+}
+
+/// Sanitize frontmatter to handle unquoted colons in values
+/// (common in other coding agent configs).
+///
+/// Converts lines like `description: foo: bar` to block scalar syntax:
+/// ```yaml
+/// description: |-
+///   foo: bar
+/// ```
+///
+/// # Source
+/// Ported from `packages/core/src/config/markdown.ts` `ConfigMarkdown.sanitize`.
+fn sanitize_frontmatter(frontmatter: &str) -> Option<String> {
+    let mut result: Vec<String> = Vec::new();
+    for line in frontmatter.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || trimmed.is_empty() || line.starts_with(' ') || line.starts_with('\t') {
+            result.push(line.to_string());
+            continue;
+        }
+        if let Some(colon_pos) = line.find(':') {
+            let key_part = &line[..colon_pos];
+            let key_trimmed = key_part.trim();
+            if key_trimmed.is_empty() || !key_trimmed.chars().next().map_or(false, |c| c.is_alphabetic() || c == '_') {
+                result.push(line.to_string());
+                continue;
+            }
+            let value = line[colon_pos + 1..].trim();
+            if value.is_empty()
+                || value == ">"
+                || value == "|"
+                || value.starts_with('"')
+                || value.starts_with('\'')
+                || !value.contains(':')
+            {
+                result.push(line.to_string());
+            } else {
+                result.push(format!("{}: |-", key_trimmed));
+                result.push(format!("  {}", value));
+            }
+        } else {
+            result.push(line.to_string());
+        }
+    }
+    Some(result.join("\n"))
+}
+
+/// Parse an agent markdown file into an [`AgentConfig`].
+///
+/// Reads the file, extracts YAML frontmatter, and uses body as prompt.
+/// The config name is derived from the filename if not in frontmatter.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/agent.ts` `ConfigAgent.load`
+/// (lines 11–32).
+pub fn parse_agent_md(path: &Path) -> crate::error::Result<AgentConfig> {
+    let text = std::fs::read_to_string(path).map_err(crate::error::Error::Io)?;
+
+    let (frontmatter, body) = parse_frontmatter(&text).ok_or_else(|| {
+        crate::error::Error::Config(format!("Missing or invalid frontmatter in {:?}", path))
+    })?;
+
+    let map: serde_json::Map<String, serde_json::Value> = frontmatter.into_iter().collect();
+    let mut config: AgentConfig =
+        serde_json::from_value(serde_json::Value::Object(map)).map_err(|e| {
+            crate::error::Error::Config(format!(
+                "Failed to deserialize agent config from {:?}: {}",
+                path, e
+            ))
+        })?;
+
+    if config.name.is_none() {
+        config.name = path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .map(|s| s.to_string());
+    }
+
+    config.prompt = Some(body);
+    Ok(config)
+}
+
+/// Parse a command markdown file into a [`CommandConfig`].
+///
+/// Reads the file, extracts YAML frontmatter, and uses body as template.
+///
+/// # Source
+/// Ported from `packages/opencode/src/config/command.ts` `ConfigCommand.load`
+/// (lines 13–39).
+pub fn parse_command_md(path: &Path) -> crate::error::Result<CommandConfig> {
+    let text = std::fs::read_to_string(path).map_err(crate::error::Error::Io)?;
+
+    let (frontmatter, body) = parse_frontmatter(&text).ok_or_else(|| {
+        crate::error::Error::Config(format!("Missing or invalid frontmatter in {:?}", path))
+    })?;
+
+    let map: serde_json::Map<String, serde_json::Value> = frontmatter.into_iter().collect();
+    let mut config: CommandConfig =
+        serde_json::from_value(serde_json::Value::Object(map)).map_err(|e| {
+            crate::error::Error::Config(format!(
+                "Failed to deserialize command config from {:?}: {}",
+                path, e
+            ))
+        })?;
+
+    config.template = body;
+    Ok(config)
+}
+
 // ── Agent discovery from .opencode/agent(s) directories ─────────────────
 
 /// Discover agent markdown files under `.opencode/agent/` or `.opencode/agents/`.
 ///
-/// Returns a list of (agent_name, file_path) tuples.
-/// Actual markdown parsing uses the markdown module.
+/// Returns parsed [`AgentConfig`] entries.
 ///
 /// # Source
 /// Ported from `packages/opencode/src/config/agent.ts` lines 11–32
 /// (`ConfigAgent.load`).
-pub fn discover_agent_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
-    let mut files = Vec::new();
+pub fn discover_agent_files(dir: &Path) -> crate::error::Result<Vec<AgentConfig>> {
+    let mut agents = Vec::new();
     for sub in &["agent", "agents"] {
         let agent_dir = dir.join(sub);
         if agent_dir.is_dir() {
             if let Ok(entries) = find_files_recursive(&agent_dir, "md") {
-                files.extend(entries);
+                for path_str in entries {
+                    let path = Path::new(&path_str);
+                    if let Ok(config) = parse_agent_md(path) {
+                        agents.push(config);
+                    }
+                }
             }
         }
     }
-    Ok(files)
+    Ok(agents)
 }
 
 /// Discover mode markdown files under `.opencode/mode/` or `.opencode/modes/`.
@@ -2490,7 +2640,7 @@ pub fn discover_agent_files(dir: &std::path::Path) -> std::io::Result<Vec<String
 /// # Source
 /// Ported from `packages/opencode/src/config/agent.ts` lines 34–59
 /// (`ConfigAgent.loadMode`).
-pub fn discover_mode_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
+pub fn discover_mode_files(dir: &Path) -> crate::error::Result<Vec<String>> {
     let mut files = Vec::new();
     for sub in &["mode", "modes"] {
         let mode_dir = dir.join(sub);
@@ -2505,20 +2655,27 @@ pub fn discover_mode_files(dir: &std::path::Path) -> std::io::Result<Vec<String>
 
 /// Discover command markdown files under `.opencode/command/` or `.opencode/commands/`.
 ///
+/// Returns parsed [`CommandConfig`] entries.
+///
 /// # Source
 /// Ported from `packages/opencode/src/config/command.ts` lines 13–39
 /// (`ConfigCommand.load`).
-pub fn discover_command_files(dir: &std::path::Path) -> std::io::Result<Vec<String>> {
-    let mut files = Vec::new();
+pub fn discover_command_files(dir: &Path) -> crate::error::Result<Vec<CommandConfig>> {
+    let mut commands = Vec::new();
     for sub in &["command", "commands"] {
         let cmd_dir = dir.join(sub);
         if cmd_dir.is_dir() {
             if let Ok(entries) = find_files_recursive(&cmd_dir, "md") {
-                files.extend(entries);
+                for path_str in entries {
+                    let path = Path::new(&path_str);
+                    if let Ok(config) = parse_command_md(path) {
+                        commands.push(config);
+                    }
+                }
             }
         }
     }
-    Ok(files)
+    Ok(commands)
 }
 
 /// Recursively find files with a given extension under a directory.

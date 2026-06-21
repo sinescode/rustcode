@@ -593,6 +593,217 @@ pub fn watcher_backend() -> Option<WatcherBackend> {
     }
 }
 
+// ── FileWatcher — runtime ─────────────────────────────────────────────────
+// Ported from: packages/core/src/filesystem/watcher.ts lines 32–142
+
+use notify::{Event as NotifyEvent, EventKind as NotifyEventKind, RecursiveMode, Watcher};
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
+
+/// The debounce window for coalescing rapid filesystem events (milliseconds).
+///
+/// # Source
+/// Ported from the implicit debounce in `packages/core/src/filesystem/watcher.ts`.
+const DEBOUNCE_WINDOW_MS: u64 = 100;
+
+/// A filesystem watcher that monitors directories and publishes events
+/// on the global event bus.
+///
+/// Wraps [`notify::RecommendedWatcher`] and provides:
+/// - Recursive directory watching
+/// - Ignore-pattern filtering via [`is_ignored`]
+/// - Protected path filtering via [`protected_paths`]
+/// - Debounce coalescing (rapid events on the same file within 100 ms)
+///
+/// # Source
+/// Ported from `packages/core/src/filesystem/watcher.ts` lines 32–142.
+pub struct FileWatcher {
+    /// The underlying notify watcher.
+    inner: notify::RecommendedWatcher,
+    /// Event bus for publishing watcher events.
+    event_bus: SharedBus,
+    /// Directories currently being watched (for relative-path computation).
+    roots: Arc<StdMutex<Vec<PathBuf>>>,
+    /// Debounce map: path → (latest event kind, timestamp).
+    debounce: Arc<StdMutex<HashMap<PathBuf, (WatcherEventKind, Instant)>>>,
+    /// Protected path prefixes from [`protected_paths`].
+    protected: Vec<String>,
+}
+
+impl FileWatcher {
+    /// Create a new `FileWatcher`.
+    ///
+    /// Spawns a background task that flushes debounced events every
+    /// `DEBOUNCE_WINDOW_MS` milliseconds.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/filesystem/watcher.ts` `layer` (lines 63–133).
+    pub fn new(event_bus: SharedBus) -> Result<Self, Box<dyn std::error::Error>> {
+        let roots: Arc<StdMutex<Vec<PathBuf>>> = Arc::new(StdMutex::new(Vec::new()));
+        let debounce: Arc<StdMutex<HashMap<PathBuf, (WatcherEventKind, Instant)>>> =
+            Arc::new(StdMutex::new(HashMap::new()));
+        let protected = protected_paths();
+
+        let event_bus_clone = event_bus.clone();
+        let debounce_clone = Arc::clone(&debounce);
+
+        // Spawn background task to flush debounced events every 100 ms
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(DEBOUNCE_WINDOW_MS));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+            loop {
+                interval.tick().await;
+                let mut map = match debounce_clone.lock() {
+                    Ok(guard) => guard,
+                    Err(_) => continue,
+                };
+                if map.is_empty() {
+                    continue;
+                }
+                for (path, (kind, _ts)) in map.drain() {
+                    let file = path.to_string_lossy().to_string();
+                    let event_tag = match kind {
+                        WatcherEventKind::Add => "add",
+                        WatcherEventKind::Change => "change",
+                        WatcherEventKind::Unlink => "unlink",
+                    };
+                    let payload = serde_json::json!({
+                        "type": "file.watcher.updated",
+                        "file": file,
+                        "event": event_tag,
+                    });
+                    let _ = event_bus_clone.publish(GlobalEvent::new(payload));
+                }
+            }
+        });
+
+        let roots_for_cb = Arc::clone(&roots);
+        let debounce_for_cb = Arc::clone(&debounce);
+        let protected_for_cb = protected.clone();
+
+        let event_handler = move |res: Result<NotifyEvent, notify::Error>| {
+            let notify_event = match res {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+
+            let path = match notify_event.paths.first() {
+                Some(p) => p.clone(),
+                None => return,
+            };
+
+            // Filter protected paths
+            let path_str = path.to_string_lossy();
+            for p in &protected_for_cb {
+                if path_str.starts_with(p.as_str()) {
+                    return;
+                }
+            }
+
+            // Filter ignored paths
+            let roots_guard = match roots_for_cb.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            let ignored = roots_guard.iter().any(|root| {
+                if let Ok(rel) = path.strip_prefix(root) {
+                    let rel_str = rel.to_string_lossy();
+                    is_ignored(&rel_str, None)
+                } else {
+                    false
+                }
+            });
+            if ignored {
+                return;
+            }
+            drop(roots_guard);
+
+            // Convert notify event kind to our WatcherEventKind
+            let kind = match notify_event.kind {
+                NotifyEventKind::Create(_) => WatcherEventKind::Add,
+                NotifyEventKind::Modify(_) => WatcherEventKind::Change,
+                NotifyEventKind::Remove(_) => WatcherEventKind::Unlink,
+                _ => return,
+            };
+
+            // Debounce: update the entry (promote kind if needed)
+            let mut map = match debounce_for_cb.lock() {
+                Ok(g) => g,
+                Err(_) => return,
+            };
+            match map.get_mut(&path) {
+                Some((existing_kind, ts)) => {
+                    *existing_kind = merge_kinds(*existing_kind, kind);
+                    *ts = Instant::now();
+                }
+                None => {
+                    map.insert(path, (kind, Instant::now()));
+                }
+            }
+        };
+
+        let inner = notify::recommended_watcher(event_handler)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+
+        Ok(Self {
+            inner,
+            event_bus,
+            roots,
+            debounce,
+            protected,
+        })
+    }
+
+    /// Watch a directory recursively.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/filesystem/watcher.ts` `subscribe()` (lines 100–110).
+    pub fn watch(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let canonical = path.to_path_buf();
+        self.inner
+            .watch(&canonical, RecursiveMode::Recursive)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        if let Ok(mut roots) = self.roots.lock() {
+            roots.push(canonical);
+        }
+        Ok(())
+    }
+
+    /// Unwatch a directory.
+    ///
+    /// # Source
+    /// Ported from `packages/core/src/filesystem/watcher.ts` `subscription.unsubscribe()`.
+    pub fn unwatch(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+        let canonical = path.to_path_buf();
+        self.inner
+            .unwatch(&canonical)
+            .map_err(|e| Box::new(e) as Box<dyn std::error::Error>)?;
+        if let Ok(mut roots) = self.roots.lock() {
+            roots.retain(|r| r != &canonical);
+        }
+        Ok(())
+    }
+}
+
+/// Merge two event kinds during debounce.
+///
+/// Rules:
+/// - Create + anything → Create (file was created)
+/// - Anything + Delete → Delete (file is now gone)
+/// - Otherwise keep the newer kind
+///
+/// # Source
+/// Ported from debounce logic in `packages/core/src/filesystem/watcher.ts`.
+fn merge_kinds(a: WatcherEventKind, b: WatcherEventKind) -> WatcherEventKind {
+    match (a, b) {
+        (WatcherEventKind::Add, _) | (_, WatcherEventKind::Add) => WatcherEventKind::Add,
+        (_, WatcherEventKind::Unlink) => WatcherEventKind::Unlink,
+        _ => b,
+    }
+}
+
 // ── Filesystem event ──────────────────────────────────────────────────────
 // Ported from: packages/core/src/filesystem.ts
 

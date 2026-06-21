@@ -7817,35 +7817,165 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
     println!("  Force:  {force}");
     println!();
 
-    // TS: Uses npm/pnpm/bun to install the package, then updates
-    // opencode.json config with the plugin entry.
-    //
-    // Plugin installation steps (from TS source):
-    //   1. Install npm package (npm install / pnpm add / bun add)
-    //   2. Read plugin manifest (package.json exports/oc-themes)
-    //   3. Update opencode.json(c) plugin config
+    // ── 1. Parse spec, determine source, check deprecation ──
+    let source = rustcode_core::plugin::plugin_source(module);
+    let is_npm = source == rustcode_core::plugin::PluginSource::Npm;
 
-    // Detect package manager
-    let pm = detect_package_manager();
-    eprintln!("Detected package manager: {pm}");
+    if rustcode_core::plugin::is_deprecated_plugin(module) {
+        eprintln!("Warning: `{module}` is deprecated and now built-in.");
+    }
 
-    // In the full implementation, this would:
-    //   1. Run `{pm} install {module}` or `{pm} add {module}`
-    //   2. Read the installed package's manifest
-    //   3. Determine plugin targets (server, tui)
-    //   4. Update opencode.json(c) to register the plugin
+    let parsed = rustcode_core::plugin::parse_specifier(module);
+
+    // ── 2. Install npm package or validate file path ─────────
+    let plugin_dir = if is_npm {
+        let pm = match detect_package_manager() {
+            "npm (not found)" => {
+                eprintln!("Error: no package manager found (bun, pnpm, or npm)");
+                return 1;
+            }
+            other => other,
+        };
+        eprintln!("Package manager: {pm}");
+
+        let add_cmd = match pm {
+            "bun" | "pnpm" => "add",
+            _ => "install",
+        };
+
+        eprintln!("Running: {pm} {add_cmd} {module}");
+        let status = std::process::Command::new(pm)
+            .arg(add_cmd)
+            .arg(module)
+            .stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit())
+            .status();
+
+        match status {
+            Ok(s) if s.success() => {
+                eprintln!("Package installed successfully.");
+            }
+            Ok(s) => {
+                eprintln!("Error: {pm} exited with code {}", s.code().unwrap_or(-1));
+                return 1;
+            }
+            Err(e) => {
+                eprintln!("Error: failed to run {pm}: {e}");
+                return 1;
+            }
+        }
+
+        let node_modules = std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("."))
+            .join("node_modules");
+        let dir = node_modules.join(&parsed.pkg);
+        if !dir.exists() {
+            eprintln!("Warning: package directory not found at {}", dir.display());
+        }
+        dir
+    } else {
+        let path_str = module.strip_prefix("file://").unwrap_or(module);
+        let dir = PathBuf::from(path_str);
+        if !dir.exists() {
+            eprintln!("Error: plugin path not found: {}", dir.display());
+            return 1;
+        }
+        if !dir.is_dir() {
+            eprintln!("Error: plugin path is not a directory: {}", dir.display());
+            return 1;
+        }
+        eprintln!("Plugin directory: {}", dir.display());
+        dir
+    };
+
+    // ── 3. Read package.json ────────────────────────────────
+    let pkg = match rustcode_core::plugin::read_plugin_package(&plugin_dir) {
+        Ok(pkg) => pkg,
+        Err(e) => {
+            eprintln!("Error reading plugin package: {e}");
+            return 1;
+        }
+    };
+
+    let plugin_id = rustcode_core::plugin::resolve_plugin_id(&pkg)
+        .unwrap_or_else(|| parsed.pkg.clone());
+    let plugin_version = pkg.version.as_deref().unwrap_or("unknown");
+
+    eprintln!("Plugin ID:      {plugin_id}");
+    eprintln!("Plugin version: {plugin_version}");
+
+    // ── 4. Compatibility check (engines.opencode) ───────────
+    if let Err(e) =
+        rustcode_core::plugin::check_plugin_compatibility(&pkg, env!("CARGO_PKG_VERSION"))
+    {
+        eprintln!("Warning: {e}");
+        if !force {
+            eprintln!("Use --force to install anyway.");
+            return 1;
+        }
+        eprintln!("Proceeding (forced).");
+    }
+
+    // ── 5. Read plugin manifest → determine targets ─────────
+    let targets = match rustcode_core::plugin::read_plugin_manifest(&plugin_dir) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("Error reading plugin manifest: {e}");
+            return 1;
+        }
+    };
+
+    print!("Detected targets:");
+    for t in &targets {
+        print!(" {}", t.kind);
+    }
+    println!();
+
+    // ── 6. Patch opencode config to register the plugin ─────
+    let config_dir = if args.global {
+        dirs::config_dir()
+            .map(|d| d.join("opencode"))
+            .unwrap_or_else(|| PathBuf::from(".opencode"))
+    } else {
+        PathBuf::from(".opencode")
+    };
+
+    match rustcode_core::plugin::patch_plugin_config(&config_dir, module, &targets, force) {
+        Ok(results) => {
+            for (kind, path) in &results {
+                eprintln!("Patched config ({kind}): {path}");
+            }
+        }
+        Err(e) => {
+            eprintln!("Error patching config: {e}");
+            return 1;
+        }
+    }
+
+    // ── 7. Save plugin metadata ────────────────────────────
+    let mut meta_manager = rustcode_core::plugin::PluginManager::new();
+    if let Some(meta_path) = rustcode_core::plugin::PluginManager::default_meta_path() {
+        let _ = meta_manager.load_meta(&meta_path);
+        meta_manager.touch_meta(
+            &plugin_id,
+            source,
+            module,
+            &plugin_dir.display().to_string(),
+            if is_npm { Some(&parsed.version) } else { None },
+            pkg.version.as_deref(),
+            None,
+        );
+        if let Err(e) = meta_manager.save_meta(&meta_path) {
+            eprintln!("Warning: failed to save plugin metadata: {e}");
+        }
+    }
 
     eprintln!();
-    eprintln!("Plugin installation from npm/registry not yet wired.");
-    eprintln!("When available, plugins can add:");
-    eprintln!("  - TUI themes and extensions");
-    eprintln!("  - Custom provider integrations");
-    eprintln!("  - Additional tool implementations");
-    eprintln!("  - MCP server wrappers");
-    eprintln!();
-    eprintln!("For now, manually add plugin configuration to opencode.json(c):");
-    eprintln!(r#"  {{ "plugin": {{ "{module}": {{ }} }} }}"#);
-
+    eprintln!("Plugin `{module}` installed successfully.");
+    let target_str: Vec<String> = targets.iter().map(|t| t.kind.to_string()).collect();
+    eprintln!("  ID:      {plugin_id}");
+    eprintln!("  Version: {plugin_version}");
+    eprintln!("  Targets: {}", target_str.join(", "));
     0
 }
 

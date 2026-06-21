@@ -1913,6 +1913,961 @@ impl DatabaseService {
 
         Ok(())
     }
+
+    // ── Project CRUD ─────────────────────────────────────────────────
+
+    /// List all projects.
+    pub async fn list_projects(&self) -> Result<Vec<ProjectRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, ProjectRowRaw>(
+            "SELECT id, worktree, vcs, name, icon_url, icon_url_override, icon_color, \
+             time_created, time_updated, time_initialized, sandboxes, commands \
+             FROM project ORDER BY time_created DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list projects: {e}")))?;
+
+        Ok(rows.into_iter().map(ProjectRowRaw::into_row).collect())
+    }
+
+    /// Get a single project by ID.
+    pub async fn get_project(&self, id: &str) -> Result<Option<ProjectRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, ProjectRowRaw>(
+            "SELECT id, worktree, vcs, name, icon_url, icon_url_override, icon_color, \
+             time_created, time_updated, time_initialized, sandboxes, commands \
+             FROM project WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get project: {e}")))?;
+
+        Ok(row.map(ProjectRowRaw::into_row))
+    }
+
+    /// Insert a new project.
+    pub async fn insert_project(
+        &self,
+        id: &str,
+        worktree: &str,
+        vcs: Option<&str>,
+        name: Option<&str>,
+        icon_url: Option<&str>,
+        icon_url_override: Option<&str>,
+        icon_color: Option<&str>,
+        time_created: i64,
+        time_updated: i64,
+        time_initialized: Option<i64>,
+        sandboxes: &str,
+        commands: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO project (id, worktree, vcs, name, icon_url, icon_url_override, icon_color, \
+             time_created, time_updated, time_initialized, sandboxes, commands) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )
+        .bind(id)
+        .bind(worktree)
+        .bind(vcs)
+        .bind(name)
+        .bind(icon_url)
+        .bind(icon_url_override)
+        .bind(icon_color)
+        .bind(time_created)
+        .bind(time_updated)
+        .bind(time_initialized)
+        .bind(sandboxes)
+        .bind(commands)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert project: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a project's mutable fields.
+    pub async fn update_project(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        icon_url: Option<&str>,
+        icon_url_override: Option<&str>,
+        icon_color: Option<&str>,
+        vcs: Option<&str>,
+        commands: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE project SET time_updated = ?2, \
+             name = COALESCE(?3, name), \
+             icon_url = COALESCE(?4, icon_url), \
+             icon_url_override = COALESCE(?5, icon_url_override), \
+             icon_color = COALESCE(?6, icon_color), \
+             vcs = COALESCE(?7, vcs), \
+             commands = COALESCE(?8, commands) \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(now)
+        .bind(name)
+        .bind(icon_url)
+        .bind(icon_url_override)
+        .bind(icon_color)
+        .bind(vcs)
+        .bind(commands)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update project: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a project by ID.
+    pub async fn delete_project(&self, id: &str) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM project WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete project: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("project {id}")));
+        }
+        Ok(())
+    }
+
+    // ── Project Directory CRUD ───────────────────────────────────────
+
+    /// List directories for a project.
+    pub async fn list_project_directories(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<ProjectDirectoryRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, ProjectDirectoryRowRaw>(
+            "SELECT project_id, directory, type, strategy, time_created \
+             FROM project_directory WHERE project_id = ?1 ORDER BY directory ASC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list project directories: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(ProjectDirectoryRowRaw::into_row)
+            .collect())
+    }
+
+    /// Insert a project directory.
+    pub async fn insert_project_directory(
+        &self,
+        project_id: &str,
+        directory: &str,
+        dir_type: Option<&str>,
+        strategy: Option<&str>,
+        time_created: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO project_directory (project_id, directory, type, strategy, time_created) \
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(project_id)
+        .bind(directory)
+        .bind(dir_type)
+        .bind(strategy)
+        .bind(time_created)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert project directory: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a project directory by project_id and directory.
+    pub async fn delete_project_directory(
+        &self,
+        project_id: &str,
+        directory: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query(
+            "DELETE FROM project_directory WHERE project_id = ?1 AND directory = ?2",
+        )
+        .bind(project_id)
+        .bind(directory)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("delete project directory: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!(
+                "project_directory {project_id}/{directory}"
+            )));
+        }
+        Ok(())
+    }
+
+    // ── Account CRUD ─────────────────────────────────────────────────
+
+    /// List all accounts.
+    pub async fn list_accounts(&self) -> Result<Vec<AccountRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, AccountRowRaw>(
+            "SELECT id, email, url, access_token, refresh_token, token_expiry, \
+             time_created, time_updated FROM account ORDER BY time_created DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list accounts: {e}")))?;
+
+        Ok(rows.into_iter().map(AccountRowRaw::into_row).collect())
+    }
+
+    /// Get a single account by ID.
+    pub async fn get_account(&self, id: &str) -> Result<Option<AccountRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, AccountRowRaw>(
+            "SELECT id, email, url, access_token, refresh_token, token_expiry, \
+             time_created, time_updated FROM account WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get account: {e}")))?;
+
+        Ok(row.map(AccountRowRaw::into_row))
+    }
+
+    /// Insert a new account.
+    pub async fn insert_account(
+        &self,
+        id: &str,
+        email: &str,
+        url: &str,
+        access_token: &str,
+        refresh_token: &str,
+        token_expiry: Option<i64>,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO account (id, email, url, access_token, refresh_token, token_expiry, time_created, time_updated) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(id)
+        .bind(email)
+        .bind(url)
+        .bind(access_token)
+        .bind(refresh_token)
+        .bind(token_expiry)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert account: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update an account's tokens and optional fields.
+    pub async fn update_account(
+        &self,
+        id: &str,
+        access_token: Option<&str>,
+        refresh_token: Option<&str>,
+        token_expiry: Option<i64>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE account SET time_updated = ?2, \
+             access_token = COALESCE(?3, access_token), \
+             refresh_token = COALESCE(?4, refresh_token), \
+             token_expiry = COALESCE(?5, token_expiry) \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(now)
+        .bind(access_token)
+        .bind(refresh_token)
+        .bind(token_expiry)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update account: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete an account by ID.
+    pub async fn delete_account(&self, id: &str) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM account WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete account: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("account {id}")));
+        }
+        Ok(())
+    }
+
+    // ── Account State CRUD (singleton row, id = 1) ───────────────────
+
+    /// Get the active account/organization state.
+    pub async fn get_account_state(
+        &self,
+    ) -> Result<Option<AccountStateRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, AccountStateRowRaw>(
+            "SELECT id, active_account_id, active_org_id FROM account_state WHERE id = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get account state: {e}")))?;
+
+        Ok(row.map(AccountStateRowRaw::into_row))
+    }
+
+    /// Insert or replace the active account state (singleton row).
+    pub async fn upsert_account_state(
+        &self,
+        active_account_id: Option<&str>,
+        active_org_id: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO account_state (id, active_account_id, active_org_id) \
+             VALUES (1, ?1, ?2) \
+             ON CONFLICT(id) DO UPDATE SET \
+                active_account_id = excluded.active_account_id, \
+                active_org_id = excluded.active_org_id",
+        )
+        .bind(active_account_id)
+        .bind(active_org_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("upsert account state: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete the account state row.
+    pub async fn delete_account_state(&self) -> Result<(), DatabaseServiceError> {
+        sqlx::query("DELETE FROM account_state WHERE id = 1")
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete account state: {e}")))?;
+
+        Ok(())
+    }
+
+    // ── Control Account CRUD ─────────────────────────────────────────
+
+    /// List all control accounts.
+    pub async fn list_control_accounts(
+        &self,
+    ) -> Result<Vec<ControlAccountRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, ControlAccountRowRaw>(
+            "SELECT email, url, access_token, refresh_token, token_expiry, active, \
+             time_created, time_updated FROM control_account ORDER BY time_created DESC",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list control accounts: {e}")))?;
+
+        Ok(rows
+            .into_iter()
+            .map(ControlAccountRowRaw::into_row)
+            .collect())
+    }
+
+    /// Get a control account by email and url.
+    pub async fn get_control_account(
+        &self,
+        email: &str,
+        url: &str,
+    ) -> Result<Option<ControlAccountRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, ControlAccountRowRaw>(
+            "SELECT email, url, access_token, refresh_token, token_expiry, active, \
+             time_created, time_updated FROM control_account WHERE email = ?1 AND url = ?2",
+        )
+        .bind(email)
+        .bind(url)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get control account: {e}")))?;
+
+        Ok(row.map(ControlAccountRowRaw::into_row))
+    }
+
+    /// Insert a new control account.
+    pub async fn insert_control_account(
+        &self,
+        email: &str,
+        url: &str,
+        access_token: &str,
+        refresh_token: &str,
+        token_expiry: Option<i64>,
+        active: bool,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO control_account (email, url, access_token, refresh_token, token_expiry, active, time_created, time_updated) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(email)
+        .bind(url)
+        .bind(access_token)
+        .bind(refresh_token)
+        .bind(token_expiry)
+        .bind(active)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert control account: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a control account's tokens and active flag.
+    pub async fn update_control_account(
+        &self,
+        email: &str,
+        url: &str,
+        access_token: Option<&str>,
+        refresh_token: Option<&str>,
+        token_expiry: Option<i64>,
+        active: Option<bool>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE control_account SET time_updated = ?3, \
+             access_token = COALESCE(?4, access_token), \
+             refresh_token = COALESCE(?5, refresh_token), \
+             token_expiry = COALESCE(?6, token_expiry), \
+             active = COALESCE(?7, active) \
+             WHERE email = ?1 AND url = ?2",
+        )
+        .bind(email)
+        .bind(url)
+        .bind(now)
+        .bind(access_token)
+        .bind(refresh_token)
+        .bind(token_expiry)
+        .bind(active)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update control account: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a control account by email and url.
+    pub async fn delete_control_account(
+        &self,
+        email: &str,
+        url: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM control_account WHERE email = ?1 AND url = ?2")
+            .bind(email)
+            .bind(url)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete control account: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!(
+                "control_account {email}/{url}"
+            )));
+        }
+        Ok(())
+    }
+
+    // ── Event CRUD ───────────────────────────────────────────────────
+
+    /// Insert an event record.
+    pub async fn insert_event(
+        &self,
+        id: &str,
+        aggregate_id: &str,
+        seq: i64,
+        event_type: &str,
+        data: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO event (id, aggregate_id, seq, type, data) VALUES (?1, ?2, ?3, ?4, ?5)",
+        )
+        .bind(id)
+        .bind(aggregate_id)
+        .bind(seq)
+        .bind(event_type)
+        .bind(data)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert event: {e}")))?;
+
+        Ok(())
+    }
+
+    /// List events for an aggregate after a given sequence number.
+    pub async fn list_events_after(
+        &self,
+        aggregate_id: &str,
+        after_seq: Option<i64>,
+        limit: Option<u32>,
+    ) -> Result<Vec<EventRow>, DatabaseServiceError> {
+        let limit = limit.unwrap_or(500) as i64;
+        let after_seq = after_seq.unwrap_or(0);
+
+        let rows = sqlx::query_as::<_, EventRowRaw>(
+            "SELECT id, aggregate_id, seq, type, data \
+             FROM event WHERE aggregate_id = ?1 AND seq > ?2 \
+             ORDER BY seq ASC LIMIT ?3",
+        )
+        .bind(aggregate_id)
+        .bind(after_seq)
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list events after: {e}")))?;
+
+        Ok(rows.into_iter().map(EventRowRaw::into_row).collect())
+    }
+
+    /// List all events for an aggregate.
+    pub async fn list_events_by_aggregate(
+        &self,
+        aggregate_id: &str,
+    ) -> Result<Vec<EventRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, EventRowRaw>(
+            "SELECT id, aggregate_id, seq, type, data \
+             FROM event WHERE aggregate_id = ?1 ORDER BY seq ASC",
+        )
+        .bind(aggregate_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list events by aggregate: {e}")))?;
+
+        Ok(rows.into_iter().map(EventRowRaw::into_row).collect())
+    }
+
+    // ── Event Sequence CRUD ──────────────────────────────────────────
+
+    /// Get the event sequence record for an aggregate.
+    pub async fn get_event_sequence(
+        &self,
+        aggregate_id: &str,
+    ) -> Result<Option<EventSequenceRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, EventSequenceRowRaw>(
+            "SELECT aggregate_id, seq, owner_id FROM event_sequence WHERE aggregate_id = ?1",
+        )
+        .bind(aggregate_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get event sequence: {e}")))?;
+
+        Ok(row.map(EventSequenceRowRaw::into_row))
+    }
+
+    /// Upsert an event sequence record.
+    pub async fn upsert_event_sequence(
+        &self,
+        aggregate_id: &str,
+        seq: i64,
+        owner_id: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO event_sequence (aggregate_id, seq, owner_id) VALUES (?1, ?2, ?3) \
+             ON CONFLICT(aggregate_id) DO UPDATE SET \
+                seq = excluded.seq, \
+                owner_id = COALESCE(excluded.owner_id, event_sequence.owner_id)",
+        )
+        .bind(aggregate_id)
+        .bind(seq)
+        .bind(owner_id)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("upsert event sequence: {e}")))?;
+
+        Ok(())
+    }
+
+    // ── Permission CRUD ──────────────────────────────────────────────
+
+    /// List all permissions for a project.
+    pub async fn list_permissions(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<PermissionRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, PermissionRowRaw>(
+            "SELECT id, project_id, action, resource, time_created, time_updated \
+             FROM permission WHERE project_id = ?1 ORDER BY time_created ASC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list permissions: {e}")))?;
+
+        Ok(rows.into_iter().map(PermissionRowRaw::into_row).collect())
+    }
+
+    /// Get a single permission by ID.
+    pub async fn get_permission(
+        &self,
+        id: &str,
+    ) -> Result<Option<PermissionRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, PermissionRowRaw>(
+            "SELECT id, project_id, action, resource, time_created, time_updated \
+             FROM permission WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get permission: {e}")))?;
+
+        Ok(row.map(PermissionRowRaw::into_row))
+    }
+
+    /// Insert a new permission.
+    pub async fn insert_permission(
+        &self,
+        id: &str,
+        project_id: &str,
+        action: &str,
+        resource: &str,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO permission (id, project_id, action, resource, time_created, time_updated) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(id)
+        .bind(project_id)
+        .bind(action)
+        .bind(resource)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert permission: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a permission by ID.
+    pub async fn delete_permission(&self, id: &str) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM permission WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete permission: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("permission {id}")));
+        }
+        Ok(())
+    }
+
+    // ── Workspace CRUD ───────────────────────────────────────────────
+
+    /// List all workspaces for a project.
+    pub async fn list_workspaces(
+        &self,
+        project_id: &str,
+    ) -> Result<Vec<WorkspaceRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, WorkspaceRowRaw>(
+            "SELECT id, type, name, branch, directory, extra, project_id, time_used \
+             FROM workspace WHERE project_id = ?1 ORDER BY time_used DESC",
+        )
+        .bind(project_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list workspaces: {e}")))?;
+
+        Ok(rows.into_iter().map(WorkspaceRowRaw::into_row).collect())
+    }
+
+    /// Get a single workspace by ID.
+    pub async fn get_workspace(
+        &self,
+        id: &str,
+    ) -> Result<Option<WorkspaceRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, WorkspaceRowRaw>(
+            "SELECT id, type, name, branch, directory, extra, project_id, time_used \
+             FROM workspace WHERE id = ?1",
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get workspace: {e}")))?;
+
+        Ok(row.map(WorkspaceRowRaw::into_row))
+    }
+
+    /// Insert a new workspace.
+    pub async fn insert_workspace(
+        &self,
+        id: &str,
+        ws_type: &str,
+        name: &str,
+        branch: Option<&str>,
+        directory: Option<&str>,
+        extra: Option<&str>,
+        project_id: &str,
+        time_used: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO workspace (id, type, name, branch, directory, extra, project_id, time_used) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        )
+        .bind(id)
+        .bind(ws_type)
+        .bind(name)
+        .bind(branch)
+        .bind(directory)
+        .bind(extra)
+        .bind(project_id)
+        .bind(time_used)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert workspace: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a workspace's mutable fields.
+    pub async fn update_workspace(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        branch: Option<&str>,
+        directory: Option<&str>,
+        extra: Option<&str>,
+        time_used: Option<i64>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = time_used.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+        sqlx::query(
+            "UPDATE workspace SET \
+             name = COALESCE(?2, name), \
+             branch = COALESCE(?3, branch), \
+             directory = COALESCE(?4, directory), \
+             extra = COALESCE(?5, extra), \
+             time_used = ?6 \
+             WHERE id = ?1",
+        )
+        .bind(id)
+        .bind(name)
+        .bind(branch)
+        .bind(directory)
+        .bind(extra)
+        .bind(now)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update workspace: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a workspace by ID.
+    pub async fn delete_workspace(&self, id: &str) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM workspace WHERE id = ?1")
+            .bind(id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete workspace: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!("workspace {id}")));
+        }
+        Ok(())
+    }
+
+    // ── Session Share CRUD ───────────────────────────────────────────
+
+    /// Get the session share record by session_id.
+    pub async fn get_session_share(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionShareRow>, DatabaseServiceError> {
+        let row = sqlx::query_as::<_, SessionShareRowRaw>(
+            "SELECT session_id, id, secret, url, time_created, time_updated \
+             FROM session_share WHERE session_id = ?1",
+        )
+        .bind(session_id)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("get session share: {e}")))?;
+
+        Ok(row.map(SessionShareRowRaw::into_row))
+    }
+
+    /// Insert a new session share.
+    pub async fn insert_session_share(
+        &self,
+        session_id: &str,
+        id: &str,
+        secret: &str,
+        url: &str,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO session_share (session_id, id, secret, url, time_created, time_updated) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )
+        .bind(session_id)
+        .bind(id)
+        .bind(secret)
+        .bind(url)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert session share: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a session share's secret and url.
+    pub async fn update_session_share(
+        &self,
+        session_id: &str,
+        secret: Option<&str>,
+        url: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE session_share SET time_updated = ?2, \
+             secret = COALESCE(?3, secret), \
+             url = COALESCE(?4, url) \
+             WHERE session_id = ?1",
+        )
+        .bind(session_id)
+        .bind(now)
+        .bind(secret)
+        .bind(url)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update session share: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a session share by session_id.
+    pub async fn delete_session_share(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM session_share WHERE session_id = ?1")
+            .bind(session_id)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete session share: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!(
+                "session_share {session_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    // ── Todo CRUD ────────────────────────────────────────────────────
+
+    /// List all todo items for a session, ordered by position.
+    pub async fn list_todos(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<TodoRow>, DatabaseServiceError> {
+        let rows = sqlx::query_as::<_, TodoRowRaw>(
+            "SELECT session_id, content, status, priority, position, time_created, time_updated \
+             FROM todo WHERE session_id = ?1 ORDER BY position ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("list todos: {e}")))?;
+
+        Ok(rows.into_iter().map(TodoRowRaw::into_row).collect())
+    }
+
+    /// Insert a new todo item.
+    pub async fn insert_todo(
+        &self,
+        session_id: &str,
+        content: &str,
+        status: &str,
+        priority: &str,
+        position: i64,
+        time_created: i64,
+        time_updated: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        sqlx::query(
+            "INSERT INTO todo (session_id, content, status, priority, position, time_created, time_updated) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .bind(session_id)
+        .bind(content)
+        .bind(status)
+        .bind(priority)
+        .bind(position)
+        .bind(time_created)
+        .bind(time_updated)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("insert todo: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Update a todo item's content, status, and priority.
+    pub async fn update_todo(
+        &self,
+        session_id: &str,
+        position: i64,
+        content: Option<&str>,
+        status: Option<&str>,
+        priority: Option<&str>,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query(
+            "UPDATE todo SET time_updated = ?3, \
+             content = COALESCE(?4, content), \
+             status = COALESCE(?5, status), \
+             priority = COALESCE(?6, priority) \
+             WHERE session_id = ?1 AND position = ?2",
+        )
+        .bind(session_id)
+        .bind(position)
+        .bind(now)
+        .bind(content)
+        .bind(status)
+        .bind(priority)
+        .execute(&self.pool)
+        .await
+        .map_err(|e| DatabaseServiceError::Database(format!("update todo: {e}")))?;
+
+        Ok(())
+    }
+
+    /// Delete a todo item by session_id and position.
+    pub async fn delete_todo(
+        &self,
+        session_id: &str,
+        position: i64,
+    ) -> Result<(), DatabaseServiceError> {
+        let rows = sqlx::query("DELETE FROM todo WHERE session_id = ?1 AND position = ?2")
+            .bind(session_id)
+            .bind(position)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("delete todo: {e}")))?;
+
+        if rows.rows_affected() == 0 {
+            return Err(DatabaseServiceError::NotFound(format!(
+                "todo {session_id}/{position}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 // ── Row types for CRUD results ────────────────────────────────────────────
@@ -3200,6 +4155,345 @@ impl ContextEpochRowRaw {
             baseline_seq: self.baseline_seq,
             replacement_seq: self.replacement_seq,
             revision: self.revision,
+        }
+    }
+}
+
+// ── Row types for new tables ──────────────────────────────────────────────
+
+/// A row from the project table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectRow {
+    pub id: String,
+    pub worktree: String,
+    pub vcs: Option<String>,
+    pub name: Option<String>,
+    pub icon_url: Option<String>,
+    pub icon_url_override: Option<String>,
+    pub icon_color: Option<String>,
+    pub time_created: i64,
+    pub time_updated: i64,
+    pub time_initialized: Option<i64>,
+    pub sandboxes: String,
+    pub commands: Option<String>,
+}
+
+/// A row from the project_directory table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectDirectoryRow {
+    pub project_id: String,
+    pub directory: String,
+    pub dir_type: Option<String>,
+    pub strategy: Option<String>,
+    pub time_created: i64,
+}
+
+/// A row from the account table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountRow {
+    pub id: String,
+    pub email: String,
+    pub url: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_expiry: Option<i64>,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+/// A row from the account_state table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AccountStateRow {
+    pub id: i64,
+    pub active_account_id: Option<String>,
+    pub active_org_id: Option<String>,
+}
+
+/// A row from the control_account table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ControlAccountRow {
+    pub email: String,
+    pub url: String,
+    pub access_token: String,
+    pub refresh_token: String,
+    pub token_expiry: Option<i64>,
+    pub active: bool,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+/// A row from the permission table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PermissionRow {
+    pub id: String,
+    pub project_id: String,
+    pub action: String,
+    pub resource: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+/// A row from the workspace table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceRow {
+    pub id: String,
+    pub ws_type: String,
+    pub name: String,
+    pub branch: Option<String>,
+    pub directory: Option<String>,
+    pub extra: Option<String>,
+    pub project_id: String,
+    pub time_used: i64,
+}
+
+/// A row from the session_share table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionShareRow {
+    pub session_id: String,
+    pub id: String,
+    pub secret: String,
+    pub url: String,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+/// A row from the todo table.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TodoRow {
+    pub session_id: String,
+    pub content: String,
+    pub status: String,
+    pub priority: String,
+    pub position: i64,
+    pub time_created: i64,
+    pub time_updated: i64,
+}
+
+// ── sqlx::FromRow compatible raw types for new tables ────────────────────
+
+#[derive(sqlx::FromRow)]
+struct ProjectRowRaw {
+    id: String,
+    worktree: String,
+    vcs: Option<String>,
+    name: Option<String>,
+    icon_url: Option<String>,
+    icon_url_override: Option<String>,
+    icon_color: Option<String>,
+    time_created: i64,
+    time_updated: i64,
+    time_initialized: Option<i64>,
+    sandboxes: String,
+    commands: Option<String>,
+}
+
+impl ProjectRowRaw {
+    fn into_row(self) -> ProjectRow {
+        ProjectRow {
+            id: self.id,
+            worktree: self.worktree,
+            vcs: self.vcs,
+            name: self.name,
+            icon_url: self.icon_url,
+            icon_url_override: self.icon_url_override,
+            icon_color: self.icon_color,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+            time_initialized: self.time_initialized,
+            sandboxes: self.sandboxes,
+            commands: self.commands,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ProjectDirectoryRowRaw {
+    project_id: String,
+    directory: String,
+    #[sqlx(rename = "type")]
+    dir_type: Option<String>,
+    strategy: Option<String>,
+    time_created: i64,
+}
+
+impl ProjectDirectoryRowRaw {
+    fn into_row(self) -> ProjectDirectoryRow {
+        ProjectDirectoryRow {
+            project_id: self.project_id,
+            directory: self.directory,
+            dir_type: self.dir_type,
+            strategy: self.strategy,
+            time_created: self.time_created,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct AccountRowRaw {
+    id: String,
+    email: String,
+    url: String,
+    access_token: String,
+    refresh_token: String,
+    token_expiry: Option<i64>,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl AccountRowRaw {
+    fn into_row(self) -> AccountRow {
+        AccountRow {
+            id: self.id,
+            email: self.email,
+            url: self.url,
+            access_token: self.access_token,
+            refresh_token: self.refresh_token,
+            token_expiry: self.token_expiry,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct AccountStateRowRaw {
+    id: i64,
+    active_account_id: Option<String>,
+    active_org_id: Option<String>,
+}
+
+impl AccountStateRowRaw {
+    fn into_row(self) -> AccountStateRow {
+        AccountStateRow {
+            id: self.id,
+            active_account_id: self.active_account_id,
+            active_org_id: self.active_org_id,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct ControlAccountRowRaw {
+    email: String,
+    url: String,
+    access_token: String,
+    refresh_token: String,
+    token_expiry: Option<i64>,
+    active: bool,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl ControlAccountRowRaw {
+    fn into_row(self) -> ControlAccountRow {
+        ControlAccountRow {
+            email: self.email,
+            url: self.url,
+            access_token: self.access_token,
+            refresh_token: self.refresh_token,
+            token_expiry: self.token_expiry,
+            active: self.active,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct PermissionRowRaw {
+    id: String,
+    project_id: String,
+    action: String,
+    resource: String,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl PermissionRowRaw {
+    fn into_row(self) -> PermissionRow {
+        PermissionRow {
+            id: self.id,
+            project_id: self.project_id,
+            action: self.action,
+            resource: self.resource,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct WorkspaceRowRaw {
+    id: String,
+    #[sqlx(rename = "type")]
+    ws_type: String,
+    name: String,
+    branch: Option<String>,
+    directory: Option<String>,
+    extra: Option<String>,
+    project_id: String,
+    time_used: i64,
+}
+
+impl WorkspaceRowRaw {
+    fn into_row(self) -> WorkspaceRow {
+        WorkspaceRow {
+            id: self.id,
+            ws_type: self.ws_type,
+            name: self.name,
+            branch: self.branch,
+            directory: self.directory,
+            extra: self.extra,
+            project_id: self.project_id,
+            time_used: self.time_used,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct SessionShareRowRaw {
+    session_id: String,
+    id: String,
+    secret: String,
+    url: String,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl SessionShareRowRaw {
+    fn into_row(self) -> SessionShareRow {
+        SessionShareRow {
+            session_id: self.session_id,
+            id: self.id,
+            secret: self.secret,
+            url: self.url,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
+        }
+    }
+}
+
+#[derive(sqlx::FromRow)]
+struct TodoRowRaw {
+    session_id: String,
+    content: String,
+    status: String,
+    priority: String,
+    position: i64,
+    time_created: i64,
+    time_updated: i64,
+}
+
+impl TodoRowRaw {
+    fn into_row(self) -> TodoRow {
+        TodoRow {
+            session_id: self.session_id,
+            content: self.content,
+            status: self.status,
+            priority: self.priority,
+            position: self.position,
+            time_created: self.time_created,
+            time_updated: self.time_updated,
         }
     }
 }

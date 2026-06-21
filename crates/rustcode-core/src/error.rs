@@ -65,6 +65,10 @@ pub enum Error {
     #[error("TOML error: {0}")]
     Toml(#[from] toml::de::Error),
 
+    /// YAML serialization/deserialization error.
+    #[error("YAML error: {0}")]
+    Yaml(#[from] serde_yaml::Error),
+
     // -- Config --
     /// Configuration error.
     #[error("config error: {0}")]

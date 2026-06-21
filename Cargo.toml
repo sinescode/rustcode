@@ -51,6 +51,7 @@ shlex = "1"
 urlencoding = "2"
 walkdir = "2"
 image = "0.25"
+notify = { version = "6", default-features = false, features = [] }
 rustcode-core = { path = "crates/rustcode-core" }
 rustcode-server = { path = "crates/rustcode-server" }
 rustcode-tui = { path = "crates/rustcode-tui" }
