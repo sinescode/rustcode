@@ -1243,7 +1243,9 @@ async fn post_command(
                 extra: std::collections::HashMap::new(),
                 messages: std::sync::Arc::from([] as [rustcode_core::provider::ChatMessage; 0]),
                 ask_fn: None,
-                permission_source: None,
+                permission_source: Some(rustcode_core::permission::PermissionSource::Session {
+                    session_id: session_id.clone(),
+                }),
             };
             let tool = tool_def.tool;
             match tool.execute(args, &ctx).await {
