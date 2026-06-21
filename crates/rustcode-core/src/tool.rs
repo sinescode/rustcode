@@ -522,7 +522,7 @@ impl ToolRegistry {
 
         // Step 3: Output truncation
         let truncated = truncate
-            .truncate(&result.output, &ctx.session_id, &ctx.call_id.clone().unwrap_or_default())
+            .truncate(&result.output, &ctx.session_id, ctx.call_id.as_deref().unwrap_or("unknown"))
             .await;
 
         // Step 4: Result wrapping

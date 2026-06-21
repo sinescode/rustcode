@@ -842,6 +842,15 @@ impl SessionRunner {
             }
         }
 
+        // Doom-loop detection (same tool + input repeated)
+        if needs_continuation {
+            if let Some((tool, count)) = detect_doom_loop(&tool_calls_made) {
+                return Err(Error::Tool(format!(
+                    "doom loop: tool '{tool}' called {count}x with same input"
+                )));
+            }
+        }
+
         Ok((needs_continuation, final_text, all_events, tool_calls_made))
     }
 

@@ -237,6 +237,12 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     // Normalize backslashes to forward slashes (TS line 4).
     let normalized = input.replace('\\', "/");
 
+    // Treat empty pattern as "*" (match everything) to prevent silent
+    // misconfiguration.
+    if pattern.is_empty() {
+        return true;
+    }
+
     // Escape regex-special characters, then convert wildcards to regex.
     // TS lines 6–10.
     let mut escaped = pattern.replace('\\', "/");
@@ -254,17 +260,18 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     }
 
     // Anchor to full string (TS line 13).
+    // Enable dot_matches_new_line flag (TS: "s" flag) so `.` matches `\n`.
     let regex_str = format!("^{}$", escaped);
 
-    // Build regex with dot-matches-newline flag (TS: "s" flag, or "si" on Windows).
-    // We use the `s` flag for dot-all (`.` matches `\n`).
-    match Regex::new(&regex_str) {
+    // Use RegexBuilder to enable the `s` (dot-matches-newline) flag
+    match regex::RegexBuilder::new(&regex_str)
+        .dot_matches_new_line(true)
+        .build()
+    {
         Ok(re) => re.is_match(&normalized),
         Err(_) => {
-            // If the regex fails to compile (shouldn't happen with proper escaping),
-            // fall back to exact match.
             tracing::warn!(%pattern, "failed to compile wildcard regex, falling back to exact match");
-            normalized == escaped
+            normalized == pattern.replace('\\', "/")
         }
     }
 }

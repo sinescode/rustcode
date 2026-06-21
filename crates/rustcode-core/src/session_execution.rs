@@ -28,6 +28,7 @@ use tokio_util::sync::CancellationToken;
 /// # Source
 /// `packages/core/src/session/execution.ts` lines 7–14 `Interface`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub enum DrainMode {
     /// Explicit drain request
     #[serde(rename = "run")]
@@ -227,14 +228,22 @@ impl<T: Send + 'static> FiberSet<T> {
 
     /// Wait until no fibers are running.
     ///
-    /// Polls briefly; for production use a `Notify`-based approach.
+    /// Times out after 30 seconds with exponential backoff (10ms → 100ms).
     ///
     /// # Source
     /// Ported from `FiberSet.awaitEmpty`.
-    pub async fn await_empty(&self) {
+    pub async fn await_empty(&self) -> Result<(), &'static str> {
+        let start = std::time::Instant::now();
+        let timeout = std::time::Duration::from_secs(30);
+        let mut delay_ms: u64 = 10;
         while !self.handles.is_empty() {
-            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            if start.elapsed() > timeout {
+                return Err("await_empty timed out after 30s");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+            delay_ms = (delay_ms * 2).min(100);
         }
+        Ok(())
     }
 
     /// Return the number of currently-running fibers.
@@ -461,8 +470,9 @@ type DoneChannel = broadcast::Sender<Result<(), SessionRunError>>;
 type DoneReceiver = broadcast::Receiver<Result<(), SessionRunError>>;
 
 /// Create a new done channel.
+/// Uses capacity 64 to prevent overflow when many callers wait on completion.
 fn done_channel() -> (DoneChannel, DoneReceiver) {
-    broadcast::channel(16)
+    broadcast::channel(64)
 }
 
 /// A single session's execution lane within the [`RunCoordinator`].
