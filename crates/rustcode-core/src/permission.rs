@@ -829,6 +829,7 @@ pub struct SavedPermissions {
 
 impl SavedPermissions {
     /// Create a new saved-permissions handler.
+    #[must_use]
     pub fn new(db: Database) -> Self {
         Self { db }
     }
@@ -948,6 +949,7 @@ pub struct PermissionService {
 
 impl PermissionService {
     /// Create a new permission service.
+    #[must_use]
     pub fn new(bus: SharedBus) -> Self {
         Self {
             bus,

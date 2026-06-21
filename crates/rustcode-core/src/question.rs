@@ -55,6 +55,7 @@ impl QuestionId {
     /// Create a `QuestionId` from a string, validating the `que_` prefix.
     ///
     /// Returns `None` if the string does not start with `que_`.
+    #[must_use]
     pub fn new(id: impl Into<String>) -> Option<Self> {
         let s = id.into();
         if s.starts_with("que") {
@@ -135,6 +136,7 @@ pub struct QuestionOption {
 
 impl QuestionOption {
     /// Create a new question option.
+    #[must_use]
     pub fn new(label: impl Into<String>, description: impl Into<String>) -> Self {
         Self {
             label: label.into(),
@@ -182,6 +184,7 @@ fn is_false(v: &bool) -> bool {
 
 impl QuestionInfo {
     /// Create a new question with the given text and header.
+    #[must_use]
     pub fn new(question: impl Into<String>, header: impl Into<String>) -> Self {
         Self {
             question: question.into(),
@@ -305,6 +308,7 @@ pub struct QuestionAnswer(Vec<String>);
 
 impl QuestionAnswer {
     /// Create a new answer with the given selected labels.
+    #[must_use]
     pub fn new(labels: Vec<String>) -> Self {
         Self(labels)
     }
@@ -558,6 +562,7 @@ impl QuestionService {
     ///
     /// The bus is used to publish `QuestionEvent::Asked` / `Replied` / `Rejected`
     /// so that the UI layer can present questions to the user.
+    #[must_use]
     pub fn new(bus: SharedBus) -> Self {
         Self {
             pending: Arc::new(Mutex::new(HashMap::new())),

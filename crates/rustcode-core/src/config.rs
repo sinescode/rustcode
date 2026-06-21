@@ -1148,6 +1148,7 @@ pub struct ExperimentalConfig {
 
 impl Config {
     /// Create a new `Config` for the given project directory.
+    #[must_use]
     pub fn new(project_dir: PathBuf, worktree: Option<PathBuf>) -> Self {
         Self {
             info: RwLock::new(Info::default()),

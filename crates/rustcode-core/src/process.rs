@@ -265,6 +265,7 @@ pub struct StandardCommand {
 
 impl StandardCommand {
     /// Create a simple command with no arguments.
+    #[must_use]
     pub fn new(command: impl Into<String>) -> Self {
         Self {
             command: command.into(),
@@ -314,6 +315,7 @@ pub struct PipedCommand {
 
 impl ProcessCommand {
     /// Create a simple command (wraps `StandardCommand::new`).
+    #[must_use]
     pub fn new(command: impl Into<String>) -> Self {
         Self::Standard(StandardCommand::new(command))
     }

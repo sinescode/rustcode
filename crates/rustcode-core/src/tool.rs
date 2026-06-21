@@ -220,6 +220,7 @@ pub struct ToolDef {
 
 impl ToolDef {
     /// Create a new ToolDef from a Tool implementation.
+    #[must_use]
     pub fn new(tool: Arc<dyn Tool>) -> Self {
         let id = tool.id().to_string();
         let description = tool.description().to_string();
@@ -257,6 +258,7 @@ pub struct ToolInfo {
 
 impl ToolInfo {
     /// Create a ToolInfo for a tool that can be instantiated on demand.
+    #[must_use]
     pub fn new(
         id: impl Into<String>,
         init: impl Fn() -> Box<dyn Tool> + Send + Sync + 'static,
@@ -345,6 +347,7 @@ pub struct ToolRegistry {
 
 impl ToolRegistry {
     /// Create an empty tool registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             tools: dashmap::DashMap::new(),
@@ -1206,6 +1209,7 @@ pub struct NoopTool {
 
 impl NoopTool {
     /// Create a no-op tool stub.
+    #[must_use]
     pub fn new(id: impl Into<String>) -> Self {
         Self { id: id.into() }
     }

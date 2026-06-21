@@ -23,6 +23,7 @@ pub struct EncryptionService {
 
 impl EncryptionService {
     /// Create a new encryption service with the given key.
+    #[must_use]
     pub fn new(key: [u8; KEY_LENGTH]) -> Self {
         Self { key }
     }
@@ -100,6 +101,7 @@ pub struct EncryptedField {
 }
 
 impl EncryptedField {
+    #[must_use]
     pub fn new(value: String) -> Self {
         Self { value }
     }

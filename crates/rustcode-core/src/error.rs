@@ -722,6 +722,7 @@ pub struct HttpContext {
 
 impl HttpContext {
     /// Create a new empty HTTP context.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }

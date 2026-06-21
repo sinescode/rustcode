@@ -528,6 +528,7 @@ pub struct Deferred<F: FnOnce()> {
 }
 
 impl<F: FnOnce()> Deferred<F> {
+    #[must_use]
     pub fn new(f: F) -> Self {
         Self { f: Some(f) }
     }

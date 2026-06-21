@@ -50,6 +50,7 @@ pub struct GlobalEvent {
 
 impl GlobalEvent {
     /// Create a new event with the given payload.
+    #[must_use]
     pub fn new(payload: serde_json::Value) -> Self {
         Self {
             directory: None,
@@ -210,6 +211,7 @@ impl EventBus {
     /// When all receivers are dropped, `publish` returns an error.
     /// `capacity` controls how many events are buffered while no receiver
     /// is actively listening.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         let (sender, _) = broadcast::channel(capacity);
         Self { sender }
@@ -281,6 +283,7 @@ pub struct SharedBus {
 
 impl SharedBus {
     /// Create a new shared bus.
+    #[must_use]
     pub fn new(capacity: usize) -> Self {
         Self {
             inner: Arc::new(EventBus::new(capacity)),

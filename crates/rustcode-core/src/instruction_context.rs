@@ -156,6 +156,7 @@ impl InstructionDiscovery {
     ///
     /// # Source
     /// Ported from `packages/core/src/instruction-context.ts` — `global.config`.
+    #[must_use]
     pub fn new(config_dir: impl Into<String>) -> Self {
         Self {
             config_dir: config_dir.into(),
@@ -323,6 +324,7 @@ pub struct InstructionContextSource {
 
 impl InstructionContextSource {
     /// Create a new instruction context source.
+    #[must_use]
     pub fn new(
         config_dir: impl Into<String>,
         start_dir: PathBuf,

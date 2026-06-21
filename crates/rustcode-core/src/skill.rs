@@ -694,6 +694,7 @@ pub struct SkillRegistry {
 
 impl SkillRegistry {
     /// Create an empty skill registry.
+    #[must_use]
     pub fn new() -> Self {
         Self {
             skills: HashMap::new(),
