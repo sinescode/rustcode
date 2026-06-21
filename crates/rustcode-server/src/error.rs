@@ -101,6 +101,10 @@ pub enum ServerError {
     #[error("Internal error: {message}")]
     Unknown { message: String },
 
+    // ── 501 Not Implemented ──────────────────────────────────────────
+    #[error("Not implemented: {message}")]
+    NotImplemented { message: String },
+
     // ── 502 Bad Gateway ──────────────────────────────────────────────
     #[error("Upstream error: {message}")]
     Upstream { message: String },
@@ -138,6 +142,7 @@ impl ServerError {
             ServerError::ApiNotFound { .. } => "ApiNotFoundError",
             ServerError::Conflict { .. } => "ConflictError",
             ServerError::SessionBusy { .. } => "SessionBusyError",
+            ServerError::NotImplemented { .. } => "NotImplementedError",
             ServerError::Unknown { .. } => "UnknownError",
             ServerError::Upstream { .. } => "UpstreamError",
             ServerError::ServiceUnavailable { .. } => "ServiceUnavailableError",
@@ -167,6 +172,7 @@ impl ServerError {
             ServerError::Conflict { .. } | ServerError::SessionBusy { .. } => {
                 StatusCode::CONFLICT
             }
+            ServerError::NotImplemented { .. } => StatusCode::NOT_IMPLEMENTED,
             ServerError::Unknown { .. } => StatusCode::INTERNAL_SERVER_ERROR,
             ServerError::Upstream { .. } => StatusCode::BAD_GATEWAY,
             ServerError::ServiceUnavailable { .. } => StatusCode::SERVICE_UNAVAILABLE,

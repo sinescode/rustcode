@@ -1492,6 +1492,14 @@ pub struct ListSessionsInput {
 }
 
 /// Patch for updating a session.
+///
+/// Each field uses `Option<Option<T>>` to distinguish three states:
+/// - `None` — field not provided in the patch, leave as-is
+/// - `Some(None)` — field explicitly set to null/clear
+/// - `Some(Some(value))` — field set to a new value
+///
+/// # Source
+/// Ported from `packages/opencode/src/session/session.ts`
 #[derive(Debug, Clone, Default)]
 pub struct SessionPatch {
     pub title: Option<Option<String>>,

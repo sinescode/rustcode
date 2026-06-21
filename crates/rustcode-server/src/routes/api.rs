@@ -349,8 +349,10 @@ async fn api_session_compact(
     State(_state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    info!("API: compact session {session_id}");
-    (axum::http::StatusCode::NO_CONTENT, ()).into_response()
+    info!("API: compact session {session_id} (not yet implemented)");
+    ServerError::NotImplemented {
+        message: format!("session compaction for {session_id} is not yet implemented"),
+    }.into_response()
 }
 
 /// `POST /api/session/:sessionID/wait` — wait for session.
@@ -358,8 +360,10 @@ async fn api_session_wait(
     State(_state): State<Arc<AppState>>,
     Path(session_id): Path<String>,
 ) -> impl IntoResponse {
-    info!("API: wait for session {session_id}");
-    (axum::http::StatusCode::NO_CONTENT, ()).into_response()
+    info!("API: wait for session {session_id} (not yet implemented)");
+    ServerError::NotImplemented {
+        message: format!("session wait for {session_id} is not yet implemented"),
+    }.into_response()
 }
 
 /// `GET /api/session/:sessionID/context` — session context.
