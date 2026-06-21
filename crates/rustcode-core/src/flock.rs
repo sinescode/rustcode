@@ -357,6 +357,31 @@ pub async fn acquire(key: &str, options: &FlockOptions) -> Result<FlockLease, St
     }
 }
 
+/// Clean up all stale locks in the lock directory.
+///
+/// Removes lock directories whose heartbeat file is older than `stale_ms`.
+/// Should be called on startup to clean up locks from crashed processes.
+///
+/// # Source
+/// Ported from `packages/core/src/util/flock.ts` — stale recovery pattern.
+pub async fn cleanup_stale_locks(lock_dir: &std::path::Path, stale_ms: u64) -> Result<usize, String> {
+    let mut cleaned = 0usize;
+    let mut entries = tokio::fs::read_dir(lock_dir).await
+        .map_err(|e| format!("read lock dir: {e}"))?;
+    while let Some(entry) = entries.next_entry().await
+        .map_err(|e| format!("read entry: {e}"))? {
+        let path = entry.path();
+        if path.extension().map(|e| e == "lock").unwrap_or(false) {
+            if is_stale(&path, stale_ms).await.unwrap_or(false) {
+                tokio::fs::remove_dir_all(&path).await
+                    .map_err(|e| format!("remove stale lock {:?}: {e}", path))?;
+                cleaned += 1;
+            }
+        }
+    }
+    Ok(cleaned)
+}
+
 /// Run a function with an exclusive lock.
 ///
 /// # Source
