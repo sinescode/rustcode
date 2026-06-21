@@ -247,6 +247,43 @@ impl IntoResponse for ServerError {
     }
 }
 
+/// Helper to convert a `Result<T, E>` into a JSON response.
+/// On success, serializes `T` as JSON. On error, returns 500.
+///
+/// # Source
+/// Ported from `packages/server/src/handlers/helpers.ts` `okOr500`.
+pub fn ok_or_500<T: serde::Serialize>(
+    result: Result<T, impl std::fmt::Display>,
+) -> Response {
+    match result {
+        Ok(value) => match serde_json::to_value(&value) {
+            Ok(json) => (StatusCode::OK, Json(json)).into_response(),
+            Err(e) => ServerError::Unknown {
+                message: format!("serialization error: {e}"),
+            }.into_response(),
+        },
+        Err(e) => ServerError::Unknown {
+            message: e.to_string(),
+        }.into_response(),
+    }
+}
+
+/// Helper to convert a `Result<T, ServerError>` into a JSON response.
+/// Uses the error's specific status code instead of blanket 500.
+pub fn ok_or_error<T: serde::Serialize>(
+    result: Result<T, ServerError>,
+) -> Response {
+    match result {
+        Ok(value) => match serde_json::to_value(&value) {
+            Ok(json) => (StatusCode::OK, Json(json)).into_response(),
+            Err(e) => ServerError::Unknown {
+                message: format!("serialization error: {e}"),
+            }.into_response(),
+        },
+        Err(e) => e.into_response(),
+    }
+}
+
 // ── Convenience constructors ────────────────────────────────────────────────
 
 impl ServerError {

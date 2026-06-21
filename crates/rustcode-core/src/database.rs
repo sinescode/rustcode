@@ -1938,6 +1938,24 @@ impl DatabaseService {
             .await
     }
 
+    // ── Update message data ──────────────────────────────────────────
+    /// Update a message's data JSON blob.
+    pub async fn update_message_data(
+        &self,
+        id: &str,
+        data: &str,
+    ) -> Result<(), DatabaseServiceError> {
+        let now = chrono::Utc::now().timestamp_millis();
+        sqlx::query("UPDATE message SET data = ?2, time_updated = ?3 WHERE id = ?1")
+            .bind(id)
+            .bind(data)
+            .bind(now)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| DatabaseServiceError::Database(format!("update message data: {e}")))?;
+        Ok(())
+    }
+
     // ── Update part data ─────────────────────────────────────────────
     /// Update a part's data JSON blob.
     pub async fn update_part(&self, id: &str, data: &str) -> Result<(), DatabaseServiceError> {
