@@ -643,6 +643,16 @@ pub struct Database {
 }
 
 impl Database {
+    /// Create a pre-configured SqlitePoolOptions for production use.
+    ///
+    /// - max_connections: 8
+    /// - min_connections: 1
+    pub fn pool_options() -> sqlx::sqlite::SqlitePoolOptions {
+        sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(8)
+            .min_connections(1)
+    }
+
     /// Open (or create) a SQLite database at the given path.
     ///
     /// Sets PRAGMAs for performance and safety:
@@ -658,11 +668,14 @@ impl Database {
     pub async fn open(path: &Path) -> Result<Self> {
         // Ensure parent directory exists
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
+            tokio::fs::create_dir_all(parent).await?;
         }
 
         let db_url = format!("sqlite:{}?mode=rwc", path.display());
-        let pool = sqlx::SqlitePool::connect(&db_url).await.map_err(|e| {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(8)
+            .min_connections(1)
+            .connect(&db_url).await.map_err(|e| {
             Error::Config(format!(
                 "failed to open database at {}: {e}",
                 path.display()
