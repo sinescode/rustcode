@@ -2765,9 +2765,9 @@ pub fn substitute_variables(
 
         // Security check: canonicalize and verify the resolved path
         // is within the config/project directory to prevent path traversal.
-        let canonical = resolved.canonicalize().map_err(|_| {
+        let canonical = resolved.canonicalize().map_err(|e| {
             crate::error::Error::Config(format!(
-                "Path traversal blocked: {file_path_str} resolved to {resolved:?} which does not exist or is inaccessible"
+                "Failed to resolve path '{file_path_str}': {e}"
             ))
         })?;
         let canonical_dir = dir.canonicalize().unwrap_or_else(|_| dir.to_path_buf());

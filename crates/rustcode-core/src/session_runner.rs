@@ -156,7 +156,6 @@ impl SessionRunner {
         agent_service: Arc<AgentService>,
         compaction: Arc<SessionCompaction>,
         db: Arc<DatabaseService>,
-        truncate: Arc::new(TruncateService::new()),
     ) -> Self {
         Self {
             tool_registry,
@@ -165,6 +164,7 @@ impl SessionRunner {
             agent_service,
             compaction,
             db,
+            truncate: Arc::new(TruncateService::new()),
             max_steps: MAX_STEPS,
             max_iterations: DEFAULT_MAX_ITERATIONS,
         }
@@ -187,6 +187,7 @@ impl SessionRunner {
             agent_service,
             compaction,
             db,
+            truncate: Arc::new(TruncateService::new()),
             max_steps,
             max_iterations: DEFAULT_MAX_ITERATIONS,
         }
