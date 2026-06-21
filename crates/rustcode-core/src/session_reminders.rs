@@ -45,28 +45,30 @@ impl SessionReminders {
     /// # Source
     /// Ported from `packages/opencode/src/session/reminders.ts` — the file
     /// scanning pattern.
-    pub fn load_reminders(cwd: &std::path::Path) -> Result<Option<String>, std::io::Error> {
+    pub async fn load_reminders(cwd: &std::path::Path) -> Result<Option<String>, std::io::Error> {
         let mut all_text = String::new();
 
         for dir in Self::reminder_dirs(cwd) {
-            if !dir.exists() || !dir.is_dir() {
+            if !tokio::fs::try_exists(&dir).await.unwrap_or(false) {
                 continue;
             }
 
-            let mut entries: Vec<std::fs::DirEntry> = std::fs::read_dir(&dir)?
-                .filter_map(|e| e.ok())
-                .filter(|e| {
-                    e.path()
-                        .extension()
-                        .map(|ext| ext == "md")
-                        .unwrap_or(false)
-                })
-                .collect();
+            let mut entries = tokio::task::spawn_blocking({
+                let dir = dir.clone();
+                move || -> std::io::Result<Vec<std::path::PathBuf>> {
+                    let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)?
+                        .filter_map(|e| e.ok())
+                        .filter(|e| e.path().extension().map(|ext| ext == "md").unwrap_or(false))
+                        .map(|e| e.path())
+                        .collect();
+                    entries.sort();
+                    Ok(entries)
+                }
+            }).await
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
 
-            entries.sort_by_key(|e| e.file_name());
-
-            for entry in &entries {
-                let content = std::fs::read_to_string(entry.path())?;
+            for entry_path in &entries {
+                let content = tokio::fs::read_to_string(entry_path).await?;
                 if !content.trim().is_empty() {
                     if !all_text.is_empty() {
                         all_text.push_str("\n\n");
@@ -90,8 +92,8 @@ impl SessionReminders {
     ///
     /// # Source
     /// Ported from `packages/opencode/src/session/reminders.ts` `apply` function.
-    pub fn apply(cwd: &std::path::Path) -> ReminderResult {
-        match Self::load_reminders(cwd) {
+    pub async fn apply(cwd: &std::path::Path) -> ReminderResult {
+        match Self::load_reminders(cwd).await {
             Ok(Some(text)) => ReminderResult {
                 reminder_text: Some(text),
                 applied: true,
@@ -140,36 +142,35 @@ mod tests {
         dir
     }
 
-    #[test]
-    fn test_load_reminders_finds_files() {
+    #[tokio::test]
+    async fn test_load_reminders_finds_files() {
         let dir = setup_test_reminders();
-        let result = SessionReminders::load_reminders(dir.path()).expect("load reminders");
+        let result = SessionReminders::load_reminders(dir.path()).await.expect("load reminders");
         assert!(result.is_some());
         let text = result.unwrap();
         assert!(text.contains("cargo test"));
         assert!(text.contains("CLAUDE.md"));
     }
 
-    #[test]
-    fn test_load_reminders_no_dir() {
+    #[tokio::test]
+    async fn test_load_reminders_no_dir() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        // No reminders directory exists
-        let result = SessionReminders::load_reminders(dir.path()).expect("load reminders");
+        let result = SessionReminders::load_reminders(dir.path()).await.expect("load reminders");
         assert!(result.is_none());
     }
 
-    #[test]
-    fn test_apply_with_reminders() {
+    #[tokio::test]
+    async fn test_apply_with_reminders() {
         let dir = setup_test_reminders();
-        let result = SessionReminders::apply(dir.path());
+        let result = SessionReminders::apply(dir.path()).await;
         assert!(result.applied);
         assert!(result.reminder_text.is_some());
     }
 
-    #[test]
-    fn test_apply_without_reminders() {
+    #[tokio::test]
+    async fn test_apply_without_reminders() {
         let dir = tempfile::tempdir().expect("create temp dir");
-        let result = SessionReminders::apply(dir.path());
+        let result = SessionReminders::apply(dir.path()).await;
         assert!(!result.applied);
         assert!(result.reminder_text.is_none());
     }
@@ -182,15 +183,15 @@ mod tests {
         assert!(formatted.contains("</reminders>"));
     }
 
-    #[test]
-    fn test_claude_reminders_dir() {
+    #[tokio::test]
+    async fn test_claude_reminders_dir() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let claude_dir = dir.path().join(".claude").join("reminders");
         std::fs::create_dir_all(&claude_dir).expect("create dir");
         let mut f = std::fs::File::create(claude_dir.join("note.md")).expect("create file");
         write!(f, "Claude reminder").expect("write");
 
-        let result = SessionReminders::load_reminders(dir.path()).expect("load");
+        let result = SessionReminders::load_reminders(dir.path()).await.expect("load");
         assert!(result.is_some());
         assert!(result.unwrap().contains("Claude reminder"));
     }
