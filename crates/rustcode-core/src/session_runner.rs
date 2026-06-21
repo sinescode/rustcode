@@ -697,10 +697,12 @@ impl SessionRunner {
                     if !assistant_started && crate::error::is_context_overflow(&msg) {
                         overflow_detected = true;
                     } else {
+                        // Check if the error is retryable for better recovery
+                        let is_retryable = matches!(&e, crate::error::Error::Llm { reason, .. } if reason.is_retryable());
                         all_events.push(LlmEvent::ProviderErrorEvent {
                             message: msg,
-                            classification: Some("stream-error".into()),
-                            retryable: Some(false),
+                            classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
+                            retryable: Some(is_retryable),
                             provider_metadata: None,
                         });
                     }
@@ -1072,10 +1074,11 @@ impl SessionRunner {
                             aborted = true;
                             stream_error = Some(msg);
                         } else {
+                            let is_retryable = matches!(&e, crate::error::Error::Llm { reason, .. } if reason.is_retryable());
                             all_events.push(LlmEvent::ProviderErrorEvent {
                                 message: msg.clone(),
-                                classification: Some("stream-error".into()),
-                                retryable: Some(false),
+                                classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
+                                retryable: Some(is_retryable),
                                 provider_metadata: None,
                             });
                             stream_error = Some(msg);

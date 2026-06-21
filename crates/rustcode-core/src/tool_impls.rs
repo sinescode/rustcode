@@ -1073,30 +1073,35 @@ impl Tool for ReadTool {
         let offset = args["offset"].as_u64().unwrap_or(1).max(1) as usize;
         let limit = args["limit"].as_u64().unwrap_or(DEFAULT_READ_LIMIT as u64) as usize;
 
-        let path = std::path::Path::new(file_path);
+        let path = std::path::PathBuf::from(file_path);
 
-        // Check if path exists
-        if !path.exists() {
-            // Suggest similar files
-            let parent = path.parent().unwrap_or(std::path::Path::new("."));
-            let basename = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .to_lowercase();
-            let mut suggestions: Vec<String> = Vec::new();
-
-            if let Ok(entries) = std::fs::read_dir(parent) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_lowercase();
-                    if name.contains(&basename) || basename.contains(&name) {
-                        suggestions.push(entry.path().to_string_lossy().to_string());
+        // Check if path exists (async)
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
+            // Suggest similar files using spawn_blocking to avoid blocking runtime
+            let suggestions = tokio::task::spawn_blocking({
+                let path = path.clone();
+                move || {
+                    let parent = path.parent().unwrap_or(std::path::Path::new("."));
+                    let basename = path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy()
+                        .to_lowercase();
+                    let mut suggestions: Vec<String> = Vec::new();
+                    if let Ok(entries) = std::fs::read_dir(parent) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name().to_string_lossy().to_lowercase();
+                            if name.contains(&basename) || basename.contains(&name) {
+                                suggestions.push(entry.path().to_string_lossy().to_string());
+                            }
+                            if suggestions.len() >= 3 {
+                                break;
+                            }
+                        }
                     }
-                    if suggestions.len() >= 3 {
-                        break;
-                    }
+                    suggestions
                 }
-            }
+            }).await.unwrap_or_default();
 
             let mut msg = format!("File not found: {}", file_path);
             if !suggestions.is_empty() {
@@ -1108,16 +1113,16 @@ impl Tool for ReadTool {
             return Err(Error::Tool(msg));
         }
 
-        let metadata = path.metadata().map_err(Error::Io)?;
+        let metadata = tokio::fs::metadata(&path).await.map_err(Error::Io)?;
 
         if metadata.is_dir() {
-            // List directory
+            // List directory (async)
             let mut entries: Vec<String> = Vec::new();
-            if let Ok(dir_entries) = std::fs::read_dir(path) {
-                for entry in dir_entries.flatten() {
+            if let Ok(mut dir_entries) = tokio::fs::read_dir(&path).await {
+                while let Ok(Some(entry)) = dir_entries.next_entry().await {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let is_dir = entry.file_type().map(|t| t.is_dir()).unwrap_or(false);
-                    entries.push(if is_dir { format!("{}/", name) } else { name });
+                    let ft = entry.file_type().await.unwrap_or_default();
+                    entries.push(if ft.is_dir() { format!("{}/", name) } else { name });
                 }
             }
             entries.sort();
@@ -1163,17 +1168,11 @@ impl Tool for ReadTool {
         }
 
         // Read a sample to detect binary / image
-        let mut sample = vec![0u8; 4096];
         let file_size = metadata.len() as usize;
-        let sample_size = std::cmp::min(4096, file_size);
-        let sample_bytes = if sample_size > 0 {
-            std::fs::File::open(path)
-                .ok()
-                .and_then(|mut f| {
-                    std::io::Read::read(&mut f, &mut sample[..sample_size]).ok()?;
-                    Some(sample[..sample_size].to_vec())
-                })
+        let sample_bytes = if file_size > 0 {
+            tokio::fs::read(&path).await
                 .unwrap_or_default()
+                .into_iter().take(4096).collect::<Vec<_>>()
         } else {
             Vec::new()
         };
@@ -1182,7 +1181,7 @@ impl Tool for ReadTool {
 
         // Handle images
         if SUPPORTED_IMAGE_MIMES.contains(&mime.as_str()) {
-            let bytes = std::fs::read(path).unwrap_or_default();
+            let bytes = tokio::fs::read(&path).await.unwrap_or_default();
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             return Ok(ExecuteResult {
                 title: file_path.to_string(),
@@ -1199,7 +1198,7 @@ impl Tool for ReadTool {
 
         // Handle PDF
         if mime == "application/pdf" {
-            let bytes = std::fs::read(path).unwrap_or_default();
+            let bytes = tokio::fs::read(&path).await.unwrap_or_default();
             let b64 = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, &bytes);
             return Ok(ExecuteResult {
                 title: file_path.to_string(),
@@ -1223,7 +1222,7 @@ impl Tool for ReadTool {
 
         // Read text file with byte cap (~50KB)
         const MAX_READ_BYTES: usize = 51_200; // 50KB limit
-        let raw_content = std::fs::read_to_string(path).map_err(Error::Io)?;
+        let raw_content = tokio::fs::read_to_string(&path).await.map_err(Error::Io)?;
         let content = if raw_content.len() > MAX_READ_BYTES {
             // Truncate at a line boundary to avoid cutting mid-line
             let truncated = &raw_content[..MAX_READ_BYTES];

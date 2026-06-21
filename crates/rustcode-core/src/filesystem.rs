@@ -882,16 +882,18 @@ pub struct FileMetadata {
 ///
 /// Attempts UTF-8 first; falls back to base64 for binary content.
 ///
+/// Uses tokio::fs internally for async I/O (wrapped via spawn_blocking for sync callers).
+///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `read()` method (lines 89–96).
-pub fn read_file(root: &Path, input: &ReadInput) -> Result<Content, FileSystemError> {
+pub async fn read_file(root: &Path, input: &ReadInput) -> Result<Content, FileSystemError> {
     let absolute = resolve_safe(root, &input.path)?;
-    let metadata = std::fs::metadata(&absolute)?;
+    let metadata = tokio::fs::metadata(&absolute).await?;
     if !metadata.is_file() {
         return Err(FileSystemError::NotAFile(absolute.display().to_string()));
     }
 
-    let raw = std::fs::read(&absolute)?;
+    let raw = tokio::fs::read(&absolute).await?;
 
     // Try UTF-8 first, fall back to base64
     match std::str::from_utf8(&raw) {
@@ -922,13 +924,11 @@ pub fn read_file(root: &Path, input: &ReadInput) -> Result<Content, FileSystemEr
     }
 }
 
-/// List directory entries with metadata.
-///
-/// Sorts directories before files, then alphabetically by path.
+/// Async version of list_directory — uses tokio::fs for non-blocking I/O.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` `list()` method (lines 98–121).
-pub fn list_directory(
+pub async fn list_directory(
     root: &Path,
     input: Option<&ListInput>,
 ) -> Result<Vec<Entry>, FileSystemError> {
@@ -937,7 +937,7 @@ pub fn list_directory(
         .cloned()
         .unwrap_or_else(|| RelativePath::new("."));
     let absolute = resolve_safe(root, &rel_path)?;
-    let metadata = std::fs::metadata(&absolute)?;
+    let metadata = tokio::fs::metadata(&absolute).await?;
     if !metadata.is_dir() {
         return Err(FileSystemError::NotADirectory(
             absolute.display().to_string(),
@@ -945,11 +945,10 @@ pub fn list_directory(
     }
 
     let mut entries: Vec<Entry> = Vec::new();
-    let dir_iter = std::fs::read_dir(&absolute)?;
+    let mut dir_iter = tokio::fs::read_dir(&absolute).await?;
 
-    for item in dir_iter {
-        let item = item?;
-        let file_type = item.file_type()?;
+    while let Some(item) = dir_iter.next_entry().await? {
+        let file_type = item.file_type().await?;
         let name = item.file_name().to_string_lossy().to_string();
 
         let (entry_type, mime, path_suffix) = if file_type.is_dir() {
@@ -962,9 +961,10 @@ pub fn list_directory(
             let item_abs = item.path();
             (FileType::File, mime_type(&item_abs), name.clone())
         } else if file_type.is_symlink() {
-            // Resolve symlink target
+            // Resolve symlink target using async metadata
             let item_abs = item.path();
-            let target_type = std::fs::symlink_metadata(&item_abs)
+            let target_type = tokio::fs::symlink_metadata(&item_abs)
+                .await
                 .ok()
                 .and_then(|m| if m.is_dir() { Some(FileType::Directory) } else if m.is_file() { Some(FileType::File) } else { None })
                 .unwrap_or(FileType::File);
@@ -1372,45 +1372,45 @@ pub fn file_exists(root: &Path, rel_path: &RelativePath) -> bool {
     absolute.exists()
 }
 
-/// Write content to a file, creating parent directories as needed.
+/// Async write content to a file, creating parent directories as needed.
 ///
 /// Returns the number of bytes written.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` (FileSystem.WriteInput handling).
-pub fn write_file(root: &Path, path: &RelativePath, content: &str) -> Result<usize, FileSystemError> {
+pub async fn write_file(root: &Path, path: &RelativePath, content: &str) -> Result<usize, FileSystemError> {
     let absolute = resolve_safe(root, path)?;
     if let Some(parent) = absolute.parent() {
-        std::fs::create_dir_all(parent).map_err(FileSystemError::Io)?;
+        tokio::fs::create_dir_all(parent).await.map_err(FileSystemError::Io)?;
     }
-    std::fs::write(&absolute, content).map_err(FileSystemError::Io)?;
+    tokio::fs::write(&absolute, content).await.map_err(FileSystemError::Io)?;
     Ok(content.len())
 }
 
-/// Ensure a directory exists, creating it and all parent directories if needed.
+/// Async ensure a directory exists, creating it and all parent directories if needed.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` (ensureDir equivalent).
-pub fn ensure_dir(root: &Path, path: &RelativePath) -> Result<(), FileSystemError> {
+pub async fn ensure_dir(root: &Path, path: &RelativePath) -> Result<(), FileSystemError> {
     let absolute = resolve_safe(root, path)?;
-    std::fs::create_dir_all(&absolute).map_err(FileSystemError::Io)
+    tokio::fs::create_dir_all(&absolute).await.map_err(FileSystemError::Io)
 }
 
-/// Remove a file or empty directory.
+/// Async remove a file or empty directory.
 ///
 /// Returns `true` if the file existed and was removed, `false` if it did not exist.
 ///
 /// # Source
 /// Ported from `packages/core/src/filesystem.ts` (FileSystem.RemoveInput handling).
-pub fn remove_file(root: &Path, path: &RelativePath) -> Result<bool, FileSystemError> {
+pub async fn remove_file(root: &Path, path: &RelativePath) -> Result<bool, FileSystemError> {
     let absolute = resolve_safe(root, path)?;
-    if !absolute.exists() {
+    if !tokio::fs::try_exists(&absolute).await.unwrap_or(false) {
         return Ok(false);
     }
     if absolute.is_dir() {
-        std::fs::remove_dir(&absolute).map_err(FileSystemError::Io)?;
+        tokio::fs::remove_dir(&absolute).await.map_err(FileSystemError::Io)?;
     } else {
-        std::fs::remove_file(&absolute).map_err(FileSystemError::Io)?;
+        tokio::fs::remove_file(&absolute).await.map_err(FileSystemError::Io)?;
     }
     Ok(true)
 }
