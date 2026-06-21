@@ -418,6 +418,9 @@ impl WorktreeManager {
     }
 
     /// Run a git command in a specific directory outside the primary worktree.
+    ///
+    /// NOTE: This performs a blocking subprocess call. Call from spawn_blocking
+    /// or during initialization only.
     fn git_in_dir(&self, args: &[&str], cwd: &Path) -> Result<crate::git::GitResult> {
         let mut cmd = std::process::Command::new("git");
         cmd.args(args).current_dir(cwd);
