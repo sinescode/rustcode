@@ -14,6 +14,7 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
+use serde::Deserialize;
 use std::collections::HashMap;
 
 use crate::error::{Error, LlmErrorReason};

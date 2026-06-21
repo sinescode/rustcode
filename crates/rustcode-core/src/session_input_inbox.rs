@@ -10,16 +10,13 @@
 
 use crate::database::{DatabaseService, DatabaseServiceError, SessionInputRow};
 use crate::event::{
-    EventDefinition, EventError, EventId, EventPayload, EventV2, SyncConfig,
-    PublishOptions,
+    EventDefinition, EventError, EventV2, SyncConfig,
 };
-use crate::id;
 use crate::session_history::{
     AdmitInputParams, AdmittedInput, InputDelivery, LegacyPromptedParams,
-    LifecycleConflict, PromoteSteersParams,
+    PromoteSteersParams,
 };
 use crate::session_message::Prompt;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 /// Error type for session input operations.

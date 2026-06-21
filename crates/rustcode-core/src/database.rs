@@ -1136,8 +1136,6 @@ pub async fn import_drizzle_journal(
 
 // ── Database service — session/message/part CRUD helpers ─────────────────
 
-use std::sync::Arc;
-
 /// Error type for database service operations.
 ///
 /// # Source

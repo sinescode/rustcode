@@ -6,7 +6,7 @@
 //! - `packages/core/src/session/history.ts` — epoch management (lines 58–79)
 //! - `packages/opencode/src/session/context-epoch.ts` (lines 1–343)
 
-use crate::database::{ContextEpochRow, DatabaseService, DatabaseServiceError};
+use crate::database::{DatabaseService, DatabaseServiceError};
 use crate::session_history::ContextEpoch;
 use crate::system_context::{Generation, ReconcileResult, Snapshot, SystemContext, SystemContextError};
 use serde_json;

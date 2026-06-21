@@ -28,11 +28,8 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use futures::future::BoxFuture;
-use dashmap::DashMap;
 use thiserror::Error;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
-use tokio::sync::RwLock;
-use tracing::warn;
 
 // ---------------------------------------------------------------------------
 // Server type

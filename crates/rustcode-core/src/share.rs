@@ -245,10 +245,10 @@ impl ShareNextService {
     }
 
     /// Get or create the dedup queue for a session.
-    fn get_queue(
-        state: &mut ShareNextState,
+    fn get_queue<'a>(
+        state: &'a mut ShareNextState,
         session_id: &str,
-    ) -> &mut HashMap<String, ShareData> {
+    ) -> &'a mut HashMap<String, ShareData> {
         state
             .queue
             .entry(session_id.to_string())

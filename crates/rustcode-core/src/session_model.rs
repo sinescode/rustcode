@@ -2,12 +2,9 @@
 //!
 //! Ported from: `packages/core/src/session/runner/model.ts` (lines 1–166)
 
-use crate::catalog::{
-    CatalogModelNotFoundError, CatalogProviderNotFoundError,
-};
 use crate::model::{
-    merge_model_request, parse_model_ref, well_known_providers, ModelInfo,
-    ModelRequest, ModelVariant, ModelLimits as ModelV2Limits,
+    merge_model_request, well_known_providers, ModelInfo,
+    ModelRequest, ModelLimits as ModelV2Limits,
     Capabilities as ModelV2Capabilities,
 };
 use crate::provider::Model;

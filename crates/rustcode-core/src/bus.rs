@@ -16,7 +16,7 @@
 //! - [`BusSubscription`] implements RAII cleanup on drop (matching `off` + `addFinalizer`).
 //! - Auto-ID generation mirrors the TS `emit()` override exactly.
 
-use crate::id::{self, Direction, IdPrefix};
+use crate::id::{self, Direction};
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use std::sync::Arc;

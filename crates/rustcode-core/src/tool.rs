@@ -587,19 +587,19 @@ impl Tool for PluginToolAdapter {
 // ═══════════════════════════════════════════════════════════════════
 
 /// Prompt template for the `edit` tool.
-pub const PROMPT_EDIT: &str = r"Performs exact string replacements in files. 
+pub const PROMPT_EDIT: &str = r#"Performs exact string replacements in files. 
 
 Usage:
 - You must use your `Read` tool at least once in the conversation before editing. This tool will error if you attempt an edit without reading the file. 
 - When editing text from Read tool output, ensure you preserve the exact indentation (tabs/spaces) as it appears AFTER the line number prefix. The line number prefix format is: line number + colon + space (e.g., `1: `). Everything after that space is the actual file content to match. Never include any part of the line number prefix in the oldString or newString.
 - ALWAYS prefer editing existing files in the codebase. NEVER write new files unless explicitly required.
 - Only use emojis if the user explicitly requests it. Avoid adding emojis to files unless asked.
-- The edit will FAIL if `oldString` is not found in the file with an error ""oldString not found in content"".
-- The edit will FAIL if `oldString` is found multiple times in the file with an error ""Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match."" Either provide a larger string with more surrounding context to make it unique or use `replaceAll` to change every instance of `oldString`. 
-- Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance.";
+- The edit will FAIL if `oldString` is not found in the file with an error `oldString not found in content`.
+- The edit will FAIL if `oldString` is found multiple times in the file with an error `Found multiple matches for oldString. Provide more surrounding lines in oldString to identify the correct match.` Either provide a larger string with more surrounding context to make it unique or use `replaceAll` to change every instance of `oldString`. 
+- Use `replaceAll` for replacing and renaming strings across the file. This parameter is useful if you want to rename a variable for instance."#;
 
 /// Prompt template for the `read` tool.
-pub const PROMPT_READ: &str = r"Read a file or directory from the local filesystem. If the path does not exist, an error is returned.
+pub const PROMPT_READ: &str = r#"Read a file or directory from the local filesystem. If the path does not exist, an error is returned.
 
 Usage:
 - The filePath parameter should be an absolute path.
@@ -608,11 +608,11 @@ Usage:
 - To read later sections, call this tool again with a larger offset.
 - Use the grep tool to find specific content in large files or files with long lines.
 - If you are unsure of the correct file path, use the glob tool to look up filenames by glob pattern.
-- Contents are returned with each line prefixed by its line number as `<line>: <content>`. For example, if a file has contents ""foo\n"", you will receive ""1: foo\n"". For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
+- Contents are returned with each line prefixed by its line number as `<line>: <content>`. For example, if a file has contents `foo\n`, you will receive `1: foo\n`. For directories, entries are returned one per line (without line numbers) with a trailing `/` for subdirectories.
 - Any line longer than 2000 characters is truncated.
 - Call this tool in parallel when you know there are multiple files you want to read.
 - Avoid tiny repeated slices (30 line chunks). If you need more context, read a larger window.
-- This tool can read image files and PDFs and return them as file attachments.";
+- This tool can read image files and PDFs and return them as file attachments."#;
 
 /// Prompt template for the `write` tool.
 pub const PROMPT_WRITE: &str = r"Writes a file to the local filesystem.
@@ -625,25 +625,24 @@ Usage:
 - Only use emojis if the user explicitly requests it. Avoid writing emojis to files unless asked.";
 
 /// Prompt template for the `glob` tool.
-pub const PROMPT_GLOB: &str = r"- Fast file pattern matching tool that works with any codebase size
-- Supports glob patterns like ""**/*.js"" or ""src/**/*.ts""
+pub const PROMPT_GLOB: &str = r#"- Fast file pattern matching tool that works with any codebase size
+- Supports glob patterns like "**/*.js" or "src/**/*.ts"
 - Returns matching file paths
 - Use this tool when you need to find files by name patterns
 - When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the Task tool instead
-- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful.";
+- You have the capability to call multiple tools in a single response. It is always better to speculatively perform multiple searches as a batch that are potentially useful."#;
 
 /// Prompt template for the `grep` tool.
-pub const PROMPT_GREP: &str = r"- Fast content search tool that works with any codebase size
+pub const PROMPT_GREP: &str = r#"- Fast content search tool that works with any codebase size
 - Searches file contents using regular expressions
-- Supports full regex syntax (eg. ""log.*Error"", ""function\s+\w+"", etc.)
-- Filter files by pattern with the include parameter (eg. ""*.js"", ""*.{ts,tsx}"")
+- Supports full regex syntax (eg. "log.*Error", "function\s+\w+", etc.)
+- Filter files by pattern with the include parameter (eg. "*.js", "*.{ts,tsx}")
 - Returns file paths and line numbers with matching lines
 - Use this tool when you need to find files containing specific patterns
-- If you need to identify/count the number of matches within files, use the Bash tool with `rg` (ripgrep) directly. Do NOT use `grep`.
-- When you are doing an open-ended search that may require multiple rounds of globbing and grepping, use the Task tool instead";
+- If you need to identify/count the number of matches within files, use the Bash tool with `rg` (ripgrep) directly. Do NOT use `grep`."#;
 
 /// Prompt template for the `webfetch` tool.
-pub const PROMPT_WEBFETCH: &str = r"- Fetches content from a specified URL
+pub const PROMPT_WEBFETCH: &str = r#"- Fetches content from a specified URL
 - Takes a URL and optional format as input
 - Fetches the URL content, converts to requested format (markdown by default)
 - Returns the content in the specified format
@@ -653,12 +652,12 @@ Usage notes:
   - IMPORTANT: if another tool is present that offers better web fetching capabilities, is more targeted to the task, or has fewer restrictions, prefer using that tool instead of this one.
   - The URL must be a fully-formed valid URL
   - HTTP URLs will be automatically upgraded to HTTPS
-  - Format options: ""markdown"" (default), ""text"", or ""html""
+  - Format options: "markdown" (default), "text", or "html"
   - This tool is read-only and does not modify any files
-  - Results may be summarized if the content is very large";
+  - Results may be summarized if the content is very large"#;
 
 /// Prompt template for the `websearch` tool.
-pub const PROMPT_WEBSEARCH: &str = r"- Search the web using the session's web search provider - performs real-time web searches and can scrape content from specific URLs
+pub const PROMPT_WEBSEARCH: &str = r#"- Search the web using the session's web search provider - performs real-time web searches and can scrape content from specific URLs
 - Provides up-to-date information for current events and recent data
 - Supports configurable result counts and returns the content from the most relevant websites
 - Use this tool for accessing information beyond knowledge cutoff
@@ -671,19 +670,19 @@ Usage notes:
   - Domain filtering and advanced search options available
 
 The current year is {{year}}. You MUST use this year when searching for recent information or current events
-- Example: If the current year is 2026 and the user asks for ""latest AI news"", search for ""AI news 2026"", NOT ""AI news 2025""";
+- Example: If the current year is 2026 and the user asks for "latest AI news", search for "AI news 2026", NOT "AI news 2025""#;
 
 /// Prompt template for the `question` tool.
-pub const PROMPT_QUESTION: &str = r"Use this tool when you need to ask the user questions during execution. This allows you to:
+pub const PROMPT_QUESTION: &str = r#"Use this tool when you need to ask the user questions during execution. This allows you to:
 1. Gather user preferences or requirements
 2. Clarify ambiguous instructions
 3. Get decisions on implementation choices as you work
 4. Offer choices to the user about what direction to take.
 
 Usage notes:
-- When `custom` is enabled (default), a ""Type your own answer"" option is added automatically; don't include ""Other"" or catch-all options
+- When `custom` is enabled (default), a "Type your own answer" option is added automatically; don't include "Other" or catch-all options
 - Answers are returned as arrays of labels; set `multiple: true` to allow selecting more than one
-- If you recommend a specific option, make that the first option in the list and add ""(Recommended)"" at the end of the label";
+- If you recommend a specific option, make that the first option in the list and add "(Recommended)" at the end of the label"#;
 
 /// Prompt template for the `skill` tool.
 pub const PROMPT_SKILL: &str = r"Load a specialized skill when the task at hand matches one of the skills listed in the system prompt.
@@ -693,13 +692,13 @@ Use this tool to inject the skill's instructions and resources into current conv
 The skill name must match one of the skills listed in your system prompt.";
 
 /// Prompt template for the `task` tool.
-pub const PROMPT_TASK: &str = r"Launch a new agent to handle complex, multistep tasks autonomously.
+pub const PROMPT_TASK: &str = r#"Launch a new agent to handle complex, multistep tasks autonomously.
 
 When using the Task tool, you must specify a subagent_type parameter to select which agent type to use.
 
 When NOT to use the Task tool:
 - If you want to read a specific file path, use the Read or Glob tool instead of the Task tool, to find the match more quickly
-- If you are searching for a specific class definition like ""class Foo"", use the Grep tool instead, to find the match more quickly
+- If you are searching for a specific class definition like "class Foo", use the Grep tool instead, to find the match more quickly
 - If you are searching for code within a specific file or set of 2-3 files, use the Read tool instead of the Task tool, to find the match more quickly
 - If no available agent is a good fit for the task, use other tools directly
 
@@ -711,10 +710,10 @@ Usage notes:
 4. Each agent invocation starts with a fresh context unless you provide task_id to resume the same subagent session (which continues with its previous messages and tool outputs). When starting fresh, your prompt should contain a highly detailed task description for the agent to perform autonomously and you should specify exactly what information the agent should return back to you in its final and only message to you.
 5. The agent's outputs should generally be trusted
 6. Clearly tell the agent whether you expect it to write code or just to do research (search, file reads, web fetches, etc.), since it is not aware of the user's intent. Tell it how to verify its work if possible (e.g., relevant test commands).
-7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement.";
+7. If the agent description mentions that it should be used proactively, then you should try your best to use it without the user having to ask for it first. Use your judgement."#;
 
 /// Prompt template for the `todowrite` tool.
-pub const PROMPT_TODOWRITE: &str = r"Create and maintain a structured task list for the current coding session. Tracks progress, organizes multi-step work, and surfaces status to the user.
+pub const PROMPT_TODOWRITE: &str = r#"Create and maintain a structured task list for the current coding session. Tracks progress, organizes multi-step work, and surfaces status to the user.
 
 ## When to use
 Use proactively when:
@@ -748,19 +747,19 @@ Skip when:
 ## Examples
 
 Use it:
-- ""Add a dark mode toggle and run the tests"" -> multi-step feature + explicit verification
-- ""Rename getCwd -> getCurrentWorkingDirectory across the repo"" -> grep reveals 15 occurrences in 8 files
-- ""Implement registration, catalog, cart, checkout"" -> multiple complex features
+- "Add a dark mode toggle and run the tests" -> multi-step feature + explicit verification
+- "Rename getCwd -> getCurrentWorkingDirectory across the repo" -> grep reveals 15 occurrences in 8 files
+- "Implement registration, catalog, cart, checkout" -> multiple complex features
 
 Skip it:
-- ""How do I print Hello World in Python?"" -> informational
-- ""Add a comment to calculateTotal"" -> single edit
-- ""Run npm install and tell me what happened"" -> one command
+- "How do I print Hello World in Python?" -> informational
+- "Add a comment to calculateTotal" -> single edit
+- "Run npm install and tell me what happened" -> one command
 
-When in doubt, use it.";
+When in doubt, use it."#;
 
 /// Prompt template for the `apply_patch` tool.
-pub const PROMPT_APPLY_PATCH: &str = r"Use the `apply_patch` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
+pub const PROMPT_APPLY_PATCH: &str = r#"Use the `apply_patch` tool to edit files. Your patch language is a stripped‑down, file‑oriented diff format designed to be easy to parse and safe to apply. You can think of it as a high‑level envelope:
 
 *** Begin Patch
 [ one or more file sections ]
@@ -783,8 +782,8 @@ Example patch:
 *** Update File: src/app.py
 *** Move to: src/main.py
 @@ def greet():
--print(""Hi"")
-+print(""Hello, world!"")
+-print("Hi")
++print("Hello, world!")
 *** Delete File: obsolete.txt
 *** End Patch
 ```
@@ -792,7 +791,7 @@ Example patch:
 It is important to remember:
 
 - You must include a header with your intended action (Add/Delete/Update)
-- You must prefix new lines with `+` even when creating a new file";
+- You must prefix new lines with `+` even when creating a new file"#;
 
 /// Prompt template for the `lsp` tool.
 pub const PROMPT_LSP: &str = r"Interact with Language Server Protocol (LSP) servers to get code intelligence features.

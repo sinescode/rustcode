@@ -7,7 +7,7 @@
 //! Ported from:
 //! - `packages/opencode/src/snapshot/index.ts` (lines 1–808)
 
-use crate::git::{Git, GitError as GitOpError, PatchOptions};
+use crate::git::GitError as GitOpError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -138,6 +138,27 @@ pub struct SnapshotService {
     lock: Mutex<()>,
     /// Whether initialized.
     initialized: bool,
+}
+
+/// Structured row from `git diff --numstat` output.
+struct DiffRow {
+    file: String,
+    status: String,
+    binary: bool,
+    additions: i64,
+    deletions: i64,
+}
+
+/// A ref pointing to a file at a git revision (`<tree>:<path>`).
+struct FileRef {
+    file: String,
+    side: Side,
+    ref_str: String,
+}
+
+enum Side {
+    Before,
+    After,
 }
 
 impl SnapshotService {
@@ -476,27 +497,6 @@ impl SnapshotService {
             return Ok(String::new());
         }
         Ok(result.text.trim().to_string())
-    }
-
-    /// Structured row from `git diff --numstat` output.
-    struct DiffRow {
-        file: String,
-        status: String,
-        binary: bool,
-        additions: i64,
-        deletions: i64,
-    }
-
-    /// A ref pointing to a file at a git revision (`<tree>:<path>`).
-    struct FileRef {
-        file: String,
-        side: Side,
-        ref_str: String,
-    }
-
-    enum Side {
-        Before,
-        After,
     }
 
     /// Get a full diff (with file contents and patches) between two hashes.

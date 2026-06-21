@@ -36,7 +36,7 @@ tokio-stream = { version = "0.1", features = ["sync"] }
 pin-project-lite = "0.2"
 dashmap = "6"
 tower = "0.5"
-tokio-util = { version = "0.7", features = ["rt", "sync"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 tokio-tungstenite = "0.24"
 bytes = "1"
 url = "2"

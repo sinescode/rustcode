@@ -14,7 +14,6 @@
 //! - OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use clap::{Parser, Subcommand};
-use futures::StreamExt;
 use rustcode_core::config::Config;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as _};
@@ -23,11 +22,6 @@ use std::sync::Arc;
 
 mod cli_error;
 use cli_error::CliErrorFormatter;
-
-use sqlx::Column;
-#[allow(unused_imports)]
-use sqlx::Row as _;
-use sqlx::TypeInfo;
 
 // ── Top-level CLI ───────────────────────────────────────────────────────────
 /// AI-powered development tool — Rust port of OpenCode.

@@ -11,7 +11,7 @@
 //! - `packages/opencode/src/session/run-state.ts` (lines 1–156)
 
 use crate::bus::{GlobalEvent, SharedBus};
-use crate::database::{DatabaseService, DatabaseServiceError, MessageRow, PartRow, SessionRow};
+use crate::database::{DatabaseService, DatabaseServiceError, SessionRow};
 use crate::id;
 use crate::permission::PermissionService;
 use crate::provider::{LlmEvent, Model, Usage};
@@ -22,9 +22,9 @@ use futures::StreamExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::oneshot;
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Error types

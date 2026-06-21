@@ -1922,11 +1922,12 @@ mod tests {
             .tool_stream
             .start(0, "get_weather", "toolu_01".to_string());
 
+        let partial: serde_json::Value = serde_json::from_str(r#"{"city":""#).unwrap();
         let payload = serde_json::json!({
             "contentBlockIndex": 0,
             "delta": {
                 "toolUse": {
-                    "input": r#"{"city":"#"
+                    "input": partial
                 }
             }
         });

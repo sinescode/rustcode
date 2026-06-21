@@ -15,7 +15,7 @@ use std::future::Future;
 use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
-use tokio::sync::{watch, Notify, RwLock};
+use tokio::sync::{watch, RwLock};
 
 /// Callback type for the `onPromote` effect.
 ///

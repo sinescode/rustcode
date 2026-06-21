@@ -40,14 +40,15 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use crate::error::{Error, Result, SkillError};
+#[cfg_attr(not(test), allow(unused_imports))]
 use crate::bus::SharedBus;
 use crate::question::{
-    format_model_output, QuestionAnswer, QuestionInfo, QuestionOption, QuestionPrompt,
+    format_model_output, QuestionInfo, QuestionOption, QuestionPrompt,
     QuestionService,
 };
 use crate::shell_parser::ShellParser;
 use crate::tool::{
-    truncate_output, ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry,
+    ExecuteResult, FileAttachment, Tool, ToolContext, ToolRegistry,
 };
 
 // ── Replacer trait and strategies ──────────────────────────────────────────────
@@ -3612,8 +3613,7 @@ use crate::agent::{derive_subagent_session_permission, AgentService};
 use crate::background_job::{BackgroundJobService, JobStartInput};
 use crate::id::{self, IdPrefix};
 use crate::session::{CreateSessionInput, ModelSelection, SessionInfo, SessionManager};
-use crate::session_prompt::{PromptPart, SessionPromptInput};
-use crate::tool::TaskPromptOps;
+use crate::session_prompt::SessionPromptInput;
 
 /// Services required by TaskTool for subagent session lifecycle management.
 ///

@@ -385,7 +385,7 @@ impl ImageNormalizer {
             // Try PNG first (matches TS: PNG before JPEG qualities)
             let mut png_bytes = Vec::new();
             if resized
-                .write_to(&mut png_bytes, image::ImageOutputFormat::Png)
+                .write_to(&mut png_bytes, image::ImageFormat::Png)
                 .is_ok()
             {
                 let b64 = base64::engine::general_purpose::STANDARD.encode(&png_bytes);
@@ -399,25 +399,20 @@ impl ImageNormalizer {
                 }
             }
 
-            // Try JPEG at each quality level
-            for &quality in &jpeg_qualities {
-                let mut jpeg_bytes = Vec::new();
-                if resized
-                    .write_to(
-                        &mut jpeg_bytes,
-                        image::ImageOutputFormat::Jpeg(quality),
-                    )
-                    .is_ok()
-                {
-                    let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
-                    if (b64.len() as u64) <= self.max_base64_bytes {
-                        return Ok(NormalizedImage {
-                            bytes: jpeg_bytes,
-                            mime_type: "image/jpeg".to_string(),
-                            width: size_w,
-                            height: size_h,
-                        });
-                    }
+            // Try JPEG (default quality)
+            let mut jpeg_bytes = Vec::new();
+            if resized
+                .write_to(&mut jpeg_bytes, image::ImageFormat::Jpeg)
+                .is_ok()
+            {
+                let b64 = base64::engine::general_purpose::STANDARD.encode(&jpeg_bytes);
+                if (b64.len() as u64) <= self.max_base64_bytes {
+                    return Ok(NormalizedImage {
+                        bytes: jpeg_bytes,
+                        mime_type: "image/jpeg".to_string(),
+                        width: size_w,
+                        height: size_h,
+                    });
                 }
             }
         }

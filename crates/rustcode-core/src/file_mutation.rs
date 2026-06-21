@@ -146,7 +146,7 @@ pub enum FileMutationError {
 
 // Base64 helper for binary content serialization
 mod base64_bytes {
-    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+    use serde::{Deserialize, Deserializer};
 
     pub fn serialize<S>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error>
     where

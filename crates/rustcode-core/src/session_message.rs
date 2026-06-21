@@ -5,7 +5,7 @@
 //! - `packages/core/src/session/message-id.ts` (lines 1–13)
 //! - `packages/opencode/src/session/message-v2.ts` (lines 1–744)
 
-use crate::session_info::{MessageId, SessionId};
+use crate::session_info::SessionId;
 use serde::{Deserialize, Serialize};
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -9,17 +9,15 @@
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use async_trait::async_trait;
-use futures::Stream;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
     ChatMessage, ContentBlockId, ContentPart, FinishReason, LlmEvent, MessageContent, Model,
-    Provider, ProviderId, ProviderInfo, ProviderSource, ReasoningEffort, ToolCallId,
-    ToolDefinition, Usage,
+    Provider, ToolDefinition, Usage,
 };
-use crate::sse::{parse_sse_stream, SseEvent};
+use crate::sse::parse_sse_stream;
 use crate::tool_stream::ToolStreamAccumulator;
 
 // ── Anthropic API types ────────────────────────────────────────────────

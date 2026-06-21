@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::OnceLock;
 use std::time::Instant;
-use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::Layer;
 
 // ── Log level ───────────────────────────────────────────────────────────

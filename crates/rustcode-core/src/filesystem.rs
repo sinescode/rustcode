@@ -10,6 +10,7 @@
 //!
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
+use crate::bus::{GlobalEvent, SharedBus};
 use crate::schema::RelativePath;
 use serde::{Deserialize, Serialize};
 
@@ -822,8 +823,6 @@ pub struct FileEditedEvent {
 
 // ── Filesystem operations ───────────────────────────────────────────────────
 // Ported from: packages/core/src/filesystem.ts (Interface: read, list, find, glob, grep)
-
-use std::path::{Path, PathBuf};
 
 /// Errors that can occur during filesystem operations.
 ///

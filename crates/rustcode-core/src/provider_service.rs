@@ -7,12 +7,11 @@
 //! Ported from `packages/opencode/src/provider/provider.ts` lines 1300–1550.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use crate::config::{Config, ModelConfig, ProviderConfig, ProviderOptions};
+use crate::config::{ModelConfig, ProviderConfig};
 use crate::error::Error;
 use crate::plugin::{
-    AuthLoadContext, CatalogTransformContext, CustomProviderConfig, ModelDiscoverContext,
+    AuthLoadContext, CatalogTransformContext, ModelDiscoverContext,
     ProviderPlugin, ProviderPluginRegistry,
 };
 use crate::provider::{Model, Provider};

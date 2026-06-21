@@ -2,7 +2,6 @@ use sha2::{Sha256, Digest};
 use hmac::{Hmac, Mac};
 use hex;
 use serde::{Deserialize, Serialize};
-use std::sync::OnceLock;
 
 type HmacSha256 = Hmac<Sha256>;
 

@@ -12,7 +12,6 @@
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
-use std::io::Cursor;
 use tokio_util::io::StreamReader;
 
 /// An SSE event parsed from the stream.

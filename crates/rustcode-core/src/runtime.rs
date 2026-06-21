@@ -22,7 +22,6 @@ use std::sync::Arc;
 use crate::agent::AgentService;
 use crate::background_job::BackgroundJobService;
 use crate::bus;
-use crate::config::Config;
 use crate::database::DatabaseService;
 use crate::permission::PermissionService;
 use crate::provider::Provider;
