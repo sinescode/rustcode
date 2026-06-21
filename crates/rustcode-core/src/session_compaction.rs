@@ -961,8 +961,8 @@ impl SessionCompaction {
         }
 
         // Step 2: Collect head messages
-        let head_msgs: Vec<&serde_json::Value> =
-            head_indices.iter().map(|&i| &messages[i]).collect();
+        let head_msgs: Vec<serde_json::Value> =
+            head_indices.iter().map(|&i| messages[i].clone()).collect();
 
         // Step 3: Serialize head messages
         let serialized: Vec<String> = CompactionSerializer::serialize_messages(&head_msgs);

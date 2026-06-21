@@ -1351,6 +1351,13 @@ pub enum PermissionSource {
         #[serde(rename = "callID")]
         call_id: String,
     },
+    /// The request originated from the session.
+    #[serde(rename = "session")]
+    Session {
+        /// The session ID.
+        #[serde(rename = "sessionID")]
+        session_id: String,
+    },
 }
 
 /// Result of a V2 `ask()` operation — returns the request ID and the effect.

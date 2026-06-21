@@ -449,6 +449,16 @@ pub type ProjectorFn = Arc<
         + Sync,
 >;
 
+pub fn mk_projector_fn<F>(f: F) -> ProjectorFn
+where
+    F: Fn(EventPayload) -> Pin<Box<dyn Future<Output = Result<(), EventError>> + Send>>
+        + Send
+        + Sync
+        + 'static,
+{
+    Arc::new(f)
+}
+
 /// A commit guard — runs before an event is committed, can abort the commit.
 ///
 /// # Source

@@ -1958,10 +1958,10 @@ impl Config {
             experimental: info
                 .experimental
                 .as_ref()
-                .and_then(|e| e.policies.as_ref())
-                .filter(|p| !p.is_empty())
+                .and_then(|e| Some(e.policies.as_ref()))
+                .filter(|p: &&[serde_json::Value]| !p.is_empty())
                 .map(|p| V2ExperimentalConfig {
-                    policies: p.clone(),
+                    policies: p.to_vec(),
                 }),
             providers: None,
         };
@@ -1993,7 +1993,7 @@ impl Config {
                 model: agent.model.clone(),
                 variant: agent.variant.clone(),
                 description: agent.description.clone(),
-                mode: agent.mode.map(|m| match m {
+                mode: agent.mode.clone().map(|m| match m {
                     AgentMode::Subagent => "subagent".to_string(),
                     AgentMode::Primary => "primary".to_string(),
                     AgentMode::All => "all".to_string(),
@@ -2010,7 +2010,7 @@ impl Config {
                 model: mode.model.clone(),
                 variant: mode.variant.clone(),
                 description: mode.description.clone(),
-                mode: mode.mode.map(|m| match m {
+                mode: mode.mode.clone().map(|m| match m {
                     AgentMode::Subagent => "subagent".to_string(),
                     AgentMode::Primary => "primary".to_string(),
                     AgentMode::All => "all".to_string(),
@@ -2037,7 +2037,7 @@ impl Config {
                                 r#type: "local".to_string(),
                                 command: Some(command.clone()),
                                 cwd: cwd.clone(),
-                                environment: environment.clone(),
+                                environment: Some(environment.clone()),
                                 disabled: enabled.map(|e| !e),
                                 timeout: *timeout,
                                 url: None,
@@ -2187,7 +2187,7 @@ fn deep_merge_json_map(
 fn deep_merge_tui(base: TuiConfigInfo, patch: TuiConfigInfo) -> TuiConfigInfo {
     TuiConfigInfo {
         theme: patch.theme.or(base.theme),
-        keybinds: patch.keybinds.or(base.keybinds),
+        keybinds: if patch.keybinds.is_empty() { base.keybinds } else { patch.keybinds },
         colors: patch.colors.or(base.colors),
         font_size: patch.font_size.or(base.font_size),
         font_family: patch.font_family.or(base.font_family),
@@ -2212,7 +2212,7 @@ fn deep_merge_tui(base: TuiConfigInfo, patch: TuiConfigInfo) -> TuiConfigInfo {
                 (None, None) => None,
             }
         },
-        plugin: if patch.plugin.is_some() {
+        plugin: if !patch.plugin.is_empty() {
             patch.plugin
         } else {
             base.plugin
@@ -2264,6 +2264,23 @@ fn serialize_permission_rules(
         };
     }
 
+    macro_rules! push_action_rule {
+        ($field:expr, $action:expr) => {
+            if let Some(ref a) = $field {
+                let effect = match a {
+                    PermissionAction::Ask => "ask",
+                    PermissionAction::Allow => "allow",
+                    PermissionAction::Deny => "deny",
+                };
+                rules.push(V2PermissionRule {
+                    action: $action.to_string(),
+                    resource: "*".to_string(),
+                    effect: effect.to_string(),
+                });
+            }
+        };
+    }
+
     push_rule!(config.read, "read");
     push_rule!(config.edit, "edit");
     push_rule!(config.glob, "glob");
@@ -2274,12 +2291,12 @@ fn serialize_permission_rules(
     push_rule!(config.lsp, "lsp");
     push_rule!(config.skill, "skill");
     push_rule!(config.external_directory, "external_directory");
-    push_rule!(config.wildcard, "*");
-    push_rule!(config.todowrite, "todowrite");
-    push_rule!(config.question, "question");
-    push_rule!(config.webfetch, "webfetch");
-    push_rule!(config.websearch, "websearch");
-    push_rule!(config.doom_loop, "doom_loop");
+    push_action_rule!(config.wildcard, "*");
+    push_action_rule!(config.todowrite, "todowrite");
+    push_action_rule!(config.question, "question");
+    push_action_rule!(config.webfetch, "webfetch");
+    push_action_rule!(config.websearch, "websearch");
+    push_action_rule!(config.doom_loop, "doom_loop");
 
     for (action, rule) in &config.extra {
         push_rule!(Some(rule), action);

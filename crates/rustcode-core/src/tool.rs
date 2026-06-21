@@ -1017,26 +1017,30 @@ fn normalize_json(value: &serde_json::Value, options: &NormalizeOptions) -> serd
             }
 
             // Flatten allOf
-            if let Some(all_of) = schema.get("all_of").and_then(|v| v.as_array()) {
+            let should_flatten = schema.get("all_of").and_then(|v| v.as_array()).map(|all_of| {
                 let all_objs: Vec<&serde_json::Map<String, serde_json::Value>> = all_of
                     .iter()
                     .filter_map(|v| v.as_object())
                     .collect();
-                if all_objs.len() == all_of.len() && can_flatten_all_of_json(&all_objs, &schema) {
-                    schema.remove("all_of");
-                    for item_obj in all_objs {
-                        for (k, v) in item_obj {
-                            schema.insert(k.clone(), v.clone());
-                        }
-                    }
-                    return normalize_json(&serde_json::Value::Object(schema), &NormalizeOptions { strip_null: false });
+                if all_objs.len() != all_of.len() {
+                    return None;
                 }
+                can_flatten_all_of_json(&all_objs, &schema).then(|| {
+                    all_objs.iter().flat_map(|obj| obj.iter()).map(|(k, v)| (k.clone(), v.clone())).collect::<Vec<_>>()
+                })
+            }).flatten();
+            if let Some(items) = should_flatten {
+                schema.remove("all_of");
+                for (k, v) in items {
+                    schema.insert(k, v);
+                }
+                return normalize_json(&serde_json::Value::Object(schema), &NormalizeOptions { strip_null: false });
             }
 
             // Integer bounds
             if schema.get("type") == Some(&serde_json::Value::String("integer".into())) && !schema.contains_key("maximum") {
-                schema.insert("minimum".into(), serde_json::Value::Number(serde_json::Number::MIN));
-                schema.insert("maximum".into(), serde_json::Value::Number(serde_json::Number::MAX));
+                schema.insert("minimum".into(), serde_json::Value::Number(serde_json::Number::from(i64::MIN)));
+                schema.insert("maximum".into(), serde_json::Value::Number(serde_json::Number::from(i64::MAX)));
             }
 
             serde_json::Value::Object(schema)

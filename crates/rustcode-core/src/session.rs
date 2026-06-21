@@ -1280,12 +1280,12 @@ impl SessionManager {
     /// # Source
     /// `packages/opencode/src/session/session.ts` lines 852–855.
     pub async fn diff(&self, id: &str) -> Result<Vec<FileDiff>, SessionError> {
-        let session = self.get(id).await?
-            .ok_or_else(|| SessionError::NotFound(id.to_string()))?;
+        let session = self.get(id).await?;
         let snapshot_hash = session.revert
-            .and_then(|r| r.snapshot.get("hash").and_then(|v| v.as_str()))
-            .unwrap_or("HEAD")
-            .to_string();
+            .and_then(|r| r.snapshot.clone())
+            .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+            .and_then(|v| v.get("hash").and_then(|h| h.as_str().map(String::from)))
+            .unwrap_or_else(|| "HEAD".to_string());
 
         let worktree = std::env::current_dir()
             .map_err(|e| SessionError::Other(format!("current dir: {e}")))?;
@@ -2302,6 +2302,7 @@ impl SessionProcessor {
             messages: Arc::from([] as [crate::provider::ChatMessage; 0]),
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
 
         self.tool_registry

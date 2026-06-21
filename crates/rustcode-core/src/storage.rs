@@ -66,6 +66,7 @@ impl FileLock {
 ///
 /// Ported from the `RcMap` + `TxReentrantLock` pattern in storage.ts.
 #[derive(Clone)]
+#[derive(Debug)]
 pub struct LockMap {
     inner: Arc<StdMutex<HashMap<PathBuf, Arc<FileLock>>>>,
 }
@@ -137,20 +138,20 @@ pub fn validate_schema(value: &serde_json::Value, schema: &StorageSchema) -> std
         }
         StorageSchema::Session => {
             let obj = value.as_object().ok_or("expected object")?;
-            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| "missing or invalid 'id' field".into())?;
+            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| String::from("missing or invalid 'id' field"))?;
             Ok(())
         }
         StorageSchema::Message => {
             let obj = value.as_object().ok_or("expected object")?;
-            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| "missing or invalid 'id' field".into())?;
+            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| String::from("missing or invalid 'id' field"))?;
             Ok(())
         }
         StorageSchema::Summary => {
             let obj = value.as_object().ok_or("expected object")?;
-            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| "missing 'id'".into())?;
-            obj.get("projectID").and_then(|v| v.as_str()).ok_or_else(|| "missing 'projectID'".into())?;
-            let summary = obj.get("summary").and_then(|v| v.as_object()).ok_or_else(|| "missing 'summary' object".into())?;
-            let diffs = summary.get("diffs").and_then(|v| v.as_array()).ok_or_else(|| "missing 'summary.diffs' array".into())?;
+            obj.get("id").and_then(|v| v.as_str()).ok_or_else(|| String::from("missing 'id'"))?;
+            obj.get("projectID").and_then(|v| v.as_str()).ok_or_else(|| String::from("missing 'projectID'"))?;
+            let summary = obj.get("summary").and_then(|v| v.as_object()).ok_or_else(|| String::from("missing 'summary' object"))?;
+            let diffs = summary.get("diffs").and_then(|v| v.as_array()).ok_or_else(|| String::from("missing 'summary.diffs' array"))?;
             for (i, diff) in diffs.iter().enumerate() {
                 let d = diff.as_object().ok_or_else(|| format!("diffs[{i}] not an object"))?;
                 d.get("additions").and_then(|v| v.as_i64()).ok_or_else(|| format!("diffs[{i}] missing 'additions'"))?;

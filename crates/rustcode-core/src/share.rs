@@ -473,12 +473,14 @@ impl ShareNextInterface for ShareNextService {
 
         let share = self.get_cached(session_id).await?;
 
-        let mut state = self.state.lock().unwrap();
-
-        let Some(share) = share else {
-            state.shared.remove(session_id);
-            state.queue.remove(session_id);
-            return Ok(());
+        let share = match share {
+            Some(share) => share,
+            None => {
+                let mut state = self.state.lock().unwrap();
+                state.shared.remove(session_id);
+                state.queue.remove(session_id);
+                return Ok(());
+            }
         };
 
         let req = self.request().await?;
@@ -501,8 +503,11 @@ impl ShareNextInterface for ShareNextService {
                 .await;
         }
 
-        state.shared.remove(session_id);
-        state.queue.remove(session_id);
+        {
+            let mut state = self.state.lock().unwrap();
+            state.shared.remove(session_id);
+            state.queue.remove(session_id);
+        }
 
         Ok(())
     }

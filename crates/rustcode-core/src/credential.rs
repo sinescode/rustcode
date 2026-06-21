@@ -306,7 +306,7 @@ impl CredentialService {
         .await
         .map_err(|e| CredentialServiceError::Database(e.to_string()))?;
 
-        Ok(rows.into_iter().filter_map(CredentialRowRaw::into_stored).collect())
+        Ok(rows.into_iter().filter_map(CredentialRowRaw::into_stored_direct).collect())
     }
 
     /// Return stored credentials belonging to one integration, ordered by
@@ -374,7 +374,7 @@ impl CredentialService {
 
         Ok(Some(CredentialStored {
             id: row.id,
-            integration_id: row.integration_id?,
+            integration_id: row.integration_id.ok_or_else(|| CredentialServiceError::Serialization("missing integration_id".into()))?,
             label: row.label,
             value,
         }))

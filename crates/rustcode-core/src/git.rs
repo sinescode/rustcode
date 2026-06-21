@@ -129,6 +129,8 @@ pub struct Repo {
 /// Git operation errors.
 #[derive(Debug, thiserror::Error)]
 pub enum GitError {
+    #[error("git command failed: {message}")]
+    Command { exit_code: Option<i32>, message: String },
     #[error("git command failed with exit code {exit_code}: {stderr}")]
     CommandFailed { exit_code: i32, stderr: String },
 
@@ -237,9 +239,9 @@ impl Git {
             .current_dir(&self.worktree)
             .output()
             .await
-            .map_err(|e| GitError::Command {
-                exit_code: None,
-                message: e.to_string(),
+            .map_err(|e| GitError::CommandFailed {
+                exit_code: 1,
+                stderr: e.to_string(),
             })?;
         Ok(GitResult {
             exit_code: output.status.code().unwrap_or(1),

@@ -279,10 +279,6 @@ impl GitHubCopilotProvider {
     fn chat_url(&self) -> String {
         format!("{}{CHAT_PATH}", self.base_url.trim_end_matches('/'))
     }
-
-    fn chat_url(&self) -> String {
-        format!("{}{CHAT_PATH}", self.base_url.trim_end_matches('/'))
-    }
 }
 
 // ── Provider trait implementation ──────────────────────────────────────

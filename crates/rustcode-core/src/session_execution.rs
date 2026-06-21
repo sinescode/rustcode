@@ -182,8 +182,6 @@ impl<T: Send + 'static> FiberSet<T> {
         if let Some(old) = self.handles.insert(id, handle) {
             // Detach the old handle — it will be cleaned up when the task completes
             tokio::spawn(async move { old.await.ok(); });
-        } else {
-            self.handles.insert(id, handle);
         }
         self.cancels.insert(id, cancel.clone());
 
@@ -478,6 +476,7 @@ fn done_channel() -> (DoneChannel, DoneReceiver) {
 /// A single session's execution lane within the [`RunCoordinator`].
 ///
 /// Mirrors `packages/core/src/session/run-coordinator.ts` lines 41–50 `Entry<A, E>`.
+#[derive(Clone)]
 struct Lane {
     /// The demand currently being processed (or about to start).
     demand: Demand,
@@ -544,7 +543,7 @@ impl<F> FnRunner<F> {
 impl<F, Fut> CoordinatedRunner for FnRunner<F>
 where
     F: Fn(SessionId, bool) -> Fut + Send + Sync + 'static,
-    Fut: std::future::Future<Output = Result<(), SessionRunError>> + Send,
+    Fut: std::future::Future<Output = Result<(), SessionRunError>> + Send + 'static,
 {
     fn coordinated_run(
         &self,
@@ -673,7 +672,6 @@ impl RunCoordinator {
             if lane.stopping {
                 drop(lane);
                 self.await_idle(session_id.clone()).await?;
-                return self.run(session_id).await;
             }
         }
 
@@ -691,7 +689,7 @@ impl RunCoordinator {
                 drop(lane);
 
                 if fiber_id.is_none() {
-                    self.start_drain(session_id).await;
+                    self.start_drain(session_id.clone()).await;
                 }
 
                 return wait_for_result(rx, &session_id).await;
@@ -712,7 +710,7 @@ impl RunCoordinator {
             drop(lane);
 
             if fiber_id.is_none() {
-                self.start_drain(session_id).await;
+                self.start_drain(session_id.clone()).await;
             }
 
             return wait_for_result(rx, &session_id).await;
@@ -765,44 +763,43 @@ impl RunCoordinator {
 
         // Atomic check-and-update: if lane exists and isn't stopping, coalesce
         let mut inserted = false;
-        self.lanes.alter(&session_id, |opt_lane| {
-            match opt_lane {
-                Some(mut lane) if !lane.stopping => {
-                    lane.pending = Some(coalesce_demand(
-                        lane.pending.as_ref(),
-                        &Demand::Wake { seq },
-                    ));
-                    Some(lane)
-                }
-                other => {
-                    // No lane or lane is stopping — mark for insert below
-                    inserted = true;
-                    other
-                }
+        if let Some(lane) = self.lanes.get(&session_id) {
+            if !lane.stopping {
+                // Already draining — coalesce
+                let mut lane = lane.value().clone();
+                lane.pending = Some(coalesce_demand(
+                    lane.pending.as_ref(),
+                    &Demand::Wake { seq },
+                ));
+                self.lanes.insert(session_id.clone(), lane);
+            } else {
+                inserted = true;
             }
-        });
-        if inserted {
-
-        // Idle — start a new drain chain
-        self.lanes.insert(
-            session_id.clone(),
-            Lane {
-                demand: Demand::Wake { seq },
-                pending: None,
-                stopping: false,
-                interrupt_seq: None,
-                fiber_id: None,
-                done_tx: None,
-            },
-        );
-
-        let turn_id = self.turn_counter.fetch_add(1, Ordering::SeqCst);
-        {
-            let mut state = self.state.write().await;
-            *state = CoordinatorState::Running { turn_id };
+        } else {
+            inserted = true;
         }
+        if inserted {
+            // Idle — start a new drain chain
+            self.lanes.insert(
+                session_id.clone(),
+                Lane {
+                    demand: Demand::Wake { seq },
+                    pending: None,
+                    stopping: false,
+                    interrupt_seq: None,
+                    fiber_id: None,
+                    done_tx: None,
+                },
+            );
 
-        self.start_drain(session_id).await;
+            let turn_id = self.turn_counter.fetch_add(1, Ordering::SeqCst);
+            {
+                let mut state = self.state.write().await;
+                *state = CoordinatorState::Running { turn_id };
+            }
+
+            self.start_drain(session_id).await;
+        }
     }
 
     /// Interrupt the active drain chain for the given session.
@@ -812,7 +809,7 @@ impl RunCoordinator {
     /// # Source
     /// `packages/core/src/session/run-coordinator.ts` lines 193–218 `interrupt`.
     pub async fn interrupt(&self, session_id: SessionId, seq: Option<u64>) {
-        let latest = self.interrupt_seq.get(&session_id).copied();
+        let latest = self.interrupt_seq.get(&session_id).map(|r| *r);
         if let Some(s) = seq {
             if let Some(l) = latest {
                 if s <= l {
@@ -881,7 +878,7 @@ impl RunCoordinator {
 
     /// Check whether a wake with the given seq is after the last interrupt.
     fn is_after_interrupt(&self, session_id: &SessionId, seq: Option<u64>) -> bool {
-        let latest = self.interrupt_seq.get(session_id).copied();
+        let latest = self.interrupt_seq.get(session_id).map(|r| *r);
         match (latest, seq) {
             (None, _) => true,
             (_, None) => false,
@@ -896,6 +893,8 @@ impl RunCoordinator {
         let lanes = self.lanes.clone();
         let fiber_set = self.fiber_set.clone();
         let state = self.state.clone();
+        let session_id_clone = session_id.clone();
+        let fiber_set_clone = fiber_set.clone();
 
         let future = async move {
             let demand = {
@@ -924,8 +923,8 @@ impl RunCoordinator {
             result
         };
 
-        let handle = fiber_set.spawn(future);
-        if let Some(mut lane) = self.lanes.get_mut(&session_id) {
+        let handle = fiber_set_clone.spawn(future);
+        if let Some(mut lane) = self.lanes.get_mut(&session_id_clone) {
             lane.fiber_id = Some(handle.id());
         }
     }
@@ -963,7 +962,7 @@ async fn wait_for_result(
 ///
 /// # Source
 /// `packages/core/src/session/run-coordinator.ts` lines 112–159 `settle`.
-async fn settle(
+fn settle(
     session_id: SessionId,
     lanes: Arc<DashMap<SessionId, Lane>>,
     state: Arc<RwLock<CoordinatorState>>,
@@ -972,7 +971,8 @@ async fn settle(
     on_failure: Option<FailureFn>,
     demand: Demand,
     result: Result<(), SessionRunError>,
-) {
+) -> BoxFuture<'static, ()> {
+    Box::pin(async move {
     let has_pending = lanes
         .get(&session_id)
         .map(|l| l.pending.is_some())
@@ -999,6 +999,7 @@ async fn settle(
                     l.fiber_id = None;
                 }
 
+                let sid = session_id.clone();
                 let lanes_c = lanes.clone();
                 let state_c = state.clone();
                 let fiber_set_c = fiber_set.clone();
@@ -1006,9 +1007,9 @@ async fn settle(
                 let on_failure_c = on_failure.clone();
 
                 let next_future = async move {
-                    let next_result = drain_fn_c(session_id.clone(), next_demand).await;
+                    let next_result = drain_fn_c(sid.clone(), next_demand).await;
                     settle(
-                        session_id.clone(),
+                        sid.clone(),
                         lanes_c,
                         state_c,
                         fiber_set_c,
@@ -1049,6 +1050,7 @@ async fn settle(
                     l.done_tx = Some(new_tx);
                 }
 
+                let sid = session_id.clone();
                 let lanes_c = lanes.clone();
                 let state_c = state.clone();
                 let fiber_set_c = fiber_set.clone();
@@ -1056,9 +1058,9 @@ async fn settle(
                 let on_failure_c = on_failure.clone();
 
                 let next_future = async move {
-                    let next_result = drain_fn_c(session_id.clone(), next_demand).await;
+                    let next_result = drain_fn_c(sid.clone(), next_demand).await;
                     settle(
-                        session_id.clone(),
+                        sid.clone(),
                         lanes_c,
                         state_c,
                         fiber_set_c,
@@ -1092,7 +1094,7 @@ async fn settle(
             }
         }
     }
-}
+})}
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Session Run Error
@@ -1128,6 +1130,8 @@ pub enum SessionRunErrorKind {
     Aborted,
     /// Compaction failed
     CompactionFailed,
+    /// Timeout
+    Timeout,
     /// Internal error
     Internal,
 }
@@ -1147,6 +1151,7 @@ impl std::fmt::Display for SessionRunErrorKind {
             Self::PermissionDenied => write!(f, "PermissionDenied"),
             Self::Aborted => write!(f, "Aborted"),
             Self::CompactionFailed => write!(f, "CompactionFailed"),
+            Self::Timeout => write!(f, "Timeout"),
             Self::Internal => write!(f, "Internal"),
         }
     }

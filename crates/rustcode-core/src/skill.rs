@@ -846,7 +846,7 @@ pub fn generate_skill_guidance(skills: &[&Skill], notify_changed: bool) -> Strin
 ///
 /// # Source
 /// Ported from `packages/opencode/src/skill/index.ts` `loadSkills()`.
-pub fn discover_and_load(
+pub async fn discover_and_load(
     worktree: &Path,
     directory: &Path,
     home: &Path,
@@ -866,7 +866,7 @@ pub fn discover_and_load(
 
     let mut matched_count = 0;
     for file_path in &files {
-        match parse_skill_file(file_path) {
+        match parse_skill_file(file_path).await {
             Ok(Some(skill)) => {
                 registry.register(skill);
                 matched_count += 1;
@@ -905,7 +905,7 @@ pub async fn discover_and_load_async(
 ) -> SkillRegistry {
     // Start with local discovery (sync)
     let mut registry =
-        discover_skill_files_and_load(worktree, directory, home, extra_paths, config);
+        discover_skill_files_and_load(worktree, directory, home, extra_paths, config).await;
 
     // Add remote skills if URLs are configured
     if !config.urls.is_empty() {
@@ -930,7 +930,7 @@ pub async fn discover_and_load_async(
                             continue;
                         };
 
-                        match parse_skill_file(file_path) {
+                        match parse_skill_file(file_path).await {
                             Ok(Some(skill)) => {
                                 registry.register(skill);
                             }
@@ -952,7 +952,7 @@ pub async fn discover_and_load_async(
 }
 
 /// Internal helper: discover local skill files and load them into a registry.
-fn discover_skill_files_and_load(
+async fn discover_skill_files_and_load(
     worktree: &Path,
     directory: &Path,
     home: &Path,
@@ -972,7 +972,7 @@ fn discover_skill_files_and_load(
 
     let mut matched_count = 0;
     for file_path in &files {
-        match parse_skill_file(file_path) {
+        match parse_skill_file(file_path).await {
             Ok(Some(skill)) => {
                 registry.register(skill);
                 matched_count += 1;

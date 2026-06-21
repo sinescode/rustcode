@@ -27,6 +27,9 @@ use crate::permission::PermissionService;
 use crate::provider::Provider;
 use crate::question::QuestionService;
 use crate::session::SessionManager;
+use crate::session_compaction::SessionCompaction;
+use crate::session_epoch::EpochManager;
+use crate::session_input_inbox::SessionInputInbox;
 use crate::session_runner::SessionRunner;
 use crate::tool::ToolRegistry;
 use crate::tool_impls::{TaskTool, TaskToolServices};
@@ -141,6 +144,7 @@ pub fn initialize_runtime_with_path(
         Arc::new(AgentService::new(config, worktree, data_dir, tmp_dir, skill_dirs))
     };
     let background_jobs = Arc::new(BackgroundJobService::new());
+    let agent_service_runner = agent_service.clone();
 
     // Wire TaskTool services so it can create child sessions and run subagents.
     TaskTool::init_services(TaskToolServices {
@@ -152,7 +156,17 @@ pub fn initialize_runtime_with_path(
     let permissions = Arc::new(PermissionService::new(bus.clone()));
     let questions = Arc::new(QuestionService::new(bus.clone()));
     tools.register(Arc::new(QuestionTool::new(questions.clone())));
-    let runner = Arc::new(SessionRunner::new(tools.clone()));
+    let epoch_manager = Arc::new(EpochManager::new(db.clone()));
+    let input_inbox = Arc::new(SessionInputInbox::new(db.clone()));
+    let compaction = Arc::new(SessionCompaction::new());
+    let runner = Arc::new(SessionRunner::new(
+        tools.clone(),
+        epoch_manager,
+        input_inbox,
+        agent_service_runner,
+        compaction,
+        db.clone(),
+    ));
 
     // Use the provider initialization pipeline (plugin-aware).
     let provider_catalog = tokio::runtime::Handle::current()

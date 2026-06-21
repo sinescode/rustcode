@@ -129,6 +129,10 @@ pub enum Error {
     #[error("provider response headers timed out after {ms}ms")]
     HeaderTimeout { ms: u64 },
 
+    /// Provider error.
+    #[error("provider error: {0}")]
+    Provider(String),
+
     /// Provider response stream error.
     ///
     /// Ported from `packages/opencode/src/provider/error.ts` `ResponseStreamError`.

@@ -9,7 +9,7 @@
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use crate::bus::SharedBus;
+use crate::bus::{GlobalEvent, SharedBus};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1397,7 +1397,7 @@ struct PtySessionShared {
 pub struct PtySessionInner {
     id: String,
     shared: Arc<PtySessionShared>,
-    child: Mutex<Option<tokio::process::Child>>,
+    child: Arc<Mutex<Option<tokio::process::Child>>>,
     stdin: Mutex<Option<tokio::process::ChildStdin>>,
     cancel: CancellationToken,
     pid: u32,
@@ -1408,6 +1408,7 @@ impl std::fmt::Debug for PtySessionInner {
         f.debug_struct("PtySessionInner")
             .field("id", &self.id)
             .field("pid", &self.pid)
+            .field("child", &self.child)
             .finish()
     }
 }
@@ -1690,7 +1691,7 @@ impl PtyRuntime {
                         bytes.push(b'\n');
 
                         let len = bytes.len();
-                        reader_shared.cursor.fetch_add(len, Ordering::SeqCst);
+                        reader_shared.cursor.fetch_add(len as u64, Ordering::SeqCst);
 
                         // Write to buffer
                         {

@@ -1125,7 +1125,10 @@ impl Tool for ReadTool {
             if let Ok(mut dir_entries) = tokio::fs::read_dir(&path).await {
                 while let Ok(Some(entry)) = dir_entries.next_entry().await {
                     let name = entry.file_name().to_string_lossy().to_string();
-                    let ft = entry.file_type().await.unwrap_or_default();
+                    let ft = match entry.file_type().await {
+                        Ok(ft) => ft,
+                        Err(_) => continue,
+                    };
                     entries.push(if ft.is_dir() { format!("{}/", name) } else { name });
                 }
             }
@@ -3656,7 +3659,7 @@ impl TaskTool {
         let _ = TASK_TOOL_SERVICES.set(services);
     }
 
-    fn services(&self) -> Result<&'static TaskToolServices, Error> {
+    fn services(&self) -> crate::error::Result<&'static TaskToolServices> {
         TASK_TOOL_SERVICES.get().ok_or_else(|| {
             Error::Tool(
                 "TaskTool services not initialised — call TaskTool::init_services() before first use"

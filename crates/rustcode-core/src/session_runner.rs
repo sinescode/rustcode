@@ -10,9 +10,12 @@ use crate::agent::AgentService;
 use crate::config::CompactionConfig;
 use crate::database::DatabaseService;
 use crate::error::Error;
+use std::collections::HashMap;
+use std::sync::Arc;
+
 use crate::provider::{
-    ChatMessage, ContentPart, LlmEvent, MessageContent, Model, Provider, ToolDefinition,
-    ToolResultPart,
+    ChatMessage, ContentPart, FinishReason, LlmEvent, MessageContent, Model, Provider,
+    ToolDefinition, ToolResultPart,
 };
 use crate::session_compaction::SessionCompaction;
 use crate::session_epoch::EpochManager;
@@ -403,7 +406,7 @@ impl SessionRunner {
                 // Run one turn (with overflow recovery)
                 let (cont, text, events, tool_calls) = self
                     .run_turn(
-                        &provider,
+                        &*provider,
                         &model,
                         session_id,
                         promotion,
@@ -485,46 +488,38 @@ impl SessionRunner {
         promotion: Option<InputDelivery>,
         compaction_config: &CompactionConfig,
     ) -> Result<(bool, String, Vec<LlmEvent>, Vec<ToolCallRecord>), Error> {
-        let recover = Some((compaction_config.clone(),));
-        match self
-            .run_turn_attempt(provider, model, session_id, promotion, recover)
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                // Check for TurnControl signals (Rust representation: we encode
-                // control flow in the error variants)
-                if let Error::Internal(ref msg) = e {
-                    if let Some(ctrl) = Self::parse_turn_control(msg) {
-                        match ctrl {
-                            TurnControl::ContinueAfterOverflowCompaction => {
-                                // Run again without overflow recovery
-                                return self
-                                    .run_after_overflow_compaction(
-                                        provider,
-                                        model,
-                                        session_id,
-                                        None,
-                                        compaction_config,
-                                    )
-                                    .await;
-                            }
-                            TurnControl::RebuildPreparedTurn { promotion: p } => {
-                                // Retry from scratch
-                                return self
-                                    .run_turn(
-                                        provider,
-                                        model,
-                                        session_id,
-                                        p,
-                                        compaction_config,
-                                    )
-                                    .await;
+        let mut current_promotion = promotion;
+        loop {
+            let recover = Some((compaction_config.clone(),));
+            match self
+                .run_turn_attempt(provider, model, session_id, current_promotion, recover)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if let Error::Internal(ref msg) = e {
+                        if let Some(ctrl) = Self::parse_turn_control(msg) {
+                            match ctrl {
+                                TurnControl::ContinueAfterOverflowCompaction => {
+                                    return self
+                                        .run_after_overflow_compaction(
+                                            provider,
+                                            model,
+                                            session_id,
+                                            None,
+                                            compaction_config,
+                                        )
+                                        .await;
+                                }
+                                TurnControl::RebuildPreparedTurn { promotion: p } => {
+                                    current_promotion = p;
+                                    continue;
+                                }
                             }
                         }
                     }
+                    return Err(e);
                 }
-                Err(e)
             }
         }
     }
@@ -541,35 +536,31 @@ impl SessionRunner {
         promotion: Option<InputDelivery>,
         compaction_config: &CompactionConfig,
     ) -> Result<(bool, String, Vec<LlmEvent>, Vec<ToolCallRecord>), Error> {
-        match self
-            .run_turn_attempt(provider, model, session_id, promotion, None)
-            .await
-        {
-            Ok(result) => Ok(result),
-            Err(e) => {
-                if let Error::Internal(ref msg) = e {
-                    match Self::parse_turn_control(msg) {
-                        Some(TurnControl::ContinueAfterOverflowCompaction) => {
-                            return Err(Error::Internal(
-                                "Post-compaction provider attempt cannot recover another overflow"
-                                    .to_string(),
-                            ));
+        let mut current_promotion = promotion;
+        loop {
+            match self
+                .run_turn_attempt(provider, model, session_id, current_promotion, None)
+                .await
+            {
+                Ok(result) => return Ok(result),
+                Err(e) => {
+                    if let Error::Internal(ref msg) = e {
+                        match Self::parse_turn_control(msg) {
+                            Some(TurnControl::ContinueAfterOverflowCompaction) => {
+                                return Err(Error::Internal(
+                                    "Post-compaction provider attempt cannot recover another overflow"
+                                        .to_string(),
+                                ));
+                            }
+                            Some(TurnControl::RebuildPreparedTurn { promotion: p }) => {
+                                current_promotion = p;
+                                continue;
+                            }
+                            None => {}
                         }
-                        Some(TurnControl::RebuildPreparedTurn { promotion: p }) => {
-                            return self
-                                .run_after_overflow_compaction(
-                                    provider,
-                                    model,
-                                    session_id,
-                                    p,
-                                    compaction_config,
-                                )
-                                .await;
-                        }
-                        None => {}
                     }
+                    return Err(e);
                 }
-                Err(e)
             }
         }
     }
@@ -720,7 +711,11 @@ impl SessionRunner {
                             message: msg,
                             classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
                             retryable: Some(is_retryable),
-                            provider_metadata: retry_after.map(|ms| serde_json::json!({"retry_after_ms": ms})),
+                            provider_metadata: retry_after.map(|ms| {
+                                let mut map = std::collections::HashMap::new();
+                                map.insert("retry_after_ms".to_string(), serde_json::json!(ms));
+                                map
+                            }),
                         });
                     }
                 }
@@ -729,7 +724,8 @@ impl SessionRunner {
 
         // 6. Handle overflow recovery
         if overflow_detected && !assistant_started {
-            if let Some((ref comp_cfg)) = recover_overflow {
+            if let Some(ref comp_cfg) = recover_overflow {
+                let comp_cfg = &comp_cfg.0;
                 // Run compaction to recover
                 let messages_json: Vec<serde_json::Value> = messages
                     .iter()
@@ -799,6 +795,7 @@ impl SessionRunner {
                     permission_source: Some(PermissionSource::Session {
                         session_id: session_id.to_string(),
                     }),
+                    prompt_ops: None,
                 };
 
                 let result = self
@@ -1112,7 +1109,11 @@ impl SessionRunner {
                                 message: msg.clone(),
                                 classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
                                 retryable: Some(is_retryable),
-                                provider_metadata: retry_after.map(|ms| serde_json::json!({"retry_after_ms": ms})),
+                                provider_metadata: retry_after.map(|ms| {
+                                    let mut map = std::collections::HashMap::new();
+                                    map.insert("retry_after_ms".to_string(), serde_json::json!(ms));
+                                    map
+                                }),
                             });
                             stream_error = Some(msg);
                         }
@@ -1165,6 +1166,7 @@ impl SessionRunner {
                     permission_source: Some(PermissionSource::Session {
                         session_id: input.session_id.clone(),
                     }),
+                    prompt_ops: None,
                 };
                 let result = self
                     .tool_registry

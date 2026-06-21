@@ -1048,10 +1048,10 @@ pub fn json_parse_absolute_path_array(json: &str) -> Result<Vec<String>, String>
 }
 
 /// A typed JSON column wrapper for SQLite storage.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct JsonColumn<T: Clone>(#[serde(bound = "")] pub T);
+#[derive(Debug, Clone)]
+pub struct JsonColumn<T: Clone>(pub T);
 
-impl<T: Clone + serde::de::DeserializeOwned> JsonColumn<T> {
+impl<T: Clone + serde::de::DeserializeOwned + serde::Serialize> JsonColumn<T> {
     pub fn from_db(raw: &str) -> Result<Self, String> {
         let value: T = serde_json::from_str(raw).map_err(|e| format!("JSON column parse error: {e}"))?;
         Ok(Self(value))
@@ -1877,8 +1877,10 @@ impl DatabaseService {
                     parts.push(PartRow {
                         id: pid,
                         message_id: pmid,
+                        session_id: row.session_id.clone(),
                         data: pdata,
                         time_created: ptime,
+                        time_updated: ptime,
                     });
                 }
             }

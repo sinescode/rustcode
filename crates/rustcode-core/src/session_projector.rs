@@ -5,7 +5,7 @@
 
 use crate::database::DatabaseService;
 use crate::event::{
-    EventPayload, EventV2,
+    mk_projector_fn, EventPayload, EventV2,
     session_event_types::{
         AGENT_SWITCHED, COMPACTION_ENDED, CONTEXT_UPDATED, INTERRUPT_REQUESTED,
         MODEL_SWITCHED, PROMPT_PROMOTED, PROMPTED,
@@ -298,6 +298,10 @@ pub async fn register_all_projectors(
                                 }
                             });
 
+                        // Serialize prompt before moving its fields
+                        let prompt_str =
+                            serde_json::to_string(&prompt).unwrap_or_default();
+
                         let user_msg = UserMessage {
                             id: msg_id.to_string(),
                             session_id: Some(sid.clone()),
@@ -341,10 +345,6 @@ pub async fn register_all_projectors(
                                 "insert msg: {e}"
                             ))
                         })?;
-
-                        // Also insert into session_input as legacy prompted
-                        let prompt_str =
-                            serde_json::to_string(&prompt).unwrap_or_default();
                         sqlx::query(
                             "INSERT INTO session_input (id, session_id, prompt, delivery, admitted_seq, promoted_seq, time_created) \
                              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7) \

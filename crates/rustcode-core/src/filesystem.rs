@@ -731,7 +731,7 @@ impl FileWatcher {
     ///
     /// # Source
     /// Ported from `packages/core/src/filesystem/watcher.ts` `subscribe()` (lines 100–110).
-    pub fn watch(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn watch(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let canonical = path.to_path_buf();
         self.inner
             .watch(&canonical, RecursiveMode::Recursive)
@@ -746,7 +746,7 @@ impl FileWatcher {
     ///
     /// # Source
     /// Ported from `packages/core/src/filesystem/watcher.ts` `subscription.unsubscribe()`.
-    pub fn unwatch(&self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    pub fn unwatch(&mut self, path: &Path) -> Result<(), Box<dyn std::error::Error>> {
         let canonical = path.to_path_buf();
         self.inner
             .unwatch(&canonical)
@@ -1001,14 +1001,16 @@ pub fn find_files(root: &Path, input: &FindInput) -> Result<Vec<Entry>, FileSyst
 
     // Add custom ignore patterns from IGNORE_FOLDERS
     for folder in IGNORE_FOLDERS {
-        walk_builder.add_custom_ignore(folder);
+        walk_builder.add_custom_ignore_filename(folder);
     }
     // Add custom ignore file patterns
     for pattern in IGNORE_FILES {
         if let Ok(p) = glob::Pattern::new(pattern) {
-            // Convert **/glob to ignore crate filter
-            let filter_pattern = pattern.to_string();
-            walk_builder.add_custom_ignore(&filter_pattern);
+            let pattern_owned = pattern.to_string();
+            walk_builder.filter_entry(move |entry| {
+                let path = entry.path();
+                !p.matches_path(path)
+            });
         }
     }
 
@@ -1103,10 +1105,16 @@ pub fn glob_search(root: &Path, input: &GlobInput) -> Result<Vec<Entry>, FileSys
     walk_builder.require_git(false);
 
     for folder in IGNORE_FOLDERS {
-        walk_builder.add_custom_ignore(folder);
+        walk_builder.add_custom_ignore_filename(folder);
     }
     for pattern in IGNORE_FILES {
-        walk_builder.add_custom_ignore(pattern);
+        if let Ok(p) = glob::Pattern::new(pattern) {
+            let pattern_owned = pattern.to_string();
+            walk_builder.filter_entry(move |entry| {
+                let path = entry.path();
+                !p.matches_path(path)
+            });
+        }
     }
 
     let glob_pat = match glob::Pattern::new(&input.pattern) {
@@ -1238,10 +1246,16 @@ pub fn grep_search(root: &Path, input: &GrepInput) -> Result<Vec<Match>, FileSys
     walk_builder.require_git(false);
 
     for folder in IGNORE_FOLDERS {
-        walk_builder.add_custom_ignore(folder);
+        walk_builder.add_custom_ignore_filename(folder);
     }
     for pattern in IGNORE_FILES {
-        walk_builder.add_custom_ignore(pattern);
+        if let Ok(p) = glob::Pattern::new(pattern) {
+            let pattern_owned = pattern.to_string();
+            walk_builder.filter_entry(move |entry| {
+                let path = entry.path();
+                !p.matches_path(path)
+            });
+        }
     }
 
     let include_pat = input.include.as_ref().and_then(|p| glob::Pattern::new(p).ok());

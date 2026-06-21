@@ -1497,7 +1497,7 @@ impl PluginV2Service {
     ///
     /// # Source
     /// Ported from `packages/core/src/plugin.ts` `PluginV2.Service.trigger()`.
-    pub async fn trigger(&self, mut hook: V2Hook<'_>) {
+    pub async fn trigger_v2(&self, mut hook: V2Hook<'_>) {
         let hook_type = PluginV2Hook::from_v2_hook(&hook);
         let Some(ref hook_type) = hook_type else { return };
 
@@ -1521,7 +1521,7 @@ impl PluginV2Service {
     ///
     /// # Source
     /// Ported from `packages/core/src/plugin.ts` `PluginV2.Service.triggerFor()`.
-    pub async fn trigger_for(&self, plugin_id: &str, mut hook: V2Hook<'_>) -> bool {
+    pub async fn trigger_for_v2(&self, plugin_id: &str, mut hook: V2Hook<'_>) -> bool {
         let hook_type = PluginV2Hook::from_v2_hook(&hook);
         let Some(ref hook_type) = hook_type else { return false };
 
@@ -2231,14 +2231,12 @@ impl PluginManager {
     /// # Source
     /// Ported from `boot.ts` boot trigger; runs all hook types.
     pub async fn trigger_all_hooks(&self) {
-        let hook_types: std::collections::HashSet<PluginHook> = self
-            .plugins
-            .iter()
-            .flat_map(|p| p.hooks.iter().cloned())
-            .collect();
-
-        for hook in &hook_types {
-            self.trigger(hook).await;
+        for plugin in &self.plugins {
+            if let Some(handler) = self.handlers.get(&plugin.id) {
+                for hook in &plugin.hooks {
+                    handler.on_event(&format!("{hook:?}"), &serde_json::Value::Null).await;
+                }
+            }
         }
     }
 

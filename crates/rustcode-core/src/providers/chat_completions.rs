@@ -92,7 +92,7 @@ pub fn build_chat_body(
     // Model parameters
     let mt = options
         .max_tokens
-        .or_else(|| crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX));
+        .or_else(|| Some(crate::provider::max_output_tokens(model, crate::provider::OUTPUT_TOKEN_MAX)));
     if let Some(v) = mt {
         body["max_tokens"] = serde_json::json!(v);
     }

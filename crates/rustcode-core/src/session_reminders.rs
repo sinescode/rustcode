@@ -65,7 +65,8 @@ impl SessionReminders {
                     Ok(entries)
                 }
             }).await
-                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?
+                .map_err(|e| e)?;
 
             for entry_path in &entries {
                 let content = tokio::fs::read_to_string(entry_path).await?;

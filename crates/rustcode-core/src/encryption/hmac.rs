@@ -17,6 +17,7 @@ pub const KEY_FILE: &str = "encryption.key";
 /// for encryption. The key is stored in a file in the config directory.
 ///
 /// Ported from: `packages/opencode/src/credential/encryption.ts`
+#[derive(Clone)]
 pub struct EncryptionService {
     key: [u8; KEY_LENGTH],
 }

@@ -1149,9 +1149,9 @@ impl McpOAuthClient {
 
         let auth_tokens = crate::mcp::McpAuthTokens {
             access_token: new_tokens.access_token.clone(),
-            refresh_token: new_tokens.refresh_token.or(tokens.refresh_token),
+            refresh_token: new_tokens.refresh_token.clone().or(tokens.refresh_token),
             expires_at,
-            scope: new_tokens.scope.or(tokens.scope),
+            scope: new_tokens.scope.clone().or(tokens.scope),
         };
 
         self.auth_store

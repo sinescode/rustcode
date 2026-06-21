@@ -59,7 +59,7 @@ impl ShellParser {
     /// Create a new parser with tree-sitter-bash grammar.
     pub fn new() -> Self {
         Self {
-            language: tree_sitter_bash::language(),
+            language: tree_sitter_bash::LANGUAGE.into(),
         }
     }
 
@@ -80,7 +80,7 @@ impl ShellParser {
 
         let mut parser = tree_sitter::Parser::new();
         parser
-            .set_language(self.language)
+            .set_language(&self.language)
             .expect("tree-sitter-bash grammar loaded");
 
         let tree = match parser.parse(input, None) {
@@ -183,8 +183,9 @@ impl ShellParser {
         result.tokens = tokens.clone();
 
         let args: Vec<&str> = tokens[1..].iter().map(|s| s.as_str()).collect();
-        self.detect_file_ops(&result.command_name, &args, &mut result);
-        self.detect_cwd_changes(&result.command_name, &args, &mut result);
+        let cmd_name = result.command_name.clone();
+        self.detect_file_ops(&cmd_name, &args, &mut result);
+        self.detect_cwd_changes(&cmd_name, &args, &mut result);
         result.has_redirection = input.contains('>') || input.contains('<');
         result.has_pipe = input.contains('|');
         result.is_flagged = self.classify_dangerous(&result);
