@@ -240,6 +240,7 @@ pub enum CredentialServiceError {
 #[derive(Clone)]
 pub struct CredentialService {
     pool: sqlx::SqlitePool,
+    encryption: Option<crate::encryption::hmac::EncryptionService>,
 }
 
 // Raw DB row — maps to actual SQLite column types (i64 timestamps, JSON text
@@ -261,7 +262,7 @@ impl CredentialRowRaw {
     /// Convert a raw DB row into a [`CredentialStored`], skipping rows where
     /// `integration_id` is NULL (defensive, matching the TS `stored()` helper
     /// that returns `undefined` when `row.integration_id` is falsy).
-    fn into_stored(self) -> Option<CredentialStored> {
+    fn into_stored_direct(self) -> Option<CredentialStored> {
         let value: CredentialInfo = serde_json::from_str(&self.value).ok()?;
         Some(CredentialStored {
             id: self.id,
@@ -275,7 +276,21 @@ impl CredentialRowRaw {
 impl CredentialService {
     /// Create a new `CredentialService` from an existing SQLite connection pool.
     pub fn new(pool: sqlx::SqlitePool) -> Self {
-        Self { pool }
+        Self { pool, encryption: None }
+    }
+
+    /// Create a new `CredentialService` with at-rest encryption enabled.
+    ///
+    /// The encryption key is loaded from or created at the config directory.
+    pub fn with_encryption(
+        pool: sqlx::SqlitePool,
+        config_dir: &std::path::Path,
+    ) -> Result<Self, crate::encryption::hmac::EncryptionError> {
+        let encryption = crate::encryption::hmac::EncryptionService::load_or_create(config_dir)?;
+        Ok(Self {
+            pool,
+            encryption: Some(encryption),
+        })
     }
 
     /// Return every stored credential, ordered by creation time ascending.
@@ -295,7 +310,7 @@ impl CredentialService {
     }
 
     /// Return stored credentials belonging to one integration, ordered by
-    /// creation time ascending.
+    /// creation time ascending. Decrypts values if encryption is configured.
     ///
     /// # Source
     /// Ported from `packages/core/src/credential.ts` — `Credential.Service.list`
@@ -313,10 +328,24 @@ impl CredentialService {
         .await
         .map_err(|e| CredentialServiceError::Database(e.to_string()))?;
 
-        Ok(rows.into_iter().filter_map(CredentialRowRaw::into_stored).collect())
+        let mut result = Vec::with_capacity(rows.len());
+        for row in rows {
+            let decrypted = self.maybe_decrypt(&row.value)?;
+            if let Some(integration_id) = row.integration_id {
+                if let Ok(value) = serde_json::from_str(&decrypted) {
+                    result.push(CredentialStored {
+                        id: row.id,
+                        integration_id,
+                        label: row.label,
+                        value,
+                    });
+                }
+            }
+        }
+        Ok(result)
     }
 
-    /// Return one stored credential by ID.
+    /// Return one stored credential by ID, decrypting the value if needed.
     ///
     /// # Source
     /// Ported from `packages/core/src/credential.ts` — `Credential.Service.get`
@@ -333,11 +362,46 @@ impl CredentialService {
         .await
         .map_err(|e| CredentialServiceError::Database(e.to_string()))?;
 
-        Ok(row.and_then(CredentialRowRaw::into_stored))
+        let row = match row {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
+        // Decrypt the value if encryption is configured
+        let decrypted = self.maybe_decrypt(&row.value)?;
+        let value: CredentialInfo = serde_json::from_str(&decrypted)
+            .map_err(|e| CredentialServiceError::Serialization(e.to_string()))?;
+
+        Ok(Some(CredentialStored {
+            id: row.id,
+            integration_id: row.integration_id?,
+            label: row.label,
+            value,
+        }))
+    }
+
+    /// Encrypt a value string if encryption is enabled.
+    fn maybe_encrypt(&self, plaintext: &str) -> Result<String, CredentialServiceError> {
+        match &self.encryption {
+            Some(enc) => enc.encrypt(plaintext)
+                .map_err(|e| CredentialServiceError::Serialization(e.to_string())),
+            None => Ok(plaintext.to_owned()),
+        }
+    }
+
+    /// Decrypt a value string if encryption is enabled.
+    fn maybe_decrypt(&self, encrypted: &str) -> Result<String, CredentialServiceError> {
+        match &self.encryption {
+            Some(enc) => enc.decrypt(encrypted)
+                .map_err(|e| CredentialServiceError::Serialization(e.to_string())),
+            None => Ok(encrypted.to_owned()),
+        }
     }
 
     /// Create a new credential for an integration, replacing any existing
     /// credential for the same `integration_id`. Returns the new record.
+    ///
+    /// Values are encrypted at rest when encryption is configured.
     ///
     /// # Source
     /// Ported from `packages/core/src/credential.ts` — `Credential.Service.create`
@@ -351,6 +415,8 @@ impl CredentialService {
             CredentialStored::new(integration_id.to_string(), label.to_string(), value.clone());
         let value_json = serde_json::to_string(value)
             .map_err(|e| CredentialServiceError::Serialization(e.to_string()))?;
+        // Encrypt the value at rest
+        let encrypted = self.maybe_encrypt(&value_json)?;
         let now = chrono::Utc::now().timestamp_millis();
 
         let mut tx = self
@@ -372,7 +438,7 @@ impl CredentialService {
         .bind(&credential.id)
         .bind(integration_id)
         .bind(label)
-        .bind(&value_json)
+        .bind(&encrypted)
         .bind(now)
         .bind(now)
         .execute(&mut *tx)
@@ -388,7 +454,8 @@ impl CredentialService {
 
     /// Update the value of an existing credential by ID.
     ///
-    /// Returns the updated [`CredentialStored`].
+    /// Returns the updated [`CredentialStored`]. Value is encrypted at rest
+    /// when encryption is configured.
     ///
     /// # Source
     /// Ported from `packages/core/src/credential.ts` — `Credential.Service.update`
@@ -399,11 +466,12 @@ impl CredentialService {
     ) -> Result<CredentialStored, CredentialServiceError> {
         let value_json = serde_json::to_string(value)
             .map_err(|e| CredentialServiceError::Serialization(e.to_string()))?;
+        let encrypted = self.maybe_encrypt(&value_json)?;
         let now = chrono::Utc::now().timestamp_millis();
 
         let rows = sqlx::query("UPDATE credential SET value = ?2, time_updated = ?3 WHERE id = ?1")
             .bind(id)
-            .bind(&value_json)
+            .bind(&encrypted)
             .bind(now)
             .execute(&self.pool)
             .await
