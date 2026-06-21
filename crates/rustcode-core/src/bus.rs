@@ -900,7 +900,7 @@ mod tests {
     async fn shared_bus_default_creates_working_bus_with_default_capacity() {
         let bus = SharedBus::default();
 
-        // Default capacity is 1024 — we can publish at least that many + subscribe
+        // Default capacity is 8192 — we can publish at least that many + subscribe
         let mut sub = bus.subscribe();
 
         bus.publish(GlobalEvent::new(json!({"type": "default-shared"})))

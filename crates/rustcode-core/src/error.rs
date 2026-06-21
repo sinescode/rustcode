@@ -351,6 +351,18 @@ pub enum Error {
     Internal(String),
 }
 
+impl From<crate::session::SessionError> for Error {
+    fn from(e: crate::session::SessionError) -> Self {
+        Error::Session(e.to_string())
+    }
+}
+
+impl From<crate::database::DatabaseServiceError> for Error {
+    fn from(e: crate::database::DatabaseServiceError) -> Self {
+        Error::Database(e.to_string())
+    }
+}
+
 // ── LLM error reason (mirrors TS LLMErrorReason union) ─────────────
 
 /// Structured reason for an LLM error.
