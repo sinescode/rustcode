@@ -17,12 +17,15 @@
 
 use async_trait::async_trait;
 use futures::StreamExt;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
+use std::pin::Pin;
 
 use crate::error::Error;
 use crate::provider::{ChatMessage, LlmEvent, Model, Provider, ToolDefinition};
+use crate::sse::parse_sse_stream;
+use crate::tool_stream::ToolStreamAccumulator;
 
-use super::chat_completions::{self, BodyOptions, build_chat_body, classify_error};
+use super::chat_completions::{self, BodyOptions, build_chat_body, classify_error, ChatStreamState, events_from_chat};
 
 const CHAT_PATH: &str = "/chat/completions?api-version=2025-01-01-preview";
 
@@ -349,8 +352,8 @@ impl Provider for AzureProvider {
                         }
                         match sse.next().await {
                             Some(Ok(se)) if !se.is_done() && se.has_data() => {
-                                if let Ok(oe) = serde_json::from_str::<AzureChatEvent>(&se.data) {
-                                    for ev in events_from_chat(oe, &mut state) {
+                                if let Ok(oe) = serde_json::from_str::<serde_json::Value>(&se.data) {
+                                    for ev in events_from_chat(&oe, &mut state) {
                                         buffer.push_back(Ok(ev));
                                     }
                                     if let Some(ev) = buffer.pop_front() {
