@@ -871,3 +871,57 @@ pub async fn register_all_projectors(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::{EventDefinition, EventRegistry, SyncConfig};
+    use crate::id;
+
+    #[tokio::test]
+    async fn test_register_lifecycle_events() {
+        let mut registry = EventRegistry::new();
+        let events = EventV2::new(None, registry.clone());
+        register_lifecycle_events(&registry).unwrap();
+
+        // Verify lifecycle events are registered
+        let text_started = registry.get_definition("session.conversation.text.started").unwrap();
+        assert_eq!(text_started.event_type, "session.conversation.text.started");
+        assert!(text_started.sync.is_some());
+
+        let text_ended = registry.get_definition("session.conversation.text.ended").unwrap();
+        assert_eq!(text_ended.event_type, "session.conversation.text.ended");
+    }
+
+    #[tokio::test]
+    async fn test_projector_registration() {
+        let mut registry = EventRegistry::new();
+        let events = EventV2::new(None, registry.clone());
+        register_lifecycle_events(&registry).unwrap();
+
+        // Register a custom projector and verify
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        events.project("session.conversation.text.started", mk_projector_fn(move |_payload| {
+            let c = called_clone.clone();
+            Box::pin(async move {
+                c.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+        })).await;
+
+        // Trigger the projector
+        let payload = EventPayload {
+            id: crate::event::EventId::create(),
+            event_type: "session.conversation.text.started".to_string(),
+            data: serde_json::json!({"text": "hello"}),
+            seq: None,
+            version: None,
+            location: None,
+            metadata: None,
+            replay: false,
+        };
+        let projectors = events.get_projectors("session.conversation.text.started").await;
+        assert_eq!(projectors.len(), 1);
+    }
+}

@@ -335,3 +335,71 @@ impl SessionRevert {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_revert_input_creation() {
+        let input = RevertInput {
+            session_id: "ses_001".to_string(),
+            message_id: "msg_001".to_string(),
+            part_id: None,
+        };
+        assert_eq!(input.session_id, "ses_001");
+        assert_eq!(input.message_id, "msg_001");
+        assert!(input.part_id.is_none());
+    }
+
+    #[test]
+    fn test_revert_input_with_part() {
+        let input = RevertInput {
+            session_id: "ses_001".to_string(),
+            message_id: "msg_001".to_string(),
+            part_id: Some("part_001".to_string()),
+        };
+        assert_eq!(input.part_id.unwrap(), "part_001");
+    }
+
+    #[test]
+    fn test_revert_state_serde() {
+        let state = RevertState {
+            message_id: "msg_001".to_string(),
+            part_id: None,
+            snapshot: serde_json::json!({"files": {}}),
+            timestamp: 1000,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let deserialized: RevertState = serde_json::from_str(&json).unwrap();
+        assert_eq!(state.message_id, deserialized.message_id);
+        assert_eq!(state.timestamp, deserialized.timestamp);
+    }
+
+    #[test]
+    fn test_revert_state_with_part_serde() {
+        let state = RevertState {
+            message_id: "msg_001".to_string(),
+            part_id: Some("part_001".to_string()),
+            snapshot: serde_json::json!({"files": {"src/main.rs": "content"}}),
+            timestamp: 2000,
+        };
+        let json = serde_json::to_string(&state).unwrap();
+        let deserialized: RevertState = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.part_id.unwrap(), "part_001");
+        assert_eq!(deserialized.snapshot["files"]["src/main.rs"], "content");
+    }
+
+    #[test]
+    fn test_revert_error_display() {
+        let err = RevertError::Snapshot("test error".to_string());
+        assert!(err.to_string().contains("test error"));
+
+        let err = RevertError::Database("db error".to_string());
+        assert!(err.to_string().contains("db error"));
+
+        let err = RevertError::Other("other error".to_string());
+        assert!(err.to_string().contains("other error"));
+    }
+}
+
