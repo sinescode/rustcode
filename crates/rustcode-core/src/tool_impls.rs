@@ -1348,24 +1348,23 @@ impl Tool for WriteTool {
                 detail: "missing 'content' field".into(),
             })?;
 
-        let path = std::path::Path::new(file_path);
+        let path = std::path::PathBuf::from(file_path);
 
-        // Create parent directories
+        // Create parent directories (async)
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| Error::FileSystem {
+            tokio::fs::create_dir_all(parent).await.map_err(|e| Error::FileSystem {
                 path: parent.to_string_lossy().to_string(),
                 message: format!("failed to create parent directories: {}", e),
             })?;
         }
 
-        let existed = path.exists();
+        let existed = tokio::fs::try_exists(&path).await.unwrap_or(false);
 
         // Preserve UTF-8 BOM (EF BB BF) if the existing file has one
         let bom = [0xEFu8, 0xBB, 0xBF];
         let content_bytes = if existed {
-            let existing = std::fs::read(path).unwrap_or_default();
+            let existing = tokio::fs::read(&path).await.unwrap_or_default();
             if existing.starts_with(&bom) && !content.as_bytes().starts_with(&bom) {
-                // Prepend BOM to new content
                 let mut bytes = Vec::with_capacity(bom.len() + content.len());
                 bytes.extend_from_slice(&bom);
                 bytes.extend_from_slice(content.as_bytes());
@@ -1377,7 +1376,7 @@ impl Tool for WriteTool {
             content.as_bytes().to_vec()
         };
 
-        std::fs::write(path, &content_bytes).map_err(|e| Error::FileSystem {
+        tokio::fs::write(&path, &content_bytes).await.map_err(|e| Error::FileSystem {
             path: file_path.to_string(),
             message: format!("failed to write file: {}", e),
         })?;
@@ -1606,19 +1605,20 @@ impl Tool for EditTool {
             ));
         }
 
-        let path = std::path::Path::new(file_path);
-        if !path.exists() {
+        let path = std::path::PathBuf::from(file_path);
+        if !tokio::fs::try_exists(&path).await.unwrap_or(false) {
             return Err(Error::Tool(format!("File {} not found", file_path)));
         }
 
-        if path.is_dir() {
+        let meta = tokio::fs::metadata(&path).await.map_err(Error::Io)?;
+        if meta.is_dir() {
             return Err(Error::Tool(format!(
                 "Path is a directory, not a file: {}",
                 file_path
             )));
         }
 
-        let source_content = std::fs::read_to_string(path).map_err(Error::Io)?;
+        let source_content = tokio::fs::read_to_string(&path).await.map_err(Error::Io)?;
 
         // Detect and normalize line endings for consistent matching
         let ending = Self::detect_line_ending(&source_content);
@@ -1633,7 +1633,7 @@ impl Tool for EditTool {
             .map_err(|e| Error::Tool(e))?;
 
         // Write the file
-        std::fs::write(path, &replaced).map_err(|e| Error::FileSystem {
+        tokio::fs::write(&path, &replaced).await.map_err(|e| Error::FileSystem {
             path: file_path.to_string(),
             message: format!("failed to write file: {}", e),
         })?;
