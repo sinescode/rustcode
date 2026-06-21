@@ -88,6 +88,8 @@ pub enum Error {
         module: String,
         method: String,
         reason: Box<LlmErrorReason>,
+        /// HTTP context if this error originated from an HTTP request
+        http_context: Option<HttpContext>,
     },
 
     /// Provider initialization error.
@@ -882,7 +884,7 @@ mod tests {
             message: "too many requests".into(),
             retry_after_ms: None,
         };
-        let err = Error::Llm {
+        let err = Error::Llm { http_context: None, 
             module: "anthropic".into(),
             method: "stream".into(),
             reason: Box::new(reason),

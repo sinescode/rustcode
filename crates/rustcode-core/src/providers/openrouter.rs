@@ -138,7 +138,7 @@ impl Provider for OpenRouterProvider {
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let text = resp.text().await.unwrap_or_default();
-            return Err(Error::Llm {
+            return Err(Error::Llm { http_context: None, 
                 module: "openrouter".into(),
                 method: "stream".into(),
                 reason: Box::new(chat_completions::classify_error(status, &text)),

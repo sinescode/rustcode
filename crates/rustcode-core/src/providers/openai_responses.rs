@@ -1317,7 +1317,7 @@ impl crate::provider::Provider for ResponsesProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(Error::Llm {
+            return Err(Error::Llm { http_context: None, 
                 module: "openai-responses".into(),
                 method: "stream".into(),
                 reason: Box::new(classify_error(status, &text)),

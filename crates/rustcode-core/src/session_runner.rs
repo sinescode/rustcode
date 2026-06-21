@@ -704,7 +704,7 @@ impl SessionRunner {
                     } else {
                         // Check if the error is retryable and extract retry_after_ms hint
                         let (is_retryable, retry_after) = match &e {
-                            crate::error::Error::Llm { reason, .. } => {
+                            crate::error::Error::Llm { http_context: None,  reason, .. } => {
                                 (reason.is_retryable(), reason.retry_after_ms())
                             }
                             _ => (false, None),
@@ -1097,7 +1097,7 @@ impl SessionRunner {
                             stream_error = Some(msg);
                         } else {
                             let (is_retryable, retry_after) = match &e {
-                                crate::error::Error::Llm { reason, .. } => {
+                            crate::error::Error::Llm { reason, .. } => {
                                     (reason.is_retryable(), reason.retry_after_ms())
                                 }
                                 _ => (false, None),

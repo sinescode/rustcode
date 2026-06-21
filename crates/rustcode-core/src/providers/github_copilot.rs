@@ -82,7 +82,7 @@ async fn resolve_copilot_token(
         .send()
         .await
         .map_err(|e| {
-            Error::Llm {
+            Error::Llm { http_context: None, 
                 module: "github-copilot".into(),
                 method: "token_exchange".into(),
                 reason: Box::new(LlmErrorReason::Transport {
@@ -96,7 +96,7 @@ async fn resolve_copilot_token(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let text = response.text().await.unwrap_or_default();
-        return Err(Error::Llm {
+        return Err(Error::Llm { http_context: None, 
             module: "github-copilot".into(),
             method: "token_exchange".into(),
             reason: Box::new(classify_token_error(status, &text)),
@@ -107,7 +107,7 @@ async fn resolve_copilot_token(
         .json()
         .await
         .map_err(|e| {
-            Error::Llm {
+            Error::Llm { http_context: None, 
                 module: "github-copilot".into(),
                 method: "token_exchange".into(),
                 reason: Box::new(LlmErrorReason::InvalidProviderOutput {
@@ -350,7 +350,7 @@ impl Provider for GitHubCopilotProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(Error::Llm {
+            return Err(Error::Llm { http_context: None, 
                 module: "github-copilot".into(),
                 method: "stream".into(),
                 reason: Box::new(chat_completions::classify_error(status, &text)),

@@ -565,7 +565,7 @@ impl Provider for OpenAICompatibleProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(Error::Llm {
+            return Err(Error::Llm { http_context: None, 
                 module: self.config.provider_id.into(),
                 method: "stream".into(),
                 reason: Box::new((self.config.classify_error)(status, &text)),

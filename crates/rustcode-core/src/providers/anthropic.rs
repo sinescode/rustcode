@@ -986,7 +986,7 @@ impl Provider for AnthropicProvider {
             .json(&body)
             .send()
             .await
-            .map_err(|e| Error::Llm {
+            .map_err(|e| Error::Llm { http_context: None, 
                 module: "anthropic".into(),
                 method: "stream".into(),
                 reason: Box::new(LlmErrorReason::Transport {
@@ -1007,7 +1007,7 @@ impl Provider for AnthropicProvider {
                     let error_type = err_obj["type"].as_str().unwrap_or("api_error");
                     let message = err_obj["message"].as_str().unwrap_or(&error_body);
 
-                    return Err(Error::Llm {
+                    return Err(Error::Llm { http_context: None, 
                         module: "anthropic".into(),
                         method: "stream".into(),
                         reason: Box::new(classify_http_error(status, error_type, message)),
@@ -1015,7 +1015,7 @@ impl Provider for AnthropicProvider {
                 }
             }
 
-            return Err(Error::Llm {
+            return Err(Error::Llm { http_context: None, 
                 module: "anthropic".into(),
                 method: "stream".into(),
                 reason: Box::new(LlmErrorReason::UnknownProvider {
@@ -1071,7 +1071,7 @@ impl Provider for AnthropicProvider {
                                     }
                                     Err(e) => {
                                         return Some((
-                                            Err(Error::Llm {
+                                            Err(Error::Llm { http_context: None, 
                                                 module: "anthropic".into(),
                                                 method: "stream.event_parse".into(),
                                                 reason: Box::new(

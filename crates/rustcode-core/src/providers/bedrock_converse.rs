@@ -1487,7 +1487,7 @@ impl Provider for BedrockConverseProvider {
         if !response.status().is_success() {
             let status = response.status().as_u16();
             let text = response.text().await.unwrap_or_default();
-            return Err(Error::Llm {
+            return Err(Error::Llm { http_context: None, 
                 module: "bedrock-converse".into(),
                 method: "stream".into(),
                 reason: Box::new(classify_converse_error(status, &text)),
