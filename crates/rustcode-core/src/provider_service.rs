@@ -216,15 +216,34 @@ fn create_provider_from_config(
         .as_ref()
         .and_then(|o| o.base_url.clone())
         .or_else(|| {
-            // Try to find base_url in extra options
+            // Try to find base_url in extra options (OpenCode uses baseURL)
             cfg.options
                 .as_ref()
-                .and_then(|o| o.extra.get("baseUrl"))
+                .and_then(|o| {
+                    o.extra.get("baseUrl")
+                        .or_else(|| o.extra.get("baseURL"))
+                        .or_else(|| o.extra.get("api_base"))
+                })
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string())
         });
 
-    let env_var = cfg.env.first().cloned().unwrap_or_default();
+    let env_var = cfg.env.first().cloned().unwrap_or_else(|| {
+        // Try to extract env var from options.apiKey if it uses {env:VAR} syntax
+        if let Some(ref options) = cfg.options {
+            let api_key_val = options.api_key.as_deref().or_else(|| {
+                options.extra.get("apiKey").and_then(|v| v.as_str())
+            });
+            if let Some(val) = api_key_val {
+                if let Some(var_name) = val.strip_prefix("{env:") {
+                    if let Some(end) = var_name.find('}') {
+                        return var_name[..end].to_string();
+                    }
+                }
+            }
+        }
+        String::new()
+    });
 
     if base_url.is_none() || env_var.is_empty() {
         return Ok(None);
