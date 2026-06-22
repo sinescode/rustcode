@@ -636,7 +636,12 @@ impl TuiApp {
                     opt = llm_rx.as_mut().expect("llm_rx set").recv() => {
                         match opt {
                             Some((msg_id, llm_evt)) => {
+                                let was_streaming = self.is_streaming;
                                 self.apply_llm_event(&msg_id, llm_evt);
+                                // If the sentinel just ended the stream, persist
+                                if was_streaming && !self.is_streaming {
+                                    self.persist_session_after_stream();
+                                }
                             }
                             None => {
                                 self.finalize_stream();
@@ -898,6 +903,18 @@ impl TuiApp {
             if let Some(ref notify) = stream_end {
                 notify.notify_one();
             }
+            // Send completion sentinel — llm_tx Arc keeps channel alive forever,
+            // so llm_rx.recv() will never return None. We send a fake event
+            // through the channel to trigger finalize_stream().
+            let _ = llm_tx.send((
+                assistant_msg_id.clone(),
+                LlmEvent::ProviderErrorEvent {
+                    message: String::new(),
+                    classification: Some("__stream_completed__".into()),
+                    retryable: Some(false),
+                    provider_metadata: None,
+                },
+            ));
         });
     }
 
@@ -1122,15 +1139,38 @@ impl TuiApp {
                     ));
                 }
             }
-            // Signal stream completion
+            // Signal stream completion via Notify
             if let Some(ref notify) = stream_end_signal {
                 notify.notify_one();
             }
+            // Send completion sentinel through llm_tx — the Arc keeps the
+            // channel alive, so llm_rx.recv() would never return None.
+            let _ = llm_tx.send((
+                assistant_msg_id.clone(),
+                LlmEvent::ProviderErrorEvent {
+                    message: String::new(),
+                    classification: Some("__stream_completed__".into()),
+                    retryable: Some(false),
+                    provider_metadata: None,
+                },
+            ));
         });
     }
 
     /// Apply an LLM streaming event to the conversation in real time.
     fn apply_llm_event(&mut self, msg_id: &str, event: LlmEvent) {
+        // Check for completion sentinel first
+        if let LlmEvent::ProviderErrorEvent {
+            classification: Some(ref cls),
+            ..
+        } = &event
+        {
+            if cls == "__stream_completed__" {
+                self.finalize_stream();
+                return;
+            }
+        }
+
         match event {
             LlmEvent::TextDelta { text, .. } => {
                 self.stream_text_buf.push_str(&text);
@@ -1423,8 +1463,6 @@ impl TuiApp {
         self.stream_text_buf.clear();
         self.stream_reasoning_buf.clear();
         self.status.session_status = Some(SessionStatus::Idle);
-        self.conversation
-            .add_system_message("Response complete.".into());
 
         // Emit terminal bell for audio notification on stream completion.
         if self.audio_enabled {
@@ -1436,6 +1474,36 @@ impl TuiApp {
             let _ = std::io::stderr().flush();
             tracing::debug!("audio notification: bell emitted");
         }
+    }
+
+    /// Persist in-memory conversation messages to the SessionManager database.
+    /// Called once after stream completion detects streaming just ended.
+    fn persist_session_after_stream(&self) {
+        let sessions = match self.sessions.clone() {
+            Some(s) => s,
+            None => return,
+        };
+        let sid = match self.session_id.clone() {
+            Some(id) => id,
+            None => return,
+        };
+        let messages = self.conversation.messages.clone();
+        tokio::spawn(async move {
+            for msg in &messages {
+                match sessions.append_message(sid.clone(), msg.info.clone(), msg.parts.clone()).await {
+                    Ok(_) => {}
+                    Err(e) => {
+                        // Existing messages will fail on UNIQUE constraint — harmless.
+                        tracing::trace!("persist skip: {e}");
+                    }
+                }
+            }
+            tracing::info!(
+                "persisted {} messages to session {}",
+                messages.len(),
+                sid
+            );
+        });
     }
 
     /// Handle a bus event from the SharedBus subscription.
