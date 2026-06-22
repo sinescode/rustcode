@@ -297,32 +297,72 @@ fn create_provider_from_config(
         return Ok(None);
     }
 
-    // Create a CompatConfig for this provider
-    let config = crate::providers::openai_compatible::CompatConfig {
-        provider_id: Box::leak(provider_id.to_string().into_boxed_str()),
-        name: Box::leak(
-            cfg.name
-                .clone()
-                .unwrap_or_else(|| provider_id.to_string())
-                .into_boxed_str(),
-        ),
-        npm: Box::leak(
-            cfg.npm
-                .clone()
-                .unwrap_or_else(|| format!("@ai-sdk/{provider_id}"))
-                .into_boxed_str(),
-        ),
-        base_url: Box::leak(base_url.into_boxed_str()),
-        env_var: Box::leak(env_var.into_boxed_str()),
-        models: Box::leak(models.into_boxed_slice()),
-        extra_headers: &[],
-        classify_error: crate::providers::openai_compatible::default_classify_error,
-    };
+    // Check npm to determine the provider protocol type
+    let npm = cfg.npm.as_deref().unwrap_or("");
 
-    let provider =
-        crate::providers::openai_compatible::OpenAICompatibleProvider::from_config(&config)?;
+    // Create provider based on protocol type
+    if npm.contains("anthropic") {
+        // Use Anthropic Messages API protocol
+        use crate::providers::anthropic;
+            // Strip trailing /v1 if present to avoid double path when
+            // the Anthropic provider appends /v1/messages to the base URL
+            let anthro_base = base_url.trim_end_matches("/v1").to_string();
+            let mut p = match anthropic::AnthropicProvider::with_api_key(
+                api_key.clone(),
+                anthro_base,
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    tracing::warn!("Failed to create Anthropic provider from config: {e}");
+                    return Ok(None);
+                }
+            };
+            // Add models from the config (e.g. deepseek-v4-flash, glm-5.2)
+            for model_spec in &models {
+                use crate::provider::{ApiInfo, Capabilities, Model, TokenLimit, ModelStatus};
+                let model = Model {
+                    id: model_spec.id.to_string(),
+                    provider_id: provider_id.to_string(),
+                    name: model_spec.name.to_string(),
+                    api: ApiInfo {
+                        id: model_spec.id.to_string(),
+                        url: base_url.clone(),
+                        npm: npm.to_string(),
+                    },
+                    family: model_spec.family.map(|f| f.to_string()),
+                    capabilities: Capabilities { temperature: true, toolcall: true, ..Default::default() },
+                    cost: crate::provider::Cost::default(),
+                    limit: TokenLimit { context: model_spec.ctx, output: model_spec.out, input: None },
+                    status: ModelStatus::Active,
+                    options: std::collections::HashMap::new(),
+                    headers: std::collections::HashMap::new(),
+                    release_date: String::new(),
+                    variants: None,
+                };
+                p.models.push(model);
+            }
+            Ok(Some(Box::new(p)))
+    } else {
+        // Default: OpenAI Chat Completions protocol
+        let compat_config = crate::providers::openai_compatible::CompatConfig {
+            provider_id: Box::leak(provider_id.to_string().into_boxed_str()),
+            name: Box::leak(
+                cfg.name
+                    .clone()
+                    .unwrap_or_else(|| provider_id.to_string())
+                    .into_boxed_str(),
+            ),
+            npm: Box::leak(npm.to_string().into_boxed_str()),
+            base_url: Box::leak(base_url.into_boxed_str()),
+            env_var: Box::leak(env_var.into_boxed_str()),
+            models: Box::leak(models.into_boxed_slice()),
+            extra_headers: &[],
+            classify_error: crate::providers::openai_compatible::default_classify_error,
+        };
 
-    Ok(Some(Box::new(provider)))
+        let provider = crate::providers::openai_compatible::OpenAICompatibleProvider::from_config(&compat_config)?;
+        Ok(Some(Box::new(provider)))
+    }
 }
 
 /// Get a model override from the catalog.

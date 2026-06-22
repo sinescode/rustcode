@@ -871,7 +871,7 @@ pub struct AnthropicProvider {
     base_url: String,
     http_client: reqwest::Client,
     /// Hardcoded model catalog
-    models: Vec<Model>,
+    pub(crate) models: Vec<Model>,
 }
 
 impl AnthropicProvider {
