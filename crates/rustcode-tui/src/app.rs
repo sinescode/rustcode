@@ -257,7 +257,7 @@ impl TuiApp {
             should_quit: false,
             leader_active: false,
             session_id: None,
-            bus: None,
+            bus: Some(bus),
             sessions: None,
             runner: None,
             providers,

@@ -2794,18 +2794,15 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
     let tool_defs = tools.llm_definitions();
     match rustcode_tui::TuiApp::new(sessions, runner, providers_map, bus.clone(), tool_defs) {
         Ok(mut app) => {
-            let rt = tokio::runtime::Runtime::new().unwrap();
+            // Run the TUI app
+            let exit_code = app.run_async().await;
 
-            let exit_code = rt.block_on(app.run_async());
-
-            // When TUI exits, publish a shutdown event for cleanup.
-            let _ = rt.block_on(async {
-                let shutdown_event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
-                    "type": "tui.shutdown",
-                    "timestamp": chrono::Utc::now().timestamp_millis(),
-                }));
-                bus.publish(shutdown_event)
-            });
+            // Publish shutdown event
+            let shutdown_event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+                "type": "tui.shutdown",
+                "timestamp": chrono::Utc::now().timestamp_millis(),
+            }));
+            let _ = bus.publish(shutdown_event);
 
             // Abort the heartbeat task
             heartbeat_handle.abort();
