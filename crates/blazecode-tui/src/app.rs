@@ -2688,7 +2688,9 @@ impl TuiApp {
             {
                 let text = self.input.take();
                 if !text.is_empty() {
-                    self.handle_prompt_submit(text);
+                    if !self.handle_slash_command(&text) {
+                        self.handle_prompt_submit(text);
+                    }
                 }
                 return;
             }
@@ -3906,6 +3908,47 @@ impl TuiApp {
                 // Reinitialize the terminal for the TUI
                 let _ = enable_raw_mode();
                 let _ = execute!(io::stdout(), EnterAlternateScreen);
+            }
+        }
+    }
+
+    /// Handle slash commands typed in the input field (e.g. /help, /status, :q).
+    /// Returns true if the text was handled as a command, false if it should be sent to the LLM.
+    fn handle_slash_command(&mut self, text: &str) -> bool {
+        let trimmed = text.trim();
+        match trimmed {
+            "/help" | "/h" => {
+                self.help_visible = true;
+                self.status_dialog_visible = false;
+                true
+            }
+            "/status" | "/st" => {
+                self.status_dialog_visible = !self.status_dialog_visible;
+                self.input.focused = !self.status_dialog_visible;
+                true
+            }
+            "/clear" | "/c" => {
+                self.conversation.messages.clear();
+                true
+            }
+            "/quit" | "/q" | ":q" | ":wq" | ":Q" => {
+                self.should_quit = true;
+                true
+            }
+            "/model" | "/m" => {
+                self.dispatch_action(TuiAction::VariantCycle);
+                true
+            }
+            "/agent" | "/a" => {
+                self.dispatch_action(TuiAction::AgentCycle);
+                true
+            }
+            "/session" => {
+                self.dispatch_action(TuiAction::SessionList);
+                true
+            }
+            _ => {
+                false
             }
         }
     }

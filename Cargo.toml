@@ -3,7 +3,7 @@ resolver = "2"
 members = [".", "crates/blazecode-core", "crates/blazecode-server", "crates/blazecode-tui", "crates/blazecode-lsp", "crates/blazecode-mcp", "crates/blazecode-derive", "crates/blazecode-sandbox", "crates/blazecode-session-core", "crates/blazecode-event", "crates/blazecode-storage", "crates/blazecode-provider"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/sinescode/blazecode"
