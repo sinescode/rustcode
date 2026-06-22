@@ -2219,7 +2219,7 @@
 ### Finding CI-10: Strategic Innovations for BlazeCode
 - **Severity**: Info
 - **Description**: BlazeCode should exploit unique advantages: proc macros for zero-boilerplate tool definitions, single binary distribution, WASM plugin sandboxing, local AI inference via llama.cpp, compile-time safety for permission-critical tools.
-- **Recommendation**: Build the "Rust-native AI terminal" -- not a port of OpenCode.
+- **Recommendation**: Build the "Rust-native AI terminal" -- not a port — a ground-up Rust build.
 
 ---
 

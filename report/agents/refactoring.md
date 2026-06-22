@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-BlazeCode is a scaffold-phase Rust port of OpenCode (TypeScript) with an Architecture Score of 25/100 and ~120–180 person-hours of technical debt. The codebase exhibits: a monolithic core crate with 95 flat public modules, a 3,000+ line `main.rs` mixing CLI dispatch and business logic, 5 fragmented error hierarchies, 14 files over 1,000 lines, 100+ `unwrap()` calls in library code, <2% test coverage, and direct infrastructure coupling (sqlx, reqwest, std::fs) in domain code.
+BlazeCode is a scaffold-phase Rust project with an Architecture Score of 25/100 and ~120–180 person-hours of technical debt. The codebase exhibits: a monolithic core crate with 95 flat public modules, a 3,000+ line `main.rs` mixing CLI dispatch and business logic, 5 fragmented error hierarchies, 14 files over 1,000 lines, 100+ `unwrap()` calls in library code, <2% test coverage, and direct infrastructure coupling (sqlx, reqwest, std::fs) in domain code.
 
 The plan below organizes 27 refactoring opportunities across 4 levels, from quick wins to strategic transformations.
 

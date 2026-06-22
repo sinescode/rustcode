@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-BlazeCode is a Rust port of OpenCode (TypeScript) at an early scaffold-to-prototype transition phase. The codebase exhibits **high technical debt** typical of nascent ports: type-heavy scaffolding with skeleton implementations, relaxed lint discipline, heavy open-close duplication against the TS source, and no runtime validation. Estimated **120–180 person-hours of technical debt** before reaching BlazeCode parity.
+BlazeCode is a ground-up Rust build at an early scaffold-to-prototype transition phase. The codebase exhibits **high technical debt** typical of nascent projects: type-heavy scaffolding with skeleton implementations, relaxed lint discipline, and no runtime validation. Estimated **120–180 person-hours of technical debt** before reaching production quality.
 
 Below is an organized analysis across all 13 dimensions.
 

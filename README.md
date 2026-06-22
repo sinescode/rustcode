@@ -1,6 +1,6 @@
 # BlazeCode
 
-A Rust port of [OpenCode](https://github.com/sst/opencode) — an AI-powered development tool.
+An AI-powered development tool built in Rust.
 
 ## Features
 
@@ -41,7 +41,7 @@ cargo build --release
 
 ## Configuration
 
-Config at `~/.config/blazecode/config.json` (shared with OpenCode).
+Configuration at `~/.config/blazecode/config.json`.
 
 ## Architecture
 
@@ -58,7 +58,7 @@ blazecode/                    # Workspace root + binary
 
 ## Status
 
-Active port in progress. Core modules are structurally complete; provider integrations and session runner are being actively implemented. See `report/` for the full gap analysis against OpenCode.
+Core modules are structurally complete; provider integrations and session runner are being actively implemented. See `report/` for full details.
 
 ## License
 

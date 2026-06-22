@@ -57,12 +57,9 @@ blazecode/                              # workspace root + binary crate
 │   └── blazecode-mcp/                 # Model Context Protocol
 ```
 
-## Porting from BlazeCode
+## Development
 
-The upstream TS source is at `packages/` in the OpenCode repository.
-- Pin your work to the commit referenced in `CLAUDE.md`
-- Match the TS module structure and naming
-- Port business logic faithfully, then optimize for Rust idioms
+- When referencing the TypeScript source, match the module structure and naming
 - Add tests alongside implementations
 
 ## Commit Style

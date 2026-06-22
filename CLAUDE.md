@@ -1,7 +1,6 @@
 # CLAUDE.md — blazecode
 
-Rust port of [OpenCode](https://github.com/sst/opencode) (TypeScript/Bun AI coding agent).
-OpenCode source pinned at commit `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`.
+BlazeCode — an AI-powered development tool built in Rust.
 
 ## Absolute Rules
 
@@ -71,9 +70,7 @@ All in `crates/blazecode-core/src/`. Current status: scaffold (type skeletons + 
 | `question.rs` | `blazecode/question/` | User prompt types |
 | `lsp.rs` / `mcp.rs` | `blazecode/lsp/` / `blazecode/mcp/` | Placeholder — main impl in `blazecode-lsp` / `blazecode-mcp` |
 
-## BlazeCode Source Reference
-
-The upstream TS source lives at `/home/kali/gitaction/blazecodess/blazecode/`.
+## Code Reference
 
 | Package | Path | Files | Purpose |
 |---|---|---|---|

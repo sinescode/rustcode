@@ -4,7 +4,7 @@
 
 //! blazecode — AI-powered development tool.
 //!
-//! A Rust port of the OpenCode TypeScript/Bun AI coding agent.
+//! BlazeCode — an AI-powered development tool built in Rust.
 //!
 //! # TS Source references
 //! - Main entry: `packages/blazecode/src/index.ts`
@@ -24,14 +24,14 @@ mod cli_error;
 use cli_error::CliErrorFormatter;
 
 // ── Top-level CLI ───────────────────────────────────────────────────────────
-/// AI-powered development tool — Rust port of OpenCode.
+/// AI-powered development tool built in Rust.
 ///
 /// Ported from: `packages/blazecode/src/index.ts` — yargs-based CLI
 #[derive(Parser)]
 #[command(
     name = "blazecode",
     version = env!("CARGO_PKG_VERSION"),
-    about = "AI-powered development tool — Rust port of OpenCode",
+    about = "AI-powered development tool built in Rust",
     long_about = None,
     // TS: `.scriptName("blazecode").wrap(100)`
     max_term_width = 100

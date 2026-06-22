@@ -331,6 +331,6 @@ BlazeCode currently lags BlazeCode in every architectural dimension: effect syst
 4. **Local AI inference** via llama.cpp for offline-first, private, cost-free AI coding
 5. **Compile-time safety** for permission-critical tools (file read/write boundaries)
 
-**Build the "Rust-native AI terminal"** — not a port of OpenCode. The terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience. This is a product BlazeCode cannot build because of its TypeScript/Electron/cloud-native foundation.
+**Build the "Rust-native AI terminal"** — not a port — a ground-up Rust build. The terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience. This is a product BlazeCode cannot build because of its TypeScript/Electron/cloud-native foundation.
 
 Focus P0 on: route architecture, structured concurrency, proc-macro tools, and single-binary distribution (already have). Ship an MVP that feels **native to Rust developers** — not a slower clone of BlazeCode.

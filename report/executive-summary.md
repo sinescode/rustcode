@@ -335,7 +335,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 | # | Opportunity | Effort | Impact | Rust Advantage | Description |
 |---|------------|--------|--------|----------------|-------------|
-| 46 | Ship "Rust-native AI terminal" — not a port of OpenCode | Ongoing | Transformative | **Unique** | Terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience. Product BlazeCode cannot build due to its TypeScript/Electron/cloud-native foundation. |
+| 46 | Ship "Rust-native AI terminal" — not a port — a ground-up Rust build | Ongoing | Transformative | **Unique** | Terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience. Product BlazeCode cannot build due to its TypeScript/Electron/cloud-native foundation. |
 | 47 | Implement CRDT-based offline-first sync | 3 months | High | — | Local-first via SQLite + optional CRDT sync via `automerge-rs` or `yrs`. Sessions work offline, merge on reconnect. |
 | 48 | Implement distributed session orchestration | 6 months | Medium | Rust networking | Multi-machine session coordination via `tokio` + `tonic` (gRPC). Event-sourced architecture makes this natural. |
 | 49 | Multi-tenant architecture (auth, orgs, billing) | 4 months | High | — | Implement `account` and `workspace` CRUD. Auth middleware with JWT. Permission isolation per workspace. Stripe integration. |
