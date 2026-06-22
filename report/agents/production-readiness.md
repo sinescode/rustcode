@@ -1,4 +1,4 @@
-# Production Readiness Report — RustCode
+# Production Readiness Report — BlazeCode
 
 **Agent**: Agent 20 — Production Readiness Agent  
 **Date**: 2026-06-21  
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-RustCode is in **mid-to-late scaffold phase**. The infrastructure layer (error types, config loading, database schema, observability setup, event sourcing, file locking) is well-structured and demonstrates good Rust patterns. However, the business logic layer (session runner, agent loop, provider protocol adapters, tool execution, TUI, LSP, MCP) is largely stubbed out. The server crate exists but depends on route modules that are unimplemented.
+BlazeCode is in **mid-to-late scaffold phase**. The infrastructure layer (error types, config loading, database schema, observability setup, event sourcing, file locking) is well-structured and demonstrates good Rust patterns. However, the business logic layer (session runner, agent loop, provider protocol adapters, tool execution, TUI, LSP, MCP) is largely stubbed out. The server crate exists but depends on route modules that are unimplemented.
 
 **Overall Production Readiness Score: 42 / 100** — Not production-ready.
 
@@ -44,7 +44,7 @@ RustCode is in **mid-to-late scaffold phase**. The infrastructure layer (error t
 
 | Sub-dimension | Score | Assessment |
 |---|---|---|
-| Authentication | 50 | Basic Auth via `OPENCODE_SERVER_PASSWORD`; credentials checked per-request |
+| Authentication | 50 | Basic Auth via `BLAZECODE_SERVER_PASSWORD`; credentials checked per-request |
 | Authorization | 20 | Permission system scaffolded but no fine-grained authorization |
 | Secrets management | 30 | API keys from env vars; no encryption at rest for stored tokens |
 | Input validation | 40 | Config JSON validated; no server-side input sanitization for API |
@@ -178,7 +178,7 @@ RustCode is in **mid-to-late scaffold phase**. The infrastructure layer (error t
 | Maintainability | 60 | Clean error hierarchy; some modules stubbed with `NotImplemented`; relaxed lints for scaffold |
 
 **Critical blockers**:
-- `#![allow(dead_code, unused_imports, unused_variables)]` in rustcode-core — masks real issues
+- `#![allow(dead_code, unused_imports, unused_variables)]` in blazecode-core — masks real issues
 - Many command handlers are stubs returning `0` exit code — users get false success
 
 **Quick wins**:
@@ -310,6 +310,6 @@ RustCode is in **mid-to-late scaffold phase**. The infrastructure layer (error t
 
 ## Summary
 
-RustCode has a **solid foundation** — error types, config system, database schema, observability, event sourcing, and file locking are well-implemented. The codebase follows Rust best practices (no unsafe, no unwrap, clippy-clean). However, it is fundamentally **not production-ready** because the core business logic — session runner, LLM provider integration, tool execution, TUI, LSP, MCP — exists only as type stubs. A production deployment would have zero functional capability beyond database CRUD and config loading.
+BlazeCode has a **solid foundation** — error types, config system, database schema, observability, event sourcing, and file locking are well-implemented. The codebase follows Rust best practices (no unsafe, no unwrap, clippy-clean). However, it is fundamentally **not production-ready** because the core business logic — session runner, LLM provider integration, tool execution, TUI, LSP, MCP — exists only as type stubs. A production deployment would have zero functional capability beyond database CRUD and config loading.
 
 **Estimated time to production readiness**: 6–12 months with 2–3 full-time engineers.

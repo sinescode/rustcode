@@ -1,6 +1,6 @@
 //! CLI interactive prompts and ANSI style constants.
 //!
-//! Ported from: `packages/opencode/src/cli/ui.ts`
+//! Ported from: `packages/blazecode/src/cli/ui.ts`
 
 pub mod prompts;
 pub mod styles;

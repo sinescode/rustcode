@@ -1,4 +1,4 @@
-# Architecture Roadmap — RustCode Target Architecture
+# Architecture Roadmap — BlazeCode Target Architecture
 
 **Date:** 2026-06-21
 **Status:** Planning (Phase 0)
@@ -17,10 +17,10 @@
            │ depends                              │ depends
            ▼                                      ▼
 ┌──────────────────────┐   ┌──────────────────────────────────────┐
-│   rustcode-server     │   │         rustcode-core (95 modules)   │
-│   rustcode-tui        │   │  ┌────────────────────────────────┐  │
-│   rustcode-lsp        │   │  │ config provider session tool    │  │
-│   rustcode-mcp        │   │  │ database permission plugin     │  │
+│   blazecode-server     │   │         blazecode-core (95 modules)   │
+│   blazecode-tui        │   │  ┌────────────────────────────────┐  │
+│   blazecode-lsp        │   │  │ config provider session tool    │  │
+│   blazecode-mcp        │   │  │ database permission plugin     │  │
 │   (4 stubs, re-export)│   │  │ filesystem event git snapshot   │  │
 └──────────────────────┘   │  │ worktree format image skill     │  │
                            │  │ question lsp mcp agent bus      │  │
@@ -40,7 +40,7 @@
 | Monolithic core | Critical | 95 flat public modules, all `pub`, no visibility filtering |
 | Thick binary | Critical | 8,575-line `main.rs` mixing CLI, business logic, infrastructure |
 | Infrastructure in core | Critical | `sqlx`, `reqwest`, `std::fs` imported directly in domain code |
-| No layering | Critical | Effectively 1.5 layers (core + 4 stub wrappers) vs OpenCode's 4+ |
+| No layering | Critical | Effectively 1.5 layers (core + 4 stub wrappers) vs BlazeCode's 4+ |
 | Extreme coupling | Critical | All modules flat-scoped, change to `config.rs` ripples through 94 others |
 | Low cohesion | High | 14 `session_*` files flat with no sub-module grouping |
 | Missing V2 domains | High | No System Context algebra, EventV2 event sourcing, Location concepts |
@@ -140,7 +140,7 @@ Breakdown:
 
 ### Modular Monolith (Crate Boundaries as Module Boundaries)
 
-- ~25 crates matching OpenCode's 26 packages
+- ~25 crates matching BlazeCode's 26 packages
 - Each crate has explicit dependencies (Cargo.toml)
 - `pub(crate)` visibility discipline within crates
 - Clean `lib.rs` re-export surface per crate
@@ -170,21 +170,21 @@ Breakdown:
 │                       Composition Root                          │
 │                    main.rs (~50 lines)                          │
 ├─────────────────────────────────────────────────────────────────┤
-│  rustcode-cli        rustcode-server     rustcode-tui           │
-│  rustcode-lsp        rustcode-mcp        rustcode-sdk           │
+│  blazecode-cli        blazecode-server     blazecode-tui           │
+│  blazecode-lsp        blazecode-mcp        blazecode-sdk           │
 ├─────────────────────────────────────────────────────────────────┤
-│  rustcode-session-core   rustcode-tool-core   rustcode-plugin   │
-│  rustcode-provider-core  rustcode-event-store                   │
+│  blazecode-session-core   blazecode-tool-core   blazecode-plugin   │
+│  blazecode-provider-core  blazecode-event-store                   │
 ├─────────────────────────────────────────────────────────────────┤
-│  rustcode-config     rustcode-schema      rustcode-types        │
-│  rustcode-error      rustcode-observability                     │
+│  blazecode-config     blazecode-schema      blazecode-types        │
+│  blazecode-error      blazecode-observability                     │
 ├─────────────────────────────────────────────────────────────────┤
 │  Infrastructure Adapters (one crate per backend)                │
-│  rustcode-database-sqlite   rustcode-database-postgres          │
-│  rustcode-filesystem-local  rustcode-filesystem-ssh             │
-│  rustcode-http-reqwest      rustcode-provider-anthropic         │
-│  rustcode-provider-openai   rustcode-provider-gemini            │
-│  rustcode-plugin-wasm                                            │
+│  blazecode-database-sqlite   blazecode-database-postgres          │
+│  blazecode-filesystem-local  blazecode-filesystem-ssh             │
+│  blazecode-http-reqwest      blazecode-provider-anthropic         │
+│  blazecode-provider-openai   blazecode-provider-gemini            │
+│  blazecode-plugin-wasm                                            │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
@@ -192,7 +192,7 @@ Breakdown:
 
 ```
                                     ┌────────────────────┐
-                                    │   rustcode-types    │
+                                    │   blazecode-types    │
                                     │  (zero deps, pure   │
                                     │   domain types)     │
                                     └────────┬───────────┘
@@ -200,26 +200,26 @@ Breakdown:
                     ┌────────────────────────┼────────────────────┐
                     │                        │                    │
                ┌────┴────┐           ┌───────┴───────┐    ┌──────┴──────┐
-               │ rustcode │           │  rustcode      │    │ rustcode   │
+               │ blazecode │           │  blazecode      │    │ blazecode   │
                │ -error   │           │  -schema       │    │ -config    │
                └────┬────┘           └───────┬───────┘    └──────┬──────┘
                     │                        │                    │
                     └────────────┬───────────┴────────────────────┘
                                  │
                     ┌────────────┴────────────┐
-                    │   rustcode-observability │
+                    │   blazecode-observability │
                     └────────────┬────────────┘
                                  │
           ┌──────────────────────┼──────────────────────┐
           │                      │                      │
      ┌────┴────┐          ┌──────┴──────┐        ┌──────┴──────┐
-     │ rustcode │          │ rustcode    │        │ rustcode    │
+     │ blazecode │          │ blazecode    │        │ blazecode    │
      │ -database │         │ -filesystem │        │ -provider  │
      │ (trait)   │         │ (trait)     │        │ -core      │
      └────┬─────┘         └──────┬──────┘        └──────┬──────┘
           │                      │                      │
      ┌────┴─────┐          ┌──────┴──────┐        ┌──────┴──────┐
-     │ rustcode │          │ rustcode    │        │ rustcode    │
+     │ blazecode │          │ blazecode    │        │ blazecode    │
      │-database │          │-filesystem  │        │-provider    │
      │-sqlite   │          │-local       │        │-anthropic   │
      └──────────┘          └─────────────┘        └─────────────┘
@@ -227,7 +227,7 @@ Breakdown:
           ┌──────────────────────┼──────────────────────┐
           │                      │                      │
      ┌────┴────┐          ┌──────┴──────┐        ┌──────┴──────┐
-     │ rustcode │          │ rustcode    │        │ rustcode    │
+     │ blazecode │          │ blazecode    │        │ blazecode    │
      │-session │          │ -tool-core  │        │ -plugin     │
      │-core    │          │             │        │ -core       │
      └────┬─────┘         └──────┬──────┘        └──────┬──────┘
@@ -235,13 +235,13 @@ Breakdown:
           └──────────────────────┼──────────────────────┘
                                  │
                     ┌────────────┴────────────┐
-                    │     rustcode-event-store  │
+                    │     blazecode-event-store  │
                     └────────────┬────────────┘
                                  │
           ┌──────────────────────┼──────────────────────┐
           │                      │                      │
      ┌────┴────┐          ┌──────┴──────┐        ┌──────┴──────┐
-     │ rustcode │          │ rustcode    │        │ rustcode    │
+     │ blazecode │          │ blazecode    │        │ blazecode    │
      │ -cli     │          │ -server     │        │ -tui        │
      │ (library)│          │             │        │             │
      └──────────┘          └─────────────┘        └─────────────┘
@@ -249,44 +249,44 @@ Breakdown:
 
 ### Crate Catalog (~27 crates)
 
-| # | Crate | Type | Purpose | Deps (rustcode) | Deps (external) |
+| # | Crate | Type | Purpose | Deps (blazecode) | Deps (external) |
 |---|-------|------|---------|-----------------|-----------------|
-| 1 | `rustcode-types` | Foundation | Core domain types, newtypes, traits | none | serde, thiserror |
-| 2 | `rustcode-schema` | Foundation | JSON Schema types, serialization contracts | types | serde, serde_json, jsonschema |
-| 3 | `rustcode-config` | Foundation | Config model, TOML parsing, validation | types, schema, error | serde, toml |
-| 4 | `rustcode-error` | Foundation | Unified error hierarchy, `Error`, `Result` | types | thiserror |
-| 5 | `rustcode-observability` | Foundation | Tracing, metrics, logging infrastructure | types, error | tracing, opentelemetry |
-| 6 | `rustcode-database` | Port | `Database` trait, session/event/tool repos | types, error | async-trait |
-| 7 | `rustcode-filesystem` | Port | `FileSystem` trait, glob, read/write/search | types, error | async-trait, tokio |
-| 8 | `rustcode-http` | Port | `HttpClient` trait, streaming, retries | types, error, observability | async-trait |
-| 9 | `rustcode-provider-core` | Port | `Provider` trait, `Model`, `StreamChunk` | types, error, http | async-trait, serde |
-| 10 | `rustcode-provider-anthropic` | Adapter | Anthropic Messages API | provider-core, http | reqwest, serde |
-| 11 | `rustcode-provider-openai` | Adapter | OpenAI Chat Completions API | provider-core, http | reqwest, serde |
-| 12 | `rustcode-provider-gemini` | Adapter | Google Gemini API | provider-core, http | reqwest, serde |
-| 13 | `rustcode-provider-bedrock` | Adapter | AWS Bedrock API | provider-core, http | reqwest, aws-sigv4 |
-| 14 | `rustcode-provider-ollama` | Adapter | Local Ollama API | provider-core, http | reqwest |
-| 15 | `rustcode-provider-openai-compatible` | Adapter | Generic OpenAI-compatible (14 variants) | provider-core, http | reqwest |
-| 16 | `rustcode-session-core` | Domain | Session model, event sourcing, lifecycle | types, error, database, event-store | async-trait |
-| 17 | `rustcode-tool-core` | Domain | `Tool` trait, execution pipeline, registry | types, error, filesystem | async-trait |
-| 18 | `rustcode-tool-impls` | Domain | Built-in tools (bash, read, write, edit, grep) | tool-core, types, filesystem | tokio |
-| 19 | `rustcode-permission` | Domain | Permission evaluation, rules, policies | types, error | none |
-| 20 | `rustcode-plugin-core` | Domain | `Plugin` trait, discovery, lifecycle | types, error | async-trait |
-| 21 | `rustcode-plugin-wasm` | Infrastructure | WASM plugin sandbox using wasmtime | plugin-core, types | wasmtime, wit |
-| 22 | `rustcode-event-store` | Infrastructure | EventV2 event sourcing, replay | types, error, database | async-trait |
-| 23 | `rustcode-database-sqlite` | Adapter | SQLite implementation of `Database` trait | database, types | sqlx, tokio |
-| 24 | `rustcode-filesystem-local` | Adapter | Local filesystem via `tokio::fs` | filesystem, types | tokio |
-| 25 | `rustcode-sdk` | Public API | Public SDK for Rust consumers | types, session-core, tool-core, provider-core | tokio |
-| 26 | `rustcode-cli` | Application | CLI argument parsing + command dispatch | all domain crates, config | clap, tokio |
-| 27 | `rustcode-server` | Application | HTTP/SSE server (axum) | session-core, config, observability | axum, tower |
-| 28 | `rustcode-tui` | Application | Terminal UI (ratatui) | session-core, config | ratatui, tokio |
-| 29 | `rustcode-lsp` | Application | LSP integration | session-core, config | tower-lsp |
-| 30 | `rustcode-mcp` | Application | MCP integration | tool-core, config | serde |
+| 1 | `blazecode-types` | Foundation | Core domain types, newtypes, traits | none | serde, thiserror |
+| 2 | `blazecode-schema` | Foundation | JSON Schema types, serialization contracts | types | serde, serde_json, jsonschema |
+| 3 | `blazecode-config` | Foundation | Config model, TOML parsing, validation | types, schema, error | serde, toml |
+| 4 | `blazecode-error` | Foundation | Unified error hierarchy, `Error`, `Result` | types | thiserror |
+| 5 | `blazecode-observability` | Foundation | Tracing, metrics, logging infrastructure | types, error | tracing, opentelemetry |
+| 6 | `blazecode-database` | Port | `Database` trait, session/event/tool repos | types, error | async-trait |
+| 7 | `blazecode-filesystem` | Port | `FileSystem` trait, glob, read/write/search | types, error | async-trait, tokio |
+| 8 | `blazecode-http` | Port | `HttpClient` trait, streaming, retries | types, error, observability | async-trait |
+| 9 | `blazecode-provider-core` | Port | `Provider` trait, `Model`, `StreamChunk` | types, error, http | async-trait, serde |
+| 10 | `blazecode-provider-anthropic` | Adapter | Anthropic Messages API | provider-core, http | reqwest, serde |
+| 11 | `blazecode-provider-openai` | Adapter | OpenAI Chat Completions API | provider-core, http | reqwest, serde |
+| 12 | `blazecode-provider-gemini` | Adapter | Google Gemini API | provider-core, http | reqwest, serde |
+| 13 | `blazecode-provider-bedrock` | Adapter | AWS Bedrock API | provider-core, http | reqwest, aws-sigv4 |
+| 14 | `blazecode-provider-ollama` | Adapter | Local Ollama API | provider-core, http | reqwest |
+| 15 | `blazecode-provider-openai-compatible` | Adapter | Generic OpenAI-compatible (14 variants) | provider-core, http | reqwest |
+| 16 | `blazecode-session-core` | Domain | Session model, event sourcing, lifecycle | types, error, database, event-store | async-trait |
+| 17 | `blazecode-tool-core` | Domain | `Tool` trait, execution pipeline, registry | types, error, filesystem | async-trait |
+| 18 | `blazecode-tool-impls` | Domain | Built-in tools (bash, read, write, edit, grep) | tool-core, types, filesystem | tokio |
+| 19 | `blazecode-permission` | Domain | Permission evaluation, rules, policies | types, error | none |
+| 20 | `blazecode-plugin-core` | Domain | `Plugin` trait, discovery, lifecycle | types, error | async-trait |
+| 21 | `blazecode-plugin-wasm` | Infrastructure | WASM plugin sandbox using wasmtime | plugin-core, types | wasmtime, wit |
+| 22 | `blazecode-event-store` | Infrastructure | EventV2 event sourcing, replay | types, error, database | async-trait |
+| 23 | `blazecode-database-sqlite` | Adapter | SQLite implementation of `Database` trait | database, types | sqlx, tokio |
+| 24 | `blazecode-filesystem-local` | Adapter | Local filesystem via `tokio::fs` | filesystem, types | tokio |
+| 25 | `blazecode-sdk` | Public API | Public SDK for Rust consumers | types, session-core, tool-core, provider-core | tokio |
+| 26 | `blazecode-cli` | Application | CLI argument parsing + command dispatch | all domain crates, config | clap, tokio |
+| 27 | `blazecode-server` | Application | HTTP/SSE server (axum) | session-core, config, observability | axum, tower |
+| 28 | `blazecode-tui` | Application | Terminal UI (ratatui) | session-core, config | ratatui, tokio |
+| 29 | `blazecode-lsp` | Application | LSP integration | session-core, config | tower-lsp |
+| 30 | `blazecode-mcp` | Application | MCP integration | tool-core, config | serde |
 
 ---
 
 ## 4. Module Architecture per Crate
 
-### `rustcode-types` — Core Domain Types
+### `blazecode-types` — Core Domain Types
 
 **Purpose:** Zero-dependency crate holding all shared domain types, newtypes, and core traits. Every other crate depends on this one.
 
@@ -335,7 +335,7 @@ src/
 
 ---
 
-### `rustcode-error` — Unified Error Hierarchy
+### `blazecode-error` — Unified Error Hierarchy
 
 **Purpose:** Single `Error` enum with `thiserror` derives. Every crate converts its errors into this hierarchy via `#[from]`.
 
@@ -372,11 +372,11 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 **Sub-error types** (`ConfigError`, `SessionError`, etc.) live in their respective crates and implement `std::error::Error + Send + Sync`.
 
-**No dependencies on rustcode crates** (except `types` for type info).
+**No dependencies on blazecode crates** (except `types` for type info).
 
 ---
 
-### `rustcode-config` — Configuration Model
+### `blazecode-config` — Configuration Model
 
 **Purpose:** Load, parse, validate configuration from TOML files + env vars + CLI overrides.
 
@@ -400,7 +400,7 @@ impl Config {
 
 **Key types:** `Config`, `ProviderConfig`, `AgentConfig`, `McpConfig`, `ServerConfig`, `PluginConfig`
 
-**Dependencies:** `rustcode-types`, `rustcode-error`, `rustcode-schema`
+**Dependencies:** `blazecode-types`, `blazecode-error`, `blazecode-schema`
 
 **External deps:** `serde`, `toml`, `schemars`
 
@@ -425,7 +425,7 @@ src/
 
 ---
 
-### `rustcode-observability` — Tracing, Metrics, Logging
+### `blazecode-observability` — Tracing, Metrics, Logging
 
 **Purpose:** Set up `tracing` subscriber, OpenTelemetry export, structured logging, metrics collection.
 
@@ -442,7 +442,7 @@ pub struct Metrics {
 }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`
+**Dependencies:** `blazecode-types`, `blazecode-error`
 
 **External deps:** `tracing`, `tracing-subscriber`, `opentelemetry`, `opentelemetry-otlp`, `metrics`, `metrics-exporter-prometheus`
 
@@ -458,7 +458,7 @@ src/
 
 ---
 
-### `rustcode-database` — Database Port (Trait)
+### `blazecode-database` — Database Port (Trait)
 
 **Purpose:** Define `Database` trait as the port for all persistence operations. No implementation — just the contract.
 
@@ -490,7 +490,7 @@ pub trait Database: Send + Sync + 'static {
 
 **Key types:** `SessionRow`, `MessageRow`, `EventRow`, `SessionFilter`, `SessionPatch`
 
-**Dependencies:** `rustcode-types`, `rustcode-error`
+**Dependencies:** `blazecode-types`, `blazecode-error`
 
 **External deps:** `async-trait`, `serde`
 
@@ -505,13 +505,13 @@ src/
 
 ---
 
-### `rustcode-database-sqlite` — SQLite Adapter
+### `blazecode-database-sqlite` — SQLite Adapter
 
 **Purpose:** Implements `Database` trait using `sqlx` + SQLite.
 
 **Key types:** `SqliteDatabase { pool: SqlitePool }`
 
-**Dependencies:** `rustcode-database`, `rustcode-types`, `rustcode-error`
+**Dependencies:** `blazecode-database`, `blazecode-types`, `blazecode-error`
 
 **External deps:** `sqlx` (sqlite), `tokio`, `serde`
 
@@ -529,7 +529,7 @@ src/
 
 ---
 
-### `rustcode-provider-core` — Provider Port
+### `blazecode-provider-core` — Provider Port
 
 **Purpose:** Define `Provider` trait as the port for LLM provider abstractions. Route-based architecture (protocol/endpoint/auth/framing).
 
@@ -571,7 +571,7 @@ pub struct Route<P: Protocol<..>> {
 }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`, `rustcode-http`
+**Dependencies:** `blazecode-types`, `blazecode-error`, `blazecode-http`
 
 **External deps:** `async-trait`, `serde`, `futures`
 
@@ -594,7 +594,7 @@ src/
 
 ---
 
-### `rustcode-provider-anthropic` — Anthropic Provider
+### `blazecode-provider-anthropic` — Anthropic Provider
 
 **Purpose:** Single provider implementation using the route architecture. ~50 lines.
 
@@ -610,13 +610,13 @@ pub fn anthropic_provider(http: Arc<dyn HttpClient>, api_key: String) -> impl Pr
 }
 ```
 
-**Dependencies:** `rustcode-provider-core`, `rustcode-http`, `rustcode-types`
+**Dependencies:** `blazecode-provider-core`, `blazecode-http`, `blazecode-types`
 
 **External deps:** `serde`, `serde_json`
 
 ---
 
-### `rustcode-session-core` — Session Domain
+### `blazecode-session-core` — Session Domain
 
 **Purpose:** Session model, event sourcing, lifecycle management, prompt admission.
 
@@ -651,7 +651,7 @@ pub enum SessionEvent {
 }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`, `rustcode-database`, `rustcode-event-store`
+**Dependencies:** `blazecode-types`, `blazecode-error`, `blazecode-database`, `blazecode-event-store`
 
 **External deps:** `async-trait`, `tokio`, `serde`
 
@@ -672,7 +672,7 @@ src/
 
 ---
 
-### `rustcode-tool-core` — Tool Domain
+### `blazecode-tool-core` — Tool Domain
 
 **Purpose:** `Tool` trait, `ToolRegistry`, execution pipeline with permission checks.
 
@@ -705,12 +705,12 @@ pub struct ToolContext {
     pub session_id: SessionId,
 }
 
-// Proc-macro tool definition (rustcode-derive):
+// Proc-macro tool definition (blazecode-derive):
 // #[tool(description = "Read file contents")]
 // async fn read_file(path: String) -> Result<String> { ... }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`, `rustcode-filesystem`, `rustcode-permission`
+**Dependencies:** `blazecode-types`, `blazecode-error`, `blazecode-filesystem`, `blazecode-permission`
 
 **External deps:** `async-trait`, `serde`, `serde_json`, `schemars`
 
@@ -726,7 +726,7 @@ src/
 
 ---
 
-### `rustcode-permission` — Permission Domain
+### `blazecode-permission` — Permission Domain
 
 **Purpose:** Evaluate whether a tool call / action is permitted based on rules, policies, and user configuration.
 
@@ -756,7 +756,7 @@ pub struct PermissionRule {
 }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`
+**Dependencies:** `blazecode-types`, `blazecode-error`
 
 **External deps:** `globset` (for wildcard matching)
 
@@ -773,7 +773,7 @@ src/
 
 ---
 
-### `rustcode-plugin-core` — Plugin Domain
+### `blazecode-plugin-core` — Plugin Domain
 
 **Purpose:** Plugin trait, discovery, lifecycle management.
 
@@ -803,13 +803,13 @@ impl PluginRegistry {
 }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`, `rustcode-tool-core`, `rustcode-provider-core`
+**Dependencies:** `blazecode-types`, `blazecode-error`, `blazecode-tool-core`, `blazecode-provider-core`
 
 **External deps:** `async-trait`
 
 ---
 
-### `rustcode-plugin-wasm` — WASM Plugin Sandbox
+### `blazecode-plugin-wasm` — WASM Plugin Sandbox
 
 **Purpose:** Load plugins compiled to WASM, sandbox execution with controlled file/network access.
 
@@ -832,13 +832,13 @@ pub struct PluginPermissions {
 }
 ```
 
-**Dependencies:** `rustcode-plugin-core`, `rustcode-types`, `rustcode-error`
+**Dependencies:** `blazecode-plugin-core`, `blazecode-types`, `blazecode-error`
 
 **External deps:** `wasmtime`, `wit`
 
 ---
 
-### `rustcode-event-store` — EventV2 Event Sourcing
+### `blazecode-event-store` — EventV2 Event Sourcing
 
 **Purpose:** Durable event store with replay, cursors, and pub/sub.
 
@@ -859,13 +859,13 @@ pub struct StoredEvent {
 }
 ```
 
-**Dependencies:** `rustcode-types`, `rustcode-error`, `rustcode-database`
+**Dependencies:** `blazecode-types`, `blazecode-error`, `blazecode-database`
 
 **External deps:** `async-trait`, `futures`, `tokio`
 
 ---
 
-### `rustcode-cli` — CLI Library Crate
+### `blazecode-cli` — CLI Library Crate
 
 **Purpose:** All CLI command handlers as public async functions. Thin binary dispatches to this.
 
@@ -878,53 +878,53 @@ pub async fn cmd_session(args: SessionArgs) -> Result<i32>;
 pub async fn cmd_version() -> i32;
 ```
 
-**Dependencies:** all domain crates, `rustcode-config`, `rustcode-observability`
+**Dependencies:** all domain crates, `blazecode-config`, `blazecode-observability`
 
 **External deps:** `clap`, `tokio`
 
-### `rustcode-server` — HTTP/SSE Server
+### `blazecode-server` — HTTP/SSE Server
 
 **Purpose:** Axum-based HTTP server for remote session management, SSE streaming.
 
-**Dependencies:** `rustcode-session-core`, `rustcode-config`, `rustcode-observability`, `rustcode-types`
+**Dependencies:** `blazecode-session-core`, `blazecode-config`, `blazecode-observability`, `blazecode-types`
 
 **External deps:** `axum`, `tower`, `tokio`, `serde_json`
 
-### `rustcode-tui` — Terminal UI
+### `blazecode-tui` — Terminal UI
 
-**Purpose:** Ratatui-based terminal user interface. Reuses `rustcode-session-core`.
+**Purpose:** Ratatui-based terminal user interface. Reuses `blazecode-session-core`.
 
-**Dependencies:** `rustcode-session-core`, `rustcode-config`, `rustcode-types`
+**Dependencies:** `blazecode-session-core`, `blazecode-config`, `blazecode-types`
 
 **External deps:** `ratatui`, `crossterm`, `tokio`
 
-### `rustcode-lsp` — LSP Integration
+### `blazecode-lsp` — LSP Integration
 
 **Purpose:** LSP server for IDE integration.
 
-**Dependencies:** `rustcode-session-core`, `rustcode-tool-core`, `rustcode-config`
+**Dependencies:** `blazecode-session-core`, `blazecode-tool-core`, `blazecode-config`
 
 **External deps:** `tower-lsp`, `serde_json`, `tokio`
 
-### `rustcode-mcp` — MCP Integration
+### `blazecode-mcp` — MCP Integration
 
 **Purpose:** Model Context Protocol server for MCP-compatible tools.
 
-**Dependencies:** `rustcode-tool-core`, `rustcode-config`, `rustcode-types`
+**Dependencies:** `blazecode-tool-core`, `blazecode-config`, `blazecode-types`
 
 **External deps:** `serde`, `serde_json`
 
-### `rustcode-sdk` — Public SDK
+### `blazecode-sdk` — Public SDK
 
-**Purpose:** Re-export all public APIs for Rust consumers. Single `rustcode` crate that bundles the public surface.
+**Purpose:** Re-export all public APIs for Rust consumers. Single `blazecode` crate that bundles the public surface.
 
 ```rust
-pub use rustcode_types::*;
-pub use rustcode_session_core::{Session, SessionManager, SessionConfig};
-pub use rustcode_tool_core::{Tool, ToolRegistry, ToolContext};
-pub use rustcode_provider_core::{Provider, ChatRequest, LlmEvent};
-pub use rustcode_config::Config;
-pub use rustcode_error::{Error, Result};
+pub use blazecode_types::*;
+pub use blazecode_session_core::{Session, SessionManager, SessionConfig};
+pub use blazecode_tool_core::{Tool, ToolRegistry, ToolContext};
+pub use blazecode_provider_core::{Provider, ChatRequest, LlmEvent};
+pub use blazecode_config::Config;
+pub use blazecode_error::{Error, Result};
 ```
 
 ---
@@ -997,10 +997,10 @@ pub use rustcode_error::{Error, Result};
 │  ┌────────────────────────────────────────────────────┐            │
 │  │              Integration Domain                     │            │
 │  │                                                     │            │
-│  │  Adapters: rustcode-server (axum HTTP/SSE)          │            │
-│  │            rustcode-tui (ratatui)                   │            │
-│  │            rustcode-lsp (tower-lsp)                 │            │
-│  │            rustcode-mcp (MCP protocol)              │            │
+│  │  Adapters: blazecode-server (axum HTTP/SSE)          │            │
+│  │            blazecode-tui (ratatui)                   │            │
+│  │            blazecode-lsp (tower-lsp)                 │            │
+│  │            blazecode-mcp (MCP protocol)              │            │
 │  └─────────────────────────────────────────────────────┘            │
 │                                                                     │
 └─────────────────────────────────────────────────────────────────────┘
@@ -1010,14 +1010,14 @@ pub use rustcode_error::{Error, Result};
 
 | Domain | Crates | Aggregate Root | Key Events | Ports (Traits) |
 |--------|--------|---------------|------------|---------------|
-| Session | `rustcode-session-core` | `Session` | Created, MessageAppended, ToolExecuted, Compacted, EpochAdvanced | `Database`, `EventStore` |
-| Tool | `rustcode-tool-core`, `rustcode-tool-impls` | `ToolRegistry` | ToolExecuting, ToolExecuted, ToolFailed | `FileSystem`, `PermissionEvaluator` |
-| Provider | `rustcode-provider-core`, `rustcode-provider-*` | `ProviderCatalog` | StreamStarted, ChunkReceived, StreamComplete | `HttpClient` |
-| Plugin | `rustcode-plugin-core`, `rustcode-plugin-wasm` | `PluginRegistry` | PluginActivated, PluginDeactivated, PluginError | — |
-| Config | `rustcode-config` | — | ConfigLoaded, ConfigChanged | — |
-| Storage | `rustcode-database` | — | — | `Database` |
-| Permission | `rustcode-permission` | `RuleEngine` | PermissionChecked, PermissionDenied | — |
-| Integration | `rustcode-server`, `rustcode-tui`, `rustcode-lsp`, `rustcode-mcp` | — | — | — |
+| Session | `blazecode-session-core` | `Session` | Created, MessageAppended, ToolExecuted, Compacted, EpochAdvanced | `Database`, `EventStore` |
+| Tool | `blazecode-tool-core`, `blazecode-tool-impls` | `ToolRegistry` | ToolExecuting, ToolExecuted, ToolFailed | `FileSystem`, `PermissionEvaluator` |
+| Provider | `blazecode-provider-core`, `blazecode-provider-*` | `ProviderCatalog` | StreamStarted, ChunkReceived, StreamComplete | `HttpClient` |
+| Plugin | `blazecode-plugin-core`, `blazecode-plugin-wasm` | `PluginRegistry` | PluginActivated, PluginDeactivated, PluginError | — |
+| Config | `blazecode-config` | — | ConfigLoaded, ConfigChanged | — |
+| Storage | `blazecode-database` | — | — | `Database` |
+| Permission | `blazecode-permission` | `RuleEngine` | PermissionChecked, PermissionDenied | — |
+| Integration | `blazecode-server`, `blazecode-tui`, `blazecode-lsp`, `blazecode-mcp` | — | — | — |
 
 ---
 
@@ -1110,10 +1110,10 @@ SessionDomain         → StorageDomain: SessionRow / MessageRow (via Database t
 
 ```
 ┌─────────────────────────────────────┐
-│         rustcode binary (~15MB)      │
+│         blazecode binary (~15MB)      │
 │                                     │
 │  ┌─────────────────────────────┐    │
-│  │  rustcode-cli (thin CLI)    │    │
+│  │  blazecode-cli (thin CLI)    │    │
 │  └─────────────┬───────────────┘    │
 │                │                    │
 │  ┌─────────────▼───────────────┐    │
@@ -1122,22 +1122,22 @@ SessionDomain         → StorageDomain: SessionRow / MessageRow (via Database t
 │  │  + Local filesystem         │    │
 │  └─────────────────────────────┘    │
 │                                     │
-│  ~/.rustcode/                       │
+│  ~/.blazecode/                       │
 │    config.toml                      │
 │    data/                            │
-│      rustcode.db (SQLite)           │
+│      blazecode.db (SQLite)           │
 │      sessions/                      │
 │      plugins/                       │
 └─────────────────────────────────────┘
 ```
 
-**Distribution:** Single binary via `cargo install rustcode` or GitHub releases.
+**Distribution:** Single binary via `cargo install blazecode` or GitHub releases.
 
 ### Option B: Server (Multi-Instance)
 
 ```
 ┌─────────────┐  ┌─────────────┐  ┌─────────────┐
-│ rustcode    │  │ rustcode    │  │ rustcode    │
+│ blazecode    │  │ blazecode    │  │ blazecode    │
 │ server 1    │  │ server 2    │  │ server 3    │
 │ (axum)      │  │ (axum)      │  │ (axum)      │
 └──────┬──────┘  └──────┬──────┘  └──────┬──────┘
@@ -1163,7 +1163,7 @@ Optional:
 ┌─────────────────────────────────────┐
 │         Electron Shell              │
 │  ┌─────────────────────────────┐    │
-│  │  Built-in rustcode binary   │    │
+│  │  Built-in blazecode binary   │    │
 │  │  (bundled per-platform)     │    │
 │  └─────────────────────────────┘    │
 │                                     │
@@ -1187,7 +1187,7 @@ Optional:
        └────────────────┘
                │
        ┌───────▼───────┐
-       │ rustcode      │
+       │ blazecode      │
        │ server        │
        │ (axum)        │
        └───────┬───────┘
@@ -1294,30 +1294,30 @@ Optional:
 
 **Activities:**
 1. **Database trait extraction (MR-3):**
-   - Define `Database` trait in `rustcode-database` crate
-   - Move SQLite impl to `rustcode-database-sqlite`
+   - Define `Database` trait in `blazecode-database` crate
+   - Move SQLite impl to `blazecode-database-sqlite`
    - Core accepts `Arc<dyn Database>` instead of `Arc<DatabaseService>`
    - Create `MockDatabase` for tests
 
 2. **HTTP client trait extraction (MR-4):**
-   - Define `HttpClient` trait in `rustcode-http` crate
+   - Define `HttpClient` trait in `blazecode-http` crate
    - Implement `ReqwestHttpClient` adapter
    - Provider implementations use `Arc<dyn HttpClient>`
    - Add 120s timeout + retry policy
 
 3. **Filesystem trait extraction (MR-6):**
-   - Define `FileSystem` trait in `rustcode-filesystem` crate
+   - Define `FileSystem` trait in `blazecode-filesystem` crate
    - Implement `TokioFileSystem` using `tokio::fs`
    - Tool implementations use `Arc<dyn FileSystem>`
    - Replace blocking `std::fs` calls with async equivalents
 
 4. **Plugin SDK extraction (MR-5):**
-   - Create `rustcode-plugin-sdk` with minimal dependencies
+   - Create `blazecode-plugin-sdk` with minimal dependencies
    - Extract `Plugin` trait, `PluginManager` trait
    - Core depends on plugin-sdk (inverted dependency)
 
 **Deliverables:**
-- `rustcode-core` no longer imports `sqlx`, `reqwest`, `std::fs`
+- `blazecode-core` no longer imports `sqlx`, `reqwest`, `std::fs`
 - All infrastructure behind trait boundaries
 - `MockDatabase`, `MockHttpClient`, `MockFileSystem` for testing
 - Test coverage: <2% → ~30%
@@ -1341,18 +1341,18 @@ Optional:
 
 ### Phase 3: Crate Extraction (Months 4-5)
 
-**Goal:** Split monolithic `rustcode-core` into 8+ domain crates.
+**Goal:** Split monolithic `blazecode-core` into 8+ domain crates.
 
 **Activities:**
-1. **Create `rustcode-types`** — extract shared types, newtypes, error types
-2. **Create `rustcode-config`** — extract config loading, parsing, validation
-3. **Create `rustcode-provider-core`** — extract Provider trait, route architecture
-4. **Create `rustcode-session-core`** — extract session model, event sourcing
-5. **Create `rustcode-tool-core`** — extract Tool trait, execution pipeline
-6. **Create `rustcode-permission`** — extract permission evaluation
-7. **Create `rustcode-event-store`** — extract EventV2 event sourcing
+1. **Create `blazecode-types`** — extract shared types, newtypes, error types
+2. **Create `blazecode-config`** — extract config loading, parsing, validation
+3. **Create `blazecode-provider-core`** — extract Provider trait, route architecture
+4. **Create `blazecode-session-core`** — extract session model, event sourcing
+5. **Create `blazecode-tool-core`** — extract Tool trait, execution pipeline
+6. **Create `blazecode-permission`** — extract permission evaluation
+7. **Create `blazecode-event-store`** — extract EventV2 event sourcing
 8. **Extract CLI library (AR-2):**
-   - Create `rustcode-cli` library crate
+   - Create `blazecode-cli` library crate
    - Move all `cmd_*` functions from `main.rs`
    - Reduce `main.rs` to ~30 lines
 
@@ -1395,10 +1395,10 @@ Optional:
    - Replace `ClosureProviderPlugin` function-pointer soup with trait
 
 3. **Provider crate creation:**
-   - `rustcode-provider-anthropic`
-   - `rustcode-provider-openai`
-   - `rustcode-provider-gemini`
-   - `rustcode-provider-openai-compatible` (14 variants)
+   - `blazecode-provider-anthropic`
+   - `blazecode-provider-openai`
+   - `blazecode-provider-gemini`
+   - `blazecode-provider-openai-compatible` (14 variants)
 
 **Deliverables:**
 - Deterministic shutdown, no fiber leaks
@@ -1414,16 +1414,16 @@ Optional:
 
 **Activities:**
 1. **WASM plugin sandbox (SR-5 variant):**
-   - `rustcode-plugin-wasm` crate with `wasmtime`
+   - `blazecode-plugin-wasm` crate with `wasmtime`
    - WIT interface for plugin ↔ host communication
    - Sandbox with controlled file/network access
 
 2. **Proc-macro crate:**
-   - `rustcode-derive` with `#[derive(Tool)]`
+   - `blazecode-derive` with `#[derive(Tool)]`
    - `#[tool(description = "...")]` attribute macro on functions
    - `#[derive(Provider)]` for route-based providers
 
-3. **Publish `rustcode-plugin-sdk` on crates.io**
+3. **Publish `blazecode-plugin-sdk` on crates.io**
 
 **Architecture Score:** 80 → 83
 
@@ -1434,7 +1434,7 @@ Optional:
 **Goal:** Production-grade server mode with PostgreSQL, distributed event bus, session sync.
 
 **Activities:**
-1. `rustcode-database-postgres` adapter
+1. `blazecode-database-postgres` adapter
 2. Distributed event bus (NATS/Redis backend)
 3. Session migration from SQLite to PostgreSQL
 4. Health checks, metrics export, structured audit logging
@@ -1514,12 +1514,12 @@ Current  25 ──► P0: 35 ──► P1: 50 ──► P2: 65 ──► P3: 75 
 
 ---
 
-## Appendix A: RustCode Moat — What OpenCode Cannot Replicate
+## Appendix A: BlazeCode Moat — What BlazeCode Cannot Replicate
 
 | Moat | Current | Target | Implementation |
 |------|---------|--------|----------------|
-| **Single binary** | ✅ Already have | ✅ Maintain | Static linking, `cargo install rustcode` |
-| **Proc macros** | ❌ Not yet | ✅ P4-P5 | `rustcode-derive` crate with `#[derive(Tool)]` |
+| **Single binary** | ✅ Already have | ✅ Maintain | Static linking, `cargo install blazecode` |
+| **Proc macros** | ❌ Not yet | ✅ P4-P5 | `blazecode-derive` crate with `#[derive(Tool)]` |
 | **WASM sandbox** | ❌ Not yet | ✅ P5 | `wasmtime` + WIT interface |
 | **Local AI** | ❌ Not yet | ✅ Future | `llama-cpp-rs` or `candle` binding |
 | **Compile-time safety** | ✅ Already have | ✅ Maintain | `forbid(unsafe_code)`, type-state patterns |
@@ -1533,8 +1533,8 @@ Current  25 ──► P0: 35 ──► P1: 50 ──► P2: 65 ──► P3: 75 
 | Phase 3 crate split breaks compilation | High | High | Incremental extraction, verify after each crate |
 | Trait extraction reveals missing abstractions | Medium | High | Extend trait surface during extraction, keep adapters in core initially |
 | WASM plugin sandbox conflicts with `forbid(unsafe_code)` | High | Medium | Evaluate `wasmtime` safety guarantees; `unsafe` in sandbox adapter only, not in core |
-| Community migration from OpenCode doesn't happen | High | Medium | Ship working CLI first, then add unique features (proc macros, WASM) |
-| OpenCode V2 evolves faster than RustCode ports | High | Medium | Focus on unique moats, not parity; implement CONTEXT.md rules as test cases |
+| Community migration from BlazeCode doesn't happen | High | Medium | Ship working CLI first, then add unique features (proc macros, WASM) |
+| BlazeCode V2 evolves faster than BlazeCode ports | High | Medium | Focus on unique moats, not parity; implement CONTEXT.md rules as test cases |
 
 ## Appendix C: Glossary
 
@@ -1548,4 +1548,4 @@ Current  25 ──► P0: 35 ──► P1: 50 ──► P2: 65 ──► P3: 75 
 | Structured Concurrency | Pattern where async tasks are bounded by a scope and automatically cancelled on scope exit |
 | Event Sourcing | Pattern where state changes are stored as an append-only log of events |
 | Composition Root | The single place in an application where dependencies are wired together |
-| Route Architecture | OpenCode's pattern of composing a provider from orthogonal Protocol, Endpoint, Auth, Framing pieces |
+| Route Architecture | BlazeCode's pattern of composing a provider from orthogonal Protocol, Endpoint, Auth, Framing pieces |

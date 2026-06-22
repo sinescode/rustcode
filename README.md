@@ -1,4 +1,4 @@
-# RustCode
+# BlazeCode
 
 A Rust port of [OpenCode](https://github.com/sst/opencode) — an AI-powered development tool.
 
@@ -17,42 +17,42 @@ A Rust port of [OpenCode](https://github.com/sst/opencode) — an AI-powered dev
 ## Quick Start
 
 ```bash
-curl -sSf https://raw.githubusercontent.com/sinescode/rustcode/main/install | sh
+curl -sSf https://raw.githubusercontent.com/sinescode/blazecode/main/install | sh
 ```
 
 Or build from source:
 ```bash
-git clone https://github.com/sinescode/rustcode
-cd rustcode
+git clone https://github.com/sinescode/blazecode
+cd blazecode
 cargo build --release
-./target/release/rustcode
+./target/release/blazecode
 ```
 
 ## Commands
 
-- `rustcode` — Interactive REPL
-- `rustcode run` — Run a prompt
-- `rustcode serve` — Start HTTP/SSE server
-- `rustcode tui` — Terminal UI
-- `rustcode session` — Manage sessions
-- `rustcode provider` — List/manage providers
-- `rustcode config` — View configuration
-- `rustcode models` — List available models
+- `blazecode` — Interactive REPL
+- `blazecode run` — Run a prompt
+- `blazecode serve` — Start HTTP/SSE server
+- `blazecode tui` — Terminal UI
+- `blazecode session` — Manage sessions
+- `blazecode provider` — List/manage providers
+- `blazecode config` — View configuration
+- `blazecode models` — List available models
 
 ## Configuration
 
-Config at `~/.config/opencode/config.json` (shared with OpenCode).
+Config at `~/.config/blazecode/config.json` (shared with OpenCode).
 
 ## Architecture
 
 ```
-rustcode/                    # Workspace root + binary
+blazecode/                    # Workspace root + binary
 ├── crates/
-│   ├── rustcode-core/       # Core library (config, provider, session, tool, etc.)
-│   ├── rustcode-server/     # HTTP/SSE API server
-│   ├── rustcode-tui/        # Terminal UI
-│   ├── rustcode-lsp/        # LSP integration
-│   └── rustcode-mcp/        # Model Context Protocol
+│   ├── blazecode-core/       # Core library (config, provider, session, tool, etc.)
+│   ├── blazecode-server/     # HTTP/SSE API server
+│   ├── blazecode-tui/        # Terminal UI
+│   ├── blazecode-lsp/        # LSP integration
+│   └── blazecode-mcp/        # Model Context Protocol
 └── src/main.rs              # CLI entry
 ```
 

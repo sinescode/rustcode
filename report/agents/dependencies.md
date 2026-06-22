@@ -1,8 +1,8 @@
-# Dependency Analysis: RustCode vs OpenCode
+# Dependency Analysis: BlazeCode vs BlazeCode
 
 **Agent**: Agent 11 — Dependency Agent
 **Date**: 2026-06-21
-**Scope**: All direct + transitive deps in RustCode workspace (6 crates) vs OpenCode workspace (10+ packages)
+**Scope**: All direct + transitive deps in BlazeCode workspace (6 crates) vs BlazeCode workspace (10+ packages)
 
 ---
 
@@ -162,7 +162,7 @@ Total unique direct dependencies: **52** (48 workspace-level + 4 crate-local)
 - TLS via `rustls` (Rust-native) for `reqwest`, `hyper-rustls` also present
 - No `native-tls` in reqwest (uses `rustls-tls` feature)
 
-**Note**: `reqwest` pulls in `native-tls` for its default `default-tls` feature, but RustCode uses `rustls-tls` feature. However, `native-tls` is still a transitive dep of `sqlx` (for MySQL/Postgres). Since RustCode uses SQLite only, consider disabling sqlx's default features to drop `native-tls`.
+**Note**: `reqwest` pulls in `native-tls` for its default `default-tls` feature, but BlazeCode uses `rustls-tls` feature. However, `native-tls` is still a transitive dep of `sqlx` (for MySQL/Postgres). Since BlazeCode uses SQLite only, consider disabling sqlx's default features to drop `native-tls`.
 
 ---
 
@@ -184,7 +184,7 @@ Total unique direct dependencies: **52** (48 workspace-level + 4 crate-local)
 
 | Crate | Why redundant | Recommendation |
 |---|---|---|
-| `serde_yaml` + `toml` | Both for config parsing. OpenCode uses TOML only. | Keep both — YAML useful for MCP/tool configs |
+| `serde_yaml` + `toml` | Both for config parsing. BlazeCode uses TOML only. | Keep both — YAML useful for MCP/tool configs |
 | `glob` + `ignore` + `walkdir` | Three file walking crates. `ignore` subsumes `glob` + `walkdir`. | ✅ Actually needed: `ignore` is gitignore-aware, `walkdir` is simpler, `glob` for pattern matching |
 | `sha2` + `hmac` + `hex` | All crypto primitives — could be `ring` alone | Keep — fine-grained is fine |
 | `url` + `urlencoding` | URL handling overlap | Keep — separate concerns |
@@ -196,13 +196,13 @@ Total unique direct dependencies: **52** (48 workspace-level + 4 crate-local)
 
 ---
 
-## 6. Missing Dependencies — What RustCode Needs From OpenCode
+## 6. Missing Dependencies — What BlazeCode Needs From BlazeCode
 
 ### Critical gaps
 
-| Category | OpenCode | RustCode | Gap | Consequence |
+| Category | BlazeCode | BlazeCode | Gap | Consequence |
 |---|---|---|---|---|
-| **AI Provider SDKs** | 20+ `@ai-sdk/*` packages (Anthropic, OpenAI, Google, Bedrock, Azure, Groq, Mistral, Cohere, Perplexity, XAI, DeepInfra, Together, Cerebras, Alibaba, Gateway, Vercel, OpenRouter) | 0 provider-specific crates | **CRITICAL** — RustCode has no provider protocol adapters | Must implement 15+ HTTP protocol adapters from scratch |
+| **AI Provider SDKs** | 20+ `@ai-sdk/*` packages (Anthropic, OpenAI, Google, Bedrock, Azure, Groq, Mistral, Cohere, Perplexity, XAI, DeepInfra, Together, Cerebras, Alibaba, Gateway, Vercel, OpenRouter) | 0 provider-specific crates | **CRITICAL** — BlazeCode has no provider protocol adapters | Must implement 15+ HTTP protocol adapters from scratch |
 | **Schema validation** | `zod` 4.x | `schemars` 0.8 | `schemars` generates JSON Schema but doesn't validate. Need `jsonschema` or `valico` for runtime validation | Runtime validation must be custom-built |
 | **Effect system** | `effect` (full functional effects, layers, `Effect.gen`) | `thiserror` + `anyhow` (basic error handling) | No structured concurrency, no dependency injection, no `Context` service system | Manual DI via struct fields, no tracing/AOP |
 | **Drizzle ORM** | `drizzle-orm` + `drizzle-kit` (migrations, schema) | `sqlx` raw SQL | No migration framework, no type-safe query builder | Raw SQL + manual migrations |
@@ -212,7 +212,7 @@ Total unique direct dependencies: **52** (48 workspace-level + 4 crate-local)
 
 ### Moderate gaps
 
-| Category | OpenCode | RustCode | Gap |
+| Category | BlazeCode | BlazeCode | Gap |
 |---|---|---|---|
 | **Git operations** | `@octokit/rest`, `@octokit/graphql` | `git2` (not listed yet) | No Git library dep — must add `git2` |
 | **Package management** | `@npmcli/arborist`, `npm-package-arg` | Nothing | Plugin system needs npm interaction |
@@ -231,7 +231,7 @@ Total unique direct dependencies: **52** (48 workspace-level + 4 crate-local)
 
 ## 7. Dependency Tree Depth
 
-### RustCode
+### BlazeCode
 - **Total transitive packages in lock**: 395
 - **Direct dependencies**: 52
 - **Lock file size**: 3984 lines
@@ -250,13 +250,13 @@ Total unique direct dependencies: **52** (48 workspace-level + 4 crate-local)
 - WebAssembly: ~10 packages (wasm-bindgen, wasm-streams, etc.)
 - Tracing: ~12 packages
 
-### OpenCode Comparison
-OpenCode's JS/TS dependency tree is much larger per-package due to npm's flat-ish structure:
+### BlazeCode Comparison
+BlazeCode's JS/TS dependency tree is much larger per-package due to npm's flat-ish structure:
 - `packages/core`: ~200+ transitive deps (AI SDK, Effect, Drizzle, OpenTelemetry, etc.)
-- `packages/opencode`: ~300+ transitive deps (opencode packages, 20+ AI SDK packages, openauth, modelcontextprotocol, etc.)
+- `packages/blazecode`: ~300+ transitive deps (blazecode packages, 20+ AI SDK packages, openauth, modelcontextprotocol, etc.)
 - `packages/tui`: ~100+ transitives (SolidJS, OpenTUI, etc.)
 
-**RustCode has fewer transitive deps but each does more heavy lifting.**
+**BlazeCode has fewer transitive deps but each does more heavy lifting.**
 
 ---
 
@@ -279,7 +279,7 @@ MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0, Unicode-DFS-2016,
 
 ### Risks
 - **MPL-2.0** (`dashmap`): File-level copyleft. If we modify `dashmap` sources (unlikely), must release those changes. Low risk.
-- **OpenSSL license**: GPL-incompatible — but RustCode is MIT, not GPL. No conflict.
+- **OpenSSL license**: GPL-incompatible — but BlazeCode is MIT, not GPL. No conflict.
 - **Unicode-DFS-2016** / **Unicode-3.0**: Unicode data files. Safe.
 
 **Verdict**: No license conflicts. Allowlist is comprehensive and reasonable.
@@ -319,11 +319,11 @@ MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0, Unicode-DFS-2016,
 
 ---
 
-## 10. OpenCode Comparison — Dependency Strategy
+## 10. BlazeCode Comparison — Dependency Strategy
 
 ### Strategy divergence
 
-| Aspect | OpenCode | RustCode |
+| Aspect | BlazeCode | BlazeCode |
 |---|---|---|
 | **Package count** | ~200 direct dependencies across workspace | 52 direct dependencies |
 | **AI providers** | 20+ small `@ai-sdk/*` npm packages (each 100-500 LOC) | 0 — must implement providers as modules |
@@ -334,16 +334,16 @@ MIT, Apache-2.0, BSD-2-Clause, BSD-3-Clause, ISC, Unicode-3.0, Unicode-DFS-2016,
 | **Build system** | Turbo (multi-process, cached) | Cargo (multi-crate, cached) |
 | **Type safety** | TypeScript (structural types) | Rust (nominal types + borrow checker) |
 
-### OpenCode's approach: Many small packages
+### BlazeCode's approach: Many small packages
 **Pros**: Fine-grained versioning, tree-shakeable, easy to swap providers
 **Cons**: Churn in lock file, dependency confusion risk, npm supply chain surface
 
-### RustCode's approach: Fewer integrated crates
+### BlazeCode's approach: Fewer integrated crates
 **Pros**: Single-source provider impls, smaller supply chain, compile-time checks
 **Cons**: More code to write per provider, harder to add new providers
 
 ### Provider implementation gap
-RustCode must implement what OpenCode gets from `@ai-sdk/*`:
+BlazeCode must implement what BlazeCode gets from `@ai-sdk/*`:
 - 15+ provider protocol adapters (Anthropic Messages, OpenAI Chat/Responses, Google Gemini, Bedrock Converse, etc.)
 - Streaming SSE parsing, tool call streaming, content block delta handling
 - Each ~300-1000 lines of Rust
@@ -353,19 +353,19 @@ RustCode must implement what OpenCode gets from `@ai-sdk/*`:
 ## 11. Consolidated Recommendations
 
 ### Critical
-1. **Add provider protocol crates** — rustcode-core needs at minimum Anthropic Messages + OpenAI Chat/Responses protocol adapters. OpenCode has 20+; start with 3 most used.
-2. **Add `git2` crate** — required for OpenCode parity (git diff, status, worktree operations). Missing entirely.
+1. **Add provider protocol crates** — blazecode-core needs at minimum Anthropic Messages + OpenAI Chat/Responses protocol adapters. BlazeCode has 20+; start with 3 most used.
+2. **Add `git2` crate** — required for BlazeCode parity (git diff, status, worktree operations). Missing entirely.
 3. **Add runtime schema validation** — `schemars` generates schemas but doesn't validate. Add `jsonschema` or `valico` crate for LLM tool call validation.
 
 ### High
 4. **Strip `native-tls`/`openssl`** — sqlx pulls them in for MySQL/Postgres. Use `sqlx` with `no-default-features` + `runtime-tokio` + `sqlite` features only. Tree drops by ~20 packages.
-5. **Update `tree-sitter` to 0.25** — OpenCode uses `web-tree-sitter@0.25.10` and `tree-sitter-bash@0.25.0`. RustCode lags at 0.24/0.23.
+5. **Update `tree-sitter` to 0.25** — BlazeCode uses `web-tree-sitter@0.25.10` and `tree-sitter-bash@0.25.0`. BlazeCode lags at 0.24/0.23.
 6. **Update `clap` to latest 4.x patch** — minor but easy hygiene.
-7. **Add `zip` crate** — OpenCode uses `@zip.js/zip.js` for JAR/SARIF handling.
+7. **Add `zip` crate** — BlazeCode uses `@zip.js/zip.js` for JAR/SARIF handling.
 
 ### Medium
 8. **Add `fuzzysort` equivalent** — `fuzzy-matcher` or `skim` crate for command palette.
-9. **Add OpenTelemetry tracing** — `opentelemetry` + `opentelemetry-otlp` crates to match OpenCode's OTLP export.
+9. **Add OpenTelemetry tracing** — `opentelemetry` + `opentelemetry-otlp` crates to match BlazeCode's OTLP export.
 10. **Lock `tree-sitter-bash` at 0.25** — current 0.23 may have grammar regressions.
 11. **Update `ratatui` and `crossterm`** — 0.26 is several releases behind. Ratatui 0.28+ has breaking API changes but important fixes.
 12. **Vendor or system-dep `ring`** — slowest compile-time dep; consider `openssl` vendored or `aws-lc-rs`.
@@ -379,7 +379,7 @@ RustCode must implement what OpenCode gets from `@ai-sdk/*`:
 
 ## 12. Summary Statistics
 
-| Metric | RustCode | OpenCode |
+| Metric | BlazeCode | BlazeCode |
 |---|---|---|
 | Direct deps | 52 | ~200+ |
 | Transitive packages | 395 | ~2000+ |
@@ -400,7 +400,7 @@ RustCode must implement what OpenCode gets from `@ai-sdk/*`:
 
 ## 13. Key Findings Summary
 
-- **Biggest gap**: 0 AI provider SDKs vs 20+. RustCode needs custom protocol implementations for every LLM provider.
+- **Biggest gap**: 0 AI provider SDKs vs 20+. BlazeCode needs custom protocol implementations for every LLM provider.
 - **Biggest win**: Rust supply chain is ~1/5 the size of npm's. 395 crates vs 2000+ packages.
 - **Biggest risk**: `RUSTSEC-2024-0436` (paste) is ignored. Acceptable (proc-macro only).
 - **Biggest bloat**: `ring` (C crypto), `libsqlite3-sys` (C SQLite), `openssl-sys` (C OpenSSL) — 3 C compilation deps. Consider `aws-lc-rs` to replace `ring`.

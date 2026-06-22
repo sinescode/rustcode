@@ -1,8 +1,8 @@
-# Executive Summary: RustCode vs OpenCode — Full Audit Report
+# Executive Summary: BlazeCode vs BlazeCode — Full Audit Report
 
 **Prepared for:** CTO / VP Engineering  
 **Date:** 2026-06-21  
-**Audit Scope:** Complete codebase comparison of RustCode (Rust port) vs OpenCode (TypeScript source)  
+**Audit Scope:** Complete codebase comparison of BlazeCode (Rust port) vs BlazeCode (TypeScript source)  
 **Agents:** 20 domain-specific analysis agents across architecture, security, performance, reliability, scalability, API design, testing, infrastructure, dependencies, developer experience, maintainability, technical debt, feature gaps, competitive intelligence, production readiness, refactoring, and logic verification
 
 ---
@@ -30,7 +30,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 ## 1. Repository Overview
 
-| Metric | RustCode | OpenCode |
+| Metric | BlazeCode | BlazeCode |
 |--------|----------|----------|
 | **Primary Language** | Rust (edition 2021) | TypeScript (5.8) |
 | **Total Files** | 175 | 5,682 |
@@ -47,7 +47,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | **AI Providers** | 0 provider protocol adapters | 20+ `@ai-sdk/*` packages |
 | **Auth Libraries** | None (env-var based) | 3+ (OpenAuth, GitHub OAuth, etc.) |
 
-**RustCode commit pinned at:** OpenCode `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`
+**BlazeCode commit pinned at:** BlazeCode `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`
 
 ---
 
@@ -57,14 +57,14 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 | # | ID | Finding | Severity | Agent | Location | Summary | Impact |
 |---|----|---------|----------|-------|----------|---------|--------|
-| 1 | CRIT-API-1 | No SDK/client library for Rust consumers | Critical | API Agent | `rustcode-core/` | No `rustcode-client` crate exists. OpenCode publishes `@opencode-ai/sdk@1.17.8` with typed REST client, lifecycle helpers, and auto-generated types. Rust consumers must embed `rustcode-core` directly or write their own HTTP client. | Dev: Blocks adoption by Rust ecosystem |
+| 1 | CRIT-API-1 | No SDK/client library for Rust consumers | Critical | API Agent | `blazecode-core/` | No `blazecode-client` crate exists. BlazeCode publishes `@blazecode-ai/sdk@1.17.8` with typed REST client, lifecycle helpers, and auto-generated types. Rust consumers must embed `blazecode-core` directly or write their own HTTP client. | Dev: Blocks adoption by Rust ecosystem |
 | 2 | CRIT-API-2 | No versioning strategy, semver discipline, or deprecation policy | Critical | API Agent | All `Cargo.toml` (v0.1.0) | All 6 crates are at `0.1.0` with no changelog, no `#[deprecated]` annotations, no `cargo-semver-checks` in CI. Any change can be breaking. Downstream consumers cannot depend on any API surface safely. | Reliability: Unpredictable breaking changes |
-| 3 | CRIT-API-3 | Server route handlers are stubs — not production-ready | Critical | API Agent | `rustcode-server/src/routes/api.rs` | 25+ routes defined but handlers return placeholder data (e.g., `api_session_compact` returns `NO_CONTENT`, `api_session_prompt` is stub). No authentication middleware. Cannot serve as real backend. | Security/Reliability: Server cannot operate |
-| 4 | CRIT-ARCH-1 | Extreme coupling — 95 flat public modules with zero visibility discipline | Critical | Architecture Agent | `rustcode-core/src/lib.rs:11-95` | All 95 modules are `pub mod` — no `pub(crate)`, no re-export filtering. Every internal helper is world-visible. Refactoring requires understanding the full 95-module graph. | Dev: Impossible to reason about API boundaries |
-| 5 | CRIT-ARCH-2 | Infrastructure dependency in core — violates Clean Architecture | Critical | Architecture Agent | `rustcode-core/` | Core library imports `sqlx`, `reqwest`, `serde_json`, `tracing` — infrastructure concerns. `pub mod database` has SQLite schema and queries inline. Direct HTTP client construction in provider code. Cannot swap SQLite → PostgreSQL or reqwest → hyper without modifying core. | Architecture: Violates Dependency Inversion Principle |
+| 3 | CRIT-API-3 | Server route handlers are stubs — not production-ready | Critical | API Agent | `blazecode-server/src/routes/api.rs` | 25+ routes defined but handlers return placeholder data (e.g., `api_session_compact` returns `NO_CONTENT`, `api_session_prompt` is stub). No authentication middleware. Cannot serve as real backend. | Security/Reliability: Server cannot operate |
+| 4 | CRIT-ARCH-1 | Extreme coupling — 95 flat public modules with zero visibility discipline | Critical | Architecture Agent | `blazecode-core/src/lib.rs:11-95` | All 95 modules are `pub mod` — no `pub(crate)`, no re-export filtering. Every internal helper is world-visible. Refactoring requires understanding the full 95-module graph. | Dev: Impossible to reason about API boundaries |
+| 5 | CRIT-ARCH-2 | Infrastructure dependency in core — violates Clean Architecture | Critical | Architecture Agent | `blazecode-core/` | Core library imports `sqlx`, `reqwest`, `serde_json`, `tracing` — infrastructure concerns. `pub mod database` has SQLite schema and queries inline. Direct HTTP client construction in provider code. Cannot swap SQLite → PostgreSQL or reqwest → hyper without modifying core. | Architecture: Violates Dependency Inversion Principle |
 | 6 | CRIT-DB-1 | `commit_sync_event` missing atomicity — data corruption | Critical | Database Agent | `event_projector.rs:276-331` | `insert_event` and `upsert_event_sequence` run as separate non-transactional queries. If the first succeeds and the second fails, orphan events or duplicate sequence numbers corrupt event sourcing invariants. | Reliability: Data corruption |
-| 7 | CRIT-DB-2 | Projectors run inside database transactions | Critical | Database Agent | `event.rs:943-948` | Running projectors inside the DB transaction keeps it open for async operations (guards, projectors, commit hooks). If a projector fails, valid events are rolled back. OpenCode runs projectors in post-commit hooks. | Performance/Scalability: Long-held transactions block writers |
-| 8 | CRIT-SEC-1 | No encryption at rest — all credentials plaintext | Critical | Security Agent | `database.rs:514-525`, `mcp.rs:2263-2276`, `credential.rs:352-353` | Account access/refresh tokens, MCP OAuth tokens, credential values all stored as plaintext in SQLite. Anyone with filesystem access to `opencode.db` reads all API tokens. Encryption module (`encryption/hmac.rs`) declared but does not exist. | Security: Full credential exposure |
+| 7 | CRIT-DB-2 | Projectors run inside database transactions | Critical | Database Agent | `event.rs:943-948` | Running projectors inside the DB transaction keeps it open for async operations (guards, projectors, commit hooks). If a projector fails, valid events are rolled back. BlazeCode runs projectors in post-commit hooks. | Performance/Scalability: Long-held transactions block writers |
+| 8 | CRIT-SEC-1 | No encryption at rest — all credentials plaintext | Critical | Security Agent | `database.rs:514-525`, `mcp.rs:2263-2276`, `credential.rs:352-353` | Account access/refresh tokens, MCP OAuth tokens, credential values all stored as plaintext in SQLite. Anyone with filesystem access to `blazecode.db` reads all API tokens. Encryption module (`encryption/hmac.rs`) declared but does not exist. | Security: Full credential exposure |
 | 9 | CRIT-SEC-2 | Ignored RUSTSEC advisory without documented rationale | Critical | Security Agent | `deny.toml:3` | `RUSTSEC-2024-0436` is suppressed with no documented reasoning. An unpatched dependency vulnerability is deliberately ignored. | Security: Supply chain risk |
 | 10 | CRIT-LOGIC-1 | `clear_revert` writes literal string `"null"` instead of SQL NULL | Critical | Logic Verification Agent | `session.rs:1206-1215` | `update_session` passes `Some("null")` which writes the 4-character text `"null"` into the SQLite column instead of SQL `NULL`. `WHERE revert IS NULL` queries miss this row. | Reliability: Data corruption |
 | 11 | CRIT-LOGIC-2 | V1 `run_loop` bypasses all permission checks | Critical | Logic Verification Agent | `session_runner.rs:1086-1096` | V1 run loop sets `ask_fn: None` and `permission_source: None`, then calls `execute_by_name` which performs zero permission checks. LLM can call `bash`, `read`, `write`, `edit` without any allow/deny/ask check. | Security: Permission bypass |
@@ -79,15 +79,15 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | # | ID | Finding | Severity | Agent | Location |
 |---|----|---------|----------|-------|----------|
 | 17 | HIGH-ARCH-1 | 8,575-line `main.rs` monolith mixing CLI, business logic, and infrastructure | High | Architecture | `src/main.rs` |
-| 18 | HIGH-ARCH-2 | Missing V2 domain model (System Context algebra, EventV2, Location) | High | Architecture | `rustcode-core/src/` |
-| 19 | HIGH-ARCH-3 | No hexagonal architecture outside provider trait | High | Architecture | `rustcode-core/src/` |
-| 20 | HIGH-ARCH-4 | 4 of 5 wrapper crates are stubs | High | Architecture | `rustcode-{server,tui,lsp,mcp}/` |
-| 21 | HIGH-API-1 | No API firewall — all 95 modules `pub` | High | API Agent | `rustcode-core/src/lib.rs` |
+| 18 | HIGH-ARCH-2 | Missing V2 domain model (System Context algebra, EventV2, Location) | High | Architecture | `blazecode-core/src/` |
+| 19 | HIGH-ARCH-3 | No hexagonal architecture outside provider trait | High | Architecture | `blazecode-core/src/` |
+| 20 | HIGH-ARCH-4 | 4 of 5 wrapper crates are stubs | High | Architecture | `blazecode-{server,tui,lsp,mcp}/` |
+| 21 | HIGH-API-1 | No API firewall — all 95 modules `pub` | High | API Agent | `blazecode-core/src/lib.rs` |
 | 22 | HIGH-API-2 | Serde naming inconsistent — `snake_case` vs `camelCase` breaks JSON wire compatibility | High | API Agent | `config.rs`, `provider.rs` |
 | 23 | HIGH-API-3 | All IDs are `String` type aliases — no compile-time type safety | High | API Agent | `session.rs:83-90`, `provider.rs:24-48` |
-| 24 | HIGH-API-4 | No OpenAPI specification for server | High | API Agent | `rustcode-server/` |
+| 24 | HIGH-API-4 | No OpenAPI specification for server | High | API Agent | `blazecode-server/` |
 | 25 | HIGH-API-5 | Duplicate error hierarchies (`ApiError` vs `ServerError`) with no conversion path | High | API Agent | `error.rs:613-650`, `server/error.rs:19-243` |
-| 26 | HIGH-API-6 | LSP defines its own error enum, incompatible with core errors | High | API Agent | `rustcode-lsp/src/lib.rs:48-113` |
+| 26 | HIGH-API-6 | LSP defines its own error enum, incompatible with core errors | High | API Agent | `blazecode-lsp/src/lib.rs:48-113` |
 | 27 | HIGH-DB-1 | No compile-time schema validation — raw SQL strings unchecked | High | Database Agent | `database.rs` |
 | 28 | HIGH-DB-2 | N+1 query for messages + parts (1 + N queries instead of JOIN) | High | Database Agent | `database.rs:1728-1744` |
 | 29 | HIGH-DB-3 | No database backup mechanism — data loss on corruption | High | Database Agent | `storage.rs` |
@@ -118,10 +118,10 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | 49 | MED-API-1 | `Option<Option<T>>` pattern in SessionPatch confusing | Medium | API Agent | `session.rs:1496-1509` |
 | 50 | MED-API-2 | Tool trait dual-schema design (`json_schema` vs `parameters_schema`) | Medium | API Agent | `tool.rs:163-201` |
 | 51 | MED-API-3 | Fragmented plugin architecture (V1 + V2 + ProviderPlugin as separate traits) | Medium | API Agent | `plugin.rs:80-115,784-871,1231-1340` |
-| 52 | MED-API-4 | MCP transport ambiguity — dual transport API | Medium | API Agent | `mcp.rs:1003-1188`, `rustcode-mcp/src/lib.rs` |
+| 52 | MED-API-4 | MCP transport ambiguity — dual transport API | Medium | API Agent | `mcp.rs:1003-1188`, `blazecode-mcp/src/lib.rs` |
 | 53 | MED-API-5 | V2 config dead code — defined but never used | Medium | API Agent | `config.rs:299-350` |
 | 54 | MED-API-6 | `TaggedString` type exists but is broken — no const generic | Medium | API Agent | `schema.rs:304-306` |
-| 55 | MED-API-7 | LSP monolithic single file (~2000+ lines) | Medium | API Agent | `rustcode-lsp/src/lib.rs` |
+| 55 | MED-API-7 | LSP monolithic single file (~2000+ lines) | Medium | API Agent | `blazecode-lsp/src/lib.rs` |
 | 56 | MED-API-8 | V2 config dead code | Medium | API Agent | `config.rs:299-350` |
 | 57 | MED-DB-1 | Dynamic query building via string interpolation | Medium | Database Agent | `database.rs:1356-1421` |
 | 58 | MED-DB-2 | Missing fresh-install migration optimization (35 sequential migrations on fresh DB) | Medium | Database Agent | `storage.rs:621-1363` |
@@ -129,7 +129,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | 60 | MED-DB-4 | No `BEGIN IMMEDIATE` for write transactions — SQLITE_BUSY risk | Medium | Database Agent | `event.rs:899-986` |
 | 61 | MED-DB-5 | Projection state in-memory only — lost on restart | Medium | Database Agent | `event_projector.rs:66` |
 | 62 | MED-DB-6 | Missing composite indexes for common query patterns | Medium | Database Agent | `database.rs` |
-| 63 | MED-SEC-5 | `OPENCODE_SERVER_PASSWORD` read from env var at request time (TOCTOU) | Medium | Security Agent | `server/auth.rs:41-46` |
+| 63 | MED-SEC-5 | `BLAZECODE_SERVER_PASSWORD` read from env var at request time (TOCTOU) | Medium | Security Agent | `server/auth.rs:41-46` |
 | 64 | MED-SEC-6 | No JSON Schema validation before deserialization of config files | Medium | Security Agent | `config.rs:2505-2515` |
 | 65 | MED-SEC-7 | Wildcard deps allowed in `deny.toml` | Medium | Security Agent | `deny.toml:25` |
 | 66 | MED-SEC-8 | Plugin auto-installs npm/bun deps without package validation | Medium | Security Agent | `config.rs:1836-1886` |
@@ -152,10 +152,10 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 | # | ID | Finding | Severity | Agent | Location |
 |---|----|---------|----------|-------|----------|
-| 81 | LOW-API-1 | MCP re-exports create dual-surface confusion | Low | API Agent | `rustcode-mcp/src/lib.rs:44-48` |
+| 81 | LOW-API-1 | MCP re-exports create dual-surface confusion | Low | API Agent | `blazecode-mcp/src/lib.rs:44-48` |
 | 82 | LOW-API-2 | `v2_schema.rs` naming misleading (only datetime helpers) | Low | API Agent | `v2_schema.rs` |
 | 83 | LOW-API-3 | Route URL patterns correct but untested | Low | API Agent | `server/routes/api.rs` |
-| 84 | LOW-API-4 | MCP protocol version hardcoded in two places | Low | API Agent | `mcp.rs:1059-1068`, `rustcode-mcp/src/lib.rs:185-193` |
+| 84 | LOW-API-4 | MCP protocol version hardcoded in two places | Low | API Agent | `mcp.rs:1059-1068`, `blazecode-mcp/src/lib.rs:185-193` |
 | 85 | LOW-DB-1 | Path validation in JSON column helpers overly strict for some use cases | Low | Database Agent | `database.rs:889-1063` |
 | 86 | LOW-DB-2 | `RowRaw` → `Row` mapping boilerplate (~400 lines across 20 tables) | Low | Database Agent | `database.rs:3163-3300` |
 | 87 | LOW-DB-3 | Flock heartbeat jitter runs on async runtime — rare premature lock release | Low | Database Agent | `flock.rs:329-338` |
@@ -172,11 +172,11 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | 93 | INFO-ARCH-1 | Provider trait is coherent and minimal | Info | Architecture | `provider.rs:907-940` |
 | 94 | INFO-ARCH-2 | Error hierarchy is excellent (~50 variants, sub-enums, good docs) | Info | API Agent | `error.rs:1-1315` |
 | 95 | INFO-ARCH-3 | JSON Schema normalization is a near-perfect port | Info | API Agent | `tool.rs:868-1154` |
-| 96 | INFO-DB-1 | Full 35-migration parity with OpenCode | Info | Database | `database.rs` |
+| 96 | INFO-DB-1 | Full 35-migration parity with BlazeCode | Info | Database | `database.rs` |
 | 97 | INFO-DB-2 | All 17 indexes ported correctly | Info | Database | `database.rs:816-834` |
-| 98 | INFO-PERF-1 | RustCode has no GC pauses vs OpenCode's V8 GC | Info | Performance | Cross-cutting |
-| 99 | INFO-REL-1 | LSP client is the most complete module (35+ server definitions, diagnostics) | Info | API Agent | `rustcode-lsp/src/lib.rs` |
-| 100 | INFO-REL-2 | Release workflow is better automated than OpenCode (5 targets, GPG signing, checksums) | Info | DevEx Agent | `.github/workflows/release.yml` |
+| 98 | INFO-PERF-1 | BlazeCode has no GC pauses vs BlazeCode's V8 GC | Info | Performance | Cross-cutting |
+| 99 | INFO-REL-1 | LSP client is the most complete module (35+ server definitions, diagnostics) | Info | API Agent | `blazecode-lsp/src/lib.rs` |
+| 100 | INFO-REL-2 | Release workflow is better automated than BlazeCode (5 targets, GPG signing, checksums) | Info | DevEx Agent | `.github/workflows/release.yml` |
 
 ---
 
@@ -192,7 +192,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | 4 | JSON storage writes not fsynced — data loss on crash | High | Reliability Agent | `Storage::write()` uses `std::fs::write()` without `sync_all()`. OS may buffer writes; crash after `write()` returns but before data reaches disk loses the written data. |
 | 5 | Session revert cleanup non-transactional — partial deletion on crash | High | Reliability Agent | `session_revert.rs:244-250` performs individual `DELETE FROM session_message` queries without a transaction. Crash mid-cleanup leaves corrupted session with inconsistent ordering. |
 | 6 | No incremental session persistence — crash loses in-flight work | High | Reliability Agent | `run_loop` does not persist intermediate events or tool results. Only final `SessionRunResult` is returned. Crash during a 10-tool sequence loses all work. |
-| 7 | SQLite database path `mode=rwc` silently creates empty DB on wrong path | Medium | Database Agent | `sqlite:{path}?mode=rwc` implicitly creates database if it doesn't exist. Running with wrong `OPENCODE_DB` path creates a new empty database silently — all data "gone." |
+| 7 | SQLite database path `mode=rwc` silently creates empty DB on wrong path | Medium | Database Agent | `sqlite:{path}?mode=rwc` implicitly creates database if it doesn't exist. Running with wrong `BLAZECODE_DB` path creates a new empty database silently — all data "gone." |
 | 8 | In-memory projection state lost on restart — full replay from event store | Medium | Database Agent | `EventProjector` state is `RwLock<HashMap<String, ProjectionState>>` — in-memory only. Restart replays all events from the beginning of time. |
 
 ### Security Risks (10)
@@ -200,15 +200,15 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | # | Risk | Severity | Source | Details |
 |---|------|----------|--------|---------|
 | 9 | No encryption at rest — all credentials in plaintext SQLite | Critical | Security Agent | `account.access_token`, `account.refresh_token`, `credential.value`, `mcp-auth.json` OAuth tokens — all plaintext. The declared `encryption/hmac.rs` module does not exist. |
-| 10 | Ignored RUSTSEC-2024-0436 advisory with no documented rationale | High | Security Agent | A known vulnerability in a dependency is deliberately suppressed. No assessment of exploitability in RustCode's usage context. |
+| 10 | Ignored RUSTSEC-2024-0436 advisory with no documented rationale | High | Security Agent | A known vulnerability in a dependency is deliberately suppressed. No assessment of exploitability in BlazeCode's usage context. |
 | 11 | Permission bypass in V1 run loop — LLM calls tools unchecked | Critical | Logic Verification | V1 `run_loop` sets `permission_source: None` and calls `execute_by_name` which has zero permission enforcement. `execute_with_pipeline` (which has permission checks) is bypassed entirely. |
 | 12 | `{file:}` substitution in config reads arbitrary files | High | Security Agent | Config variable substitution reads any file path without restriction. Attacker who tricks user into loading a crafted config can exfiltrate `/etc/shadow`, SSH keys, etc. |
 | 13 | Permission check always passes `"*"` as resource — defeats pattern granularity | High | Logic Verification | `execute_with_pipeline` calls `ctx.ask(name, "*")` — hardcoded wildcard. Users cannot configure permissions like `"read": "/etc/*"` because the resource-level check matches everything. |
 | 14 | MCP local server spawns arbitrary commands with user privileges | High | Security Agent | `McpClient::connect()` spawns subprocesses from config. An attacker who modifies config executes arbitrary code with user's full privileges. No sandbox, no containerization. |
-| 15 | `OPENCODE_SERVER_PASSWORD` read from env at request time (TOCTOU) | Medium | Security Agent | Auth config re-read from environment on every request, not at startup. Environment could change between reads. Also visible in `/proc/self/environ` and process listings. |
+| 15 | `BLAZECODE_SERVER_PASSWORD` read from env at request time (TOCTOU) | Medium | Security Agent | Auth config re-read from environment on every request, not at startup. Environment could change between reads. Also visible in `/proc/self/environ` and process listings. |
 | 16 | Plugin auto-installs npm/bun deps without integrity verification | Medium | Security Agent | Plugins specified by npm package name execute `npm install` or `bun add` from config-specified directories. No package integrity verification, no lockfile enforcement. |
 | 17 | Supply chain: `wildcards = "allow"` in deny.toml permits imprecise version specs | Medium | Security Agent | Lenient dependency specifications could allow semver-malicious updates. No git dependency origin verification. |
-| 18 | No CSRF protection on server state-changing endpoints | Medium | Production Readiness | Server endpoints lack CSRF tokens. Any website can make authenticated requests to a running local RustCode server via browser. |
+| 18 | No CSRF protection on server state-changing endpoints | Medium | Production Readiness | Server endpoints lack CSRF tokens. Any website can make authenticated requests to a running local BlazeCode server via browser. |
 
 ### Performance Risks (8)
 
@@ -230,8 +230,8 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | 27 | Monolithic core crate with 95 flat public modules | Critical | Architecture Agent | All modules `pub`, no `pub(crate)`, no sub-module grouping. Cannot split into separate crates without massive refactoring. Build times degrade as core grows. |
 | 28 | Infrastructure dependency in core — violates Clean Architecture | Critical | Architecture Agent | Core imports `sqlx`, `reqwest`, `std::fs`, `axum` directly. Cannot swap SQLite for PostgreSQL, reqwest for hyper, or local fs for cloud storage without editing core logic. |
 | 29 | 8,575-line `main.rs` monolith | Critical | Architecture Agent | Business logic, CLI dispatch, database initialization, provider resolution, and SSE handling all in one file. Cannot test CLI logic without running the binary. |
-| 30 | Only 6 crates vs OpenCode's 26 packages | Critical | Architecture Agent | 4 of 6 wrapper crates are stubs. No infrastructure crates (database, HTTP, filesystem, event-store). All concerns dump into core. |
-| 31 | Missing V2 domain model (System Context, EventV2, Location) | High | Architecture Agent | OpenCode's V2 architecture has algebraic system context, event sourcing, and location-scoped services. RustCode's `system_context` is a stub. 129 rules from CONTEXT.md not ported. |
+| 30 | Only 6 crates vs BlazeCode's 26 packages | Critical | Architecture Agent | 4 of 6 wrapper crates are stubs. No infrastructure crates (database, HTTP, filesystem, event-store). All concerns dump into core. |
+| 31 | Missing V2 domain model (System Context, EventV2, Location) | High | Architecture Agent | BlazeCode's V2 architecture has algebraic system context, event sourcing, and location-scoped services. BlazeCode's `system_context` is a stub. 129 rules from CONTEXT.md not ported. |
 | 32 | No hexagonal architecture outside provider trait | High | Architecture Agent | Only LLM providers use port/adapter pattern. Database, filesystem, HTTP client are not trait-abstracted. Testing requires real infrastructure. |
 | 33 | Dual event bus (SharedBus + EventV2) with no interoperability | High | Scalability Agent | CRUD events on `SharedBus` (in-memory, lost on crash) vs `EventV2` (database-backed, survives restart) are separate systems. No single event pipeline. |
 | 34 | SQLite single-writer bottleneck — cannot scale beyond ~1K writes/sec | Critical | Scalability Agent | SQLite is inherently single-writer. All session mutations serialize. At ~100 concurrent sessions, SQLITE_BUSY errors dominate. WAL helps reads but all writes serialize. |
@@ -243,11 +243,11 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | # | Risk | Severity | Source | Details |
 |---|------|----------|--------|---------|
 | 37 | No LLM provider implementations — core feature is non-functional | Critical | Feature Gap | Provider trait defined but Anthropic, OpenAI, Gemini, Bedrock, etc. not implemented. The agent cannot call any LLM. CLI `run` commands and all session activity fail. |
-| 38 | 3.5 person-years to reach feature parity | High | Feature Gap | Estimated 906 person-days to complete all 86 core modules + 21 OpenCode-only features. Cost estimate: $1,087,200. |
+| 38 | 3.5 person-years to reach feature parity | High | Feature Gap | Estimated 906 person-days to complete all 86 core modules + 21 BlazeCode-only features. Cost estimate: $1,087,200. |
 | 39 | ~20% functional parity — all business logic is stubs | High | Feature Gap | 86 modules exist as type skeletons. Actual business logic (session runner, tool execution provider protocols) is ~5% complete. Users cannot run a single session. |
-| 40 | No community — <10 GitHub stars vs OpenCode's 20K+ | High | Competitive Intelligence | No Discord, no release cadence, no crates.io presence. Without community adoption, RustCode cannot sustain development or attract contributors. |
-| 41 | Porting alone is a losing strategy — OpenCode moves faster | High | Competitive Intelligence | RustCode is pinned to commit `5d0f866`. OpenCode has 21 features beyond that commit. By the time RustCode reaches parity, OpenCode will have moved further. RustCode must innovate, not just port. |
-| 42 | No CI containers — 15-25 min CI round-trip per change | High | DevEx Agent | No pre-baked CI Docker images. Each CI run installs Rust toolchain from scratch. Developer feedback loop is 15-25 minutes vs OpenCode's 5-10 minutes. |
+| 40 | No community — <10 GitHub stars vs BlazeCode's 20K+ | High | Competitive Intelligence | No Discord, no release cadence, no crates.io presence. Without community adoption, BlazeCode cannot sustain development or attract contributors. |
+| 41 | Porting alone is a losing strategy — BlazeCode moves faster | High | Competitive Intelligence | BlazeCode is pinned to commit `5d0f866`. BlazeCode has 21 features beyond that commit. By the time BlazeCode reaches parity, BlazeCode will have moved further. BlazeCode must innovate, not just port. |
+| 42 | No CI containers — 15-25 min CI round-trip per change | High | DevEx Agent | No pre-baked CI Docker images. Each CI run installs Rust toolchain from scratch. Developer feedback loop is 15-25 minutes vs BlazeCode's 5-10 minutes. |
 | 43 | No README, no CONTRIBUTING.md — zero human-facing documentation | Critical | DevEx Agent | Only `CLAUDE.md` exists (targeting AI agents). New users have no entry point. Potential contributors have no documented workflow. |
 
 ### Technical Debt Risks (7)
@@ -277,7 +277,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | 5 | Replace 19-param `update_session` with typed struct | 0.5 days | High | — | Create `SessionUpdate` struct. Eliminates argument-ordering bugs and 140+ `None` values across 10 call sites. |
 | 6 | Add `rust-toolchain.toml` | 0.25 days | High | — | Pin toolchain version for reproducible builds. Eliminates version mismatch CI failures. |
 | 7 | Write README.md | 0.5 days | Critical | — | 50-line getting-started guide. New users currently have zero entry point. |
-| 8 | Write CONTRIBUTING.md | 1 day | High | — | Port key sections from OpenCode's 299-line version. Document PR workflow, coding standards, CI pipeline. |
+| 8 | Write CONTRIBUTING.md | 1 day | High | — | Port key sections from BlazeCode's 299-line version. Document PR workflow, coding standards, CI pipeline. |
 | 9 | Allow `cargo check` locally | 0.1 days | Critical | — | Modify CLAUDE.md Rule #1 to permit `cargo check --workspace`. Current policy prohibits ALL local compilation. |
 | 10 | Add pre-commit hooks for fmt + clippy | 0.5 days | High | — | Use `lefthook` or `cargo-husky`. Prevents pushing unformatted or lint-failing code. |
 | 11 | Add `.vscode/settings.json` for rust-analyzer | 0.25 days | Medium | — | Configure rust-analyzer workspace features. Currently zero IDE configuration. |
@@ -287,14 +287,14 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 | # | Opportunity | Effort | Impact | Rust Advantage | Description |
 |---|------------|--------|--------|----------------|-------------|
-| 13 | Create `rustcode-client` SDK crate | 2 weeks | Critical | — | Typed async HTTP client for the REST API. `reqwest`-based, mirrors `@opencode-ai/sdk`. Currently Rust has NO programmatic client API. |
-| 14 | Implement Anthropic + OpenAI provider protocol adapters | 3 weeks | Critical | — | Two providers cover ~80% of users. `reqwest` + SSE streaming. Each ~300-500 LOC. Without providers, RustCode is non-functional. |
+| 13 | Create `blazecode-client` SDK crate | 2 weeks | Critical | — | Typed async HTTP client for the REST API. `reqwest`-based, mirrors `@blazecode-ai/sdk`. Currently Rust has NO programmatic client API. |
+| 14 | Implement Anthropic + OpenAI provider protocol adapters | 3 weeks | Critical | — | Two providers cover ~80% of users. `reqwest` + SSE streaming. Each ~300-500 LOC. Without providers, BlazeCode is non-functional. |
 | 15 | Add `Arc<Vec<ChatMessage>>` in `ToolContext` | 0.5 days | High | Rust ownership | Eliminates the single largest clone cost — 2.5MB saved per 25-tool session. Zero-copy shared references. |
 | 16 | Extract `ok_or_500()` server error helper | 0.5 days | High | — | Eliminates 200 lines of boilerplate across 25 handlers. Fixes silent serialization failures. |
 | 17 | Add newtype wrappers for all ID types | 1 week | High | Rust type system | `SessionId(String)`, `MessageId(String)`, `ModelId(String)` — compiler prevents passing wrong ID types at compile time. |
 | 18 | Implement module visibility discipline (`pub(crate)`) | 1 week | Critical | Rust module system | Audit 95 modules; mark 65 as `pub(crate)`. Define clean `lib.rs` re-export surface. Improves Architecture Score from 25 to ~40. |
 | 19 | Split monolithic modules into directory-based sub-modules | 2 weeks | High | — | `session.rs` → `session/mod.rs`, `manager.rs`, `message.rs`, `part.rs`, `compaction.rs`, etc. Same for `event.rs`, `provider.rs`, `config.rs`. |
-| 20 | Extract `Database` trait + SQLite adapter | 2 weeks | Critical | Zero-cost abstraction | `#[async_trait] Database` in core. `SqliteDatabase` in `rustcode-database-sqlite`. Enables testing with in-memory mock. First step to hexagonal architecture. |
+| 20 | Extract `Database` trait + SQLite adapter | 2 weeks | Critical | Zero-cost abstraction | `#[async_trait] Database` in core. `SqliteDatabase` in `blazecode-database-sqlite`. Enables testing with in-memory mock. First step to hexagonal architecture. |
 | 21 | Extract `HttpClient` trait + reqwest adapter | 1 week | High | — | Enables testing with `wiremock`. Consistent timeout/retry across providers. Default 120s timeout prevents indefinite hangs. |
 | 22 | Add provider retry with exponential backoff | 1 week | Critical | — | Wire existing `is_retryable()` into `run_turn_attempt`. Exponential backoff with jitter for retryable errors (rate limits, 503s). |
 | 23 | Add signal handling for graceful shutdown | 3 days | Critical | — | `tokio::signal::ctrl_c()` + `tokio::signal::unix::Signal` for SIGTERM. Cancel in-flight, persist state, close connections. |
@@ -307,10 +307,10 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | # | Opportunity | Effort | Impact | Rust Advantage | Description |
 |---|------------|--------|--------|----------------|-------------|
 | 27 | Implement proc-macro `#[tool]` and `#[provider]` | 3 weeks | High | **Unique** | Zero-boilerplate tool/plugin definitions. Impossible in TypeScript. `#[tool(description = "Search files")] fn grep(...)` — genuine Rust moat. |
-| 28 | Split `rustcode-core` into 5-8 granular crates | 6 weeks | Critical | — | `rustcode-core-types`, `rustcode-provider`, `rustcode-session`, `rustcode-tool`, `rustcode-config`, `rustcode-permission`, etc. Build times improve, bounded contexts emerge. |
-| 29 | Extract business logic from `main.rs` into `rustcode-cli` library crate | 2 weeks | High | — | Reduce `main.rs` from 8,575 to ~30 lines. CLI logic becomes testable. Alternative front-ends reuse dispatch. |
+| 28 | Split `blazecode-core` into 5-8 granular crates | 6 weeks | Critical | — | `blazecode-core-types`, `blazecode-provider`, `blazecode-session`, `blazecode-tool`, `blazecode-config`, `blazecode-permission`, etc. Build times improve, bounded contexts emerge. |
+| 29 | Extract business logic from `main.rs` into `blazecode-cli` library crate | 2 weeks | High | — | Reduce `main.rs` from 8,575 to ~30 lines. CLI logic becomes testable. Alternative front-ends reuse dispatch. |
 | 30 | Implement Effect-like structured concurrency (ScopedFiberSet) | 3 weeks | High | — | Automatic fiber cancellation on scope exit. No fiber leaks. Deterministic shutdown. `cancel_and_join()`. |
-| 31 | Implement WASM-based plugin sandbox | 6 weeks | High | **Unique** | Plugins run in isolated WASM sandbox via `wasmtime`. Language-agnostic (Rust, C, Go, etc.). Genuine security moat vs OpenCode's Node.js plugins. |
+| 31 | Implement WASM-based plugin sandbox | 6 weeks | High | **Unique** | Plugins run in isolated WASM sandbox via `wasmtime`. Language-agnostic (Rust, C, Go, etc.). Genuine security moat vs BlazeCode's Node.js plugins. |
 | 32 | Implement local AI inference via `llama.cpp` | 4 weeks | High | **Unique** | Offline-first, private, cost-free AI coding via `llama-cpp-rs` or `candle`. Privacy: code never leaves machine. |
 | 33 | Implement session crash recovery via EventV2 replay | 4 weeks | High | — | Wire `EventV2::replay` into `SessionRunner::run_v2()`. Resume crashed sessions from last persisted epoch. Persist tool results as events. |
 | 34 | Unify event bus — route all events through EventV2 | 3 weeks | High | — | Remove `SharedBus` or make it a thin wrapper over EventV2. All events get persistence guarantees. Single event pipeline. |
@@ -335,7 +335,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 | # | Opportunity | Effort | Impact | Rust Advantage | Description |
 |---|------------|--------|--------|----------------|-------------|
-| 46 | Ship "Rust-native AI terminal" — not a port of OpenCode | Ongoing | Transformative | **Unique** | Terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience. Product OpenCode cannot build due to its TypeScript/Electron/cloud-native foundation. |
+| 46 | Ship "Rust-native AI terminal" — not a port of OpenCode | Ongoing | Transformative | **Unique** | Terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience. Product BlazeCode cannot build due to its TypeScript/Electron/cloud-native foundation. |
 | 47 | Implement CRDT-based offline-first sync | 3 months | High | — | Local-first via SQLite + optional CRDT sync via `automerge-rs` or `yrs`. Sessions work offline, merge on reconnect. |
 | 48 | Implement distributed session orchestration | 6 months | Medium | Rust networking | Multi-machine session coordination via `tokio` + `tonic` (gRPC). Event-sourced architecture makes this natural. |
 | 49 | Multi-tenant architecture (auth, orgs, billing) | 4 months | High | — | Implement `account` and `workspace` CRUD. Auth middleware with JWT. Permission isolation per workspace. Stripe integration. |
@@ -347,7 +347,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 ### Architecture Scores
 
-| Dimension | RustCode | OpenCode | Gap |
+| Dimension | BlazeCode | BlazeCode | Gap |
 |-----------|----------|----------|-----|
 | **Overall Architecture** | **45/100** | **85/100** | High |
 | **Security** | **75/100** | **80/100** | Low |
@@ -373,7 +373,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 | Category | Person-Days | Cost |
 |----------|-------------|------|
 | Core modules (86 modules) | 623 | $747,600 |
-| OpenCode-only features (21) | 283 | $339,600 |
+| BlazeCode-only features (21) | 283 | $339,600 |
 | **Total** | **906** | **$1,087,200** |
 | **Person-years** | **3.5** | |
 
@@ -401,7 +401,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 ### Performance Budget (Estimated)
 
-| Operation | OpenCode | RustCode (current) | Target |
+| Operation | BlazeCode | BlazeCode (current) | Target |
 |-----------|----------|-------------------|--------|
 | Session load (50 msgs) | ~1ms | ~3-8ms | <2ms |
 | Grep small repo (100 files) | ~50ms (ripgrep) | ~200-500ms | <100ms |
@@ -414,7 +414,7 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 ### Test Coverage
 
-| Metric | RustCode | OpenCode |
+| Metric | BlazeCode | BlazeCode |
 |--------|----------|----------|
 | Total test functions | 2,386 | 532 test files |
 | Test attributes | 3,023 | — |
@@ -429,21 +429,21 @@ The scores and metrics in this report have been updated to reflect the post-clos
 
 ## 6. Verdict
 
-**RustCode is a structurally complete but functionally non-viable scaffold.** All 86 core modules exist with full type definitions and trait interfaces mirroring OpenCode, but the actual business logic — session runner, LLM provider protocols, tool execution, server handlers — is less than 20% implemented. The codebase cannot run a single AI session.
+**BlazeCode is a structurally complete but functionally non-viable scaffold.** All 86 core modules exist with full type definitions and trait interfaces mirroring BlazeCode, but the actual business logic — session runner, LLM provider protocols, tool execution, server handlers — is less than 20% implemented. The codebase cannot run a single AI session.
 
-**The architecture carries foundational debt that will compound.** The monolithic `rustcode-core` with 95 flat public modules, direct infrastructure coupling (sqlx, reqwest, std::fs) in domain code, no visibility discipline, and a 8,575-line `main.rs` violates every principle of Clean/Hexagonal Architecture. The Architecture Score of 45/100 reflects that the crate boundary structure is correct but the internal organization is not salvageable through incremental fixes — it requires deliberate, phased refactoring.
+**The architecture carries foundational debt that will compound.** The monolithic `blazecode-core` with 95 flat public modules, direct infrastructure coupling (sqlx, reqwest, std::fs) in domain code, no visibility discipline, and a 8,575-line `main.rs` violates every principle of Clean/Hexagonal Architecture. The Architecture Score of 45/100 reflects that the crate boundary structure is correct but the internal organization is not salvageable through incremental fixes — it requires deliberate, phased refactoring.
 
 **Four critical bugs threaten data integrity and security** — the `clear_revert` SQL NULL corruption, V1 permission bypass, non-atomic event commits, and the TOCTOU race in lane state management. Any of these shipped to users would cause data loss or security breaches.
 
-**The path to success requires innovation, not just porting.** Porting is a losing strategy — OpenCode has 21 features beyond the pinned commit, a 20K+ user community, and a SaaS infrastructure that RustCode cannot replicate. RustCode's genuine moats are:
+**The path to success requires innovation, not just porting.** Porting is a losing strategy — BlazeCode has 21 features beyond the pinned commit, a 20K+ user community, and a SaaS infrastructure that BlazeCode cannot replicate. BlazeCode's genuine moats are:
 1. **Single binary distribution** — zero-dependency deployment, ideal for CI/CD and enterprise
 2. **Proc macros** — compile-time code generation for zero-boilerplate tool/plugin definitions
 3. **WASM plugin sandbox** — security isolation impossible in TypeScript
 4. **Local AI inference** — offline-first, private, cost-free via llama.cpp
 5. **Compile-time safety** — memory safety, type safety, ownership guarantees
 
-**The winning product is the "Rust-native AI terminal"** — not a slower clone of OpenCode. A terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience that OpenCode cannot build because of its TypeScript/Electron/cloud-native foundation.
+**The winning product is the "Rust-native AI terminal"** — not a slower clone of BlazeCode. A terminal-native, offline-first, sandboxed-plugin, local-AI-powered developer experience that BlazeCode cannot build because of its TypeScript/Electron/cloud-native foundation.
 
 **Recommendation:** Fix the 4 critical bugs immediately (1 week). Implement Anthropic + OpenAI providers for basic functionality (3 weeks). Ship a minimal viable CLI that can run one end-to-end session. Then pivot from parity porting to Rust-native innovation: proc-macro tool definitions, WASM plugin sandbox, and local AI inference. This is a 6-month, 2-3 engineer effort to initial viability, followed by a 12-month path to superiority.
 
-**RustCode will not succeed by being "Rust OpenCode." It will succeed by being what OpenCode cannot be.**
+**BlazeCode will not succeed by being "Rust BlazeCode." It will succeed by being what BlazeCode cannot be.**

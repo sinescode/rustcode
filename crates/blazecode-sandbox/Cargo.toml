@@ -1,0 +1,30 @@
+[package]
+name = "blazecode-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Single security gate for all process execution — Landlock, seccomp, policy enforcement"
+
+[package.metadata.docs.rs]
+all-features = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "sync", "time"] }
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+chrono.workspace = true
+glob.workspace = true
+tempfile.workspace = true
+uuid = { workspace = true }
+regex.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Landlock support — direct syscall wrappers (no libc dependency)
+# seccomp via nix or direct prctl/seccomp syscalls
+
+[dev-dependencies]
+tempfile.workspace = true

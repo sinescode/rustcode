@@ -1,15 +1,15 @@
-# RustCode Technical Debt Inventory
+# BlazeCode Technical Debt Inventory
 
 **Agent:** Agent 19 — Technical Debt Agent  
 **Date:** 2026-06-21  
 **Scope:** Whole workspace (~134K lines, 5 crates + binary)  
-**Upstream:** OpenCode (TypeScript) pinned at `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`
+**Upstream:** BlazeCode (TypeScript) pinned at `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`
 
 ---
 
 ## Executive Summary
 
-RustCode is a medium-to-large Rust port (134K lines) in **scaffold/early-production phase**. Most modules have full type definitions and trait interfaces, but significant portions of the business logic are **stubs, panicking, or silently swallowing errors**. The codebase carries an estimated **580–720 person-hours** of technical debt (~$87,000–$108,000 at $150/hr), representing roughly **15–20% of the codebase value** (estimated 3,500–4,500 hours to build the current state).
+BlazeCode is a medium-to-large Rust port (134K lines) in **scaffold/early-production phase**. Most modules have full type definitions and trait interfaces, but significant portions of the business logic are **stubs, panicking, or silently swallowing errors**. The codebase carries an estimated **580–720 person-hours** of technical debt (~$87,000–$108,000 at $150/hr), representing roughly **15–20% of the codebase value** (estimated 3,500–4,500 hours to build the current state).
 
 **Top 3 critical risks:**
 1. **~300+ `panic!()` calls in test and production code** — any production panic crashes the agent mid-session
@@ -63,7 +63,7 @@ RustCode is a medium-to-large Rust port (134K lines) in **scaffold/early-product
 | Field | Value |
 |-------|-------|
 | **Type** | Workaround / Quality |
-| **Location** | Every production module in `rustcode-core/src/` (500+ `.unwrap()` + `.expect()` calls in non-test code) |
+| **Location** | Every production module in `blazecode-core/src/` (500+ `.unwrap()` + `.expect()` calls in non-test code) |
 | **Description** | CLAUDE.md rule #3: "No `.unwrap()` in library code — use `?`, `.ok_or()`, `.unwrap_or()`, or `expect()` with a reason string." Every `.unwrap()` in non-test production code violates this. Production violations include `tool_impls.rs:248` (regex unwrap), `event.rs` (JSON unwrap in replay), `config.rs` (lock poisoned panics), `filesystem.rs` (I/O unwraps), `session.rs` (ID generation unwrap), `mcp.rs` (JSON unwraps). |
 | **Impact** | Any `unwrap()` on `None`/`Err` crashes the process. Users lose work mid-session. |
 | **Interest** | High — each new `.unwrap()` added makes the codebase more brittle. |
@@ -96,7 +96,7 @@ RustCode is a medium-to-large Rust port (134K lines) in **scaffold/early-product
 | **Location** | `provider.rs:906` (trait defined), no `impl Provider for ...` outside of stubs |
 | **Description** | The `Provider` trait is fully defined with `stream()`, `complete()`, `list_models()`, `get_model()` methods, but no real provider implementations exist. The TS source has full Anthropic, OpenAI, Gemini, Bedrock, Azure, OpenRouter, DeepSeek, Groq, etc. implementations (55 LLM files). |
 | **Impact** | The agent cannot call any LLM. CLI `run` commands and HTTP prompt endpoints fail. |
-| **Interest** | High — without providers, RustCode is a non-functional shell. |
+| **Interest** | High — without providers, BlazeCode is a non-functional shell. |
 | **Estimated Fix Cost** | 80–120 person-hours (implement reqwest-based streaming for each provider, SSE parsing, error handling) |
 | **Estimated Cost of Carrying** | $5,000/month (zero product value without LLM) |
 | **Priority** | **High** |
@@ -355,7 +355,7 @@ RustCode is a medium-to-large Rust port (134K lines) in **scaffold/early-product
 ### INFO-4: Codebase is 134K lines with 60 public modules
 | Location | Workspace root |
 |----------|---------------|
-| **Observation** | RustCode is a faithful port of a 355+313+55+146 = 869 file TypeScript monorepo. The Rust version consolidates this into ~60 modules across 5 crates. The ~4:1 LOC ratio (TS:Rust) is reasonable. Many modules are "type scaffold complete but logic pending." |
+| **Observation** | BlazeCode is a faithful Rust port of a 355+313+55+146 = 869 file TypeScript monorepo. The Rust version consolidates this into ~60 modules across 5 crates. The ~4:1 LOC ratio (TS:Rust) is reasonable. Many modules are "type scaffold complete but logic pending." |
 
 ### INFO-5: CI cannot run locally
 | Location | `CLAUDE.md` rule #1 |

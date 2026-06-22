@@ -1,12 +1,12 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/rustcode-core", "crates/rustcode-server", "crates/rustcode-tui", "crates/rustcode-lsp", "crates/rustcode-mcp", "crates/rustcode-derive", "crates/opencode-sandbox", "crates/opencode-session-core", "crates/opencode-event", "crates/opencode-storage", "crates/opencode-provider"]
+members = [".", "crates/blazecode-core", "crates/blazecode-server", "crates/blazecode-tui", "crates/blazecode-lsp", "crates/blazecode-mcp", "crates/blazecode-derive", "crates/blazecode-sandbox", "crates/blazecode-session-core", "crates/blazecode-event", "crates/blazecode-storage", "crates/blazecode-provider"]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "https://github.com/sinescode/rustcode"
+repository = "https://github.com/sinescode/blazecode"
 description = "AI-powered development tool — Rust port of OpenCode"
 
 [workspace.dependencies]
@@ -58,27 +58,27 @@ notify = { version = "6", default-features = false, features = [] }
 tree-sitter = "0.24"
 tree-sitter-bash = "0.23"
 once_cell = "1"
-rustcode-core = { path = "crates/rustcode-core" }
-rustcode-server = { path = "crates/rustcode-server" }
-rustcode-tui = { path = "crates/rustcode-tui" }
-rustcode-lsp = { path = "crates/rustcode-lsp" }
-rustcode-mcp = { path = "crates/rustcode-mcp" }
+blazecode-core = { path = "crates/blazecode-core" }
+blazecode-server = { path = "crates/blazecode-server" }
+blazecode-tui = { path = "crates/blazecode-tui" }
+blazecode-lsp = { path = "crates/blazecode-lsp" }
+blazecode-mcp = { path = "crates/blazecode-mcp" }
 
 [package]
-name = "rustcode"
+name = "blazecode"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 description.workspace = true
-default-run = "rustcode"
+default-run = "blazecode"
 
 [[bin]]
-name = "rustcode"
+name = "blazecode"
 path = "src/main.rs"
 
 [dependencies]
-rustcode-core.workspace = true
-rustcode-server.workspace = true
+blazecode-core.workspace = true
+blazecode-server.workspace = true
 tokio.workspace = true
 clap.workspace = true
 tracing.workspace = true
@@ -95,7 +95,7 @@ sqlx.workspace = true
 dialoguer.workspace = true
 indicatif.workspace = true
 clap_complete = "4"
-rustcode-tui.workspace = true
+blazecode-tui.workspace = true
 
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports", "async_futures"] }

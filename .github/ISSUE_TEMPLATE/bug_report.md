@@ -1,6 +1,6 @@
 ---
 name: Bug Report
-about: Report a bug in RustCode
+about: Report a bug in BlazeCode
 title: ''
 labels: bug
 assignees: ''
@@ -29,7 +29,7 @@ assignees: ''
 
 - OS: 
 - Rust version: 
-- RustCode version: 
+- BlazeCode version: 
 
 ## Additional Context
 

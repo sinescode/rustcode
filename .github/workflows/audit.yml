@@ -1,4 +1,4 @@
-# Security audit workflow for RustCode
+# Security audit workflow for BlazeCode
 # Runs cargo-audit to check for known vulnerabilities in dependencies
 # Runs on schedule (weekly) and on dependency file changes
 

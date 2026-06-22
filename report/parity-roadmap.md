@@ -1,4 +1,4 @@
-# RustCode ↔ OpenCode Parity Roadmap
+# BlazeCode ↔ BlazeCode Parity Roadmap
 
 **Date:** 2026-06-21
 **Source Data:** Feature Gap Report (agent 08), Architecture Report (agent 02), Database Report (agent 07)
@@ -9,19 +9,19 @@
 
 | Metric | Value | Notes |
 |--------|-------|-------|
-| Structural parity | ~100% | All 86 modules exist as `.rs` files in `rustcode-core/src/` |
+| Structural parity | ~100% | All 86 modules exist as `.rs` files in `blazecode-core/src/` |
 | Functional parity | ~20% | Most modules are type skeletons + traits; business logic is stubbed |
-| Feature parity | ~15% | 21 OpenCode-only features have zero RustCode equivalent |
+| Feature parity | ~15% | 21 BlazeCode-only features have zero BlazeCode equivalent |
 | Working features | ~5% | Config scaffold, error types, basic ID generation, partial Anthropic provider |
-| Total RustCode LOC | 140,884 | 115,477 in core + 25,407 in supplementary crates (server, tui, lsp, mcp) |
-| Total OpenCode LOC | 101,847 | Core + opencode packages at pinned commit `5d0f866` |
+| Total BlazeCode LOC | 140,884 | 115,477 in core + 25,407 in supplementary crates (server, tui, lsp, mcp) |
+| Total BlazeCode LOC | 101,847 | Core + blazecode packages at pinned commit `5d0f866` |
 
 ### Key Findings
 
 1. **Structural parity is deceptive** — all module files exist but most are hollow. The `tool_impls.rs` (7,235 LOC) has function signatures for all tools but only stub implementations.
-2. **The session system is the critical gap** — OpenCode's V2 Session architecture (~4,000 LOC of Effect-native state machine logic) is barely scaffolded.
+2. **The session system is the critical gap** — BlazeCode's V2 Session architecture (~4,000 LOC of Effect-native state machine logic) is barely scaffolded.
 3. **Provider ecosystem is 1/30+** — only Anthropic is substantially implemented; 25+ provider protocol adapters are missing.
-4. **RustCode is ahead in supplementary crates** — 25,407 LOC in server, TUI, LSP, MCP show real investment (especially `rustcode-tui` at 8,190 LOC).
+4. **BlazeCode is ahead in supplementary crates** — 25,407 LOC in server, TUI, LSP, MCP show real investment (especially `blazecode-tui` at 8,190 LOC).
 5. **Estimated 3.5 person-years** to reach full parity.
 
 ---
@@ -30,7 +30,7 @@
 
 ### 2.1 Core Modules (86 modules)
 
-| # | Module | Status | RustCode Eq. | Complete % | Effort | Priority |
+| # | Module | Status | BlazeCode Eq. | Complete % | Effort | Priority |
 |---|--------|--------|-------------|------------|--------|----------|
 | 1 | **account** | PARTIAL | `account.rs` | 30% | Medium | P3 |
 | 2 | **agent** | PARTIAL | `agent.rs` | 40% | Medium | P1 |
@@ -119,24 +119,24 @@
 | 85 | **workspace** | PARTIAL | `workspace.rs` | 30% | Medium | P2 |
 | 86 | **worktree** | PARTIAL | `worktree.rs` | 30% | Medium | P3 |
 
-### 2.2 OpenCode-Only Features (21 features, zero RustCode equivalent)
+### 2.2 BlazeCode-Only Features (21 features, zero BlazeCode equivalent)
 
-| # | Feature | OpenCode LOC | RustCode Equivalent | Priority | Effort | Strategy |
+| # | Feature | BlazeCode LOC | BlazeCode Equivalent | Priority | Effort | Strategy |
 |---|---------|-------------|-------------------|----------|--------|----------|
 | 1 | Console (Cloud Platform) | ~15,000 | None | P2 | Very Large (50 pd) | Build — new Rust web backend |
 | 2 | Web App | ~10,000 | None | P2 | Large (25 pd) | Build — Yew/Leptos frontend |
 | 3 | Desktop App | ~5,000 | None | P3 | Large (25 pd) | Build — Tauri with embedded CLI |
 | 4 | VS Code Extension | ~5,000 | None | P1 | Large (25 pd) | Build — TypeScript wrapping CLI |
-| 5 | TUI (Terminal UI) | ~5,000 | `rustcode-tui` (8,190 LOC) | P2 | Medium (10 pd) | Port — extend existing ratatui TUI |
+| 5 | TUI (Terminal UI) | ~5,000 | `blazecode-tui` (8,190 LOC) | P2 | Medium (10 pd) | Port — extend existing ratatui TUI |
 | 6 | V2 Session Architecture | ~4,000 | `session*.rs` (scaffold) | P1 | Large (15 pd) | Port — translate Effect-native to tokio |
-| 7 | Slack Integration | ~3,000 | None | P4 | Medium (10 pd) | Build — add to rustcode-server |
+| 7 | Slack Integration | ~3,000 | None | P4 | Medium (10 pd) | Build — add to blazecode-server |
 | 8 | Stats/Telemetry | ~3,000 | `observability.rs` (stub) | P3 | Medium (10 pd) | Build — Prometheus/OTLP pipeline |
 | 9 | Storybook UI Library | ~3,000 | None | P4 | 0 | **Skip** — not applicable to Rust |
 | 10 | Documentation Site | ~5,000 | None | P3 | Medium (10 pd) | Build — rustdoc + mdBook site |
 | 11 | GitHub Copilot Integration | ~2,000 | `providers/github_copilot.rs` (stub) | P1 | Medium (10 pd) | Port — complete provider impl |
 | 12 | Enterprise (Teams/SSO) | ~2,000 | None | P3 | Large (15 pd) | Build — PostgreSQL + multi-tenant |
-| 13 | ACP (Agent Client Protocol) | ~2,000 | None | P2 | Medium (10 pd) | Port — translate from OpenCode |
-| 14 | Plugin SDK | ~2,000 | None | P2 | Medium (10 pd) | Build — publish rustcode-sdk crate |
+| 13 | ACP (Agent Client Protocol) | ~2,000 | None | P2 | Medium (10 pd) | Port — translate from BlazeCode |
+| 14 | Plugin SDK | ~2,000 | None | P2 | Medium (10 pd) | Build — publish blazecode-sdk crate |
 | 15 | EventV2 (Durable Events) | ~2,000 | `event.rs` (stub) | P1 | Large (15 pd) | Port — SQL-persisted event streams |
 | 16 | LLM Package | ~2,000 | `providers/` (partial) | P1 | Medium (10 pd) | Port — complete 25+ providers |
 | 17 | HTTP Recorder | ~1,000 | None | P4 | Small (3 pd) | Build — testing utility crate |
@@ -154,13 +154,13 @@
 - **Strategy:** Build
 - **Effort:** 10 person-weeks
 - **Priority:** P2
-- **Description:** OpenCode's cloud console provides billing, auth, team management, and workspace management via a web UI.
+- **Description:** BlazeCode's cloud console provides billing, auth, team management, and workspace management via a web UI.
 - **Plan:**
   1. Phase 1: Design API schema (2 wks)
-  2. Phase 2: Implement auth/team/workspace CRUD in rustcode-server (4 wks)
+  2. Phase 2: Implement auth/team/workspace CRUD in blazecode-server (4 wks)
   3. Phase 3: Build minimal web admin UI (2 wks) — defer full console
   4. Phase 4: Add billing integration via Stripe (2 wks)
-- **Decision rationale:** Cloud platform is a differentiator but not needed for local-first RustCode MVP. Build minimal viable console after core parity is achieved.
+- **Decision rationale:** Cloud platform is a differentiator but not needed for local-first BlazeCode MVP. Build minimal viable console after core parity is achieved.
 
 ### 3.2 Enterprise (Teams/SSO)
 - **Status:** Missing
@@ -169,7 +169,7 @@
 - **Priority:** P3
 - **Description:** Team deployment, SSO (SAML/OIDC), organization management, role-based access.
 - **Plan:**
-  1. Add PostgreSQL support alongside SQLite to rustcode-core/database (1 wk)
+  1. Add PostgreSQL support alongside SQLite to blazecode-core/database (1 wk)
   2. Implement multi-tenant organization model (1 wk)
   3. Add SSO provider integration (OIDC, SAML) (1 wk)
 - **Decision rationale:** Required for enterprise adoption. Build after core single-user parity is done.
@@ -181,7 +181,7 @@
 - **Priority:** P3
 - **Description:** Electron or Tauri desktop application for non-CLI usage.
 - **Plan:**
-  1. Create Tauri v2 project wrapping rustcode CLI (2 wks)
+  1. Create Tauri v2 project wrapping blazecode CLI (2 wks)
   2. Build settings UI and session viewer (2 wks)
   3. Package for macOS/Windows/Linux (1 wk)
 - **Decision rationale:** Tauri is superior to Electron for Rust projects. Bundle CLI as subprocess. Defer until core parity and web app are done.
@@ -191,9 +191,9 @@
 - **Strategy:** Build
 - **Effort:** 2 person-weeks
 - **Priority:** P4
-- **Description:** Slack bot for interacting with RustCode via Slack messages.
+- **Description:** Slack bot for interacting with BlazeCode via Slack messages.
 - **Plan:**
-  1. Add Slack API client to rustcode-server (1 wk)
+  1. Add Slack API client to blazecode-server (1 wk)
   2. Implement message handler → session pipeline (0.5 wk)
   3. Add Slack event subscription and OAuth (0.5 wk)
 - **Decision rationale:** Low priority, narrow use case. Build if Slack becomes primary distribution channel.
@@ -203,7 +203,7 @@
 - **Strategy:** Build
 - **Effort:** 5 person-weeks
 - **Priority:** P1
-- **Description:** VS Code extension wrapping RustCode CLI for in-editor agent interaction.
+- **Description:** VS Code extension wrapping BlazeCode CLI for in-editor agent interaction.
 - **Plan:**
   1. Scaffold TypeScript extension with `yo code` (0.5 wk)
   2. Implement CLI subprocess launcher (1 wk)
@@ -217,12 +217,12 @@
 - **Strategy:** Build
 - **Effort:** 5 person-weeks
 - **Priority:** P2
-- **Description:** Full web application for browser-based RustCode usage.
+- **Description:** Full web application for browser-based BlazeCode usage.
 - **Plan:**
   1. Choose framework: Yew vs Leptos vs SolidJS + WASM (1 wk evaluation)
   2. Build session UI: chat interface, tool output viewer, file tree (2 wks)
   3. Add settings, project management, history views (1 wk)
-  4. Deploy via rustcode-server with WebSocket transport (1 wk)
+  4. Deploy via blazecode-server with WebSocket transport (1 wk)
 - **Decision rationale:** Opens browser-based usage. Build after VS Code extension is stable.
 
 ### 3.7 Storybook
@@ -240,7 +240,7 @@
 - **Priority:** P1
 - **Description:** GitHub Copilot provider implementing chat and responses API.
 - **Plan:**
-  1. Port OpenCode's GitHub Copilot auth flow (token exchange, device flow) (0.5 wk)
+  1. Port BlazeCode's GitHub Copilot auth flow (token exchange, device flow) (0.5 wk)
   2. Implement Copilot chat completions API adapter (1 wk)
   3. Add Copilot responses API support (0.5 wk)
 - **Decision rationale:** Critical provider — many users expect Copilot integration. Build in Phase 1.
@@ -252,8 +252,8 @@
 - **Priority:** P2
 - **Description:** Agent Client Protocol for standardized agent-to-agent communication.
 - **Plan:**
-  1. Port OpenCode's ACP type definitions and message schemas (0.5 wk)
-  2. Implement ACP server in rustcode-server (1 wk)
+  1. Port BlazeCode's ACP type definitions and message schemas (0.5 wk)
+  2. Implement ACP server in blazecode-server (1 wk)
   3. Implement ACP client for agent orchestration (0.5 wk)
 - **Decision rationale:** Enables multi-agent workflows and third-party agent integration.
 
@@ -262,11 +262,11 @@
 - **Strategy:** Build
 - **Effort:** 2 person-weeks
 - **Priority:** P2
-- **Description:** Published SDK crate for developing RustCode plugins (provider plugins, tool plugins, skill plugins).
+- **Description:** Published SDK crate for developing BlazeCode plugins (provider plugins, tool plugins, skill plugins).
 - **Plan:**
   1. Define plugin trait API and ABI boundary (1 wk)
   2. Build plugin discovery and loading system (0.5 wk)
-  3. Publish `rustcode-sdk` to crates.io with examples (0.5 wk)
+  3. Publish `blazecode-sdk` to crates.io with examples (0.5 wk)
 - **Decision rationale:** Enables ecosystem growth. Build plugin system first, then publish SDK.
 
 ### 3.11 HTTP Recorder
@@ -276,7 +276,7 @@
 - **Priority:** P4
 - **Description:** HTTP request recording utility for testing provider integrations.
 - **Plan:**
-  1. Build `rustcode-http-recorder` crate with `reqwest` middleware (0.3 wk)
+  1. Build `blazecode-http-recorder` crate with `reqwest` middleware (0.3 wk)
   2. Add replay mode for deterministic testing (0.2 wk)
 - **Decision rationale:** Testing utility — build when provider integration tests become painful.
 
@@ -287,7 +287,7 @@
 - **Priority:** P2
 - **Description:** Cross-platform file system abstraction layer (File-File-File pattern).
 - **Plan:**
-  1. Port OpenCode's FFF trait definitions from `core/filesystem/fff.*.ts` (0.3 wk)
+  1. Port BlazeCode's FFF trait definitions from `core/filesystem/fff.*.ts` (0.3 wk)
   2. Implement platform-specific backends (Unix, Windows) (0.2 wk)
 - **Decision rationale:** Needed for cross-platform file operations. Integrate into existing filesystem module.
 
@@ -297,7 +297,7 @@
 - **Effort:** 0
 - **Priority:** P4
 - **Description:** Effect-native Drizzle ORM SQLite adapter.
-- **Decision rationale:** Not applicable to Rust. RustCode uses `sqlx` directly with raw SQL/migrations. Effect pattern is replaced by `async fn` + `thiserror`.
+- **Decision rationale:** Not applicable to Rust. BlazeCode uses `sqlx` directly with raw SQL/migrations. Effect pattern is replaced by `async fn` + `thiserror`.
 
 ### 3.14 Security Scanning
 - **Status:** Missing
@@ -321,7 +321,7 @@
   1. Implement OTLP metrics exporter in observability module (1 wk)
   2. Add structured logging pipeline with `tracing` (0.5 wk)
   3. Build opt-in telemetry with privacy controls (0.5 wk)
-- **Decision rationale:** Useful for understanding usage patterns. Build when rustcode-server is deployed.
+- **Decision rationale:** Useful for understanding usage patterns. Build when blazecode-server is deployed.
 
 ### 3.16 Documentation Site
 - **Status:** Missing
@@ -352,7 +352,7 @@
 - **Strategy:** Build
 - **Effort:** 0.5 person-weeks
 - **Priority:** P3
-- **Description:** Semver policy for rustcode-core public API, CLI interface, server API.
+- **Description:** Semver policy for blazecode-core public API, CLI interface, server API.
 - **Plan:**
   1. Define public API surface and semver policy document (0.3 wk)
   2. Add API compatibility tests and breaking change detection (0.2 wk)
@@ -363,7 +363,7 @@
 - **Strategy:** Build
 - **Effort:** Ongoing (covered by individual platform efforts above)
 - **Priority:** P2
-- **Description:** RustCode available on web, desktop, and IDE platforms.
+- **Description:** BlazeCode available on web, desktop, and IDE platforms.
 - **Decision rationale:** This is a meta-feature encompassing items 3.3, 3.5, 3.6. Not a separate implementation item.
 
 ### 3.20 Cloud Deployment
@@ -371,9 +371,9 @@
 - **Strategy:** Build
 - **Effort:** 2 person-weeks
 - **Priority:** P4
-- **Description:** One-click cloud deployment for rustcode-server (AWS/GCP/Azure).
+- **Description:** One-click cloud deployment for blazecode-server (AWS/GCP/Azure).
 - **Plan:**
-  1. Create Docker image for rustcode-server with SQLite/PostgreSQL (0.5 wk)
+  1. Create Docker image for blazecode-server with SQLite/PostgreSQL (0.5 wk)
   2. Write Pulumi/Terraform deployment scripts (1 wk)
   3. Add Fly.io/DigitalOcean app spec (0.5 wk)
 - **Decision rationale:** Post-v1 feature. Defer until Console (3.1) is built.
@@ -383,7 +383,7 @@
 - **Strategy:** Build
 - **Effort:** 0.5 person-weeks
 - **Priority:** P3
-- **Description:** Nix flake for reproducible RustCode builds and shell environments.
+- **Description:** Nix flake for reproducible BlazeCode builds and shell environments.
 - **Plan:**
   1. Create `flake.nix` with `naersk` or `crane` build (0.3 wk)
   2. Add dev shell with all dependencies, CI integration (0.2 wk)
@@ -402,7 +402,7 @@
 | Large (2-4 weeks) | 23 | 15 pd | 345 |
 | **Total** | **86** | — | **623 pd** |
 
-### 4.2 OpenCode-Only Features (21 features)
+### 4.2 BlazeCode-Only Features (21 features)
 
 | Effort Category | Count | Per Feature | Total Person-Days |
 |----------------|-------|-------------|-------------------|
@@ -418,12 +418,12 @@
 | Category | Person-Days | Person-Months | Person-Years |
 |----------|-------------|--------------|--------------|
 | Core modules (86) | 623 | 29 | 2.4 |
-| OpenCode-only features (19) | 283 | 13 | 1.1 |
+| BlazeCode-only features (19) | 283 | 13 | 1.1 |
 | **Total (105 work items)** | **906** | **42** | **3.5** |
 
 ### 4.4 Cost Estimate
 
-| Rate | Core Modules | OpenCode Features | Total |
+| Rate | Core Modules | BlazeCode Features | Total |
 |------|-------------|-------------------|-------|
 | $150/hr, 8hr/day | $747,600 | $339,600 | **$1,087,200** |
 | $200/hr, 8hr/day | $996,800 | $452,800 | **$1,449,600** |
@@ -434,19 +434,19 @@
 
 | Feature | Decision | Rationale |
 |---------|----------|-----------|
-| Console | **Build** — minimal viable version | Cloud platform is core to OpenCode value prop; no off-the-shelf alternative |
+| Console | **Build** — minimal viable version | Cloud platform is core to BlazeCode value prop; no off-the-shelf alternative |
 | Enterprise (SSO) | **Build** on top of existing crates | `axum-session`, `oauth2`, `openidconnect` crates available |
 | Desktop App | **Build** with Tauri | Tauri is Rust-native; no Electron dependency needed |
 | Slack Integration | **Build** minimal | Existing Rust Slack API crates (`slack-api`, `slack-morphism`) |
 | VS Code Extension | **Build** from scratch | VS Code extensions are TypeScript; no Rust alternative |
 | Web App | **Build** with Yew or Leptos | WASM frameworks are Rust-native; SolidJS would add JS toolchain dependency |
 | Storybook | **Skip** | JS/React tool; not applicable to Rust UI components |
-| GitHub Copilot | **Port** from OpenCode | Provider protocol translation; logic is already designed |
-| ACP | **Port** from OpenCode | Protocol translation; design is stable |
-| Plugin SDK | **Build** | Publish `rustcode-sdk` crate; no existing Rust alternative |
-| EventV2 | **Port** from OpenCode | Core architectural pattern; must be faithful to original design |
+| GitHub Copilot | **Port** from BlazeCode | Provider protocol translation; logic is already designed |
+| ACP | **Port** from BlazeCode | Protocol translation; design is stable |
+| Plugin SDK | **Build** | Publish `blazecode-sdk` crate; no existing Rust alternative |
+| EventV2 | **Port** from BlazeCode | Core architectural pattern; must be faithful to original design |
 | HTTP Recorder | **Build** | Small testing utility; no existing crate does exactly this |
-| FFF Abstraction | **Port** from OpenCode | Small filesystem layer; logic is straightforward |
+| FFF Abstraction | **Port** from BlazeCode | Small filesystem layer; logic is straightforward |
 | Effect Drizzle | **Skip** | Not applicable — Rust uses `sqlx` + raw SQL |
 | Security Scanning | **Integrate** | `cargo-audit` + `cargo-deny` are mature, existing Rust ecosystem tools |
 | Stats/Telemetry | **Build** with `tracing` + `opentelemetry` | Excellent Rust telemetry ecosystem; integrate existing crates |
@@ -472,7 +472,7 @@
 - `runtime.rs` (implement scoped tasks, cancellation, interruption)
 
 **Dependencies:** None (bottom of dependency tree)
-**Deliverable:** RustCode compiles with `#![forbid(unsafe_code)]` and zero warnings
+**Deliverable:** BlazeCode compiles with `#![forbid(unsafe_code)]` and zero warnings
 
 ### Phase 1: Core Session MVP (Weeks 3-6)
 **Team: 4 engineers | Effort: 80 person-days**
@@ -487,7 +487,7 @@
 - `model.rs` (request builder, parameter validation)
 
 **Dependencies:** Phase 0
-**Deliverable:** RustCode can run a basic agent session: load config → prompt LLM → execute tools → persist events
+**Deliverable:** BlazeCode can run a basic agent session: load config → prompt LLM → execute tools → persist events
 
 ### Phase 2: Session Runner & Providers (Weeks 7-14)
 **Team: 4 engineers | Effort: 160 person-days**
@@ -531,13 +531,13 @@
 - `integration.rs` (connection CRUD, OAuth flow, webhook handling)
 - `repository.rs` (caching, clone logic, remote operations)
 - `credential.rs` (encryption-at-rest, SQL credential CRUD)
-- `rustcode-server` (HTTP/SSE API, session management, auth middleware)
+- `blazecode-server` (HTTP/SSE API, session management, auth middleware)
 - `observability.rs` (OTLP exporter, span lifecycle, metric collection)
 - **Security Scanning** (CI integration with cargo-audit, cargo-deny, gitleaks)
 - **API Versioning** (semver policy, compatibility tests)
 
 **Dependencies:** Phase 3
-**Deliverable:** RustCode server with auth, observability, and production infrastructure
+**Deliverable:** BlazeCode server with auth, observability, and production infrastructure
 
 ### Phase 5: Web App & TUI Polish (Weeks 31-38)
 **Team: 4 engineers | Effort: 160 person-days**
@@ -545,12 +545,12 @@
 **Features:**
 - **Web App** (Yew/Leptos frontend with session UI, settings, history)
 - **TUI** (complete ratatui interface with session viewer, settings, file browser)
-- `rustcode-tui` (finalize: chat panel, tool output, diff viewer, session list)
+- `blazecode-tui` (finalize: chat panel, tool output, diff viewer, session list)
 - **GitHub Copilot Integration** (complete provider with auth + chat/responses API)
 - **ACP** (Agent Client Protocol server and client)
 
 **Dependencies:** Phase 4
-**Deliverable:** RustCode accessible via web browser and polished TUI
+**Deliverable:** BlazeCode accessible via web browser and polished TUI
 
 ### Phase 6: Desktop, Enterprise & Cloud (Weeks 39-50)
 **Team: 5 engineers | Effort: 300 person-days**
@@ -559,14 +559,14 @@
 - **Desktop App** (Tauri bundle with embedded CLI, settings UI, session viewer)
 - **Enterprise** (PostgreSQL support, multi-tenant, SSO/SAML/OIDC)
 - **Console** (minimal web admin: billing, teams, workspace management)
-- **Plugin SDK** (publish `rustcode-sdk` to crates.io)
+- **Plugin SDK** (publish `blazecode-sdk` to crates.io)
 - **Nix Package** (flake.nix with dev shell and build)
 - **Cloud Deployment** (Docker image, Pulumi/Terraform scripts)
 - **Documentation Site** (rustdoc + mdBook with guides and examples)
 - `database.rs` (PostgreSQL driver alongside SQLite)
 
 **Dependencies:** Phase 5
-**Deliverable:** Enterprise-ready RustCode with desktop app and cloud deployment
+**Deliverable:** Enterprise-ready BlazeCode with desktop app and cloud deployment
 
 ### Phase 7: Platform Expansion & Polish (Weeks 51-70)
 **Team: 3 engineers | Effort: 300 person-days**
@@ -581,7 +581,7 @@
 - Performance optimization, fuzz testing, security audit
 
 **Dependencies:** Phase 6
-**Deliverable:** Feature parity with OpenCode across all dimensions
+**Deliverable:** Feature parity with BlazeCode across all dimensions
 
 ---
 

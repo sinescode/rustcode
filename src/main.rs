@@ -2,19 +2,19 @@
 #![warn(clippy::all)]
 #![allow(dead_code, unused_imports, unused_variables)]
 
-//! rustcode — AI-powered development tool.
+//! blazecode — AI-powered development tool.
 //!
 //! A Rust port of the OpenCode TypeScript/Bun AI coding agent.
 //!
 //! # TS Source references
-//! - Main entry: `packages/opencode/src/index.ts`
-//! - CLI commands: `packages/opencode/src/cli/cmd/*.ts`
-//! - Network options: `packages/opencode/src/cli/network.ts`
-//! - Effect cmd wrapper: `packages/opencode/src/cli/effect-cmd.ts`
-//! - OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
+//! - Main entry: `packages/blazecode/src/index.ts`
+//! - CLI commands: `packages/blazecode/src/cli/cmd/*.ts`
+//! - Network options: `packages/blazecode/src/cli/network.ts`
+//! - Effect cmd wrapper: `packages/blazecode/src/cli/effect-cmd.ts`
+//! - BlazeCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
 use clap::{Parser, Subcommand};
-use rustcode_core::config::Config;
+use blazecode_core::config::Config;
 use std::collections::HashMap;
 use std::io::{IsTerminal, Write as _};
 use std::path::{Path, PathBuf};
@@ -26,36 +26,36 @@ use cli_error::CliErrorFormatter;
 // ── Top-level CLI ───────────────────────────────────────────────────────────
 /// AI-powered development tool — Rust port of OpenCode.
 ///
-/// Ported from: `packages/opencode/src/index.ts` — yargs-based CLI
+/// Ported from: `packages/blazecode/src/index.ts` — yargs-based CLI
 #[derive(Parser)]
 #[command(
-    name = "rustcode",
+    name = "blazecode",
     version = env!("CARGO_PKG_VERSION"),
     about = "AI-powered development tool — Rust port of OpenCode",
     long_about = None,
-    // TS: `.scriptName("opencode").wrap(100)`
+    // TS: `.scriptName("blazecode").wrap(100)`
     max_term_width = 100
 )]
 #[command(arg_required_else_help = true)]
 struct Cli {
     /// Print logs to stderr.
     ///
-    /// Ported from: `packages/opencode/src/index.ts` — `--print-logs` boolean.
-    /// Sets OPENCODE_PRINT_LOGS=1.
+    /// Ported from: `packages/blazecode/src/index.ts` — `--print-logs` boolean.
+    /// Sets BLAZECODE_PRINT_LOGS=1.
     #[arg(long, global = true)]
     print_logs: bool,
 
     /// Log level.
     ///
-    /// Ported from: `packages/opencode/src/index.ts` — `--log-level` choices.
-    /// Sets OPENCODE_LOG_LEVEL.
+    /// Ported from: `packages/blazecode/src/index.ts` — `--log-level` choices.
+    /// Sets BLAZECODE_LOG_LEVEL.
     #[arg(long, global = true, value_name = "LEVEL", default_value = "info")]
     log_level: LogLevel,
 
     /// Run without external plugins.
     ///
-    /// Ported from: `packages/opencode/src/index.ts` — `--pure` boolean.
-    /// Sets OPENCODE_PURE=1.
+    /// Ported from: `packages/blazecode/src/index.ts` — `--pure` boolean.
+    /// Sets BLAZECODE_PURE=1.
     #[arg(long, global = true)]
     pure: bool,
 
@@ -65,7 +65,7 @@ struct Cli {
 
 /// Log level enum matching TS choices.
 ///
-/// Ported from: `packages/opencode/src/index.ts` —
+/// Ported from: `packages/blazecode/src/index.ts` —
 /// `.option("log-level", { choices: ["DEBUG", "INFO", "WARN", "ERROR"] })`
 #[derive(Clone, clap::ValueEnum)]
 enum LogLevel {
@@ -89,46 +89,46 @@ impl std::fmt::Display for LogLevel {
 // ── Subcommands ─────────────────────────────────────────────────────────────
 /// All subcommands matching the TS CLI.
 ///
-/// Ported from: `packages/opencode/src/index.ts` — 23 `.command(...)` registrations
+/// Ported from: `packages/blazecode/src/index.ts` — 23 `.command(...)` registrations
 #[derive(Subcommand)]
 enum Commands {
     /// Start ACP (Agent Client Protocol) server.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/acp.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/acp.ts`
     Acp(AcpArgs),
 
     /// Manage MCP (Model Context Protocol) servers.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/mcp.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/mcp.ts`
     Mcp {
         #[command(subcommand)]
         cmd: McpCommand,
     },
 
-    /// Start OpenCode TUI (terminal user interface).
+    /// Start BlazeCode TUI (terminal user interface).
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/tui.ts` — `$0 [project]`
+    /// Ported from: `packages/blazecode/src/cli/cmd/tui.ts` — `$0 [project]`
     Tui(TuiArgs),
 
-    /// Attach to a running OpenCode server.
+    /// Attach to a running BlazeCode server.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/attach.ts` — `attach <url>`
+    /// Ported from: `packages/blazecode/src/cli/cmd/attach.ts` — `attach <url>`
     Attach(AttachArgs),
 
-    /// Run OpenCode with a message (default command).
+    /// Run BlazeCode with a message (default command).
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/run.ts` — `run [message..]`
+    /// Ported from: `packages/blazecode/src/cli/cmd/run.ts` — `run [message..]`
     #[command(name = "run")]
     Run(RunArgs),
 
     /// Generate OpenAPI code samples for the SDK.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/generate.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/generate.ts`
     Generate,
 
     /// Debugging and troubleshooting tools.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/index.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/index.ts`
     Debug {
         #[command(subcommand)]
         cmd: DebugCommand,
@@ -136,7 +136,7 @@ enum Commands {
 
     /// Console account management (login, logout, switch, orgs, open).
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/account.ts` — `console`
+    /// Ported from: `packages/blazecode/src/cli/cmd/account.ts` — `console`
     #[command(name = "console")]
     Console {
         #[command(subcommand)]
@@ -145,7 +145,7 @@ enum Commands {
 
     /// Manage AI providers and credentials.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/providers.ts` — aliases: `auth`
+    /// Ported from: `packages/blazecode/src/cli/cmd/providers.ts` — aliases: `auth`
     #[command(visible_alias = "auth")]
     Providers {
         #[command(subcommand)]
@@ -154,69 +154,69 @@ enum Commands {
 
     /// Manage agents.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/agent.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/agent.ts`
     #[command(name = "agent")]
     Agent {
         #[command(subcommand)]
         cmd: AgentCommand,
     },
 
-    /// Upgrade OpenCode to the latest or a specific version.
+    /// Upgrade BlazeCode to the latest or a specific version.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/upgrade.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/upgrade.ts`
     Upgrade(UpgradeArgs),
 
-    /// Uninstall OpenCode and remove all related files.
+    /// Uninstall BlazeCode and remove all related files.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/uninstall.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/uninstall.ts`
     Uninstall(UninstallArgs),
 
-    /// Start a headless OpenCode server.
+    /// Start a headless BlazeCode server.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/serve.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/serve.ts`
     Serve(NetworkArgs),
 
-    /// Start OpenCode server and open web interface.
+    /// Start BlazeCode server and open web interface.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/web.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/web.ts`
     Web(NetworkArgs),
 
     /// List all available models.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/models.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/models.ts`
     Models(ModelsArgs),
 
     /// Show token usage and cost statistics.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/stats.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/stats.ts`
     Stats(StatsArgs),
 
     /// Export session data as JSON.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/export.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/export.ts`
     Export(ExportArgs),
 
     /// Import session data from JSON file or URL.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/import.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/import.ts`
     Import(ImportArgs),
 
     /// Manage GitHub agent.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/github.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/github.ts`
     Github {
         #[command(subcommand)]
         cmd: GithubCommand,
     },
 
-    /// Fetch and checkout a GitHub PR branch, then run OpenCode.
+    /// Fetch and checkout a GitHub PR branch, then run BlazeCode.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/pr.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/pr.ts`
     Pr(PrArgs),
 
     /// Manage sessions.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/session.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/session.ts`
     Session {
         #[command(subcommand)]
         cmd: SessionCommand,
@@ -224,25 +224,25 @@ enum Commands {
 
     /// Install plugin and update config.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/plug.ts` — aliases: `plug`
+    /// Ported from: `packages/blazecode/src/cli/cmd/plug.ts` — aliases: `plug`
     #[command(visible_alias = "plug")]
     Plugin(PluginArgs),
 
     /// Database tools.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/db.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/db.ts`
     Db(DbArgs),
 
     /// Show version information.
     ///
-    /// Ported from: `packages/opencode/src/index.ts` —
+    /// Ported from: `packages/blazecode/src/index.ts` —
     /// `.version("version", "show version number", InstallationVersion)`
     #[command(name = "version")]
     Version,
 
     /// Generate shell completion scripts.
     ///
-    /// Ported from: `packages/opencode/src/index.ts` — completion subcommand
+    /// Ported from: `packages/blazecode/src/index.ts` — completion subcommand
     /// (not in TS, but a common CLI convention).
     #[command(name = "completion")]
     Completion(CompletionArgs),
@@ -261,7 +261,7 @@ struct CompletionArgs {
 // ── Shared network/flags ────────────────────────────────────────────────────
 /// Network/server options shared across serve, web, acp, and tui.
 ///
-/// Ported from: `packages/opencode/src/cli/network.ts`
+/// Ported from: `packages/blazecode/src/cli/network.ts`
 #[derive(clap::Args)]
 struct NetworkArgs {
     /// Port to listen on (0 = random).
@@ -284,8 +284,8 @@ struct NetworkArgs {
 
     /// Custom domain name for mDNS service.
     ///
-    /// Ported from: `network.ts` — `mdns-domain` default "opencode.local"
-    #[arg(long, default_value = "opencode.local")]
+    /// Ported from: `network.ts` — `mdns-domain` default "blazecode.local"
+    #[arg(long, default_value = "blazecode.local")]
     mdns_domain: String,
 
     /// Additional domains to allow for CORS.
@@ -298,7 +298,7 @@ struct NetworkArgs {
 // ── run command ─────────────────────────────────────────────────────────────
 /// Arguments for the `run` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/run.ts` — `run [message..]`
+/// Ported from: `packages/blazecode/src/cli/cmd/run.ts` — `run [message..]`
 #[derive(clap::Args)]
 struct RunArgs {
     /// Message to send.
@@ -369,19 +369,19 @@ struct RunArgs {
     #[arg(long)]
     title: Option<String>,
 
-    /// Attach to a running OpenCode server (e.g., http://localhost:4096).
+    /// Attach to a running BlazeCode server (e.g., http://localhost:4096).
     ///
     /// Ported from: `run.ts` — `--attach` string
     #[arg(long)]
     attach: Option<String>,
 
-    /// Basic auth password (defaults to OPENCODE_SERVER_PASSWORD).
+    /// Basic auth password (defaults to BLAZECODE_SERVER_PASSWORD).
     ///
     /// Ported from: `run.ts` — `--password` alias `-p`
     #[arg(short = 'p', long)]
     password: Option<String>,
 
-    /// Basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode').
+    /// Basic auth username (defaults to BLAZECODE_SERVER_USERNAME or 'blazecode').
     ///
     /// Ported from: `run.ts` — `--username` alias `-u`
     #[arg(short = 'u', long)]
@@ -446,10 +446,10 @@ struct RunArgs {
 // ── tui command ─────────────────────────────────────────────────────────────
 /// Arguments for the `tui` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/tui.ts` — `$0 [project]`
+/// Ported from: `packages/blazecode/src/cli/cmd/tui.ts` — `$0 [project]`
 #[derive(clap::Args)]
 struct TuiArgs {
-    /// Path to start OpenCode in.
+    /// Path to start BlazeCode in.
     ///
     /// Ported from: `tui.ts` — `.positional("project", { type: "string" })`
     project: Option<String>,
@@ -504,7 +504,7 @@ struct TuiArgs {
 // ── attach command ──────────────────────────────────────────────────────────
 /// Arguments for the `attach` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/attach.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/attach.ts`
 #[derive(clap::Args)]
 struct AttachArgs {
     /// Server URL (e.g., http://localhost:4096).
@@ -536,13 +536,13 @@ struct AttachArgs {
     #[arg(long)]
     fork: bool,
 
-    /// Basic auth password (defaults to OPENCODE_SERVER_PASSWORD).
+    /// Basic auth password (defaults to BLAZECODE_SERVER_PASSWORD).
     ///
     /// Ported from: `attach.ts` — `--password` alias `-p`
     #[arg(short = 'p', long)]
     password: Option<String>,
 
-    /// Basic auth username (defaults to OPENCODE_SERVER_USERNAME or 'opencode').
+    /// Basic auth username (defaults to BLAZECODE_SERVER_USERNAME or 'blazecode').
     ///
     /// Ported from: `attach.ts` — `--username` alias `-u`
     #[arg(short = 'u', long)]
@@ -552,7 +552,7 @@ struct AttachArgs {
 // ── upgrade command ─────────────────────────────────────────────────────────
 /// Arguments for the `upgrade` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/upgrade.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/upgrade.ts`
 #[derive(clap::Args)]
 struct UpgradeArgs {
     /// Version to upgrade to (e.g., '0.1.48' or 'v0.1.48').
@@ -574,7 +574,7 @@ struct UpgradeArgs {
 // ── uninstall command ───────────────────────────────────────────────────────
 /// Arguments for the `uninstall` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/uninstall.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/uninstall.ts`
 #[derive(clap::Args)]
 struct UninstallArgs {
     /// Keep configuration files.
@@ -605,7 +605,7 @@ struct UninstallArgs {
 // ── models command ──────────────────────────────────────────────────────────
 /// Arguments for the `models` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/models.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/models.ts`
 #[derive(clap::Args)]
 struct ModelsArgs {
     /// Provider ID to filter models by.
@@ -629,7 +629,7 @@ struct ModelsArgs {
 // ── stats command ───────────────────────────────────────────────────────────
 /// Arguments for the `stats` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/stats.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/stats.ts`
 #[derive(clap::Args)]
 struct StatsArgs {
     /// Show stats for the last N days (default: all time).
@@ -660,7 +660,7 @@ struct StatsArgs {
 // ── export command ──────────────────────────────────────────────────────────
 /// Arguments for the `export` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/export.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/export.ts`
 #[derive(clap::Args)]
 struct ExportArgs {
     /// Session ID to export.
@@ -678,7 +678,7 @@ struct ExportArgs {
 // ── import command ──────────────────────────────────────────────────────────
 /// Arguments for the `import` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/import.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/import.ts`
 #[derive(clap::Args)]
 struct ImportArgs {
     /// Path to JSON file or share URL.
@@ -690,7 +690,7 @@ struct ImportArgs {
 // ── pr command ──────────────────────────────────────────────────────────────
 /// Arguments for the `pr` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/pr.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/pr.ts`
 #[derive(clap::Args)]
 struct PrArgs {
     /// PR number to checkout.
@@ -702,7 +702,7 @@ struct PrArgs {
 // ── plugin command ──────────────────────────────────────────────────────────
 /// Arguments for the `plugin` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/plug.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/plug.ts`
 #[derive(clap::Args)]
 struct PluginArgs {
     /// npm module name.
@@ -726,7 +726,7 @@ struct PluginArgs {
 // ── db command ──────────────────────────────────────────────────────────────
 /// Arguments for the `db` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/db.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/db.ts`
 #[derive(clap::Args)]
 struct DbArgs {
     /// SQL query to execute (if omitted, opens interactive sqlite3 shell).
@@ -745,7 +745,7 @@ struct DbArgs {
 // ── ACP command (standalone args + network) ─────────────────────────────────
 /// Arguments for the `acp` subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/acp.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/acp.ts`
 #[derive(clap::Args)]
 struct AcpArgs {
     #[command(flatten)]
@@ -761,7 +761,7 @@ struct AcpArgs {
 // ── MCP subcommands ─────────────────────────────────────────────────────────
 /// MCP subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/mcp.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/mcp.ts`
 #[derive(Subcommand)]
 enum McpCommand {
     /// Add an MCP server.
@@ -828,17 +828,17 @@ enum McpCommand {
 // ── debug subcommands ───────────────────────────────────────────────────────
 /// Debug subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/debug/index.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/debug/index.ts`
 #[derive(Subcommand)]
 enum DebugCommand {
     /// Show resolved configuration.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/config.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/config.ts`
     Config,
 
     /// LSP debugging utilities.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/lsp.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/lsp.ts`
     Lsp {
         #[command(subcommand)]
         cmd: DebugLspCommand,
@@ -846,7 +846,7 @@ enum DebugCommand {
 
     /// Ripgrep debugging utilities.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/ripgrep.ts` — `debug rg`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/ripgrep.ts` — `debug rg`
     #[command(name = "rg")]
     Rg {
         #[command(subcommand)]
@@ -855,7 +855,7 @@ enum DebugCommand {
 
     /// File system debugging utilities.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/file.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/file.ts`
     File {
         #[command(subcommand)]
         cmd: DebugFileCommand,
@@ -863,17 +863,17 @@ enum DebugCommand {
 
     /// List all known projects.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/scrap.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/scrap.ts`
     Scrap,
 
     /// List all available skills.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/skill.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/skill.ts`
     Skill,
 
     /// Snapshot debugging utilities.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/snapshot.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/snapshot.ts`
     Snapshot {
         #[command(subcommand)]
         cmd: DebugSnapshotCommand,
@@ -881,12 +881,12 @@ enum DebugCommand {
 
     /// Print startup timing.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/startup.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/startup.ts`
     Startup,
 
     /// Show agent configuration details.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/agent.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/agent.ts`
     Agent {
         /// Agent name (required).
         name: String,
@@ -906,7 +906,7 @@ enum DebugCommand {
 
     /// Debug v2 catalog and built-in plugins.
     ///
-    /// Ported from: `packages/opencode/src/cli/cmd/debug/v2.ts`
+    /// Ported from: `packages/blazecode/src/cli/cmd/debug/v2.ts`
     V2,
 
     /// Show debug information.
@@ -927,7 +927,7 @@ enum DebugCommand {
 
 /// LSP debug subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/debug/lsp.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/debug/lsp.ts`
 #[derive(Subcommand)]
 enum DebugLspCommand {
     /// Get diagnostics for a file.
@@ -952,7 +952,7 @@ enum DebugLspCommand {
 
 /// Ripgrep debug subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/debug/ripgrep.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/debug/ripgrep.ts`
 #[derive(Subcommand)]
 enum DebugRgCommand {
     /// List files using ripgrep.
@@ -987,7 +987,7 @@ enum DebugRgCommand {
 
 /// File debug subcommand.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/debug/file.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/debug/file.ts`
 #[derive(Subcommand)]
 enum DebugFileCommand {
     /// Search files by query.
@@ -1011,7 +1011,7 @@ enum DebugFileCommand {
 
 /// Snapshot debug subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/debug/snapshot.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/debug/snapshot.ts`
 #[derive(Subcommand)]
 enum DebugSnapshotCommand {
     /// Track current snapshot state.
@@ -1033,14 +1033,14 @@ enum DebugSnapshotCommand {
 // ── console (account) subcommands ───────────────────────────────────────────
 /// Console / account subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/account.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/account.ts`
 #[derive(Subcommand)]
 enum ConsoleCommand {
     /// Log in to console.
     ///
     /// Ported from: `account.ts` — `console login [url]`
     Login {
-        /// Server URL (default: https://console.opencode.ai).
+        /// Server URL (default: https://console.blazecode.ai).
         url: Option<String>,
     },
 
@@ -1071,7 +1071,7 @@ enum ConsoleCommand {
 // ── providers subcommands ───────────────────────────────────────────────────
 /// Providers subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/providers.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/providers.ts`
 #[derive(Subcommand)]
 enum ProvidersCommand {
     /// List providers and credentials.
@@ -1084,7 +1084,7 @@ enum ProvidersCommand {
     ///
     /// Ported from: `providers.ts` — `providers login [url]`
     Login {
-        /// OpenCode auth provider URL.
+        /// BlazeCode auth provider URL.
         url: Option<String>,
 
         /// Provider ID or name to log in to (skips provider selection).
@@ -1112,7 +1112,7 @@ enum ProvidersCommand {
 // ── agent subcommands ───────────────────────────────────────────────────────
 /// Agent subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/agent.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/agent.ts`
 #[derive(Subcommand)]
 enum AgentCommand {
     /// Create a new agent.
@@ -1156,7 +1156,7 @@ enum AgentCommand {
 // ── github subcommands ──────────────────────────────────────────────────────
 /// GitHub agent subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/github.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/github.ts`
 #[derive(Subcommand)]
 enum GithubCommand {
     /// Install the GitHub agent.
@@ -1192,7 +1192,7 @@ enum GithubCommand {
 // ── session subcommands ─────────────────────────────────────────────────────
 /// Session subcommands.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/session.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/session.ts`
 #[derive(Subcommand)]
 enum SessionCommand {
     /// List sessions.
@@ -1237,7 +1237,7 @@ fn main() {
         let location = panic_info.location()
             .map(|l| format!("{}:{}", l.file(), l.line()))
             .unwrap_or_else(|| "unknown".to_string());
-        eprintln!("\n\x1b[31m⚠ rustcode panicked\x1b[0m");
+        eprintln!("\n\x1b[31m⚠ blazecode panicked\x1b[0m");
         eprintln!("  message: {msg}");
         eprintln!("  location: {location}");
         eprintln!("  backtrace: see RUST_BACKTRACE=1 for details");
@@ -1245,25 +1245,25 @@ fn main() {
 
     let cli = Cli::parse();
 
-    // Set environment variables for observability (matching opencode middleware).
+    // Set environment variables for observability (matching blazecode middleware).
     //
-    // Ported from: `packages/opencode/src/index.ts` lines 66-68 — middleware sets
-    // OPENCODE_PRINT_LOGS and OPENCODE_LOG_LEVEL env vars before the observability
+    // Ported from: `packages/blazecode/src/index.ts` lines 66-68 — middleware sets
+    // BLAZECODE_PRINT_LOGS and BLAZECODE_LOG_LEVEL env vars before the observability
     // layer reads them, so it sees the CLI overrides.
     if cli.print_logs {
-        std::env::set_var("OPENCODE_PRINT_LOGS", "1");
+        std::env::set_var("BLAZECODE_PRINT_LOGS", "1");
     }
-    std::env::set_var("OPENCODE_LOG_LEVEL", cli.log_level.to_string());
+    std::env::set_var("BLAZECODE_LOG_LEVEL", cli.log_level.to_string());
 
     // Initialize the observability subsystem.
     //
     // Ported from: `packages/core/src/observability.ts` — the `layer` composition
     // that sets up file logging, optional stderr output, and OTLP export.
-    let mut observability = rustcode_core::observability::ObservabilityService::new();
+    let mut observability = blazecode_core::observability::ObservabilityService::new();
     match observability.init() {
         Ok(true) => {
             tracing::info!(
-                "rustcode starting (version={}, pure={}, print_logs={}, log_level={})",
+                "blazecode starting (version={}, pure={}, print_logs={}, log_level={})",
                 env!("CARGO_PKG_VERSION"),
                 cli.pure,
                 cli.print_logs,
@@ -1280,7 +1280,7 @@ fn main() {
 
     // Build the async runtime and dispatch.
     //
-    // Ported from: `packages/opencode/src/index.ts` — `await cli.parse()`.
+    // Ported from: `packages/blazecode/src/index.ts` — `await cli.parse()`.
     // Each command handler can be async. Use current_thread for a CLI.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
@@ -1326,18 +1326,18 @@ fn main() {
 
 /// Main async entry point.
 ///
-/// Ported from: `packages/opencode/src/index.ts` —
+/// Ported from: `packages/blazecode/src/index.ts` —
 /// `try { await cli.parse() } catch (e) { ... }`
 async fn async_main(cli: Cli) {
     // Create the CLI error formatter for styled error output.
     //
-    // Ported from: `packages/opencode/src/cli/error.ts` — `FormatError()`.
+    // Ported from: `packages/blazecode/src/cli/error.ts` — `FormatError()`.
     let mut error_fmt = CliErrorFormatter::new();
 
     // Load config eagerly (matches TS middleware that sets env vars).
     //
-    // Ported from: `packages/opencode/src/index.ts` — middleware sets
-    // AGENT=1, OPENCODE=1, OPENCODE_PID.
+    // Ported from: `packages/blazecode/src/index.ts` — middleware sets
+    // AGENT=1, BLAZECODE=1, BLAZECODE_PID.
     let config = Config::load().unwrap_or_default();
     tracing::debug!("Config loaded ({} providers)", config.provider.len());
 
@@ -1363,12 +1363,12 @@ async fn async_main(cli: Cli) {
 /// Errors from handlers are captured and formatted through the
 /// [`CliErrorFormatter`].
 ///
-/// Ported from: `packages/opencode/src/index.ts` — `try { await cli.parse() }
+/// Ported from: `packages/blazecode/src/index.ts` — `try { await cli.parse() }
 /// catch (e) { FormatError(e) }`.
 async fn dispatch(
     cmd: &Commands,
     print_logs: bool,
-    config: &rustcode_core::config::Info,
+    config: &blazecode_core::config::Info,
     error_fmt: &mut CliErrorFormatter,
 ) -> i32 {
     let result = dispatch_inner(cmd, print_logs, config).await;
@@ -1382,7 +1382,7 @@ async fn dispatch(
 async fn dispatch_inner(
     cmd: &Commands,
     print_logs: bool,
-    config: &rustcode_core::config::Info,
+    config: &blazecode_core::config::Info,
 ) -> i32 {
     match cmd {
         Commands::Acp(args) => cmd_acp(args, config).await,
@@ -1505,15 +1505,15 @@ async fn run_gh(args: &[&str]) -> std::io::Result<std::process::Output> {
 // run
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// `run` — Run OpenCode with a message.
+/// `run` — Run BlazeCode with a message.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/run.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/run.ts`
 ///
 /// Supports two modes:
 /// - **Local**: resolves providers/models locally and runs the agentic loop.
 /// - **SSE attach** (`--attach <url>`): connects to a remote server via SSE,
 ///   sends the prompt via HTTP POST, and streams results back.
-async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
+async fn cmd_run(args: &RunArgs, config: &blazecode_core::config::Info) -> i32 {
     let msg = args.message.join(" ");
 
     // ── validation ──────────────────────────────────────────────────
@@ -1557,7 +1557,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     let (provider_filter, model_filter) = args.model.as_deref().and_then(parse_model_spec).unzip();
 
     // ── auto-detect providers via shared runtime ────────────────────
-    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
+    let ctx = match blazecode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -1669,8 +1669,8 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
         ),
     ];
 
-    use rustcode_core::provider::{ChatMessage, MessageContent};
-    use rustcode_core::session_prompt::{PromptPart, PromptTextPart, SessionPromptInput};
+    use blazecode_core::provider::{ChatMessage, MessageContent};
+    use blazecode_core::session_prompt::{PromptPart, PromptTextPart, SessionPromptInput};
 
     let session_id = format!("local-{}", std::process::id());
     let runner = &ctx.runner;
@@ -1679,7 +1679,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     if args.interactive {
         if !std::io::stdin().is_terminal() {
             eprintln!("Error: --interactive requires a TTY for input");
-            eprintln!("Tip: use `rustcode run \"message\"` for non-interactive mode");
+            eprintln!("Tip: use `blazecode run \"message\"` for non-interactive mode");
             return 1;
         }
 
@@ -1761,7 +1761,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
         // Run a demo prompt on start if no user message was given
         if args.demo && user_content.is_empty() {
             let demo_prompt = format!(
-                "Welcome to rustcode interactive demo! I'm running in {} mode. \
+                "Welcome to blazecode interactive demo! I'm running in {} mode. \
                  You are working in directory: {}. \
                  Available slash commands: /exit, /help, /clear, /model, /tokens.",
                 agent, cwd
@@ -1916,7 +1916,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     let input = SessionPromptInput {
         session_id: session_id.clone(),
         message_id: None,
-        model: Some(rustcode_core::session_info::ModelRef {
+        model: Some(blazecode_core::session_info::ModelRef {
             id: model.id.clone(),
             provider_id: provider_id.clone(),
             variant: None,
@@ -2004,13 +2004,13 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
 /// Handle a slash command in interactive mode.
 ///
 /// Returns (should_break, should_continue).
-/// Ported from: `packages/opencode/src/cli/cmd/run.ts` — interactive slash commands.
+/// Ported from: `packages/blazecode/src/cli/cmd/run.ts` — interactive slash commands.
 fn handle_slash_command(
     line: &str,
-    messages: &mut Vec<rustcode_core::provider::ChatMessage>,
+    messages: &mut Vec<blazecode_core::provider::ChatMessage>,
     _args: &RunArgs,
 ) -> (bool, bool) {
-    use rustcode_core::provider::{ChatMessage, MessageContent};
+    use blazecode_core::provider::{ChatMessage, MessageContent};
     let trimmed = line.trim().to_lowercase();
     match trimmed.as_str() {
         "/exit" | "/quit" | "exit" | "quit" | "/q" => return (true, false),
@@ -2053,7 +2053,7 @@ fn handle_slash_command(
     (false, false)
 }
 
-/// Run a prompt against a remote rustcode server via SSE + HTTP POST.
+/// Run a prompt against a remote blazecode server via SSE + HTTP POST.
 ///
 /// This is the attach-mode branch of [`cmd_run`]. It connects to the
 /// server's SSE endpoint (`GET /event`), sends the prompt via HTTP POST to
@@ -2077,7 +2077,7 @@ fn handle_slash_command(
 /// 8. Print final summary (tool count, success/fail) in non-JSON mode.
 ///
 /// # Source
-/// Ported from: `packages/opencode/src/cli/cmd/run.ts` — `--attach` branch.
+/// Ported from: `packages/blazecode/src/cli/cmd/run.ts` — `--attach` branch.
 async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
     let url = attach_url.trim_end_matches('/');
 
@@ -2086,12 +2086,12 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
     let username = args
         .username
         .clone()
-        .or_else(|| std::env::var("OPENCODE_SERVER_USERNAME").ok())
-        .unwrap_or_else(|| "opencode".to_string());
+        .or_else(|| std::env::var("BLAZECODE_SERVER_USERNAME").ok())
+        .unwrap_or_else(|| "blazecode".to_string());
     let password = args
         .password
         .clone()
-        .or_else(|| std::env::var("OPENCODE_SERVER_PASSWORD").ok());
+        .or_else(|| std::env::var("BLAZECODE_SERVER_PASSWORD").ok());
 
     if let Some(pw) = &password {
         let auth = format!("{username}:{pw}");
@@ -2635,10 +2635,10 @@ fn handle_sse_event(
 // tui
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// `tui` — Start OpenCode TUI.
+/// `tui` — Start BlazeCode TUI.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/tui.ts`
-async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::config::Info) -> i32 {
+/// Ported from: `packages/blazecode/src/cli/cmd/tui.ts`
+async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &blazecode_core::config::Info) -> i32 {
     if args.fork && !args.r#continue && args.session.is_none() {
         cli_error::format_cli_error("--fork requires --continue or --session");
         return 1;
@@ -2683,12 +2683,12 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
     }
 
     if !args.json {
-        println!("rustcode TUI v{}", env!("CARGO_PKG_VERSION"));
+        println!("blazecode TUI v{}", env!("CARGO_PKG_VERSION"));
         println!("Working directory: {}", cwd.display());
     }
 
     // ── Initialize shared runtime ──────────────────────────────────
-    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
+    let ctx = match blazecode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -2778,7 +2778,7 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
         loop {
             interval.tick().await;
-            let ping = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+            let ping = blazecode_core::bus::GlobalEvent::new(serde_json::json!({
                 "type": "tui.heartbeat.ping",
                 "timestamp": chrono::Utc::now().timestamp_millis(),
             }));
@@ -2791,13 +2791,13 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
 
     // ── Launch TUI ─────────────────────────────────────────────────
     let tool_defs = tools.llm_definitions();
-    match rustcode_tui::TuiApp::new(sessions, runner, providers_map, bus.clone(), tool_defs) {
+    match blazecode_tui::TuiApp::new(sessions, runner, providers_map, bus.clone(), tool_defs) {
         Ok(mut app) => {
             // Run the TUI app
             let exit_code = app.run_async().await;
 
             // Publish shutdown event
-            let shutdown_event = rustcode_core::bus::GlobalEvent::new(serde_json::json!({
+            let shutdown_event = blazecode_core::bus::GlobalEvent::new(serde_json::json!({
                 "type": "tui.shutdown",
                 "timestamp": chrono::Utc::now().timestamp_millis(),
             }));
@@ -2869,28 +2869,28 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
 // serve
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// `serve` — Start a headless OpenCode server.
+/// `serve` — Start a headless BlazeCode server.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/serve.ts`
-async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i32 {
+/// Ported from: `packages/blazecode/src/cli/cmd/serve.ts`
+async fn cmd_serve(args: &NetworkArgs, config: &blazecode_core::config::Info) -> i32 {
     let hostname = if args.mdns && args.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
         args.hostname.clone()
     };
 
-    if std::env::var("OPENCODE_SERVER_PASSWORD").is_err() {
-        eprintln!("{}Warning: OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
+    if std::env::var("BLAZECODE_SERVER_PASSWORD").is_err() {
+        eprintln!("{}Warning: BLAZECODE_SERVER_PASSWORD is not set; server will be unsecured.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
     }
 
     eprintln!(
-        "rustcode serve: starting server on {hostname}:{}...",
+        "blazecode serve: starting server on {hostname}:{}...",
         args.port
     );
     println!();
 
     // Build the AppState from the shared runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
+    let ctx = match blazecode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -2898,7 +2898,7 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
         }
     };
     let state = build_server_state(&ctx);
-    let config = rustcode_server::ServerConfig {
+    let config = blazecode_server::ServerConfig {
         hostname,
         port: args.port,
         cors_origins: if args.cors.is_empty() {
@@ -2908,7 +2908,7 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
         },
     };
 
-    match rustcode_server::serve(state, config).await {
+    match blazecode_server::serve(state, config).await {
         Ok(_) => {
             eprintln!("{}Server shut down.{}", cli_error::TEXT_DIM, cli_error::TEXT_RESET);
             0
@@ -2925,8 +2925,8 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
 /// This replaces the hand-rolled `build_server_state()` that previously
 /// duplicated the service construction logic across cmd_serve and cmd_web.
 fn build_server_state(
-    ctx: &rustcode_core::runtime::RuntimeContext,
-) -> Arc<rustcode_server::AppState> {
+    ctx: &blazecode_core::runtime::RuntimeContext,
+) -> Arc<blazecode_server::AppState> {
     // Build agent service from config if available
     let agent_service = build_agent_service();
 
@@ -2934,10 +2934,10 @@ fn build_server_state(
     let command_data = Arc::new(build_command_data());
 
     // Integration service starts empty — integrations are registered at runtime
-    let integration_service = Arc::new(rustcode_core::integration::IntegrationService::new());
+    let integration_service = Arc::new(blazecode_core::integration::IntegrationService::new());
 
     // Reference service — loaded from config
-    let reference_service = Arc::new(rustcode_core::reference::ReferenceService::new());
+    let reference_service = Arc::new(blazecode_core::reference::ReferenceService::new());
 
     let server_features: Vec<String> = vec![
         "agents".into(),
@@ -2958,7 +2958,7 @@ fn build_server_state(
         "worktree".into(),
     ];
 
-    Arc::new(rustcode_server::AppState::new(
+    Arc::new(blazecode_server::AppState::new(
         ctx.db.clone(),
         ctx.bus.clone(),
         ctx.sessions.clone(),
@@ -2976,27 +2976,27 @@ fn build_server_state(
 }
 
 /// Build an agent service from the global config, if it can be loaded.
-fn build_agent_service() -> Option<Arc<rustcode_core::agent::AgentService>> {
-    let cfg = rustcode_core::config::Config::load_global().ok()?;
+fn build_agent_service() -> Option<Arc<blazecode_core::agent::AgentService>> {
+    let cfg = blazecode_core::config::Config::load_global().ok()?;
     let worktree = std::env::current_dir().ok()?;
-    let data_dir = dirs::data_dir()?.join("opencode");
+    let data_dir = dirs::data_dir()?.join("blazecode");
     let tmp_dir = std::env::temp_dir();
     let skill_dirs: Vec<std::path::PathBuf> = Vec::new();
-    Some(Arc::new(rustcode_core::agent::AgentService::new(
+    Some(Arc::new(blazecode_core::agent::AgentService::new(
         &cfg, worktree, data_dir, tmp_dir, skill_dirs,
     )))
 }
 
 /// Build command data from the global config's command section.
-fn build_command_data() -> rustcode_core::command::CommandData {
-    let mut data = rustcode_core::command::CommandData::default();
-    if let Ok(cfg) = rustcode_core::config::Config::load_global() {
+fn build_command_data() -> blazecode_core::command::CommandData {
+    let mut data = blazecode_core::command::CommandData::default();
+    if let Ok(cfg) = blazecode_core::config::Config::load_global() {
         for (name, cmd_cfg) in &cfg.command {
             let model_ref = cmd_cfg
                 .model
                 .as_ref()
-                .and_then(|m| rustcode_core::command::CommandModelRef::parse(m));
-            data.upsert(rustcode_core::command::CommandUpdateInput {
+                .and_then(|m| blazecode_core::command::CommandModelRef::parse(m));
+            data.upsert(blazecode_core::command::CommandUpdateInput {
                 name: name.clone(),
                 template: cmd_cfg.template.clone(),
                 description: cmd_cfg.description.clone(),
@@ -3015,22 +3015,22 @@ fn build_command_data() -> rustcode_core::command::CommandData {
 
 /// `web` — Start server and open web interface.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/web.ts`
-async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i32 {
+/// Ported from: `packages/blazecode/src/cli/cmd/web.ts`
+async fn cmd_web(args: &NetworkArgs, config: &blazecode_core::config::Info) -> i32 {
     let hostname = if args.mdns && args.hostname == "127.0.0.1" {
         "0.0.0.0".to_string()
     } else {
         args.hostname.clone()
     };
 
-    if std::env::var("OPENCODE_SERVER_PASSWORD").is_err() {
-        eprintln!("{}!  OPENCODE_SERVER_PASSWORD is not set; server will be unsecured.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
+    if std::env::var("BLAZECODE_SERVER_PASSWORD").is_err() {
+        eprintln!("{}!  BLAZECODE_SERVER_PASSWORD is not set; server will be unsecured.{}", cli_error::TEXT_WARNING, cli_error::TEXT_RESET);
     }
 
     let port = if args.port == 0 { 4096u16 } else { args.port };
     let server_url = format!("http://{hostname}:{port}");
 
-    println!("rustcode web: starting server + web interface...");
+    println!("blazecode web: starting server + web interface...");
     println!();
     println!("  Local access:      {server_url}");
 
@@ -3050,7 +3050,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
     open_url(&server_url);
 
     // Build and start the server from shared runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
+    let ctx = match blazecode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -3058,7 +3058,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
         }
     };
     let state = build_server_state(&ctx);
-    let config = rustcode_server::ServerConfig {
+    let config = blazecode_server::ServerConfig {
         hostname,
         port,
         cors_origins: if args.cors.is_empty() {
@@ -3068,7 +3068,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
         },
     };
 
-    match rustcode_server::serve(state, config).await {
+    match blazecode_server::serve(state, config).await {
         Ok(_) => 0,
         Err(e) => {
             cli_error::format_cli_error(&format!("Server error: {e}"));
@@ -3115,23 +3115,23 @@ fn get_network_ips() -> Result<Vec<String>, Box<dyn std::error::Error>> {
 
 /// `models` — List all available models from detected providers.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/models.ts`
-async fn cmd_models(args: &ModelsArgs, _config: &rustcode_core::config::Info) -> i32 {
+/// Ported from: `packages/blazecode/src/cli/cmd/models.ts`
+async fn cmd_models(args: &ModelsArgs, _config: &blazecode_core::config::Info) -> i32 {
     if args.refresh {
         eprintln!("Models cache refresh requested — not yet wired to models.dev API.");
     }
 
-    let providers: Vec<Box<dyn rustcode_core::provider::Provider>> =
-        rustcode_core::providers::auto_detect_all();
+    let providers: Vec<Box<dyn blazecode_core::provider::Provider>> =
+        blazecode_core::providers::auto_detect_all();
 
     if providers.is_empty() {
         eprintln!("No providers detected. Set API key environment variables.");
-        eprintln!("Run `rustcode providers list` to see available credential slots.");
+        eprintln!("Run `blazecode providers list` to see available credential slots.");
         return 1;
     }
 
     // Sort providers: priority order then alphabetical
-    let mut sorted: Vec<(String, Box<dyn rustcode_core::provider::Provider>)> = providers
+    let mut sorted: Vec<(String, Box<dyn blazecode_core::provider::Provider>)> = providers
         .into_iter()
         .map(|p| {
             let id = p.provider_id().to_string();
@@ -3198,7 +3198,7 @@ fn provider_priority(id: &str) -> u8 {
 
 /// `stats` — Show token usage and cost statistics.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/stats.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/stats.ts`
 async fn cmd_stats(args: &StatsArgs) -> i32 {
     use sqlx::Row;
     let days_label = args.days.map_or("all time".to_string(), |d| {
@@ -3217,10 +3217,10 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
 
     let db_path = get_db_path();
     if !db_path.exists() {
-        println!("rustcode stats ({days_label}, {project_label})");
+        println!("blazecode stats ({days_label}, {project_label})");
         println!();
         eprintln!("No session database found at {}", db_path.display());
-        eprintln!("Start `rustcode serve` and run sessions to populate stats.");
+        eprintln!("Start `blazecode serve` and run sessions to populate stats.");
         return 0;
     }
 
@@ -3261,7 +3261,7 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
     };
 
     // ── OVERVIEW ────────────────────────────────────────────────────────
-    println!("rustcode stats ({days_label}, {project_label})");
+    println!("blazecode stats ({days_label}, {project_label})");
     println!();
     print_header("OVERVIEW");
 
@@ -3415,7 +3415,7 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
 
 /// `export` — Export session data as JSON.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/export.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/export.ts`
 async fn cmd_export(args: &ExportArgs) -> i32 {
     use sqlx::Row;
     use sqlx::Column;
@@ -3423,7 +3423,7 @@ async fn cmd_export(args: &ExportArgs) -> i32 {
     let db_path = get_db_path();
     if !db_path.exists() {
         eprintln!("No local session database found at {}", db_path.display());
-        eprintln!("Export requires session data created by `rustcode serve` or `rustcode tui`.");
+        eprintln!("Export requires session data created by `blazecode serve` or `blazecode tui`.");
         return 1;
     }
 
@@ -3658,7 +3658,7 @@ fn is_sensitive_field(name: &str) -> bool {
 
 /// `import` — Import session data from JSON file or URL.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/import.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/import.ts`
 async fn cmd_import(args: &ImportArgs) -> i32 {
     use sqlx::Row;
     let is_url = args.file.starts_with("http://") || args.file.starts_with("https://");
@@ -3890,7 +3890,7 @@ async fn cmd_import(args: &ImportArgs) -> i32 {
 /// Get the database path (matches TS Database.path()).
 fn get_db_path() -> PathBuf {
     // Use the same path as RuntimeContext for consistency.
-    rustcode_core::runtime::default_db_path()
+    blazecode_core::runtime::default_db_path()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -3899,7 +3899,7 @@ fn get_db_path() -> PathBuf {
 
 /// `session` — Manage sessions (list, delete).
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/session.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/session.ts`
 async fn cmd_session(cmd: &SessionCommand) -> i32 {
     use sqlx::Row;
     match cmd {
@@ -3907,8 +3907,8 @@ async fn cmd_session(cmd: &SessionCommand) -> i32 {
             let db_path = get_db_path();
             if !db_path.exists() {
                 eprintln!("No session database found at {}", db_path.display());
-                eprintln!("Sessions are persisted by the server. Start `rustcode serve` or");
-                eprintln!("run `rustcode tui` to create sessions, then list them here.");
+                eprintln!("Sessions are persisted by the server. Start `blazecode serve` or");
+                eprintln!("run `blazecode tui` to create sessions, then list them here.");
                 return 0;
             }
 
@@ -4135,7 +4135,7 @@ async fn collect_child_session_ids(
 
 /// `agent` — Manage agents (create, list).
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/agent.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/agent.ts`
 async fn cmd_agent(cmd: &AgentCommand) -> i32 {
     match cmd {
         AgentCommand::Create {
@@ -4147,7 +4147,7 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
         } => {
             let target_path = path
                 .clone()
-                .unwrap_or_else(|| ".opencode/agents".to_string());
+                .unwrap_or_else(|| ".blazecode/agents".to_string());
 
             let desc = description.as_deref().unwrap_or("No description provided");
 
@@ -4166,8 +4166,8 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
             // TS: Uses LLM to generate agent config, writes markdown file with
             // gray-matter frontmatter, configures permissions.
             eprintln!();
-            eprintln!("For the full interactive agent creation experience, use `rustcode tui`");
-            eprintln!("or `rustcode run --interactive` which provides LLM-powered generation.");
+            eprintln!("For the full interactive agent creation experience, use `blazecode tui`");
+            eprintln!("or `blazecode run --interactive` which provides LLM-powered generation.");
             eprintln!();
             eprintln!("Agent creation from CLI args will be implemented with LLM integration.");
             eprintln!("For now, manually create agent markdown files in:");
@@ -4178,10 +4178,10 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
             eprintln!();
 
             // TS: agent list — sorted by native first, then by name
-            // In Rust, we scan ~/.config/opencode/agents/ and .opencode/agents/
+            // In Rust, we scan ~/.config/blazecode/agents/ and .blazecode/agents/
 
             let global_agents = get_agents_dir_global();
-            let local_agents = PathBuf::from(".opencode/agents");
+            let local_agents = PathBuf::from(".blazecode/agents");
 
             let mut found = false;
 
@@ -4210,9 +4210,9 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
                 eprintln!();
                 eprintln!("Agents are markdown files in:");
                 eprintln!("  {}", global_agents.display());
-                eprintln!("  .opencode/agents/");
+                eprintln!("  .blazecode/agents/");
                 eprintln!();
-                eprintln!("Create an agent with: rustcode agent create");
+                eprintln!("Create an agent with: blazecode agent create");
             }
         }
     }
@@ -4224,7 +4224,7 @@ async fn cmd_agent(cmd: &AgentCommand) -> i32 {
 fn get_agents_dir_global() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("opencode")
+        .join("blazecode")
         .join("agents")
 }
 
@@ -4254,7 +4254,7 @@ fn read_agent_mode(path: &Path) -> String {
 
 /// `providers` — Manage AI provider credentials.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/providers.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/providers.ts`
 async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
     match cmd {
         ProvidersCommand::List => {
@@ -4265,7 +4265,7 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
             // TS: Lists credentials from auth.json + active env vars
             let auth_path = dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("opencode")
+                .join("blazecode")
                 .join("auth.json");
 
             let auth_display = shorten_path(&auth_path);
@@ -4329,7 +4329,7 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
             // TS: Interactive login flow
             if let Some(auth_url) = url {
                 eprintln!("Logging in via auth provider URL: {auth_url}");
-                eprintln!("This would fetch {auth_url}/.well-known/opencode and run the");
+                eprintln!("This would fetch {auth_url}/.well-known/blazecode and run the");
                 eprintln!("configured auth command, then store the resulting credential.");
                 eprintln!("In the full implementation, this authenticates via the auth provider.");
             } else if let Some(provider_id) = provider {
@@ -4355,7 +4355,7 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
                         // Read existing auth.json, merge, write back
                         let auth_path = dirs::data_dir()
                             .unwrap_or_else(|| PathBuf::from("."))
-                            .join("opencode")
+                            .join("blazecode")
                             .join("auth.json");
 
                         let mut providers_map: HashMap<String, serde_json::Value> =
@@ -4387,7 +4387,7 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
                                     "Credential for '{provider_id}' saved to {}",
                                     shorten_path(&auth_path)
                                 );
-                                eprintln!("You can now use this provider in rustcode sessions.");
+                                eprintln!("You can now use this provider in blazecode sessions.");
                             }
                             Err(e) => {
                                 eprintln!("Failed to serialize auth data: {e}");
@@ -4417,14 +4417,14 @@ async fn cmd_providers(cmd: &ProvidersCommand) -> i32 {
                 Some(p) => p.clone(),
                 None => {
                     eprintln!("Please specify a provider to log out from:");
-                    eprintln!("  rustcode providers logout <provider-id>");
+                    eprintln!("  blazecode providers logout <provider-id>");
                     return 1;
                 }
             };
 
             let auth_path = dirs::data_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("opencode")
+                .join("blazecode")
                 .join("auth.json");
 
             if !auth_path.exists() {
@@ -4506,8 +4506,8 @@ fn try_open_browser(url: &str) -> bool {
 
 /// Discover all MCP servers from configuration files that support OAuth.
 ///
-/// Searches local project config (`opencode.json`, `opencode.jsonc`,
-/// `.opencode/*`) and global config (`~/.config/opencode/opencode.jsonc`).
+/// Searches local project config (`blazecode.json`, `blazecode.jsonc`,
+/// `.blazecode/*`) and global config (`~/.config/blazecode/blazecode.jsonc`).
 ///
 /// Returns a list of `(name, url, oauth_config)` tuples for remote MCP servers
 /// with OAuth not explicitly disabled.
@@ -4519,17 +4519,17 @@ fn discover_oauth_mcp_servers() -> Vec<(
     let mut servers = Vec::new();
 
     let candidates = [
-        PathBuf::from("opencode.json"),
-        PathBuf::from("opencode.jsonc"),
-        PathBuf::from(".opencode/opencode.json"),
-        PathBuf::from(".opencode/opencode.jsonc"),
+        PathBuf::from("blazecode.json"),
+        PathBuf::from("blazecode.jsonc"),
+        PathBuf::from(".blazecode/blazecode.json"),
+        PathBuf::from(".blazecode/blazecode.jsonc"),
     ];
 
     // Also check global config
     let global_config = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("opencode")
-        .join("opencode.jsonc");
+        .join("blazecode")
+        .join("blazecode.jsonc");
 
     let all_paths: Vec<PathBuf> = candidates
         .into_iter()
@@ -4540,7 +4540,7 @@ fn discover_oauth_mcp_servers() -> Vec<(
     for config_path in &all_paths {
         if let Ok(contents) = std::fs::read_to_string(config_path) {
             let cleaned = if config_path.extension().is_some_and(|e| e == "jsonc") {
-                rustcode_core::config::parse_jsonc(&contents, config_path).ok()
+                blazecode_core::config::parse_jsonc(&contents, config_path).ok()
             } else {
                 serde_json::from_str(&contents).ok()
             };
@@ -4593,16 +4593,16 @@ fn discover_oauth_mcp_servers() -> Vec<(
 /// along with the path of the config file where it was found.
 fn find_mcp_server_config(name: &str) -> (Option<serde_json::Value>, Option<PathBuf>) {
     let candidates = [
-        PathBuf::from("opencode.json"),
-        PathBuf::from("opencode.jsonc"),
-        PathBuf::from(".opencode/opencode.json"),
-        PathBuf::from(".opencode/opencode.jsonc"),
+        PathBuf::from("blazecode.json"),
+        PathBuf::from("blazecode.jsonc"),
+        PathBuf::from(".blazecode/blazecode.json"),
+        PathBuf::from(".blazecode/blazecode.jsonc"),
     ];
 
     let global_config = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("opencode")
-        .join("opencode.jsonc");
+        .join("blazecode")
+        .join("blazecode.jsonc");
 
     let all_paths: Vec<PathBuf> = candidates
         .into_iter()
@@ -4613,7 +4613,7 @@ fn find_mcp_server_config(name: &str) -> (Option<serde_json::Value>, Option<Path
     for config_path in &all_paths {
         if let Ok(contents) = std::fs::read_to_string(config_path) {
             let cleaned = if config_path.extension().is_some_and(|e| e == "jsonc") {
-                rustcode_core::config::parse_jsonc(&contents, config_path).ok()
+                blazecode_core::config::parse_jsonc(&contents, config_path).ok()
             } else {
                 serde_json::from_str(&contents).ok()
             };
@@ -4638,16 +4638,16 @@ fn list_all_mcp_servers() -> Vec<(String, String, String)> {
     let mut servers = Vec::new();
 
     let candidates = [
-        PathBuf::from("opencode.json"),
-        PathBuf::from("opencode.jsonc"),
-        PathBuf::from(".opencode/opencode.json"),
-        PathBuf::from(".opencode/opencode.jsonc"),
+        PathBuf::from("blazecode.json"),
+        PathBuf::from("blazecode.jsonc"),
+        PathBuf::from(".blazecode/blazecode.json"),
+        PathBuf::from(".blazecode/blazecode.jsonc"),
     ];
 
     let global_config = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("opencode")
-        .join("opencode.jsonc");
+        .join("blazecode")
+        .join("blazecode.jsonc");
 
     let all_paths: Vec<PathBuf> = candidates
         .into_iter()
@@ -4660,7 +4660,7 @@ fn list_all_mcp_servers() -> Vec<(String, String, String)> {
     for config_path in &all_paths {
         if let Ok(contents) = std::fs::read_to_string(config_path) {
             let cleaned = if config_path.extension().is_some_and(|e| e == "jsonc") {
-                rustcode_core::config::parse_jsonc(&contents, config_path).ok()
+                blazecode_core::config::parse_jsonc(&contents, config_path).ok()
             } else {
                 serde_json::from_str(&contents).ok()
             };
@@ -4736,7 +4736,7 @@ fn cmd_completion(args: &CompletionArgs) -> i32 {
 
 /// `mcp` — Manage MCP servers.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/mcp.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/mcp.ts`
 async fn cmd_mcp(cmd: &McpCommand) -> i32 {
     match cmd {
         McpCommand::Add {
@@ -4804,12 +4804,12 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 eprintln!("  - Server URL or command");
                 eprintln!("  - OAuth configuration (for remote servers)");
                 eprintln!();
-                eprintln!("The config is written to opencode.json in the current directory.");
+                eprintln!("The config is written to blazecode.json in the current directory.");
                 return 0;
             };
 
-            // Read existing opencode.json from current directory
-            let config_path = PathBuf::from("opencode.json");
+            // Read existing blazecode.json from current directory
+            let config_path = PathBuf::from("blazecode.json");
             let mut config_root: serde_json::Map<String, serde_json::Value> =
                 if config_path.exists() {
                     match std::fs::read_to_string(&config_path) {
@@ -4832,11 +4832,11 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 mcp_obj.insert(mcp_name.to_string(), mcp_config);
             }
 
-            // Write back to opencode.json (clean JSON, not jsonc)
+            // Write back to blazecode.json (clean JSON, not jsonc)
             match serde_json::to_string_pretty(&config_root) {
                 Ok(json) => {
                     if let Err(e) = std::fs::write(&config_path, json) {
-                        eprintln!("Failed to write opencode.json: {e}");
+                        eprintln!("Failed to write blazecode.json: {e}");
                         return 1;
                     }
                     eprintln!("MCP server '{mcp_name}' added to {}", config_path.display());
@@ -4862,12 +4862,12 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             );
             println!("{}", "\u{2500}".repeat(92));
 
-            // Check opencode.json for MCP config
+            // Check blazecode.json for MCP config
             let candidates = [
-                PathBuf::from("opencode.json"),
-                PathBuf::from("opencode.jsonc"),
-                PathBuf::from(".opencode/opencode.json"),
-                PathBuf::from(".opencode/opencode.jsonc"),
+                PathBuf::from("blazecode.json"),
+                PathBuf::from("blazecode.jsonc"),
+                PathBuf::from(".blazecode/blazecode.json"),
+                PathBuf::from(".blazecode/blazecode.jsonc"),
             ];
 
             let mut found_config = false;
@@ -4876,7 +4876,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     if let Ok(contents) = std::fs::read_to_string(candidate) {
                         // Handle jsonc by stripping comments
                         let cleaned = if candidate.extension().is_some_and(|e| e == "jsonc") {
-                            rustcode_core::config::parse_jsonc(&contents, candidate).ok()
+                            blazecode_core::config::parse_jsonc(&contents, candidate).ok()
                         } else {
                             serde_json::from_str(&contents).ok()
                         };
@@ -4947,12 +4947,12 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             // Also check global config
             let global_config = dirs::config_dir()
                 .unwrap_or_else(|| PathBuf::from("."))
-                .join("opencode")
-                .join("opencode.jsonc");
+                .join("blazecode")
+                .join("blazecode.jsonc");
             if global_config.exists() {
                 if let Ok(contents) = std::fs::read_to_string(&global_config) {
                     let cleaned =
-                        rustcode_core::config::parse_jsonc(&contents, &global_config).ok();
+                        blazecode_core::config::parse_jsonc(&contents, &global_config).ok();
                     if let Some(config) = cleaned {
                         if let Some(mcp) = config.get("mcp").and_then(|m| m.as_object()) {
                             for (name, server) in mcp {
@@ -4994,20 +4994,20 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             if !found_config {
                 eprintln!("  No MCP servers configured.");
                 eprintln!();
-                eprintln!("Add a server with: rustcode mcp add <name> --url <url>");
-                eprintln!("Or: rustcode mcp add <name> --env KEY=VALUE");
+                eprintln!("Add a server with: blazecode mcp add <name> --url <url>");
+                eprintln!("Or: blazecode mcp add <name> --env KEY=VALUE");
                 eprintln!();
                 eprintln!("Remote example:");
                 eprintln!(
-                    r#"  rustcode mcp add my-server --url https://example.com/mcp --header "Authorization:Bearer token""#
+                    r#"  blazecode mcp add my-server --url https://example.com/mcp --header "Authorization:Bearer token""#
                 );
                 eprintln!();
                 eprintln!("Local example (via config file):");
-                eprintln!(r#"  rustcode mcp add my-tool --env "NODE_ENV=production""#);
+                eprintln!(r#"  blazecode mcp add my-tool --env "NODE_ENV=production""#);
             }
         }
         McpCommand::Auth { name } => {
-            let data_dir = match rustcode_core::config::Config::data_dir() {
+            let data_dir = match blazecode_core::config::Config::data_dir() {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: cannot determine data directory: {e}");
@@ -5022,11 +5022,11 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             if oauth_servers.is_empty() {
                 eprintln!("No OAuth-capable MCP servers found in configuration.");
                 eprintln!();
-                eprintln!("To configure an MCP server with OAuth, add it to opencode.json:");
+                eprintln!("To configure an MCP server with OAuth, add it to blazecode.json:");
                 eprintln!(r#"  {{"mcp": {{"my-server": {{"type": "remote", "url": "https://...","#);
                 eprintln!(r#"    "oauth": {{"client_id": "...", "scopes": "..."}} }} }} }}"#);
                 eprintln!();
-                eprintln!("Then run: rustcode mcp auth my-server");
+                eprintln!("Then run: blazecode mcp auth my-server");
                 return 0;
             }
 
@@ -5078,7 +5078,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 }
                 eprintln!();
                 eprintln!("Specify which server to authenticate with:");
-                eprintln!("  rustcode mcp auth <name>");
+                eprintln!("  blazecode mcp auth <name>");
                 return 0;
             };
 
@@ -5118,7 +5118,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 
             // ── check current auth status ────────────────────────────
             let auth_key = format!("mcp:{server_name}");
-            let existing_auth = rustcode_core::config::Config::load_auth().ok();
+            let existing_auth = blazecode_core::config::Config::load_auth().ok();
             let is_authenticated = existing_auth
                 .as_ref()
                 .and_then(|auth| auth.get(&auth_key))
@@ -5143,8 +5143,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     auth_path.display()
                 );
                 eprintln!("To re-authenticate, first run:");
-                eprintln!("  rustcode mcp logout {server_name}");
-                eprintln!("Then run `rustcode mcp auth {server_name}` again.");
+                eprintln!("  blazecode mcp logout {server_name}");
+                eprintln!("Then run `blazecode mcp auth {server_name}` again.");
                 return 0;
             }
 
@@ -5193,7 +5193,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 eprintln!("  2. Obtain a client_id and client_secret");
                 eprintln!("  3. Proceed with the OAuth authorization code flow");
                 eprintln!();
-                eprintln!("For now, configure a client_id in opencode.json:");
+                eprintln!("For now, configure a client_id in blazecode.json:");
                 eprintln!(
                     r#"  {{"mcp": {{"{}": {{..., "oauth": {{"client_id": "your-client-id"}}}}}} }}"#,
                     server_name
@@ -5238,10 +5238,10 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             eprintln!("  4. Print a success message");
             eprintln!();
             eprintln!("For now, you can manually configure tokens by setting env vars");
-            eprintln!("or editing the MCP server headers in opencode.json directly.");
+            eprintln!("or editing the MCP server headers in blazecode.json directly.");
         }
         McpCommand::Logout { name } => {
-            let data_dir = match rustcode_core::config::Config::data_dir() {
+            let data_dir = match blazecode_core::config::Config::data_dir() {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("Error: cannot determine data directory: {e}");
@@ -5257,7 +5257,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 eprintln!();
 
                 // Check current auth state
-                let existing_auth = rustcode_core::config::Config::load_auth().ok();
+                let existing_auth = blazecode_core::config::Config::load_auth().ok();
                 let has_creds = existing_auth
                     .as_ref()
                     .map(|auth| auth.contains_key(&auth_key))
@@ -5311,7 +5311,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     }
                 }
 
-                match rustcode_core::config::Config::remove_auth(&auth_key) {
+                match blazecode_core::config::Config::remove_auth(&auth_key) {
                     Ok(()) => {
                         eprintln!();
                         eprintln!("Credentials removed successfully.");
@@ -5324,7 +5324,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 }
             } else {
                 // No name provided — remove ALL MCP credentials
-                let existing_auth = match rustcode_core::config::Config::load_auth() {
+                let existing_auth = match blazecode_core::config::Config::load_auth() {
                     Ok(auth) => auth,
                     Err(e) => {
                         eprintln!("Error reading auth: {e}");
@@ -5352,7 +5352,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 
                 let mut errors = 0;
                 for key in &mcp_keys {
-                    match rustcode_core::config::Config::remove_auth(key) {
+                    match blazecode_core::config::Config::remove_auth(key) {
                         Ok(()) => {
                             let display_name = key.strip_prefix("mcp:").unwrap_or(key);
                             eprintln!("  Removed: {display_name}");
@@ -5386,16 +5386,16 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 None => {
                     eprintln!("Error: MCP server '{name}' not found in config.");
                     eprintln!();
-                    eprintln!("Searched in: opencode.json, opencode.jsonc,");
-                    eprintln!("  .opencode/opencode.json, .opencode/opencode.jsonc,");
-                    eprintln!("  and global config (~/.config/opencode/opencode.jsonc).");
+                    eprintln!("Searched in: blazecode.json, blazecode.jsonc,");
+                    eprintln!("  .blazecode/blazecode.json, .blazecode/blazecode.jsonc,");
+                    eprintln!("  and global config (~/.config/blazecode/blazecode.jsonc).");
                     eprintln!();
                     eprintln!("Available servers:");
                     let all_servers = list_all_mcp_servers();
                     if all_servers.is_empty() {
                         eprintln!("  (none configured)");
                         eprintln!();
-                        eprintln!("Add a server with: rustcode mcp add {name} --url <url>");
+                        eprintln!("Add a server with: blazecode mcp add {name} --url <url>");
                     } else {
                         for (n, url, mcp_type) in &all_servers {
                             eprintln!("  - {n} ({mcp_type}) -> {url}");
@@ -5483,7 +5483,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
             // ── 2. Check stored tokens ───────────────────────────────
             eprintln!("━━━ Stored Credentials ━━━");
             let auth_key = format!("mcp:{name}");
-            match rustcode_core::config::Config::load_auth() {
+            match blazecode_core::config::Config::load_auth() {
                 Ok(auth) => {
                     if let Some(creds) = auth.get(&auth_key) {
                         eprintln!("  Status: credentials found");
@@ -5543,7 +5543,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                         eprintln!("  Status: no credentials stored for this server");
                         eprintln!("  Auth key: {auth_key}");
                         eprintln!();
-                        eprintln!("  Run `rustcode mcp auth {name}` to authenticate.");
+                        eprintln!("  Run `blazecode mcp auth {name}` to authenticate.");
                     }
                 }
                 Err(e) => {
@@ -5599,7 +5599,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     "protocolVersion": "2024-11-05",
                     "capabilities": {},
                     "clientInfo": {
-                        "name": "rustcode-mcp-debug",
+                        "name": "blazecode-mcp-debug",
                         "version": env!("CARGO_PKG_VERSION")
                     }
                 },
@@ -5623,7 +5623,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 }
 
                 // If OAuth token is stored, use it
-                if let Ok(auth) = rustcode_core::config::Config::load_auth() {
+                if let Ok(auth) = blazecode_core::config::Config::load_auth() {
                     if let Some(creds) = auth.get(&auth_key) {
                         if let Some(token) = creds.get("access_token").and_then(|v| v.as_str()) {
                             req = req.header("Authorization", format!("Bearer {token}"));
@@ -5677,8 +5677,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                                 eprintln!("  OAuth IS configured for this server.");
                                                 eprintln!();
                                                 eprintln!("  Possible issues:");
-                                                eprintln!("    1. Token expired — run `rustcode mcp auth {name}` to refresh");
-                                                eprintln!("    2. Client not registered — check client_id in opencode.json");
+                                                eprintln!("    1. Token expired — run `blazecode mcp auth {name}` to refresh");
+                                                eprintln!("    2. Client not registered — check client_id in blazecode.json");
                                                 eprintln!("    3. Scopes insufficient — verify scopes in oauth config");
                                             } else {
                                                 eprintln!(
@@ -5686,7 +5686,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                                                 );
                                                 eprintln!();
                                                 eprintln!(
-                                                    "  To enable OAuth, add to opencode.json:"
+                                                    "  To enable OAuth, add to blazecode.json:"
                                                 );
                                                 eprintln!(
                                                     r#"    "oauth": {{"client_id": "...", "scopes": "..."}}"#
@@ -5780,7 +5780,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                     "loaded"
                 }
             );
-            let auth_state = rustcode_core::config::Config::load_auth()
+            let auth_state = blazecode_core::config::Config::load_auth()
                 .ok()
                 .and_then(|a| a.get(&auth_key).cloned());
             match auth_state {
@@ -5792,7 +5792,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                         .map(|exp| chrono::Utc::now().timestamp() >= exp)
                         .unwrap_or(false);
                     if expired {
-                        eprintln!("  Auth:    credentials present but EXPIRED — run `rustcode mcp auth {name}`");
+                        eprintln!("  Auth:    credentials present but EXPIRED — run `blazecode mcp auth {name}`");
                     } else if has_token {
                         eprintln!("  Auth:    authenticated");
                     } else {
@@ -5801,7 +5801,7 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
                 }
                 None => {
                     if oauth_enabled {
-                        eprintln!("  Auth:    not authenticated — run `rustcode mcp auth {name}`");
+                        eprintln!("  Auth:    not authenticated — run `blazecode mcp auth {name}`");
                     } else {
                         eprintln!("  Auth:    N/A (OAuth not configured)");
                     }
@@ -5822,8 +5822,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 /// Starts an internal HTTP server and bridges ACP messages over
 /// newline-delimited JSON (NDJSON) on stdin/stdout.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/acp.ts`
-async fn cmd_acp(args: &AcpArgs, config: &rustcode_core::config::Info) -> i32 {
+/// Ported from: `packages/blazecode/src/cli/cmd/acp.ts`
+async fn cmd_acp(args: &AcpArgs, config: &blazecode_core::config::Info) -> i32 {
     let cwd = args.cwd.clone().unwrap_or_else(|| {
         std::env::current_dir()
             .map(|p| p.display().to_string())
@@ -5837,11 +5837,11 @@ async fn cmd_acp(args: &AcpArgs, config: &rustcode_core::config::Info) -> i32 {
     eprintln!("  CWD:      {cwd}");
     eprintln!();
 
-    // Set the OPENCODE_CLIENT environment variable
-    std::env::set_var("OPENCODE_CLIENT", "acp");
+    // Set the BLAZECODE_CLIENT environment variable
+    std::env::set_var("BLAZECODE_CLIENT", "acp");
 
     // Initialize the runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
+    let ctx = match blazecode_core::runtime::initialize_runtime_async(config).await {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
@@ -5880,13 +5880,13 @@ async fn cmd_acp(args: &AcpArgs, config: &rustcode_core::config::Info) -> i32 {
 
     // Start the server in a background task
     let state_clone = state.clone();
-    let server_config = rustcode_server::ServerConfig {
+    let server_config = blazecode_server::ServerConfig {
         hostname: hostname.clone(),
         port: server_port,
         cors_origins: None,
     };
     let server_handle = tokio::spawn(async move {
-        if let Err(e) = rustcode_server::serve(state_clone, server_config).await {
+        if let Err(e) = blazecode_server::serve(state_clone, server_config).await {
             eprintln!("Server error: {e}");
         }
     });
@@ -6011,7 +6011,7 @@ async fn handle_acp_request(
     msg: &serde_json::Value,
     server_url: &str,
     client: &reqwest::Client,
-    _ctx: &rustcode_core::runtime::RuntimeContext,
+    _ctx: &blazecode_core::runtime::RuntimeContext,
 ) -> serde_json::Value {
     let params = msg["params"].as_object().cloned().unwrap_or_default();
 
@@ -6025,7 +6025,7 @@ async fn handle_acp_request(
                         "logging": {}
                     },
                     "serverInfo": {
-                        "name": "rustcode",
+                        "name": "blazecode",
                         "version": "0.1.0"
                     }
                 }
@@ -6275,18 +6275,18 @@ async fn handle_acp_notification(
 
 /// `console` — Account management.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/account.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/account.ts`
 async fn cmd_console(cmd: &ConsoleCommand) -> i32 {
     match cmd {
         ConsoleCommand::Login { url } => {
-            let server_url = url.as_deref().unwrap_or("https://console.opencode.ai");
+            let server_url = url.as_deref().unwrap_or("https://console.blazecode.ai");
             cmd_console_login(server_url).await
         }
         ConsoleCommand::Logout { email } => cmd_console_logout(email.as_deref()).await,
         ConsoleCommand::Switch => cmd_console_switch().await,
         ConsoleCommand::Orgs => cmd_console_orgs().await,
         ConsoleCommand::Open => {
-            let console_url = "https://console.opencode.ai";
+            let console_url = "https://console.blazecode.ai";
             eprintln!("Opening: {console_url}");
             open_url(console_url);
             0
@@ -6321,7 +6321,7 @@ async fn cmd_console_login(server_url: &str) -> i32 {
     let resp = match client
         .post(&device_code_url)
         .json(&serde_json::json!({
-            "client_id": "opencode-cli"
+            "client_id": "blazecode-cli"
         }))
         .send()
         .await
@@ -6399,7 +6399,7 @@ async fn cmd_console_login(server_url: &str) -> i32 {
             .json(&serde_json::json!({
                 "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                 "device_code": device_code,
-                "client_id": "opencode-cli"
+                "client_id": "blazecode-cli"
             }))
             .send()
             .await
@@ -6788,7 +6788,7 @@ async fn cmd_console_switch() -> i32 {
     eprintln!("(* = currently active)");
     eprintln!();
     eprintln!("To switch, update the active organization in the database:");
-    eprintln!("  rustcode db \"UPDATE account_state SET active_account_id='<account_id>', active_org_id='<org_id>' WHERE id=1\"");
+    eprintln!("  blazecode db \"UPDATE account_state SET active_account_id='<account_id>', active_org_id='<org_id>' WHERE id=1\"");
     0
 }
 
@@ -6895,7 +6895,7 @@ async fn cmd_console_orgs() -> i32 {
 
 /// `debug` — Debugging and troubleshooting tools.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/debug/index.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/debug/index.ts`
 async fn cmd_debug(cmd: &DebugCommand) -> i32 {
     match cmd {
         DebugCommand::Config => {
@@ -7142,12 +7142,12 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             eprintln!("Available skills:");
             eprintln!();
 
-            // Scan .opencode/skills/ directories
+            // Scan .blazecode/skills/ directories
             let skill_dirs = [
-                PathBuf::from(".opencode/skills"),
+                PathBuf::from(".blazecode/skills"),
                 dirs::config_dir()
                     .unwrap_or_default()
-                    .join("opencode")
+                    .join("blazecode")
                     .join("skills"),
             ];
 
@@ -7176,8 +7176,8 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
                 eprintln!();
                 eprintln!("Skills are markdown files with YAML frontmatter that provide");
                 eprintln!("specialized instructions to agents. Place them in:");
-                eprintln!("  .opencode/skills/");
-                eprintln!("  ~/.config/opencode/skills/");
+                eprintln!("  .blazecode/skills/");
+                eprintln!("  ~/.config/blazecode/skills/");
             }
 
             println!("[]"); // JSON empty array
@@ -7224,7 +7224,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             eprintln!("V2 catalog debug:");
             eprintln!();
 
-            let providers = rustcode_core::providers::auto_detect_all();
+            let providers = blazecode_core::providers::auto_detect_all();
             let provider_ids: Vec<String> = providers
                 .iter()
                 .map(|p| p.provider_id().to_string())
@@ -7245,7 +7245,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
         }
         DebugCommand::Info => {
             // TS: prints version, OS, terminal, plugins
-            println!("rustcode version: {}", env!("CARGO_PKG_VERSION"));
+            println!("blazecode version: {}", env!("CARGO_PKG_VERSION"));
             println!("os: {} {}", std::env::consts::OS, std::env::consts::ARCH);
             println!(
                 "terminal: {}",
@@ -7253,7 +7253,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             );
             println!("plugins:");
 
-            if std::env::var("OPENCODE_PURE").is_ok() {
+            if std::env::var("BLAZECODE_PURE").is_ok() {
                 println!("  external plugins disabled (--pure)");
                 return 0;
             }
@@ -7265,8 +7265,8 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
             } else {
                 for plugin_spec in &config.plugin {
                     let name = match plugin_spec {
-                        rustcode_core::config::PluginSpec::Simple(s) => s.as_str(),
-                        rustcode_core::config::PluginSpec::WithOptions(s, _) => s.as_str(),
+                        blazecode_core::config::PluginSpec::Simple(s) => s.as_str(),
+                        blazecode_core::config::PluginSpec::WithOptions(s, _) => s.as_str(),
                     };
                     println!("  - {name}");
                 }
@@ -7275,7 +7275,7 @@ async fn cmd_debug(cmd: &DebugCommand) -> i32 {
         }
         DebugCommand::Paths => {
             // TS: iterates Global.Path entries
-            let paths = rustcode_core::global::paths();
+            let paths = blazecode_core::global::paths();
             println!("{:<10} {}", "data", paths.data);
             println!("{:<10} {}", "config", paths.config);
             println!("{:<10} {}", "cache", paths.cache);
@@ -7322,9 +7322,9 @@ fn list_files_fallback(limit: usize) {
 // upgrade
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// `upgrade` — Upgrade OpenCode to the latest or a specific version.
+/// `upgrade` — Upgrade BlazeCode to the latest or a specific version.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/upgrade.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/upgrade.ts`
 async fn cmd_upgrade(args: &UpgradeArgs) -> i32 {
     let target = args
         .target
@@ -7335,7 +7335,7 @@ async fn cmd_upgrade(args: &UpgradeArgs) -> i32 {
 
     let current = env!("CARGO_PKG_VERSION");
 
-    println!("rustcode upgrade");
+    println!("blazecode upgrade");
     println!();
     println!("  Current version: {current}");
     println!("  Target version:  {target}");
@@ -7343,7 +7343,7 @@ async fn cmd_upgrade(args: &UpgradeArgs) -> i32 {
     println!();
 
     if target == current {
-        println!("rustcode is already at version {target}.");
+        println!("blazecode is already at version {target}.");
         println!("No upgrade needed.");
         return 0;
     }
@@ -7353,49 +7353,49 @@ async fn cmd_upgrade(args: &UpgradeArgs) -> i32 {
     match method {
         "cargo" | "auto" => {
             if has_binary("cargo") {
-                println!("rustcode appears to be installed via cargo.");
+                println!("blazecode appears to be installed via cargo.");
                 println!("To upgrade, run:");
                 if target == "latest" {
-                    println!("  cargo install --git https://github.com/sst/opencode.git rustcode");
+                    println!("  cargo install --git https://github.com/sst/blazecode.git blazecode");
                 } else {
-                    println!("  cargo install --git https://github.com/sst/opencode.git --tag v{target} rustcode");
+                    println!("  cargo install --git https://github.com/sst/blazecode.git --tag v{target} blazecode");
                 }
             } else {
                 println!("Automatic upgrade is not yet implemented for this installation method.");
                 println!();
                 println!("For Rust/Cargo-based installations:");
-                println!("  cargo install --force rustcode");
+                println!("  cargo install --force blazecode");
                 println!();
-                println!("Check https://github.com/sst/opencode/releases for the latest version.");
+                println!("Check https://github.com/sst/blazecode/releases for the latest version.");
             }
         }
         "npm" => {
             println!("Upgrading via npm...");
-            println!("  npm install -g opencode-ai@{target}");
+            println!("  npm install -g blazecode-ai@{target}");
         }
         "pnpm" => {
             println!("Upgrading via pnpm...");
-            println!("  pnpm install -g opencode-ai@{target}");
+            println!("  pnpm install -g blazecode-ai@{target}");
         }
         "bun" => {
             println!("Upgrading via bun...");
-            println!("  bun install -g opencode-ai@{target}");
+            println!("  bun install -g blazecode-ai@{target}");
         }
         "brew" => {
             println!("Upgrading via Homebrew...");
-            println!("  brew upgrade opencode");
+            println!("  brew upgrade blazecode");
         }
         "choco" => {
             println!("Upgrading via Chocolatey...");
-            println!("  choco upgrade opencode --version={target}");
+            println!("  choco upgrade blazecode --version={target}");
         }
         "scoop" => {
             println!("Upgrading via Scoop...");
-            println!("  scoop update opencode");
+            println!("  scoop update blazecode");
         }
         "curl" => {
             println!("Upgrading via curl script...");
-            eprintln!("  curl -fsSL https://opencode.ai/install.sh | bash");
+            eprintln!("  curl -fsSL https://blazecode.ai/install.sh | bash");
         }
         _ => {
             println!("Unknown installation method: {method}");
@@ -7410,13 +7410,13 @@ async fn cmd_upgrade(args: &UpgradeArgs) -> i32 {
 // uninstall
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// `uninstall` — Uninstall OpenCode and remove all related files.
+/// `uninstall` — Uninstall BlazeCode and remove all related files.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/uninstall.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/uninstall.ts`
 async fn cmd_uninstall(args: &UninstallArgs) -> i32 {
-    let paths = rustcode_core::global::paths();
+    let paths = blazecode_core::global::paths();
 
-    println!("rustcode uninstall");
+    println!("blazecode uninstall");
     println!();
     println!("The following directories would be affected:");
     println!();
@@ -7492,7 +7492,7 @@ async fn cmd_uninstall(args: &UninstallArgs) -> i32 {
     }
 
     println!();
-    println!("Thank you for using rustcode!");
+    println!("Thank you for using blazecode!");
     0
 }
 
@@ -7662,7 +7662,7 @@ fn build_github_task(
 
 /// `github` — Manage GitHub agent.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/github.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/github.ts`
 async fn cmd_github(cmd: &GithubCommand) -> i32 {
     match cmd {
         GithubCommand::Install => {
@@ -7696,7 +7696,7 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
                 eprintln!("For now, you can manually configure the GitHub integration by:");
                 eprintln!("  1. Creating a GitHub App in your account/organization settings");
                 eprintln!("  2. Setting GITHUB_TOKEN environment variable");
-                eprintln!("  3. Running: rustcode github run");
+                eprintln!("  3. Running: blazecode github run");
             } else {
                 eprintln!("GitHub CLI (`gh`) is not installed.");
                 eprintln!("Install it from: https://cli.github.com");
@@ -7788,7 +7788,7 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             eprintln!("Task: {task_description}");
 
             // ── detect AI providers ──────────────────────────────────
-            use rustcode_core::providers::auto_detect_all;
+            use blazecode_core::providers::auto_detect_all;
             let providers = auto_detect_all();
 
             if providers.is_empty() {
@@ -7871,13 +7871,13 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
                 task_description
             };
 
-            use rustcode_core::session_prompt::{PromptPart, PromptTextPart, SessionPromptInput};
+            use blazecode_core::session_prompt::{PromptPart, PromptTextPart, SessionPromptInput};
 
             let session_id = format!("gh-{}-{}", event_type, std::process::id());
             let input = SessionPromptInput {
                 session_id: session_id.clone(),
                 message_id: None,
-                model: Some(rustcode_core::session_info::ModelRef {
+                model: Some(blazecode_core::session_info::ModelRef {
                     id: model.id.clone(),
                     provider_id: provider.provider_id().to_string(),
                     variant: None,
@@ -7896,7 +7896,7 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             };
 
             // ── set up tool registry ─────────────────────────────────
-            use rustcode_core::tool::ToolRegistry;
+            use blazecode_core::tool::ToolRegistry;
             let tool_registry = Arc::new(ToolRegistry::new());
             tool_registry.register_builtins();
 
@@ -7913,20 +7913,20 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             // sessions.
 
             // Build minimal services for the runner
-            let db = Arc::new(rustcode_core::database::DatabaseService::new(
+            let db = Arc::new(blazecode_core::database::DatabaseService::new(
                 sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
             ));
-            let epoch_manager = Arc::new(rustcode_core::session_epoch::EpochManager::new(db.clone()));
-            let input_inbox = Arc::new(rustcode_core::session_input_inbox::SessionInputInbox::new(db.clone()));
-            let agent_service = Arc::new(rustcode_core::agent::AgentService::new(
-                &rustcode_core::config::Config::load().unwrap_or_default(),
+            let epoch_manager = Arc::new(blazecode_core::session_epoch::EpochManager::new(db.clone()));
+            let input_inbox = Arc::new(blazecode_core::session_input_inbox::SessionInputInbox::new(db.clone()));
+            let agent_service = Arc::new(blazecode_core::agent::AgentService::new(
+                &blazecode_core::config::Config::load().unwrap_or_default(),
                 std::env::current_dir().unwrap_or_default(),
-                std::path::PathBuf::from("/tmp/rustcode-data"),
+                std::path::PathBuf::from("/tmp/blazecode-data"),
                 std::env::temp_dir(),
                 Vec::new(),
             ));
-            let compaction = Arc::new(rustcode_core::session_compaction::SessionCompaction::default());
-            let runner = rustcode_core::session_runner::SessionRunner::new(
+            let compaction = Arc::new(blazecode_core::session_compaction::SessionCompaction::default());
+            let runner = blazecode_core::session_runner::SessionRunner::new(
                 tool_registry, epoch_manager, input_inbox, agent_service, compaction, db,
             );
 
@@ -7984,7 +7984,7 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
 
 /// `pr` — Fetch and checkout a GitHub PR branch.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/pr.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/pr.ts`
 async fn cmd_pr(args: &PrArgs) -> i32 {
     let pr_number = args.number;
     eprintln!("Fetching and checking out PR #{pr_number}...");
@@ -8077,7 +8077,7 @@ async fn cmd_pr(args: &PrArgs) -> i32 {
                                 // Check for opncd.ai share links
                                 if let Some(session_url) = extract_session_url(body) {
                                     eprintln!("Found session URL in PR: {session_url}");
-                                    eprintln!("Run `rustcode import {session_url}` to import the session.");
+                                    eprintln!("Run `blazecode import {session_url}` to import the session.");
                                 }
                             }
                         }
@@ -8085,7 +8085,7 @@ async fn cmd_pr(args: &PrArgs) -> i32 {
                 }
 
                 println!();
-                println!("Starting rustcode... Use `rustcode run` or `rustcode tui` to");
+                println!("Starting blazecode... Use `blazecode run` or `blazecode tui` to");
                 println!("work on this PR with AI assistance.");
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
@@ -8130,7 +8130,7 @@ fn extract_session_url(text: &str) -> Option<String> {
 
 /// `plugin` — Install plugin and update config.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/plug.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/plug.ts`
 async fn cmd_plugin(args: &PluginArgs) -> i32 {
     let module = args.module.trim();
     if module.is_empty() {
@@ -8147,14 +8147,14 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
     println!();
 
     // ── 1. Parse spec, determine source, check deprecation ──
-    let source = rustcode_core::plugin::plugin_source(module);
-    let is_npm = source == rustcode_core::plugin::PluginSource::Npm;
+    let source = blazecode_core::plugin::plugin_source(module);
+    let is_npm = source == blazecode_core::plugin::PluginSource::Npm;
 
-    if rustcode_core::plugin::is_deprecated_plugin(module) {
+    if blazecode_core::plugin::is_deprecated_plugin(module) {
         eprintln!("Warning: `{module}` is deprecated and now built-in.");
     }
 
-    let parsed = rustcode_core::plugin::parse_specifier(module);
+    let parsed = blazecode_core::plugin::parse_specifier(module);
 
     // ── 2. Install npm package or validate file path ─────────
     let plugin_dir = if is_npm {
@@ -8218,7 +8218,7 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
     };
 
     // ── 3. Read package.json ────────────────────────────────
-    let pkg = match rustcode_core::plugin::read_plugin_package(&plugin_dir) {
+    let pkg = match blazecode_core::plugin::read_plugin_package(&plugin_dir) {
         Ok(pkg) => pkg,
         Err(e) => {
             eprintln!("Error reading plugin package: {e}");
@@ -8226,16 +8226,16 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
         }
     };
 
-    let plugin_id = rustcode_core::plugin::resolve_plugin_id(&pkg)
+    let plugin_id = blazecode_core::plugin::resolve_plugin_id(&pkg)
         .unwrap_or_else(|| parsed.pkg.clone());
     let plugin_version = pkg.version.as_deref().unwrap_or("unknown");
 
     eprintln!("Plugin ID:      {plugin_id}");
     eprintln!("Plugin version: {plugin_version}");
 
-    // ── 4. Compatibility check (engines.opencode) ───────────
+    // ── 4. Compatibility check (engines.blazecode) ───────────
     if let Err(e) =
-        rustcode_core::plugin::check_plugin_compatibility(&pkg, env!("CARGO_PKG_VERSION"))
+        blazecode_core::plugin::check_plugin_compatibility(&pkg, env!("CARGO_PKG_VERSION"))
     {
         eprintln!("Warning: {e}");
         if !force {
@@ -8246,7 +8246,7 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
     }
 
     // ── 5. Read plugin manifest → determine targets ─────────
-    let targets = match rustcode_core::plugin::read_plugin_manifest(&plugin_dir) {
+    let targets = match blazecode_core::plugin::read_plugin_manifest(&plugin_dir) {
         Ok(t) => t,
         Err(e) => {
             eprintln!("Error reading plugin manifest: {e}");
@@ -8260,16 +8260,16 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
     }
     println!();
 
-    // ── 6. Patch opencode config to register the plugin ─────
+    // ── 6. Patch blazecode config to register the plugin ─────
     let config_dir = if args.global {
         dirs::config_dir()
-            .map(|d| d.join("opencode"))
-            .unwrap_or_else(|| PathBuf::from(".opencode"))
+            .map(|d| d.join("blazecode"))
+            .unwrap_or_else(|| PathBuf::from(".blazecode"))
     } else {
-        PathBuf::from(".opencode")
+        PathBuf::from(".blazecode")
     };
 
-    match rustcode_core::plugin::patch_plugin_config(&config_dir, module, &targets, force) {
+    match blazecode_core::plugin::patch_plugin_config(&config_dir, module, &targets, force) {
         Ok(results) => {
             for (kind, path) in &results {
                 eprintln!("Patched config ({kind}): {path}");
@@ -8282,8 +8282,8 @@ async fn cmd_plugin(args: &PluginArgs) -> i32 {
     }
 
     // ── 7. Save plugin metadata ────────────────────────────
-    let mut meta_manager = rustcode_core::plugin::PluginManager::new();
-    if let Some(meta_path) = rustcode_core::plugin::PluginManager::default_meta_path() {
+    let mut meta_manager = blazecode_core::plugin::PluginManager::new();
+    if let Some(meta_path) = blazecode_core::plugin::PluginManager::default_meta_path() {
         let _ = meta_manager.load_meta(&meta_path);
         meta_manager.touch_meta(
             &plugin_id,
@@ -8327,7 +8327,7 @@ fn detect_package_manager() -> &'static str {
 
 /// `db` — Database tools (SQL query or interactive shell).
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/db.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/db.ts`
 async fn cmd_db(args: &DbArgs) -> i32 {
     let db_path = get_db_path();
 
@@ -8411,9 +8411,9 @@ async fn cmd_db(args: &DbArgs) -> i32 {
 // attach
 // ═════════════════════════════════════════════════════════════════════════════
 
-/// `attach` — Attach to a running OpenCode server.
+/// `attach` — Attach to a running BlazeCode server.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/attach.ts`
+/// Ported from: `packages/blazecode/src/cli/cmd/attach.ts`
 async fn cmd_attach(args: &AttachArgs) -> i32 {
     if args.fork && !args.r#continue && args.session.is_none() {
         cli_error::format_cli_error("--fork requires --continue or --session");
@@ -8431,12 +8431,12 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
     let username = args
         .username
         .clone()
-        .or_else(|| std::env::var("OPENCODE_SERVER_USERNAME").ok())
-        .unwrap_or_else(|| "opencode".to_string());
+        .or_else(|| std::env::var("BLAZECODE_SERVER_USERNAME").ok())
+        .unwrap_or_else(|| "blazecode".to_string());
     let password = args
         .password
         .clone()
-        .or_else(|| std::env::var("OPENCODE_SERVER_PASSWORD").ok());
+        .or_else(|| std::env::var("BLAZECODE_SERVER_PASSWORD").ok());
 
     if let Some(pw) = &password {
         let auth = format!("{username}:{pw}");
@@ -8462,8 +8462,8 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
             } else if response.status().as_u16() == 401 {
                 eprintln!("Server requires authentication.");
                 eprintln!("Provide --username and --password, or set:");
-                eprintln!("  OPENCODE_SERVER_USERNAME");
-                eprintln!("  OPENCODE_SERVER_PASSWORD");
+                eprintln!("  BLAZECODE_SERVER_USERNAME");
+                eprintln!("  BLAZECODE_SERVER_PASSWORD");
                 return 1;
             } else {
                 eprintln!("Server responded with: HTTP {}", response.status());
@@ -8474,10 +8474,10 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
             eprintln!("Could not connect to server: {e}");
             eprintln!();
             eprintln!("Make sure the server is running:");
-            eprintln!("  rustcode serve --port <port>");
+            eprintln!("  blazecode serve --port <port>");
             eprintln!();
             eprintln!("Then attach with:");
-            eprintln!("  rustcode attach http://localhost:<port>");
+            eprintln!("  blazecode attach http://localhost:<port>");
             return 1;
         }
     }
@@ -8489,7 +8489,7 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
     // Build the SseClient with auth and spawn its connect loop.
     // SseClient handles SSE parsing, TuiEvent conversion, and broadcast
     // to subscribers (including the TUI's Remote-mode event loop).
-    let mut sse_client = rustcode_tui::SseClient::new(url);
+    let mut sse_client = blazecode_tui::SseClient::new(url);
     if let Some(pw) = &password {
         sse_client.set_auth(&username, Some(pw));
     }
@@ -8519,7 +8519,7 @@ async fn cmd_attach(args: &AttachArgs) -> i32 {
     eprintln!("Press Ctrl+C to disconnect.");
 
     let tui_url = url.to_string();
-    match rustcode_tui::TuiApp::new_remote(sse_client, tui_url.clone(), http_client) {
+    match blazecode_tui::TuiApp::new_remote(sse_client, tui_url.clone(), http_client) {
         Ok(mut tui) => {
             let result = tokio::select! {
                 // Run TUI event loop (Remote mode — SSE handled internally)
@@ -8591,25 +8591,25 @@ fn base64_encode(input: &str) -> String {
 
 /// `generate` — Generate shell completions.
 ///
-/// Ported from: `packages/opencode/src/cli/cmd/generate.ts` (OpenAPI code samples)
+/// Ported from: `packages/blazecode/src/cli/cmd/generate.ts` (OpenAPI code samples)
 /// and the TS yargs `.completion("completion", ...)` registration.
 async fn cmd_generate() -> i32 {
     // TS: Generates OpenAPI spec with x-codeSamples for the JS SDK.
     // In Rust, clap natively supports completions via `clap_complete` crate.
     // Since we avoid adding extra deps, print help about completions.
 
-    println!("# rustcode shell completions");
+    println!("# blazecode shell completions");
     println!();
     println!("Shell completions are generated by clap. To enable them:");
     println!();
     println!("  # bash");
-    println!("  rustcode --help | complete -F _rustcode rustcode");
+    println!("  blazecode --help | complete -F _blazecode blazecode");
     println!();
     println!("  # zsh");
-    println!("  eval \"$(rustcode --help 2>&1 | grep -v '^error')\"  # placeholder");
+    println!("  eval \"$(blazecode --help 2>&1 | grep -v '^error')\"  # placeholder");
     println!();
     println!("  # fish");
-    println!("  rustcode --help | source  # placeholder");
+    println!("  blazecode --help | source  # placeholder");
     println!();
     println!("For full shell completion support, install clap_complete and rebuild.");
     println!("See: https://docs.rs/clap_complete/latest/clap_complete/");
@@ -8623,10 +8623,10 @@ async fn cmd_generate() -> i32 {
 
 /// `version` — Show version information.
 ///
-/// Ported from: `packages/opencode/src/index.ts` — `.version("version", ...)`
+/// Ported from: `packages/blazecode/src/index.ts` — `.version("version", ...)`
 fn cmd_version() {
-    println!("rustcode {}", env!("CARGO_PKG_VERSION"));
-    println!("Port of OpenCode (TypeScript/Bun) to Rust");
+    println!("blazecode {}", env!("CARGO_PKG_VERSION"));
+    println!("Port of BlazeCode (TypeScript/Bun) to Rust");
     println!();
 
     // Show build info
@@ -8641,7 +8641,7 @@ fn cmd_version() {
     );
 
     // Show detected providers
-    let providers = rustcode_core::providers::auto_detect_all();
+    let providers = blazecode_core::providers::auto_detect_all();
     if providers.is_empty() {
         println!();
         println!("No providers detected. Set API key environment variables.");

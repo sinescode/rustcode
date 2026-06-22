@@ -1,10 +1,10 @@
-# Contributing to RustCode
+# Contributing to BlazeCode
 
 ## Getting Started
 
 ```bash
-git clone https://github.com/sinescode/rustcode
-cd rustcode
+git clone https://github.com/sinescode/blazecode
+cd blazecode
 cargo check
 ```
 
@@ -38,10 +38,10 @@ All changes must pass CI before merging:
 ## Architecture
 
 ```
-rustcode/                              # workspace root + binary crate
+blazecode/                              # workspace root + binary crate
 ├── src/main.rs                        # CLI entry (clap: Run, Serve, Tui, etc.)
 ├── crates/
-│   ├── rustcode-core/                 # Core library
+│   ├── blazecode-core/                 # Core library
 │   │   ├── config/                    # Configuration
 │   │   ├── session/                   # Session management (V1 + V2)
 │   │   ├── provider/                  # LLM provider trait + implementations
@@ -51,13 +51,13 @@ rustcode/                              # workspace root + binary crate
 │   │   ├── filesystem/               # File I/O
 │   │   ├── database/                  # SQLite access
 │   │   └── encryption/               # At-rest encryption
-│   ├── rustcode-server/              # HTTP/SSE API server
-│   ├── rustcode-tui/                 # Terminal UI (ratatui)
-│   ├── rustcode-lsp/                 # LSP integration
-│   └── rustcode-mcp/                 # Model Context Protocol
+│   ├── blazecode-server/              # HTTP/SSE API server
+│   ├── blazecode-tui/                 # Terminal UI (ratatui)
+│   ├── blazecode-lsp/                 # LSP integration
+│   └── blazecode-mcp/                 # Model Context Protocol
 ```
 
-## Porting from OpenCode
+## Porting from BlazeCode
 
 The upstream TS source is at `packages/` in the OpenCode repository.
 - Pin your work to the commit referenced in `CLAUDE.md`
@@ -74,11 +74,11 @@ The upstream TS source is at `packages/` in the OpenCode repository.
 ## Adding a New Provider
 
 1. Add provider config type to `config.rs`
-2. Implement `Provider` trait in `crates/rustcode-core/src/providers/`
+2. Implement `Provider` trait in `crates/blazecode-core/src/providers/`
 3. Register in `providers/mod.rs`
 4. Test with `cargo test -- provider_name`
 5. Create a PR
 
 ## Questions?
 
-Open an issue at https://github.com/sinescode/rustcode/issues
+Open an issue at https://github.com/sinescode/blazecode/issues

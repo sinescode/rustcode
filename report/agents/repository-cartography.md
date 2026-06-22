@@ -1,15 +1,15 @@
-# Repository Cartography Report: RustCode vs OpenCode
+# Repository Cartography Report: BlazeCode vs BlazeCode
 
 **Agent 01 — Repository Cartographer**  
 **Date:** 2026-06-21  
-**RustCode commit:** Local workspace at `/root/opencodesport/rustcode`  
-**OpenCode commit:** Local workspace at `/root/opencodesport/opencode`  
+**BlazeCode commit:** Local workspace at `/root/blazecodesport/blazecode`  
+**BlazeCode commit:** Local workspace at `/root/blazecodesport/blazecode`  
 
 ---
 
 ## 1. Repository Overview Table
 
-| Metric | RustCode | OpenCode |
+| Metric | BlazeCode | BlazeCode |
 |---|---|---|
 | **Primary Language** | Rust (edition 2021) | TypeScript (5.8) |
 | **Total Files** | 181 `.rs` files | ~2,610 `.ts`/`.tsx` files |
@@ -17,9 +17,9 @@
 | **Source LOC** | ~168,000 (excl. build artifacts) | ~191,048 (non-generated) |
 | **Crates/Packages** | 6 cargo workspace members | 29 npm workspaces across 4 groups |
 | **Build System** | Cargo workspace (resolver v2) | Turbo v2.8.13 + Bun 1.3.14 |
-| **Central Library** | `rustcode-core` (101 files, 126,855 LOC, 74%) | `@opencode-ai/core` (largest package) |
-| **Binary / CLI Crate** | `rustcode` (`src/main.rs`, 8,575 LOC) | `opencode` (`packages/opencode/`) |
-| **Public Modules** | 85 `pub mod` in rustcode-core | ~350 source files across opencode |
+| **Central Library** | `blazecode-core` (101 files, 126,855 LOC, 74%) | `@blazecode-ai/core` (largest package) |
+| **Binary / CLI Crate** | `blazecode` (`src/main.rs`, 8,575 LOC) | `blazecode` (`packages/blazecode/`) |
+| **Public Modules** | 85 `pub mod` in blazecode-core | ~350 source files across blazecode |
 | **Test Count** | 2,655 `#[test]` annotations | ~553 `.test.*` files |
 | **Largest File(s)** | `main.rs` 8,575, `tool_impls.rs` 7,235, `plugin.rs` 6,236 | `types.gen.ts` 11,271, `sdk.gen.ts` 6,836, `icons/index.tsx` 4,454 |
 | **Infrastructure Targets** | Linux/macOS (native binary) | Cloudflare Workers (SST v4), AWS, desktop (Electron) |
@@ -27,8 +27,8 @@
 | **UI Framework** | ratatui + crossterm (TUI only) | OpenTUI (terminal), SolidJS (web), SolidJS/Vite (app) |
 | **Effect System** | `tokio` async + `Arc<RwLock<>>` shared state | Effect v4 beta (functional effects, layers, fibers) |
 | **LLM Integration** | Custom trait-based provider model | AI SDK providers + custom Effect-native layer |
-| **LSP Server** | Built-in (`rustcode-lsp`, 3,099 LOC) | External (separate binary in SDK) |
-| **MCP Support** | Built-in (`rustcode-mcp`, 1,774 LOC) | Built-in (`packages/opencode/src/mcp/`) |
+| **LSP Server** | Built-in (`blazecode-lsp`, 3,099 LOC) | External (separate binary in SDK) |
+| **MCP Support** | Built-in (`blazecode-mcp`, 1,774 LOC) | Built-in (`packages/blazecode/src/mcp/`) |
 | **Auth** | API key env vars + server password | OAuth (OpenAuth), API keys, SSO, GitHub device flow |
 | **HTTP Framework** | Axum 0.8 | Hono 4.10 |
 | **ORM** | sqlx (raw SQL) | Drizzle ORM + Effect SQL |
@@ -38,12 +38,12 @@
 
 ## 2. Module Graph
 
-### 2A. RustCode — Complete Module Tree (`rustcode-core`)
+### 2A. BlazeCode — Complete Module Tree (`blazecode-core`)
 
-All 85 public modules in `rustcode-core`, organized by domain:
+All 85 public modules in `blazecode-core`, organized by domain:
 
 ```
-rustcode-core (src/lib.rs)
+blazecode-core (src/lib.rs)
 │
 ├── CORE INFRASTRUCTURE
 │   ├── lib.rs              — crate root, re-exports
@@ -151,7 +151,7 @@ rustcode-core (src/lib.rs)
 │
 ├── LSP
 │   ├── lsp.rs              — LSP integration in core
-│   └── (rustcode-lsp crate)— standalone LSP server (3,099 LOC)
+│   └── (blazecode-lsp crate)— standalone LSP server (3,099 LOC)
 │
 ├── SKILLS & AGENTS
 │   ├── skill.rs            — skill discovery, loading, guidance
@@ -197,21 +197,21 @@ rustcode-core (src/lib.rs)
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                        rustcode (bin)                        │
+│                        blazecode (bin)                        │
 │                   src/main.rs — 8,575 LOC                    │
 │  CLI dispatch: ACP, MCP, TUI, Attach, Run, Console, ...    │
 └────────┬──────────┬──────────┬──────────┬──────────┬────────┘
          │          │          │          │          │
          ▼          ▼          ▼          ▼          ▼
 ┌──────────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
-│ rustcode-core │ │rustcode- │ │rustcode- │ │rustcode- │ │rustcode- │
+│ blazecode-core │ │blazecode- │ │blazecode- │ │blazecode- │ │blazecode- │
 │  (lib)        │ │ server   │ │   tui    │ │   lsp    │ │   mcp    │
 │  101 files    │ │ 42 files │ │ 25 files │ │ 1 file   │ │ 1 file   │
 │  126,855 LOC  │ │ 9,282 LOC│ │17,824 LOC│ │ 3,099 LOC│ │ 1,774 LOC│
 └──────┬────────┘ └────┬─────┘ └────┬─────┘ └─────┬─────┘ └────┬─────┘
        │               │            │             │            │
        │◄──────────────┘◄───────────┘◄────────────┘◄───────────┘
-       │            All depend on rustcode-core
+       │            All depend on blazecode-core
        ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                   External Dependencies                           │
@@ -235,11 +235,11 @@ rustcode-core (src/lib.rs)
 └──────────────────────────────────────────────────────────────────┘
 ```
 
-### 2B. OpenCode — Package Dependency Graph
+### 2B. BlazeCode — Package Dependency Graph
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                        OPENCODE MONOREPO                             │
+│                        BLAZECODE MONOREPO                             │
 │                 ~190,520 LOC TypeScript, 29 packages                 │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
@@ -247,15 +247,15 @@ rustcode-core (src/lib.rs)
 │  │                     CORE LAYER (8 packages)                     │ │
 │  ├─────────────────────────────────────────────────────────────────┤ │
 │  │                                                                  │ │
-│  │  @opencode-ai/core ─── central library (session, DB, tools,     │ │
+│  │  @blazecode-ai/core ─── central library (session, DB, tools,     │ │
 │  │      │                providers, events, filesystem, etc.)       │ │
-│  │      ├── @opencode-ai/effect-drizzle-sqlite (Drizzle ORM glue)   │ │
-│  │      ├── @opencode-ai/effect-sqlite-node (SQLite node binding)   │ │
-│  │      ├── @opencode-ai/llm (provider abstractions, protocols)     │ │
-│  │      └── @opencode-ai/plugin (plugin system)                     │ │
+│  │      ├── @blazecode-ai/effect-drizzle-sqlite (Drizzle ORM glue)   │ │
+│  │      ├── @blazecode-ai/effect-sqlite-node (SQLite node binding)   │ │
+│  │      ├── @blazecode-ai/llm (provider abstractions, protocols)     │ │
+│  │      └── @blazecode-ai/plugin (plugin system)                     │ │
 │  │                                                                  │ │
-│  │  @opencode-ai/cli (CLI command definitions, shared lib)          │ │
-│  │  @opencode-ai/http-recorder (HTTP recording for tests)          │ │
+│  │  @blazecode-ai/cli (CLI command definitions, shared lib)          │ │
+│  │  @blazecode-ai/http-recorder (HTTP recording for tests)          │ │
 │  │                                                                  │ │
 │  └─────────────────────────────────────────────────────────────────┘ │
 │                                    │                                  │
@@ -263,13 +263,13 @@ rustcode-core (src/lib.rs)
 │  │                  APPLICATIONS (4 packages)                      │ │
 │  ├─────────────────────────────────────────────────────────────────┤ │
 │  │                                                                  │ │
-│  │  opencode ───── CLI binary + server + LSP + MCP + provider init │ │
+│  │  blazecode ───── CLI binary + server + LSP + MCP + provider init │ │
 │  │      │          350 TS source files                              │ │
-│  │      ├── @opencode-ai/tui ──── OpenTUI terminal UI               │ │
-│  │      ├── @opencode-ai/ui ───── SolidJS component library         │ │
-│  │      ├── @opencode-ai/web ──── SolidJS web app                   │ │
-│  │      ├── @opencode-ai/app ──── SolidJS/Vite SPA                  │ │
-│  │      └── @opencode-ai/desktop ── Electron desktop shell          │ │
+│  │      ├── @blazecode-ai/tui ──── OpenTUI terminal UI               │ │
+│  │      ├── @blazecode-ai/ui ───── SolidJS component library         │ │
+│  │      ├── @blazecode-ai/web ──── SolidJS web app                   │ │
+│  │      ├── @blazecode-ai/app ──── SolidJS/Vite SPA                  │ │
+│  │      └── @blazecode-ai/desktop ── Electron desktop shell          │ │
 │  │                                                                  │ │
 │  └─────────────────────────────────────────────────────────────────┘ │
 │                                    │                                  │
@@ -277,11 +277,11 @@ rustcode-core (src/lib.rs)
 │  │            INFRASTRUCTURE (5 packages)                          │ │
 │  ├─────────────────────────────────────────────────────────────────┤ │
 │  │                                                                  │ │
-│  │  @opencode-ai/server ─── Hono HTTP server                       │ │
-│  │  @opencode-ai/slack ──── Slack bot integration                  │ │
-│  │  @opencode-ai/enterprise ── Enterprise SSO/auth                 │ │
-│  │  @opencode-ai/function ──── Function/sidecar runners            │ │
-│  │  @opencode-ai/script ───── Script execution engine              │ │
+│  │  @blazecode-ai/server ─── Hono HTTP server                       │ │
+│  │  @blazecode-ai/slack ──── Slack bot integration                  │ │
+│  │  @blazecode-ai/enterprise ── Enterprise SSO/auth                 │ │
+│  │  @blazecode-ai/function ──── Function/sidecar runners            │ │
+│  │  @blazecode-ai/script ───── Script execution engine              │ │
 │  │                                                                  │ │
 │  └─────────────────────────────────────────────────────────────────┘ │
 │                                    │                                  │
@@ -289,12 +289,12 @@ rustcode-core (src/lib.rs)
 │  │            CONSOLE SUITE (5 packages, PlanetScale)              │ │
 │  ├─────────────────────────────────────────────────────────────────┤ │
 │  │                                                                  │ │
-│  │  @opencode-ai/console/app ── Console web frontend               │ │
-│  │  @opencode-ai/console/core ── Console business logic            │ │
-│  │  @opencode-ai/console/resource ── Resource management           │ │
-│  │  @opencode-ai/console/function ── Console function runner       │ │
-│  │  @opencode-ai/console/mail ── Email service                     │ │
-│  │  @opencode-ai/console/support ── Support ticket system          │ │
+│  │  @blazecode-ai/console/app ── Console web frontend               │ │
+│  │  @blazecode-ai/console/core ── Console business logic            │ │
+│  │  @blazecode-ai/console/resource ── Resource management           │ │
+│  │  @blazecode-ai/console/function ── Console function runner       │ │
+│  │  @blazecode-ai/console/mail ── Email service                     │ │
+│  │  @blazecode-ai/console/support ── Support ticket system          │ │
 │  │                                                                  │ │
 │  └─────────────────────────────────────────────────────────────────┘ │
 │                                    │                                  │
@@ -302,9 +302,9 @@ rustcode-core (src/lib.rs)
 │  │            STATS SUITE (3 packages, PlanetScale)                │ │
 │  ├─────────────────────────────────────────────────────────────────┤ │
 │  │                                                                  │ │
-│  │  @opencode-ai/stats/app ──── Analytics dashboard (SolidJS)      │ │
-│  │  @opencode-ai/stats/core ─── Analytics data models              │ │
-│  │  @opencode-ai/stats/server ── Analytics API server              │ │
+│  │  @blazecode-ai/stats/app ──── Analytics dashboard (SolidJS)      │ │
+│  │  @blazecode-ai/stats/core ─── Analytics data models              │ │
+│  │  @blazecode-ai/stats/server ── Analytics API server              │ │
 │  │                                                                  │ │
 │  └─────────────────────────────────────────────────────────────────┘ │
 │                                    │                                  │
@@ -312,44 +312,44 @@ rustcode-core (src/lib.rs)
 │  │            SDK & DEVTOOLS (4 packages)                          │ │
 │  ├─────────────────────────────────────────────────────────────────┤ │
 │  │                                                                  │ │
-│  │  @opencode-ai/sdk/js ──── JavaScript SDK (generated)            │ │
+│  │  @blazecode-ai/sdk/js ──── JavaScript SDK (generated)            │ │
 │  │  sdks/vscode ──────────── VS Code extension                     │ │
-│  │  @opencode-ai/storybook ── UI component storybook               │ │
-│  │  @opencode-ai/opencode ── (the main package, in app layer)      │ │
+│  │  @blazecode-ai/storybook ── UI component storybook               │ │
+│  │  @blazecode-ai/blazecode ── (the main package, in app layer)      │ │
 │  │                                                                  │ │
 │  └─────────────────────────────────────────────────────────────────┘ │
 │                                                                      │
 │              External Dependencies (grouped by category)             │
 ├──────────────────────────────────────────────────────────────────────┤
 │                                                                      │
-│  HTTP: Hono, @opencode-ai/server,               RustCode equiv:     │
+│  HTTP: Hono, @blazecode-ai/server,               BlazeCode equiv:     │
 │        SSE event stream                              reqwest + axum  │
 │                                                                      │
-│  DB:   Drizzle ORM, Effect SQL,                    RustCode equiv:  │
+│  DB:   Drizzle ORM, Effect SQL,                    BlazeCode equiv:  │
 │        @effect/sql-sqlite-bun                        sqlx (SQLite)   │
 │        drizzle-kit                                   raw SQL         │
 │                                                                      │
-│  AI:   @ai-sdk/* (17 providers)                    RustCode equiv:  │
-│        @opencode-ai/llm                              custom Provider │
+│  AI:   @ai-sdk/* (17 providers)                    BlazeCode equiv:  │
+│        @blazecode-ai/llm                              custom Provider │
 │        @agentclientprotocol/sdk                       trait system   │
 │                                                                      │
-│  CLI:  yargs, @clack/prompts                       RustCode equiv:  │
+│  CLI:  yargs, @clack/prompts                       BlazeCode equiv:  │
 │        @opentui/core                                 clap + ratatui  │
 │                                                                      │
-│  UI:   SolidJS, OpenTUI, Kobalte,                  RustCode equiv:  │
+│  UI:   SolidJS, OpenTUI, Kobalte,                  BlazeCode equiv:  │
 │        TanStack Virtual, Tailwind CSS                ratatui (TUI)   │
 │                                                                      │
-│  Auth: @openauthjs/openauth                          RustCode: none │
+│  Auth: @openauthjs/openauth                          BlazeCode: none │
 │        @aws-sdk/credential-providers                 (env var based) │
 │        Google Auth Library                                           │
 │                                                                      │
-│  Parse: marked (markdown), shiki (syntax highlight)  RustCode: none │
+│  Parse: marked (markdown), shiki (syntax highlight)  BlazeCode: none │
 │         htmlparser2, turndown, gray-matter           (tree-sitter)  │
 │                                                                      │
-│  Cloud: SST v4, Cloudflare Workers, AWS S3          RustCode: none  │
+│  Cloud: SST v4, Cloudflare Workers, AWS S3          BlazeCode: none  │
 │         @sentry/solid, OpenTelemetry                  tokio + tracing│
 │                                                                      │
-│  Effect: effect (v4 beta)                           RustCode equiv: │
+│  Effect: effect (v4 beta)                           BlazeCode equiv: │
 │          @effect/platform-node                        tokio async    │
 │          @effect/opentelemetry                        Arc<RwLock>    │
 │                                                                      │
@@ -360,11 +360,11 @@ rustcode-core (src/lib.rs)
 
 ## 3. Crate/Package Dependency Graph
 
-### RustCode — Full Dependency Graph
+### BlazeCode — Full Dependency Graph
 
 ```
 ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
-│ rustcode  │    │rustcode- │    │rustcode- │    │rustcode- │    │rustcode- │
+│ blazecode  │    │blazecode- │    │blazecode- │    │blazecode- │    │blazecode- │
 │  (bin)    │    │ server   │    │   tui    │    │   lsp    │    │   mcp    │
 └─────┬─────┘    └─────┬─────┘    └─────┬─────┘    └─────┬─────┘    └─────┬─────┘
       │                │                │                │                │
@@ -372,7 +372,7 @@ rustcode-core (src/lib.rs)
                │               │                │               │
                ▼               ▼                ▼               ▼
         ┌────────────────────────────────────────────────────────────┐
-        │                     rustcode-core                           │
+        │                     blazecode-core                           │
         │  101 files, 126,855 LOC — the sun everything orbits        │
         └────────────────────────────────────────────────────────────┘
                         │
@@ -410,11 +410,11 @@ Internal module interdependencies (key paths):
   database.rs ──► storage.rs, snapshot.rs
 ```
 
-### OpenCode — Package Dependency Graph
+### BlazeCode — Package Dependency Graph
 
 ```
                     ┌──────────────────────────────────────────────────┐
-                    │                   opencode (CLI)                  │
+                    │                   blazecode (CLI)                  │
                     │  350 TS files — CLI dispatch, server, session    │
                     └────┬─────────┬──────────┬──────────┬────────────┘
                          │         │          │          │
@@ -454,21 +454,21 @@ Infrastructure deps:
 
 ## 4. Import Graph
 
-### RustCode — Top-Level Import Patterns
+### BlazeCode — Top-Level Import Patterns
 
 **Binary (`main.rs`):**
 ```
 clap::Parser, clap::Subcommand       ← CLI parsing
-rustcode_core::*                     ← everything
-rustcode_core::config::Config
-rustcode_core::database::*
+blazecode_core::*                     ← everything
+blazecode_core::config::Config
+blazecode_core::database::*
 tokio::*                             ← async runtime
 tracing::*                           ← logging
 serde_json::*                        ← JSON
 dirs, chrono, uuid                   ← utilities
 sqlx::*                              ← DB
 dialoguer, indicatif                 ← CLI UI
-rustcode_tui::*                      ← TUI entry
+blazecode_tui::*                      ← TUI entry
 ```
 
 **Each provider module imports:**
@@ -510,32 +510,32 @@ crate::repository::*
 reqwest                                          ← web_fetch/web_search
 ```
 
-### OpenCode — Top-Level Import Patterns
+### BlazeCode — Top-Level Import Patterns
 
-**Core (`@opencode-ai/core`):**
+**Core (`@blazecode-ai/core`):**
 ```
 effect                        ← Effect<T, E, R> everywhere
 drizzle-orm                   ← DB queries
-@opencode-ai/effect-drizzle-sqlite
-@opencode-ai/llm              ← provider types
+@blazecode-ai/effect-drizzle-sqlite
+@blazecode-ai/llm              ← provider types
 @ai-sdk/provider              ← LLM SDK types
 zod                           ← validation
 ```
 
-**CLI (`opencode/src`):**
+**CLI (`blazecode/src`):**
 ```
 effect                        ← Effect-based commands
 yargs                         ← CLI parsing
-@opencode-ai/core             ← core services
-@opencode-ai/cli              ← shared CLI utils
-@opencode-ai/llm              ← provider resolution
+@blazecode-ai/core             ← core services
+@blazecode-ai/cli              ← shared CLI utils
+@blazecode-ai/llm              ← provider resolution
 ```
 
-**TUI (`@opencode-ai/tui`):**
+**TUI (`@blazecode-ai/tui`):**
 ```
 @opentui/core                 ← TUI framework
 solid-js                      ← reactive UI
-@opencode-ai/core             ← core services
+@blazecode-ai/core             ← core services
 @tanstack/solid-virtual       ← virtual list
 ```
 
@@ -543,7 +543,7 @@ solid-js                      ← reactive UI
 
 ## 5. Runtime Graph
 
-### RustCode — Execution Flow
+### BlazeCode — Execution Flow
 
 ```
 STARTUP
@@ -618,10 +618,10 @@ main.rs: main()
   └── shutdown (graceful via tokio::signal)
 ```
 
-### OpenCode — Execution Flow
+### BlazeCode — Execution Flow
 
 ```
-STARTUP (bun run packages/opencode/src/index.ts)
+STARTUP (bun run packages/blazecode/src/index.ts)
   │
   ├── Effect.runMain(pipe(
   │     Effect.provide(Layer...),     ← Effect Layer composition
@@ -645,13 +645,13 @@ STARTUP (bun run packages/opencode/src/index.ts)
 
 ## 6. Database Schema Graph
 
-### RustCode — SQLite Database (sqlx, raw SQL)
+### BlazeCode — SQLite Database (sqlx, raw SQL)
 
 **Tables (18 + migration tracking):**
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│                      rustcode SQLite Schema                          │
+│                      blazecode SQLite Schema                          │
 ├─────────────────────────────────────────────────────────────────────┤
 │                                                                      │
 │  workspace ──┬── project_id ──► project(id) ON DELETE CASCADE       │
@@ -719,12 +719,12 @@ Migration path:
   (35+ SQL migrations, tracked in migration table)
 ```
 
-### OpenCode — SQLite Database (Drizzle ORM + Effect SQL)
+### BlazeCode — SQLite Database (Drizzle ORM + Effect SQL)
 
-**Same 18-table schema** (port was based on OpenCode commit `5d0f8660`) **plus:**
+**Same 18-table schema** (port was based on BlazeCode commit `5d0f8660`) **plus:**
 
 ```
-Additional tables/infrastructure in OpenCode:
+Additional tables/infrastructure in BlazeCode:
   - Console/Stats: PlanetScale MySQL (separate schema)
   - Enterprise: additional org/team tables
   - Control plane: instance registry, usage tracking
@@ -740,15 +740,15 @@ Migration framework:
 
 ## 7. Network Architecture
 
-### RustCode
+### BlazeCode
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                          RUSTCODE NETWORK ARCHITECTURE                        │
+│                          BLAZECODE NETWORK ARCHITECTURE                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                               │
 │  ┌──────────────┐    HTTP/SSE      ┌──────────────────┐                      │
-│  │  TUI Client   │◄──────────────►│  rustcode-server  │                      │
+│  │  TUI Client   │◄──────────────►│  blazecode-server  │                      │
 │  │  (ratatui)    │    WebSocket    │  (axum 0.8)      │                      │
 │  └──────────────┘                 │  30 API routes    │                      │
 │                                   │  SSE /event       │                      │
@@ -767,12 +767,12 @@ Migration framework:
 │  └──────────────┘                                          │                │
 │                                                              │                │
 │  ┌──────────────┐             ┌───────────────────┐          │                │
-│  │  MCP Servers  │◄──────────►│  rustcode-mcp      │──────────┘                │
+│  │  MCP Servers  │◄──────────►│  blazecode-mcp      │──────────┘                │
 │  │  (external)   │            │  (MCP client)      │                           │
 │  └──────────────┘             └───────────────────┘                           │
 │                                                              │                │
 │  ┌──────────────┐             ┌───────────────────┐          │                │
-│  │  Local LSP    │◄──────────►│  rustcode-lsp      │──────────┘                │
+│  │  Local LSP    │◄──────────►│  blazecode-lsp      │──────────┘                │
 │  │  (rust-analy) │            │  (LSP server)      │                           │
 │  └──────────────┘             └───────────────────┘                           │
 │                                                                               │
@@ -820,11 +820,11 @@ Migration framework:
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### OpenCode
+### BlazeCode
 
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│                          OPENCODE NETWORK ARCHITECTURE                        │
+│                          BLAZECODE NETWORK ARCHITECTURE                        │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                               │
 │  ┌──────────────┐    HTTP/SSE      ┌──────────────────┐                      │
@@ -864,7 +864,7 @@ Migration framework:
 │  │  (SolidJS)    │            │  (stats/*)         │                         │
 │  └──────────────┘             └───────────────────┘                          │
 │                                                                               │
-│  Additional endpoints (OpenCode-only):                                       │
+│  Additional endpoints (BlazeCode-only):                                       │
 │  ─────────────────────────────────────                                        │
 │  POST /control-plane/register    ← self-hosted control plane                  │
 │  GET  /control-plane/heartbeat                                              │
@@ -881,7 +881,7 @@ Migration framework:
 
 ## 8. File Size Distribution
 
-### RustCode — File Size Histogram (176 source files, excluding target/)
+### BlazeCode — File Size Histogram (176 source files, excluding target/)
 
 ```
    Range          Count    Bar
@@ -914,7 +914,7 @@ Largest files (need splitting):
 ⚠️ MEDIUM: plugin.rs (6,236 LOC) should be split into plugin/ subdirectory.
 ```
 
-### OpenCode — File Size Histogram (~2,610 source files)
+### BlazeCode — File Size Histogram (~2,610 source files)
 
 ```
    Range          Count    Bar
@@ -934,20 +934,20 @@ Largest files:
   1. packages/sdk/js/src/v2/gen/types.gen.ts   11,271 LOC  ← GENERATED (auto-generated SDK types)
   2. packages/sdk/js/src/v2/gen/sdk.gen.ts      6,836 LOC  ← GENERATED
   3. packages/web/src/components/icons/index.tsx 4,454 LOC  ← Icon SVGs
-  4. packages/opencode/test/provider/transform.test.ts 4,408 LOC  ← Tests
+  4. packages/blazecode/test/provider/transform.test.ts 4,408 LOC  ← Tests
   5. packages/sdk/js/src/gen/types.gen.ts       3,907 LOC  ← GENERATED
 
 ⚠️ MEDIUM: Generated files are acceptable (SDK), but test files > 4K LOC indicate
    test suite consolidation needed.
 ```
 
-**Comparison:** OpenCode has far more small files (1,444 under 100 LOC vs RustCode's 19). RustCode has concentrated logic in fewer, larger files. OpenCode uses a more granular module structure (2,610 files vs 181), which is more maintainable but has higher overhead.
+**Comparison:** BlazeCode has far more small files (1,444 under 100 LOC vs BlazeCode's 19). BlazeCode has concentrated logic in fewer, larger files. BlazeCode uses a more granular module structure (2,610 files vs 181), which is more maintainable but has higher overhead.
 
 ---
 
 ## 9. Cyclomatic Complexity Map
 
-### RustCode — High-Complexity Modules
+### BlazeCode — High-Complexity Modules
 
 | Module | File | LOC | Complexity Factors | Recommendation |
 |---|---|---|---|---|
@@ -961,7 +961,7 @@ Largest files:
 | **Provider Trait** | `provider.rs` | 3,018 | Core trait, 10+ message types, serialization | Moderate; OK as single file |
 | **SSE / Streaming** | `sse.rs` | ~1,200 | EventSource client, reconnection, backpressure | OK |
 
-### OpenCode — High-Complexity Modules
+### BlazeCode — High-Complexity Modules
 
 | Module | File | LOC | Complexity Factors |
 |---|---|---|---|
@@ -973,13 +973,13 @@ Largest files:
 | **Message Part Component** | `ui/src/components/message-part.tsx` | 2,436 | Complex rendering of different message types |
 | **SSE Stream Transport** | `stream.transport.test.ts` | 2,363 | Test for stream transport |
 
-**Structural Complexity Difference:** OpenCode's Effect v4 architecture provides structured concurrency, making complex orchestration more manageable. RustCode's tokio + Arc<RwLock> pattern requires manual lock management, increasing cognitive complexity in the session runner and tool execution paths.
+**Structural Complexity Difference:** BlazeCode's Effect v4 architecture provides structured concurrency, making complex orchestration more manageable. BlazeCode's tokio + Arc<RwLock> pattern requires manual lock management, increasing cognitive complexity in the session runner and tool execution paths.
 
 ---
 
 ## 10. Call Graph — Major Call Chains
 
-### RustCode — Critical Call Chains
+### BlazeCode — Critical Call Chains
 
 ```
 CLI CHAIN (run):
@@ -1040,13 +1040,13 @@ TUI CHAIN:
   → component::render()
 
 MCP CHAIN:
-  rustcode-mcp::McpClient::connect()
+  blazecode-mcp::McpClient::connect()
   → JSON-RPC over SSE/stdio
   → tools/list, tools/call, resources/read
-  → dispatches to rustcode-core tools
+  → dispatches to blazecode-core tools
 ```
 
-### OpenCode — Equivalent Call Chains
+### BlazeCode — Equivalent Call Chains
 
 ```
 openode CLI:
@@ -1054,34 +1054,34 @@ openode CLI:
   → Layer.provide(Database, Bus, Tools, Providers)
   → Command handler (RunCmd)
   → SessionRunner.run()
-  → Provider.chat() [via @ai-sdk/provider + @opencode-ai/llm]
-  → Tool execution [via @opencode-ai/core/tool]
+  → Provider.chat() [via @ai-sdk/provider + @blazecode-ai/llm]
+  → Tool execution [via @blazecode-ai/core/tool]
   → Output
 
 Key difference: Effect v4 wraps everything in Effect<A, E, R>
 with automatic resource cleanup, structured concurrency via
-Fibers, and Layer-based dependency injection. RustCode does
+Fibers, and Layer-based dependency injection. BlazeCode does
 this manually with Arc<RwLock<>> and tokio::spawn.
 ```
 
 ---
 
-## Gap Analysis: RustCode vs OpenCode
+## Gap Analysis: BlazeCode vs BlazeCode
 
-| Location (File, Line) | OpenCode Implementation | RustCode Implementation | Gap | Consequence | Recommendation | Severity |
+| Location (File, Line) | BlazeCode Implementation | BlazeCode Implementation | Gap | Consequence | Recommendation | Severity |
 |---|---|---|---|---|---|---|
 | `packages/core/src/providers/*.ts` | 17 AI SDK providers (Alibaba, Cerebras, Cohere, DeepInfra, etc.) via `@ai-sdk/*` | 14 providers in `providers/*.rs` | Missing: Cerebras, Cohere, DeepInfra, TogetherAI, Mistral, Perplexity, Groq, DeepSeek, Alibaba, Gateway, Vertex, Vercel | Users cannot use these LLM providers directly | Add OpenAI-compatible profiles for all 11 missing providers | HIGH |
 | `packages/core/src/database/sqlite.ts` | Drizzle ORM with Effect SQL integration | Raw sqlx queries | Missing ORM layer, no type-safe query builder | More verbose/safer queries, higher maintenance | Consider sqlx integration or keep raw SQL (acceptable) | LOW |
-| `packages/opencode/src/server/routes/` | Full route set (31 groups) | 30 route groups | Missing: control-plane registration endpoint | No self-hosted control plane support | Add control-plane route | MEDIUM |
+| `packages/blazecode/src/server/routes/` | Full route set (31 groups) | 30 route groups | Missing: control-plane registration endpoint | No self-hosted control plane support | Add control-plane route | MEDIUM |
 | `packages/core/src/event.ts` | EventV2 with Effect PubSub | Tokio broadcast bus | Missing: typed subscriber effects, structured concurrency | Less type-safe event dispatch | Current impl adequate for parity | LOW |
 | `packages/core/src/github-copilot/` | Full GitHub Copilot integration (auth, token exchange, chat) | `github_copilot.rs` (basic) | Missing: copilot plugin GUI, extended auth flows | Limited Copilot integration | Expand copilot module | MEDIUM |
-| `packages/opencode/src/provider/provider.ts` | Effect-based provider composition, middleware chains | Simple provider trait | No effect composition for retry, fallback, rate-limiting | Less sophisticated provider orchestration | Add retry/fallback wrapper provider | LOW |
+| `packages/blazecode/src/provider/provider.ts` | Effect-based provider composition, middleware chains | Simple provider trait | No effect composition for retry, fallback, rate-limiting | Less sophisticated provider orchestration | Add retry/fallback wrapper provider | LOW |
 | `packages/app/`, `packages/web/` | SolidJS web + desktop apps | No web/desktop UI | Missing: web application, desktop Electron app | CLI/TUI only; no GUI for non-terminal users | Out of scope for Rust port | LOW |
 | `packages/console/*`, `packages/stats/*` | Console and analytics dashboards | No console/stats | Missing: PlanetScale-backed admin console | No web-based admin interface | Out of scope for Rust port | LOW |
 | `packages/core/src/session/runner/index.ts` | Effect-based Layer composition for DI | Manual `Arc<RwLock<>>` wiring in `runtime.rs` | Missing: structured concurrency, automatic resource scoping | Manual wiring is fragile; errors harder to trace | Add `RuntimeContext` builder pattern (already done well) | MEDIUM |
-| `packages/opencode/src/auth/` | OpenAuth OAuth, SSO, device flow | Basic env-var auth + server password | Missing: OAuth, SSO, device flow, token refresh | Users must use API keys directly | Add OAuth flow | MEDIUM |
+| `packages/blazecode/src/auth/` | OpenAuth OAuth, SSO, device flow | Basic env-var auth + server password | Missing: OAuth, SSO, device flow, token refresh | Users must use API keys directly | Add OAuth flow | MEDIUM |
 | `packages/core/src/event.ts` (projectors) | Event projector system with Effect fibers | `event_projector.rs` + `session_projector.rs` | No fiber-based projection | Projectors run sequentially | Add async projector dispatch | LOW |
-| `packages/opencode/src/control-plane/` | Self-hosted control plane (instance registry, heartbeat, usage) | No control plane | No instance registry or heartbeat | Cannot manage distributed instances | Add optional control plane | HIGH |
+| `packages/blazecode/src/control-plane/` | Self-hosted control plane (instance registry, heartbeat, usage) | No control plane | No instance registry or heartbeat | Cannot manage distributed instances | Add optional control plane | HIGH |
 | `packages/core/src/skill/discovery.ts` | Remote skill discovery via HTTP index | `skill.rs` (basic local discovery) | No remote skill pulling | Only local skills supported | Add HTTP skill index | MEDIUM |
 | `packages/core/src/session/runner/llm.ts` | V2 runner with Effect fibers for concurrent I/O | `session_runner.rs` (tokio sequential loop) | No concurrent tool execution | Serial tool execution (slower) | Add parallel tool execution | MEDIUM |
 
@@ -1089,30 +1089,30 @@ this manually with Arc<RwLock<>> and tokio::spawn.
 
 ## Feature Completeness Scorecard
 
-| Module | OpenCode Files | RustCode Files | Est. Completeness | Grade |
+| Module | BlazeCode Files | BlazeCode Files | Est. Completeness | Grade |
 |---|---|---|---|---|
-| **Config** | `packages/core/src/config/*`, `packages/opencode/src/config/*` | `config.rs` | 90% | A |
+| **Config** | `packages/core/src/config/*`, `packages/blazecode/src/config/*` | `config.rs` | 90% | A |
 | **Database** | `packages/core/src/database/*` (10 files) | `database.rs`, `storage.rs` | 95% | A |
 | **Session Management** | `packages/core/src/session/*` (20+ files) | `session*.rs` (14 files) | 95% | A |
-| **LLM Providers** | `@opencode-ai/llm` + `@ai-sdk/*` (17 providers) | `providers/*.rs` (14 providers) | 65% | C |
-| **Tool System** | `packages/opencode/src/tool/*` | `tool.rs`, `tool_impls.rs` | 95% | A |
+| **LLM Providers** | `@blazecode-ai/llm` + `@ai-sdk/*` (17 providers) | `providers/*.rs` (14 providers) | 65% | C |
+| **Tool System** | `packages/blazecode/src/tool/*` | `tool.rs`, `tool_impls.rs` | 95% | A |
 | **Event System** | `packages/core/src/event.ts` | `event.rs`, `event_projector.rs` | 90% | A |
-| **Plugin System** | `packages/core/src/plugin/*`, `packages/opencode/src/plugin/*` | `plugin.rs`, `npm.rs` | 85% | B |
-| **MCP** | `packages/opencode/src/mcp/*` | `mcp.rs`, `mcp_oauth.rs`, `rustcode-mcp` | 90% | A |
-| **LSP** | `packages/opencode/src/lsp/*` | `lsp.rs`, `rustcode-lsp` (3K file) | 85% | B |
-| **TUI** | `packages/tui/*` (SolidJS/OpenTUI) | `rustcode-tui/*` (ratatui) | 95% | A |
-| **Server** | `packages/opencode/src/server/*` | `rustcode-server/*` (42 files) | 95% | A |
-| **Account/Auth** | `packages/opencode/src/account/*`, `auth/*` | `account.rs`, `auth.rs`, `credential.rs` | 70% | C |
-| **Skills** | `packages/core/src/skill/*`, `packages/opencode/src/skill/*` | `skill.rs` | 75% | C |
+| **Plugin System** | `packages/core/src/plugin/*`, `packages/blazecode/src/plugin/*` | `plugin.rs`, `npm.rs` | 85% | B |
+| **MCP** | `packages/blazecode/src/mcp/*` | `mcp.rs`, `mcp_oauth.rs`, `blazecode-mcp` | 90% | A |
+| **LSP** | `packages/blazecode/src/lsp/*` | `lsp.rs`, `blazecode-lsp` (3K file) | 85% | B |
+| **TUI** | `packages/tui/*` (SolidJS/OpenTUI) | `blazecode-tui/*` (ratatui) | 95% | A |
+| **Server** | `packages/blazecode/src/server/*` | `blazecode-server/*` (42 files) | 95% | A |
+| **Account/Auth** | `packages/blazecode/src/account/*`, `auth/*` | `account.rs`, `auth.rs`, `credential.rs` | 70% | C |
+| **Skills** | `packages/core/src/skill/*`, `packages/blazecode/src/skill/*` | `skill.rs` | 75% | C |
 | **Permission** | `packages/core/src/permission/*` | `permission.rs` | 95% | A |
 | **Filesystem** | `packages/core/src/filesystem/*` | `filesystem.rs`, `fs_util.rs` | 95% | A |
 | **PTY/Process** | `packages/core/src/pty/*` | `pty.rs`, `process.rs` | 90% | A |
 | **Observability** | `packages/core/src/observability/*` | `observability.rs` | 80% | B |
-| **Background Jobs** | `packages/opencode/src/background/*` | `background_job.rs` | 80% | B |
+| **Background Jobs** | `packages/blazecode/src/background/*` | `background_job.rs` | 80% | B |
 | **Console/Stats** | `packages/console/*` (5), `packages/stats/*` (3) | — | 0% | F |
 | **Web/Desktop App** | `packages/app/`, `packages/web/`, `packages/desktop/` | — | 0% | F |
-| **Control Plane** | `packages/opencode/src/control-plane/*` | — | 0% | F |
-| **Auth/OAuth** | `packages/opencode/src/auth/*` | `auth.rs` (basic) | 20% | D |
+| **Control Plane** | `packages/blazecode/src/control-plane/*` | — | 0% | F |
+| **Auth/OAuth** | `packages/blazecode/src/auth/*` | `auth.rs` (basic) | 20% | D |
 
 **Overall Port Completeness: ~75%** (by features, ~85% by LOC)
 
@@ -1121,7 +1121,7 @@ this manually with Arc<RwLock<>> and tokio::spawn.
 ## Scorecard Summary
 
 ```
-Category                  RustCode Score   OpenCode Score    Parity
+Category                  BlazeCode Score   BlazeCode Score    Parity
 ────────────────────────  ───────────────  ───────────────  ──────
 Architecture Match        85%              100%              HIGH
 Module Organization        80%              95%              HIGH
@@ -1137,7 +1137,7 @@ Console/Web                0%              N/A (extra)       N/A
 **Weighted Total**        **72%**          **97%**           —
 ```
 
-**Letter Grade: B-** (RustCode is a competent port of the core engine, missing primarily the web/console layer, control plane, and some long-tail providers)
+**Letter Grade: B-** (BlazeCode is a competent port of the core engine, missing primarily the web/console layer, control plane, and some long-tail providers)
 
 ---
 

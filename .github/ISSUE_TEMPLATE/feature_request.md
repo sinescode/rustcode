@@ -1,6 +1,6 @@
 ---
 name: Feature Request
-about: Suggest a feature for RustCode
+about: Suggest a feature for BlazeCode
 title: ''
 labels: enhancement
 assignees: ''

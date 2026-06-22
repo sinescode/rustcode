@@ -1,12 +1,12 @@
 # Provider Plugin System
 
-Extensibility architecture for adding custom LLM providers to rustcode.
+Extensibility architecture for adding custom LLM providers to blazecode.
 
 ## Overview
 
 The plugin system lets you add LLM providers in three ways:
 
-1. **Config-based** — declare providers in `opencode.json`
+1. **Config-based** — declare providers in `blazecode.json`
 2. **Closure plugins** — quick ad-hoc customization in Rust code
 3. **Trait plugins** — full `ProviderPlugin` implementation for complex needs
 
@@ -17,7 +17,7 @@ All three converge through the same initialization pipeline.
 ### Startup Flow
 
 ```
-opencode.json loaded
+blazecode.json loaded
         │
         ▼
 provider_service::init_providers(config)
@@ -28,7 +28,7 @@ provider_service::init_providers(config)
         │    OpenRouter, DeepSeek, Groq, Together, xAI, Mistral, ...)
         │
         ├─ Phase 2: config.provider iteration
-        │   For each provider in opencode.json:
+        │   For each provider in blazecode.json:
         │   • Collect model overrides
         │   • If not auto-detected, create from config
         │     (needs base_url + env var with API key)
@@ -62,7 +62,7 @@ provider_service::init_providers(config)
 
 ### 1. Config-Based Custom Provider
 
-Add a custom provider in `opencode.json`:
+Add a custom provider in `blazecode.json`:
 
 ```json
 {
@@ -107,7 +107,7 @@ Quick ad-hoc customization without defining a struct:
 
 ```rust
 use std::sync::Arc;
-use rustcode_core::plugin::{
+use blazecode_core::plugin::{
     ClosureProviderPlugin, ProviderPluginRegistry,
 };
 
@@ -137,11 +137,11 @@ Full control over provider behavior:
 use std::collections::HashMap;
 use std::sync::Arc;
 use async_trait::async_trait;
-use rustcode_core::plugin::{
+use blazecode_core::plugin::{
     ProviderPlugin, ProviderPluginRegistry,
     CatalogTransformContext, ModelDiscoverContext, AuthLoadContext,
 };
-use rustcode_core::provider::Model;
+use blazecode_core::provider::Model;
 
 struct MyProviderPlugin;
 
@@ -244,7 +244,7 @@ pub const PROFILES: &[CompatConfig] = &[
 
 ### Custom Provider from Config
 
-`CustomProviderConfig` builds models from `opencode.json`:
+`CustomProviderConfig` builds models from `blazecode.json`:
 
 ```rust
 let config: CustomProviderConfig = serde_json::from_value(json)?;

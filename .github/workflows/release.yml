@@ -1,4 +1,4 @@
-# Release workflow for RustCode
+# Release workflow for BlazeCode
 # Triggered by git tags matching v* (e.g., v0.1.0, v1.2.3)
 # Builds for Linux (x86_64, aarch64), macOS (x86_64, aarch64), Windows (x86_64)
 # Creates GitHub Release with binary artifacts, SHA256 checksums, and optional GPG signatures
@@ -26,7 +26,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  BINARY_NAME: rustcode
+  BINARY_NAME: blazecode
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -231,7 +231,7 @@ jobs:
           fi
 
           cat > /tmp/release-body.md <<- BODYEOF
-        ## RustCode v${VERSION}
+        ## BlazeCode v${VERSION}
 
         ### Changes since previous release
         ${NOTES}
@@ -256,7 +256,7 @@ jobs:
 
           # Create release with all artifacts
           gh release create "${TAG}" \
-            --title "RustCode v${VERSION}" \
+            --title "BlazeCode v${VERSION}" \
             --notes-file /tmp/release-body.md \
             --prerelease="${{ needs.metadata.outputs.is_prerelease }}" \
             --verify-tag \

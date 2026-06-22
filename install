@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-APP=rustcode
+APP=blazecode
 
 MUTED='\033[0;2m'
 RED='\033[0;31m'
@@ -9,7 +9,7 @@ GREEN='\033[0;32m'
 NC='\033[0m' # No Color
 
 # Defaults
-REPO="${REPO:-sinescode/rustcode}"
+REPO="${REPO:-sinescode/blazecode}"
 INSTALL_DIR="${INSTALL_DIR:-}"
 requested_version=""
 no_modify_path=false
@@ -18,7 +18,7 @@ skip_checksum=false
 
 usage() {
     cat <<EOF
-RustCode Installer
+BlazeCode Installer
 
 Usage: install [options]
 
@@ -31,9 +31,9 @@ Options:
         --skip-checksum     Skip SHA256 checksum verification
 
 Examples:
-    curl -fsSL https://raw.githubusercontent.com/sinescode/rustcode/main/install | bash
-    curl -fsSL https://raw.githubusercontent.com/sinescode/rustcode/main/install | bash -s -- --version 0.1.0
-    ./install --binary /path/to/rustcode
+    curl -fsSL https://raw.githubusercontent.com/sinescode/blazecode/main/install | bash
+    curl -fsSL https://raw.githubusercontent.com/sinescode/blazecode/main/install | bash -s -- --version 0.1.0
+    ./install --binary /path/to/blazecode
     ./install --dir ~/bin
 EOF
 }
@@ -392,7 +392,7 @@ fi
 # Success message
 # ---------------------------------------------------------------------------
 echo ""
-echo -e "${GREEN}  RustCode ${MUTED}v${requested_version:-local} installed successfully!${NC}"
+echo -e "${GREEN}  BlazeCode ${MUTED}v${requested_version:-local} installed successfully!${NC}"
 echo ""
 echo -e "${MUTED}  Get started: ${NC}${APP} --help"
 echo ""

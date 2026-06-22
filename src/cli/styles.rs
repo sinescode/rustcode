@@ -1,6 +1,6 @@
-//! ANSI style constants matching `packages/opencode/src/cli/ui.ts` → `Style` object.
+//! ANSI style constants matching `packages/blazecode/src/cli/ui.ts` → `Style` object.
 //!
-//! Ported from: `packages/opencode/src/cli/ui.ts` lines 14–29
+//! Ported from: `packages/blazecode/src/cli/ui.ts` lines 14–29
 
 /// Bright cyan foreground — used for highlights / emphasis.
 pub const TEXT_HIGHLIGHT: &str = "\x1b[96m";

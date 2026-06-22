@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Version management script for RustCode
+# Version management script for BlazeCode
 #
 # Usage:
 #   ./scripts/version.sh              # Print current version
@@ -125,7 +125,7 @@ generate_changelog() {
         cat > "$changelog_file" <<- EOF
 # Changelog
 
-All notable changes to RustCode will be documented in this file.
+All notable changes to BlazeCode will be documented in this file.
 
 EOF
     fi

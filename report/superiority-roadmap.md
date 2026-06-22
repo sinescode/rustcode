@@ -1,4 +1,4 @@
-# Superiority Roadmap — RustCode > OpenCode
+# Superiority Roadmap — BlazeCode > BlazeCode
 
 **Author:** Strategy Agent | **Date:** 2026-06-21 | **Classification:** Internal
 
@@ -6,63 +6,63 @@
 
 ## 1. Philosophy
 
-> **"Don't port OpenCode. Build what OpenCode would have been if written in Rust."**
+> **"Don't port BlazeCode. Build what BlazeCode would have been if written in Rust."**
 
-Parity is a trap. By the time RustCode matches OpenCode's feature set, OpenCode will have moved further. RustCode must exploit Rust's superpowers where TypeScript simply cannot compete — proc macros, WASM sandboxing, single binary distribution, compile-time safety, and local AI inference. Every decision must be measured against one question: *does this leverage a Rust-unique advantage?*
+Parity is a trap. By the time BlazeCode matches BlazeCode's feature set, BlazeCode will have moved further. BlazeCode must exploit Rust's superpowers where TypeScript simply cannot compete — proc macros, WASM sandboxing, single binary distribution, compile-time safety, and local AI inference. Every decision must be measured against one question: *does this leverage a Rust-unique advantage?*
 
 ---
 
-## 2. RustCode's Unique Advantages (OpenCode Cannot Match)
+## 2. BlazeCode's Unique Advantages (BlazeCode Cannot Match)
 
 ### Proc-Macro Tool Definitions
 - Zero-boilerplate tool definitions via `#[tool]` proc macro
 - Compile-time JSON Schema generation from Rust types
 - Automatic CLI help, parameter validation, and documentation
-- OpenCode requires manual schema definitions in TypeScript
+- BlazeCode requires manual schema definitions in TypeScript
 
 ### Single Binary Distribution
-- `curl -sSf https://rustcode.sh | sh` — no runtime required
+- `curl -sSf https://blazecode.sh | sh` — no runtime required
 - CI/CD friendly: one binary in Docker image, no `npm install`
 - 5-10MB binary vs 100MB+ Electron app
-- OpenCode requires Bun/Node.js runtime — cannot match this
+- BlazeCode requires Bun/Node.js runtime — cannot match this
 
 ### WASM Plugin Sandbox
 - Plugins run as WASM modules in `wasmtime` sandbox
 - Memory-safe, CPU-limited, capability-gated by design
 - Language-agnostic: plugins in Rust, C, Go, Zig
-- OpenCode plugins are arbitrary npm packages with full Node.js API access — no sandbox
+- BlazeCode plugins are arbitrary npm packages with full Node.js API access — no sandbox
 
 ### Local AI Inference
 - `llama.cpp` / `candle` bindings for fully offline LLM inference
 - Zero-latency local models for simple tasks, cloud routing for complex ones
 - Privacy: code never leaves the machine
 - Cost: no API fees
-- OpenCode requires cloud provider API — cannot offer offline mode
+- BlazeCode requires cloud provider API — cannot offer offline mode
 
 ### Compile-Time Safety
 - SQL queries checked at compile time (sqlx)
 - JSON Schema validation at compile time (schemars)
 - No null, no undefined, no runtime type errors (Rust type system)
 - Pattern matching + affine types prevent entire classes of bugs
-- OpenCode catches issues at test time or runtime — cannot match this
+- BlazeCode catches issues at test time or runtime — cannot match this
 
 ### Structured Concurrency
 - Scoped task execution with `CancellationToken` + `JoinSet`
 - Automatic cancellation and resource cleanup
 - No orphaned tasks, no resource leaks
 - Deterministic shutdown
-- OpenCode (TypeScript) has no structured concurrency without Effect library
+- BlazeCode (TypeScript) has no structured concurrency without Effect library
 
 ### Formal Verification Potential
 - Property-based testing with `proptest` for core algorithms
 - Model checking with Kani for permission/evaluation logic
 - Fuzzing with `cargo-fuzz` for security-critical paths
 - Memory safety guaranteed by the compiler
-- OpenCode cannot offer formal verification at any level
+- BlazeCode cannot offer formal verification at any level
 
 ---
 
-## 3. Where RustCode Can Excel
+## 3. Where BlazeCode Can Excel
 
 ### Performance
 - **10-100x faster** than TypeScript for CPU-bound tool execution
@@ -103,7 +103,7 @@ Deliverables:
 - Automatic CLI help text generation
 - Compile-time tool registry population
 
-Why RustCode wins: TypeScript has no proc macro system. This is a **genuine moat** — OpenCode cannot replicate this without a compile-time macro system.
+Why BlazeCode wins: TypeScript has no proc macro system. This is a **genuine moat** — BlazeCode cannot replicate this without a compile-time macro system.
 
 ### P0 — WASM Plugin System (Effort: Large, Impact: High, Unique)
 
@@ -114,7 +114,7 @@ Deliverables:
 - Plugin registry on crates.io with versioning and signing
 - Sandbox escapes are impossible by design
 
-Why RustCode wins: OpenCode plugins are npm packages with full Node.js API access. WASM sandboxing is **impossible in TypeScript**.
+Why BlazeCode wins: BlazeCode plugins are npm packages with full Node.js API access. WASM sandboxing is **impossible in TypeScript**.
 
 ### P0 — Route-Based LLM Architecture (Effort: Medium, Impact: Critical)
 
@@ -125,7 +125,7 @@ Deliverables:
 - Anthropic, Gemini, Bedrock protocol implementations
 - WebSocket transport support (OpenAI Responses WebSocket)
 
-Why RustCode wins: Not unique to Rust, but the compile-time safety of trait composition catches protocol mismatches at compile time rather than runtime.
+Why BlazeCode wins: Not unique to Rust, but the compile-time safety of trait composition catches protocol mismatches at compile time rather than runtime.
 
 ### P0 — Structured Concurrency Runtime (Effort: Medium, Impact: Critical)
 
@@ -135,7 +135,7 @@ Deliverables:
 - Supervisor hierarchies for fault isolation
 - Resource budget per task group (CPU, memory, file handles)
 
-Why RustCode wins: Rust's ownership system enables scope-based resource cleanup that TypeScript cannot guarantee. When a scope drops, all spawned tasks are cancelled — no orphaned promises.
+Why BlazeCode wins: Rust's ownership system enables scope-based resource cleanup that TypeScript cannot guarantee. When a scope drops, all spawned tasks are cancelled — no orphaned promises.
 
 ### P1 — Durable Session Architecture (Effort: Large, Impact: High)
 
@@ -149,18 +149,18 @@ Deliverables:
 ### P1 — Local AI Runtime (Effort: Medium, Impact: High, Unique)
 
 Deliverables:
-- `rustcode-local` crate with `llama-cpp-rs` bindings
+- `blazecode-local` crate with `llama-cpp-rs` bindings
 - Auto-detection of local models on startup
 - Hybrid routing: local for simple tasks, cloud for complex ones
 - Offline mode with automatic sync when connectivity returns
 - Provider abstraction: local models appear as standard providers
 
-Why RustCode wins: While `llama.cpp` bindings exist for TypeScript, Rust's FFI is more natural and performant. More importantly, the single-binary distribution means shipping a bundled model is practical.
+Why BlazeCode wins: While `llama.cpp` bindings exist for TypeScript, Rust's FFI is more natural and performant. More importantly, the single-binary distribution means shipping a bundled model is practical.
 
 ### P1 — Architecture Refactoring (Effort: Medium, Impact: Critical)
 
 Deliverables:
-- Split `rustcode-core` into domain crates: `rustcode-provider`, `rustcode-session`, `rustcode-tool`, `rustcode-config`
+- Split `blazecode-core` into domain crates: `blazecode-provider`, `blazecode-session`, `blazecode-tool`, `blazecode-config`
 - `pub(crate)` visibility on 80% of modules
 - Clean `lib.rs` re-export surface
 - Move business logic out of `main.rs` (<500-line thin dispatch)
@@ -203,7 +203,7 @@ Deliverables:
 ### P2 — Plugin SDK on crates.io (Effort: Small, Impact: Medium)
 
 Deliverables:
-- Publish `rustcode-plugin-sdk` crate
+- Publish `blazecode-plugin-sdk` crate
 - `Plugin` trait with activation/deactivation lifecycle
 - Scope-based registration (closing scope removes plugin contributions)
 - Example plugins and documentation
@@ -286,7 +286,7 @@ Deliverables:
 - **"Rust-native AI terminal for developers"** — primary positioning
 - **"The AI tool that fits in 5MB"** — binary size differentiator
 - **"Offline-first, secure-by-default, blazingly fast"** — feature triad
-- **"OpenCode's philosophy, Rust's superpowers"** — homage + differentiation
+- **"BlazeCode's philosophy, Rust's superpowers"** — homage + differentiation
 
 ### Target Audiences
 | Audience | Pitch | Channel |
@@ -299,7 +299,7 @@ Deliverables:
 
 ### Competitive Comparison Table
 
-| Feature | OpenCode | RustCode | RustCode Advantage |
+| Feature | BlazeCode | BlazeCode | BlazeCode Advantage |
 |---|---|---|---|
 | Distribution | npm + Bun/Node.js | Single binary | **Unfair** |
 | Startup time | ~200ms (Bun) | <10ms | Marginal (perception) |
@@ -321,12 +321,12 @@ Deliverables:
 
 | Risk | Likelihood | Impact | Mitigation |
 |---|---|---|---|
-| OpenCode adopts Rust features | Low | High | Rust's proc macros and ownership are unreachable from TS |
+| BlazeCode adopts Rust features | Low | High | Rust's proc macros and ownership are unreachable from TS |
 | Community fails to materialize | Medium | High | Invest in docs, onboarding, and good-first-issues from P1 |
 | WASM plugin DX is poor | Medium | Medium | Invest heavily in WIT ergonomics; provide Rust-first SDK |
 | Local AI models are too weak | Medium | Medium | Hybrid routing; failover to cloud; support quantized models |
 | Architecture refactoring stalls | Medium | Medium | Enforce visibility discipline in CI; make `pub(crate)` the default |
-| OpenCode adds single-binary (Bun compile) | Low | Medium | Bun binary is 100MB+; RustCode's 5-10MB is still superior |
+| BlazeCode adds single-binary (Bun compile) | Low | Medium | Bun binary is 100MB+; BlazeCode's 5-10MB is still superior |
 
 ### Success Criteria
 
@@ -353,11 +353,11 @@ Deliverables:
 
 ### Don't Build (in P0-P2)
 - **Desktop/Electron app** — high maintenance, poor Rust fit, contradicts single-binary advantage.
-- **Web UI** — let community build this; RustCode CLI + MCP are sufficient surfaces.
+- **Web UI** — let community build this; BlazeCode CLI + MCP are sufficient surfaces.
 - **Slack integration** — low ROI for core mission.
-- **Full IDE (VS Code extension)** — LSP + MCP is sufficient; IDE-specific features are OpenCode's game.
+- **Full IDE (VS Code extension)** — LSP + MCP is sufficient; IDE-specific features are BlazeCode's game.
 
-### Don't Port (from OpenCode)
+### Don't Port (from BlazeCode)
 - **Effect system** — don't replicate Effect's runtime. Rust's ownership + `CancellationToken` + `JoinSet` achieve the same goals with less abstraction overhead.
 - **React/Ink TUI** — ratatui is superior for terminal-native experiences.
 - **Drizzle ORM** — sqlx with raw SQL is more idiomatic and gives compile-time checks.
@@ -367,7 +367,7 @@ Deliverables:
 
 ## 8. Conclusion
 
-RustCode will not win by porting OpenCode. It will win by being what OpenCode cannot be:
+BlazeCode will not win by porting BlazeCode. It will win by being what BlazeCode cannot be:
 
 - **A 5MB binary** with zero runtime dependencies
 - **A terminal-native AI coding agent** with the speed of a native application
@@ -375,8 +375,8 @@ RustCode will not win by porting OpenCode. It will win by being what OpenCode ca
 - **A secure-by-default platform** where plugins are sandboxed and supply chain risk is minimized
 - **A developer experience** where tool definitions are compile-time checked, schemas are auto-generated, and errors are impossible at runtime
 
-**The roadmap is aggressive but achievable.** The P0 items (proc macros, route architecture, structured concurrency, WASM sandbox core) are independently valuable and can be built in parallel. Every P0 item is a Rust-unique advantage that OpenCode cannot copy.
+**The roadmap is aggressive but achievable.** The P0 items (proc macros, route architecture, structured concurrency, WASM sandbox core) are independently valuable and can be built in parallel. Every P0 item is a Rust-unique advantage that BlazeCode cannot copy.
 
-**The window is closing.** OpenCode has momentum, community, and a mature V2 architecture. RustCode must ship P0 within 3 months to demonstrate that the Rust-native approach is not just viable but superior. After P0, the community and ecosystem effects begin compounding.
+**The window is closing.** BlazeCode has momentum, community, and a mature V2 architecture. BlazeCode must ship P0 within 3 months to demonstrate that the Rust-native approach is not just viable but superior. After P0, the community and ecosystem effects begin compounding.
 
-**Build the Rust-native AI terminal. Not a port. Not a clone. The terminal OpenCode would have built if it were written in Rust.**
+**Build the Rust-native AI terminal. Not a port. Not a clone. The terminal BlazeCode would have built if it were written in Rust.**

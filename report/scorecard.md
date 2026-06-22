@@ -1,4 +1,4 @@
-# RustCode vs OpenCode — Scorecard & Complete Findings
+# BlazeCode vs BlazeCode — Scorecard & Complete Findings
 
 **Generated**: 2026-06-21  
 **Source**: 20 Agent Reports (Agents 01–20)  
@@ -36,7 +36,7 @@ The scores below reflect the post-audit state after all findings were closed.
 
 ## 1. Overall Score Comparison
 
-| Dimension | RustCode | OpenCode | Gap |
+| Dimension | BlazeCode | BlazeCode | Gap |
 |-----------|----------|----------|-----|
 | Architecture | 45 | 85 | -40 |
 | Security | 75 | 80 | -5 |
@@ -53,55 +53,55 @@ The scores below reflect the post-audit state after all findings were closed.
 
 ### Score Justifications
 
-**Architecture (RustCode: 45, OpenCode: 85)**  
-RustCode scores 25 because it has a single monolithic core crate with 95 flat public modules — all `pub`, no `pub(crate)` discipline, no API firewall. The binary `main.rs` is 8,575 lines thick with business logic mixed into CLI dispatch. Infrastructure concerns (sqlx, reqwest, std::fs) are imported directly in core code, violating the Dependency Inversion Principle. There are only 5 crates vs OpenCode's 26 packages, and 4 of those crates are stub-level thin wrappers. The provider trait and plugin system are well-designed (+10), and the codebase follows good Rust conventions (forbid unsafe_code, no unwrap in library code in theory), but these bright spots are overwhelmed by the monolithic structure, flat module visibility, missing V2 domain model abstractions (System Context algebra, EventV2, Location services), and lack of hexagonal architecture outside the provider adapter pattern.
+**Architecture (BlazeCode: 45, BlazeCode: 85)**  
+BlazeCode scores 25 because it has a single monolithic core crate with 95 flat public modules — all `pub`, no `pub(crate)` discipline, no API firewall. The binary `main.rs` is 8,575 lines thick with business logic mixed into CLI dispatch. Infrastructure concerns (sqlx, reqwest, std::fs) are imported directly in core code, violating the Dependency Inversion Principle. There are only 5 crates vs BlazeCode's 26 packages, and 4 of those crates are stub-level thin wrappers. The provider trait and plugin system are well-designed (+10), and the codebase follows good Rust conventions (forbid unsafe_code, no unwrap in library code in theory), but these bright spots are overwhelmed by the monolithic structure, flat module visibility, missing V2 domain model abstractions (System Context algebra, EventV2, Location services), and lack of hexagonal architecture outside the provider adapter pattern.
 
-**Security (RustCode: 75, OpenCode: 80)**  
-RustCode scores 45 because parameterized SQL prevents injection (sqlx with `?1` bound parameters), and the permission system gates tool execution. However, the encryption module (`encryption/hmac.rs`) has not been ported — OAuth tokens, API keys, and credential values are stored as plaintext in `auth.json`, `mcp-auth.json`, and SQLite columns. The config `{file:path}` substitution reads arbitrary filesystem paths without restriction, enabling path traversal via malicious config files. A RUSTSEC advisory (`RUSTSEC-2024-0436`) is ignored without documented rationale. The server lacks TLS, CSRF protection, and rate limiting. API keys live in heap memory as plain `String` (no `SecretString`). The MCP OAuth implementation is correct (PKCE, state parameter, CSPRNG), and the permission system follows OpenCode's design faithfully, but upstream design limitations (no sandbox, last-match-wins evaluation) are inherited.
+**Security (BlazeCode: 75, BlazeCode: 80)**  
+BlazeCode scores 45 because parameterized SQL prevents injection (sqlx with `?1` bound parameters), and the permission system gates tool execution. However, the encryption module (`encryption/hmac.rs`) has not been ported — OAuth tokens, API keys, and credential values are stored as plaintext in `auth.json`, `mcp-auth.json`, and SQLite columns. The config `{file:path}` substitution reads arbitrary filesystem paths without restriction, enabling path traversal via malicious config files. A RUSTSEC advisory (`RUSTSEC-2024-0436`) is ignored without documented rationale. The server lacks TLS, CSRF protection, and rate limiting. API keys live in heap memory as plain `String` (no `SecretString`). The MCP OAuth implementation is correct (PKCE, state parameter, CSPRNG), and the permission system follows BlazeCode's design faithfully, but upstream design limitations (no sandbox, last-match-wins evaluation) are inherited.
 
-**Performance (RustCode: 75, OpenCode: 65)**  
-RustCode scores 55 due to synchronous `std::fs` operations blocking the tokio async runtime — every file read, write, and git command blocks a worker thread. The `grep_search` function reads entire files into memory (potential OOM on large repos) instead of using ripgrep subprocesses or memory-mapped I/O. ReadTool reads the full file before applying the 50KB cap, causing massive waste on large files (500MB read for 50KB output). The `messages.clone()` in `ToolContext` deep-clones the entire message history per tool call (~100KB+ per clone). Async I/O is partially implemented (network calls use reqwest async), but the dominant I/O pattern (filesystem access) is synchronous. The broadcast channel has fixed capacity with no per-subscriber buffering. However, Rust benefits from zero-cost abstractions, no GC pauses, and multi-threaded tokio runtime — raw compute throughput is competitive.
+**Performance (BlazeCode: 75, BlazeCode: 65)**  
+BlazeCode scores 55 due to synchronous `std::fs` operations blocking the tokio async runtime — every file read, write, and git command blocks a worker thread. The `grep_search` function reads entire files into memory (potential OOM on large repos) instead of using ripgrep subprocesses or memory-mapped I/O. ReadTool reads the full file before applying the 50KB cap, causing massive waste on large files (500MB read for 50KB output). The `messages.clone()` in `ToolContext` deep-clones the entire message history per tool call (~100KB+ per clone). Async I/O is partially implemented (network calls use reqwest async), but the dominant I/O pattern (filesystem access) is synchronous. The broadcast channel has fixed capacity with no per-subscriber buffering. However, Rust benefits from zero-cost abstractions, no GC pauses, and multi-threaded tokio runtime — raw compute throughput is competitive.
 
-**Reliability (RustCode: 70, OpenCode: 75)**  
-RustCode scores 30 because it has no signal handling (Ctrl+C causes immediate termination with data loss), no provider retry logic (the `is_retryable()` method exists but is never called), no timeouts on any provider calls (hanging HTTP requests block sessions forever), and error context is lost in the CLI dispatch layer (handlers return raw `i32` exit codes). The V1 `run_loop` bypasses all permission checks. The `clear_revert` function writes literal text `"null"` instead of SQL NULL. The `compact_result` unwrap causes JSON corruption with `Some(...)` wrappers in epoch snapshots. Session revert cleanup is not wrapped in a transaction (crash mid-cleanup leaves corrupted session state). JSON file storage lacks `fsync()`. The file lock TOCTOU race allows concurrent lock ownership. No circuit breaker pattern exists for provider calls. The error hierarchy is comprehensive (50+ variants, thiserror derives), and SQLite WAL mode with busy_timeout provides good crash durability for committed transactions.
+**Reliability (BlazeCode: 70, BlazeCode: 75)**  
+BlazeCode scores 30 because it has no signal handling (Ctrl+C causes immediate termination with data loss), no provider retry logic (the `is_retryable()` method exists but is never called), no timeouts on any provider calls (hanging HTTP requests block sessions forever), and error context is lost in the CLI dispatch layer (handlers return raw `i32` exit codes). The V1 `run_loop` bypasses all permission checks. The `clear_revert` function writes literal text `"null"` instead of SQL NULL. The `compact_result` unwrap causes JSON corruption with `Some(...)` wrappers in epoch snapshots. Session revert cleanup is not wrapped in a transaction (crash mid-cleanup leaves corrupted session state). JSON file storage lacks `fsync()`. The file lock TOCTOU race allows concurrent lock ownership. No circuit breaker pattern exists for provider calls. The error hierarchy is comprehensive (50+ variants, thiserror derives), and SQLite WAL mode with busy_timeout provides good crash durability for committed transactions.
 
-**Scalability (RustCode: 30, OpenCode: 70)**  
-RustCode scores 20 because SQLite is fundamentally single-writer — adding instances increases read capacity slightly but write capacity stays at one. There is zero distributed infrastructure: no service discovery, no leader election, no cross-node coordination, no read replicas. The event bus uses `tokio::sync::broadcast` with fixed capacity (1024) and no per-subscriber buffering; slow consumers silently lose events. There is no application-level caching (every `get_session()` hits SQLite). No rate limiting, no resource limits (beyond 25-step and 25-iteration caps), no per-session token/memory budgeting, no multi-tenant infrastructure. Sessions are naturally isolated (separate async tasks per session), and the database schema supports workspace_id for future multi-tenancy, but these capabilities are scaffold-only. For a local-first CLI tool this is acceptable, but the gap to OpenCode's PlanetScale + Cloudflare Workers + Redis infrastructure is critical.
+**Scalability (BlazeCode: 30, BlazeCode: 70)**  
+BlazeCode scores 20 because SQLite is fundamentally single-writer — adding instances increases read capacity slightly but write capacity stays at one. There is zero distributed infrastructure: no service discovery, no leader election, no cross-node coordination, no read replicas. The event bus uses `tokio::sync::broadcast` with fixed capacity (1024) and no per-subscriber buffering; slow consumers silently lose events. There is no application-level caching (every `get_session()` hits SQLite). No rate limiting, no resource limits (beyond 25-step and 25-iteration caps), no per-session token/memory budgeting, no multi-tenant infrastructure. Sessions are naturally isolated (separate async tasks per session), and the database schema supports workspace_id for future multi-tenancy, but these capabilities are scaffold-only. For a local-first CLI tool this is acceptable, but the gap to BlazeCode's PlanetScale + Cloudflare Workers + Redis infrastructure is critical.
 
-**Maintainability (RustCode: 60, OpenCode: 80)**  
-RustCode scores 30 due to `#![allow(dead_code, unused_imports, unused_variables)]` on both core and main crates — this suppresses the compiler's strongest quality signals, allowing 15–25 dead items to accumulate silently. There are 14 files over 1,000 lines, 3 functions over 200 lines, and 5 files over 1,400 lines. The `TuiApp` is a god struct with ~50 fields. The `update_session` method has 19 positional parameters — every call site passes 14–17 `None` values. Five fragmented error types (`Error`, `SessionError`, `DatabaseServiceError`, `LspError`, `McpError`) exist without `From` impls between them. Test coverage is <2%. The `ServerError` duplicates core `ApiError`. The `LspError` is completely separate. Doc comments are thorough with TS source references (positive), the `thiserror` usage is correct, and the codebase follows Rust conventions (snake_case, no unsafe). But the structural debt is severe: monolithic modules, suppressed lints, fragmented errors, no testing infrastructure.
+**Maintainability (BlazeCode: 60, BlazeCode: 80)**  
+BlazeCode scores 30 due to `#![allow(dead_code, unused_imports, unused_variables)]` on both core and main crates — this suppresses the compiler's strongest quality signals, allowing 15–25 dead items to accumulate silently. There are 14 files over 1,000 lines, 3 functions over 200 lines, and 5 files over 1,400 lines. The `TuiApp` is a god struct with ~50 fields. The `update_session` method has 19 positional parameters — every call site passes 14–17 `None` values. Five fragmented error types (`Error`, `SessionError`, `DatabaseServiceError`, `LspError`, `McpError`) exist without `From` impls between them. Test coverage is <2%. The `ServerError` duplicates core `ApiError`. The `LspError` is completely separate. Doc comments are thorough with TS source references (positive), the `thiserror` usage is correct, and the codebase follows Rust conventions (snake_case, no unsafe). But the structural debt is severe: monolithic modules, suppressed lints, fragmented errors, no testing infrastructure.
 
-**Testing (RustCode: 55, OpenCode: 70)**  
-RustCode scores 40 because it has 2,386 test functions across 112 modules with thorough edge-case coverage in core modules (permission wildcard matching: 63 tests, image MIME detection: 47 tests). However, 11 modules have zero test functions despite declaring `mod tests {}` blocks, including `providers/openai.rs`, `providers/gemini.rs`, `credential.rs`, `bus.rs`, `system_context.rs`, `model.rs`, `policy.rs`, `event.rs`, and `v2_schema.rs`. There are zero E2E tests (no CLI binary tests, no TUI tests, no server tests), zero HTTP recording/replay infrastructure (providers cannot be tested deterministically), zero property-based tests, zero benchmarks, and zero coverage tooling. Tests are predominantly data-structure serialization roundtrips — they verify structure but not behavior. The MCP and LSP crates have ~25 tests each covering JSON-RPC framing. No mocking infrastructure exists; tests construct real provider instances (requiring real API keys).
+**Testing (BlazeCode: 55, BlazeCode: 70)**  
+BlazeCode scores 40 because it has 2,386 test functions across 112 modules with thorough edge-case coverage in core modules (permission wildcard matching: 63 tests, image MIME detection: 47 tests). However, 11 modules have zero test functions despite declaring `mod tests {}` blocks, including `providers/openai.rs`, `providers/gemini.rs`, `credential.rs`, `bus.rs`, `system_context.rs`, `model.rs`, `policy.rs`, `event.rs`, and `v2_schema.rs`. There are zero E2E tests (no CLI binary tests, no TUI tests, no server tests), zero HTTP recording/replay infrastructure (providers cannot be tested deterministically), zero property-based tests, zero benchmarks, and zero coverage tooling. Tests are predominantly data-structure serialization roundtrips — they verify structure but not behavior. The MCP and LSP crates have ~25 tests each covering JSON-RPC framing. No mocking infrastructure exists; tests construct real provider instances (requiring real API keys).
 
-**Documentation (RustCode: 65, OpenCode: 85)**  
-RustCode scores 25 because there is no user-facing `README.md` — new users have zero entry point. There is no `CONTRIBUTING.md` for human contributors; the only developer guidance is `CLAUDE.md`, which targets AI agents and explicitly prohibits local compilation. There is exactly 1 documentation file (`docs/plugin-system.md`, 293 lines) vs OpenCode's 14+ specification documents covering V2 architecture, session model, provider model, config schema, etc. OpenCode has `CONTEXT.md` (129 rules for system context algebra) and `AGENTS.md` (style guide). RustCode doc comments on public items cite TS source file paths and line numbers, which is thorough but prone to staleness as the upstream evolves. No architecture decision records (ADRs) exist. No migration guide or API compatibility doc exists.
+**Documentation (BlazeCode: 65, BlazeCode: 85)**  
+BlazeCode scores 25 because there is no user-facing `README.md` — new users have zero entry point. There is no `CONTRIBUTING.md` for human contributors; the only developer guidance is `CLAUDE.md`, which targets AI agents and explicitly prohibits local compilation. There is exactly 1 documentation file (`docs/plugin-system.md`, 293 lines) vs BlazeCode's 14+ specification documents covering V2 architecture, session model, provider model, config schema, etc. BlazeCode has `CONTEXT.md` (129 rules for system context algebra) and `AGENTS.md` (style guide). BlazeCode doc comments on public items cite TS source file paths and line numbers, which is thorough but prone to staleness as the upstream evolves. No architecture decision records (ADRs) exist. No migration guide or API compatibility doc exists.
 
-**Developer Experience (RustCode: 55, OpenCode: 80)**  
-RustCode scores 20 because `CLAUDE.md` Rule #1 prohibits all local `cargo` commands — developers cannot run `cargo check`, `cargo test`, or `cargo fmt` locally. Every code change requires a full CI round-trip (estimated 15-30 min). There is no hot-reload mechanism (no `cargo-watch`, no `watchexec`). No IDE configuration files exist (no `.vscode/`, no `.zed/`, no `rust-analyzer` config). No debug launch configurations. No pre-commit hooks. No `.editorconfig`. The CI pipeline runs 4 sequential jobs on GitHub-hosted runners with no sccache — full CI takes 30-60 minutes. The release workflow is well-automated (5 targets, SHA256, GPG signing, auto-changelog), which is a positive. The install script is feature-rich (400 lines, supports version pinning, platform detection, SHA256 verification). But the local development experience is essentially non-existent.
+**Developer Experience (BlazeCode: 55, BlazeCode: 80)**  
+BlazeCode scores 20 because `CLAUDE.md` Rule #1 prohibits all local `cargo` commands — developers cannot run `cargo check`, `cargo test`, or `cargo fmt` locally. Every code change requires a full CI round-trip (estimated 15-30 min). There is no hot-reload mechanism (no `cargo-watch`, no `watchexec`). No IDE configuration files exist (no `.vscode/`, no `.zed/`, no `rust-analyzer` config). No debug launch configurations. No pre-commit hooks. No `.editorconfig`. The CI pipeline runs 4 sequential jobs on GitHub-hosted runners with no sccache — full CI takes 30-60 minutes. The release workflow is well-automated (5 targets, SHA256, GPG signing, auto-changelog), which is a positive. The install script is feature-rich (400 lines, supports version pinning, platform detection, SHA256 verification). But the local development experience is essentially non-existent.
 
-**Production Readiness (RustCode: 65, OpenCode: 75)**  
-RustCode scores 42 because the infrastructure layer (error types, config loading, database schema, observability setup, event sourcing, file locking) is well-structured and demonstrates good Rust patterns. SQLite WAL mode, FK enforcement, busy_timeout, and structured logging provide a solid foundation. Multi-platform CI/CD with release automation is mature. However, the core business logic — session runner, LLM provider integration, tool execution, TUI, LSP, MCP — exists only as type stubs. No session crash recovery exists. No backup/restore mechanism. No Docker image. No TLS support in the server. Stored credentials are plaintext. No health check endpoint. No Prometheus metrics. OTLP export is configured but not wired to a real exporter. The green/yellow/red checklist shows ~10 green items (solid foundation) but ~15 red items (blocking production use).
+**Production Readiness (BlazeCode: 65, BlazeCode: 75)**  
+BlazeCode scores 42 because the infrastructure layer (error types, config loading, database schema, observability setup, event sourcing, file locking) is well-structured and demonstrates good Rust patterns. SQLite WAL mode, FK enforcement, busy_timeout, and structured logging provide a solid foundation. Multi-platform CI/CD with release automation is mature. However, the core business logic — session runner, LLM provider integration, tool execution, TUI, LSP, MCP — exists only as type stubs. No session crash recovery exists. No backup/restore mechanism. No Docker image. No TLS support in the server. Stored credentials are plaintext. No health check endpoint. No Prometheus metrics. OTLP export is configured but not wired to a real exporter. The green/yellow/red checklist shows ~10 green items (solid foundation) but ~15 red items (blocking production use).
 
-**Feature Completeness (RustCode: 40, OpenCode: 95)**  
-RustCode scores 20 because structural parity is 100% — all 86 modules from the pinned OpenCode commit have corresponding `.rs` files. However, functional parity is ~20% — most modules are type skeletons with key traits but actual business logic is largely unported. Actual working features are ~5% (config scaffold, error types, basic ID generation). The session system (OpenCode's V2 Effect-native, durable prompt, algebraic system context — ~4,000 LOC of state machine) has barely been ported. OpenCode supports 30+ LLM providers; RustCode implements only Anthropic with partial implementations for OpenAI, Gemini, and Bedrock. There are 21 OpenCode features with zero RustCode equivalent (Console, Web App, Desktop App, VS Code Extension, Slack Integration, GitHub Copilot, etc.). Estimated 3.5 person-years to reach full parity.
+**Feature Completeness (BlazeCode: 40, BlazeCode: 95)**  
+BlazeCode scores 20 because structural parity is 100% — all 86 modules from the pinned BlazeCode commit have corresponding `.rs` files. However, functional parity is ~20% — most modules are type skeletons with key traits but actual business logic is largely unported. Actual working features are ~5% (config scaffold, error types, basic ID generation). The session system (BlazeCode's V2 Effect-native, durable prompt, algebraic system context — ~4,000 LOC of state machine) has barely been ported. BlazeCode supports 30+ LLM providers; BlazeCode implements only Anthropic with partial implementations for OpenAI, Gemini, and Bedrock. There are 21 BlazeCode features with zero BlazeCode equivalent (Console, Web App, Desktop App, VS Code Extension, Slack Integration, GitHub Copilot, etc.). Estimated 3.5 person-years to reach full parity.
 
 ---
 
 ## 2. Dimension Breakdowns
 
-### 2.1 Architecture — RustCode: 45/100
+### 2.1 Architecture — BlazeCode: 45/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
-| Layering | 15 | 8,575-line main.rs merges CLI, business logic, and infrastructure. Effectively 1.5 layers (core + thin wrappers) vs OpenCode's 4+ layers. |
+| Layering | 15 | 8,575-line main.rs merges CLI, business logic, and infrastructure. Effectively 1.5 layers (core + thin wrappers) vs BlazeCode's 4+ layers. |
 | Boundaries | 10 | All 95 modules are `pub mod` with no `pub(crate)` discipline. No API firewall. Internal implementation details are world-visible. |
 | Coupling | 15 | Extreme coupling — all modules flat-scoped with no DI pattern. Core imports sqlx, reqwest, std::fs directly. Modules import each other freely. |
 | Cohesion | 30 | 14 `session_*` files and 8 `provider_*` files use flat name prefixing instead of sub-modules. 95 flat modules create heavy cognitive load. |
 | Domain Design | 30 | Missing V2 domain model: System Context algebra, EventV2 event sourcing, Location-scoped services, Account identity domain. |
 | Hexagonal Architecture | 20 | Good port/adapter for LLM providers (Provider trait). No Database, Filesystem, HttpClient, or EventStore port abstractions. |
 | Clean Architecture | 10 | Core directly imports infrastructure (sqlx, reqwest). Dependency rule is violated. The dependency graph is a flat star, not nested layers. |
-| Modularization | 20 | 5 crates vs OpenCode's 26 packages. 4 wrapper crates are stub-level. No infrastructure crates, no CLI crate, no plugin SDK crate. |
+| Modularization | 20 | 5 crates vs BlazeCode's 26 packages. 4 wrapper crates are stub-level. No infrastructure crates, no CLI crate, no plugin SDK crate. |
 
 **Evidence**: Agent 02 Architecture Report details all 8 dimensions with specific line references. The 95 `pub mod` in `lib.rs:11-95` is the single most impactful structural debt.
 
@@ -117,11 +117,11 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.2 Security — RustCode: 75/100
+### 2.2 Security — BlazeCode: 75/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
-| Authentication | 50 | API keys from env vars, OAuth MCP flow with correct PKCE+state. Server password via `OPENCODE_SERVER_PASSWORD`. No OAuth server-side flow. |
+| Authentication | 50 | API keys from env vars, OAuth MCP flow with correct PKCE+state. Server password via `BLAZECODE_SERVER_PASSWORD`. No OAuth server-side flow. |
 | Authorization | 40 | Permission system gates tool execution. Last-match-wins evaluation. V1 `run_loop` bypasses all permission checks (H-8 in Logic Verification). |
 | Secrets Management | 25 | No encryption at rest. auth.json, mcp-auth.json, credential SQLite values all plaintext. Encryption module (`hmac.rs`) not ported. |
 | Input Validation | 45 | Parameterized SQL prevents injection. JSON Schema defined but not enforced for tool inputs. `{file:}` substitution reads any path. |
@@ -141,7 +141,7 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.3 Performance — RustCode: 75/100
+### 2.3 Performance — BlazeCode: 75/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -165,7 +165,7 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.4 Reliability — RustCode: 70/100
+### 2.4 Reliability — BlazeCode: 70/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -189,7 +189,7 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.5 Scalability — RustCode: 30/100
+### 2.5 Scalability — BlazeCode: 30/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -217,7 +217,7 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.6 Maintainability — RustCode: 60/100
+### 2.6 Maintainability — BlazeCode: 60/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -243,7 +243,7 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.7 Testing — RustCode: 55/100
+### 2.7 Testing — BlazeCode: 55/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -270,13 +270,13 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.8 Documentation — RustCode: 65/100
+### 2.8 Documentation — BlazeCode: 65/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
 | User-Facing Docs | 5 | No README.md. No getting-started guide. No installation instructions beyond the install script. |
 | Contributor Docs | 10 | No CONTRIBUTING.md. No PR/issue templates. No code of conduct. |
-| Technical Docs | 30 | 1 doc file (plugin-system.md, 293 lines) vs OpenCode's 14+ specs. No ADRs. No migration guide. |
+| Technical Docs | 30 | 1 doc file (plugin-system.md, 293 lines) vs BlazeCode's 14+ specs. No ADRs. No migration guide. |
 | API Documentation | 40 | Doc comments on public items cite TS source references. No OpenAPI spec. No SDK docs. |
 | Code Comments | 50 | Module-level doc comments describe architecture. Line references prone to staleness. |
 
@@ -290,11 +290,11 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 **Top 3 Weaknesses**:
 1. No user-facing README.md — new users have zero entry point
 2. No CONTRIBUTING.md — humans have no documented contribution process
-3. Only 1 doc file vs OpenCode's 14+ specification documents
+3. Only 1 doc file vs BlazeCode's 14+ specification documents
 
 ---
 
-### 2.9 Developer Experience — RustCode: 55/100
+### 2.9 Developer Experience — BlazeCode: 55/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -322,7 +322,7 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.10 Production Readiness — RustCode: 65/100
+### 2.10 Production Readiness — BlazeCode: 65/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
@@ -349,15 +349,15 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ---
 
-### 2.11 Feature Completeness — RustCode: 40/100
+### 2.11 Feature Completeness — BlazeCode: 40/100
 
 | Sub-Dimension | Score | Justification |
 |--------------|-------|---------------|
 | Session System | 15 | Full type parity (14 session sub-modules). Core session loop, prompt assembly, runner, input inbox, compaction, projector all stub-level. |
-| Provider Ecosystem | 15 | Provider trait defined. 15+ provider modules scaffolded. Only Anthropic partially implemented. 30+ providers vs OpenCode's 20+ AI SDK packages. |
+| Provider Ecosystem | 15 | Provider trait defined. 15+ provider modules scaffolded. Only Anthropic partially implemented. 30+ providers vs BlazeCode's 20+ AI SDK packages. |
 | Tool System | 25 | 18+ tool types defined. Tool trait, registry, JSON schema complete. Tool implementations are stubs (7,235 LOC of stub implementations). |
 | Event System | 40 | EventV2 structurally complete (types, pub/sub, replay, projectors). Missing: durable event streams not wired into session recovery. |
-| OpenCode-Only Features | 10 | 21 features with zero RustCode equivalent (Console, Web App, Desktop App, VS Code Extension, Slack, GitHub Copilot, Plugin SDK, etc.). |
+| BlazeCode-Only Features | 10 | 21 features with zero BlazeCode equivalent (Console, Web App, Desktop App, VS Code Extension, Slack, GitHub Copilot, Plugin SDK, etc.). |
 | Platform Support | 30 | 5/6 targets (missing Windows ARM). CLI + TUI (stub). No web, desktop, VS Code, Slack. |
 | Config & Storage | 40 | Config types complete. Database schema ported. SQLite pool not wired as primary storage. |
 | Collaborative Features | 5 | No session sharing, no sync, no team support, no cloud infrastructure. |
@@ -365,13 +365,13 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 **Evidence**: Agent 08 Feature Gap Report. 100% structural parity, ~20% functional parity, ~5% working features. 21 unported features.
 
 **Top 3 Strengths**:
-1. 100% structural parity — all 86 modules from the pinned OpenCode commit have corresponding .rs files
+1. 100% structural parity — all 86 modules from the pinned BlazeCode commit have corresponding .rs files
 2. 15+ provider module types defined (Anthropic, OpenAI, Gemini, Bedrock, Azure, OpenRouter, etc.)
 3. EventV2 event sourcing infrastructure is structurally complete with types, pub/sub, replay, and projectors
 
 **Top 3 Weaknesses**:
 1. Session system (V2 Effect-native, durable prompt, algebraic system context) ~20% implemented — core differentiator
-2. 21 OpenCode features have zero RustCode equivalent (Console, Web App, Desktop, VS Code, plugin SDK, etc.)
+2. 21 BlazeCode features have zero BlazeCode equivalent (Console, Web App, Desktop, VS Code, plugin SDK, etc.)
 3. Provider ecosystem at ~5% — 30+ providers need protocol adapters; only Anthropic partially implemented
 
 ---
@@ -382,28 +382,28 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 | Rank | Project | Total Score | Primary Strength | Primary Weakness |
 |------|---------|-------------|------------------|-----------------|
-| 1 | OpenCode | 78 | Architecture, Documentation, Feature Completeness | Performance (65 lowest dimension) |
-| 2 | RustCode | 57 | Security (75 highest dimension) | Scalability (30 lowest dimension) |
+| 1 | BlazeCode | 78 | Architecture, Documentation, Feature Completeness | Performance (65 lowest dimension) |
+| 2 | BlazeCode | 57 | Security (75 highest dimension) | Scalability (30 lowest dimension) |
 
 ### 3.2 Ranking by Dimension
 
-| Dimension | Higher Score | RustCode | OpenCode | Gap |
+| Dimension | Higher Score | BlazeCode | BlazeCode | Gap |
 |-----------|-------------|----------|----------|-----|
-| Architecture | OpenCode | 45 | 85 | -40 |
-| Security | OpenCode | 75 | 80 | -5 |
-| Performance | RustCode | 75 | 65 | +10 |
-| Reliability | OpenCode | 70 | 75 | -5 |
-| Scalability | OpenCode | 30 | 70 | -40 |
-| Maintainability | OpenCode | 60 | 80 | -20 |
-| Testing | OpenCode | 55 | 70 | -15 |
-| Documentation | OpenCode | 65 | 85 | -20 |
-| Developer Experience | OpenCode | 55 | 80 | -25 |
-| Production Readiness | OpenCode | 65 | 75 | -10 |
-| Feature Completeness | OpenCode | 40 | 95 | -55 |
+| Architecture | BlazeCode | 45 | 85 | -40 |
+| Security | BlazeCode | 75 | 80 | -5 |
+| Performance | BlazeCode | 75 | 65 | +10 |
+| Reliability | BlazeCode | 70 | 75 | -5 |
+| Scalability | BlazeCode | 30 | 70 | -40 |
+| Maintainability | BlazeCode | 60 | 80 | -20 |
+| Testing | BlazeCode | 55 | 70 | -15 |
+| Documentation | BlazeCode | 65 | 85 | -20 |
+| Developer Experience | BlazeCode | 55 | 80 | -25 |
+| Production Readiness | BlazeCode | 65 | 75 | -10 |
+| Feature Completeness | BlazeCode | 40 | 95 | -55 |
 
 ### 3.3 Ranking by Gap Severity (largest gap first)
 
-| Rank | Dimension | Gap | RustCode Needs |
+| Rank | Dimension | Gap | BlazeCode Needs |
 |------|-----------|-----|----------------|
 | 1 | Feature Completeness | -55 | Continue porting missing features, complete session runner |
 | 2 | Architecture | -40 | Module visibility, pub(crate), split core crate |
@@ -415,9 +415,9 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 | 8 | Production Readiness | -10 | Session runner, backup, Docker, TLS |
 | 9 | Security | -5 | Ongoing advisory monitoring |
 | 10 | Reliability | -5 | Circuit breaker, session resume |
-| 11 | Performance | +10 | RustCode now leads — maintain advantage |
+| 11 | Performance | +10 | BlazeCode now leads — maintain advantage |
 
-### 3.4 Ranking by RustCode Technical Debt Severity
+### 3.4 Ranking by BlazeCode Technical Debt Severity
 
 | Rank | Finding | Severity | Est. Fix (person-hours) |
 |------|---------|----------|------------------------|
@@ -438,22 +438,22 @@ RustCode scores 20 because structural parity is 100% — all 86 modules from the
 
 ### Is the gap widening or narrowing?
 
-**Widening.** OpenCode (TypeScript) is actively developed with 2M+ downloads, 20k+ GitHub stars, and a full-time team. The pinned commit `5d0f866` is already behind OpenCode's current HEAD — 21 features exist in OpenCode that weren't in the pinned commit (Console, Web App, Desktop App, VS Code Extension, GitHub Copilot, Plugin SDK, Enterprise, Slack, etc.). Each week OpenCode's architecture evolves (V2 session model, System Context algebra, EventV2 event sourcing), while RustCode remains pinned to an older commit. The gap expands at approximately the rate of OpenCode's development velocity minus RustCode's porting velocity, which is net negative.
+**Widening.** BlazeCode (TypeScript) is actively developed with 2M+ downloads, 20k+ GitHub stars, and a full-time team. The pinned commit `5d0f866` is already behind BlazeCode's current HEAD — 21 features exist in BlazeCode that weren't in the pinned commit (Console, Web App, Desktop App, VS Code Extension, GitHub Copilot, Plugin SDK, Enterprise, Slack, etc.). Each week BlazeCode's architecture evolves (V2 session model, System Context algebra, EventV2 event sourcing), while BlazeCode remains pinned to an older commit. The gap expands at approximately the rate of BlazeCode's development velocity minus BlazeCode's porting velocity, which is net negative.
 
-### Is RustCode improving fast enough?
+### Is BlazeCode improving fast enough?
 
-**No.** RustCode is in scaffold phase with ~5% working features. The estimated 3.5 person-years to reach parity means at current investment levels (assuming 1-2 part-time contributors), the project will never catch up. The CLAUDE.md restriction on local `cargo build` further slows progress — every code change requires a CI round-trip, making the iteration cycle 15-30 minutes instead of seconds. Without significant investment (2-3 full-time engineers for 6-12 months), RustCode will remain a non-functional skeleton.
+**No.** BlazeCode is in scaffold phase with ~5% working features. The estimated 3.5 person-years to reach parity means at current investment levels (assuming 1-2 part-time contributors), the project will never catch up. The CLAUDE.md restriction on local `cargo build` further slows progress — every code change requires a CI round-trip, making the iteration cycle 15-30 minutes instead of seconds. Without significant investment (2-3 full-time engineers for 6-12 months), BlazeCode will remain a non-functional skeleton.
 
 ### What's the trajectory?
 
-**Divergent.** The recommended strategy from Agent 17 (Competitive Intelligence) is to stop trying to port OpenCode feature-for-feature and instead exploit Rust's unique advantages:
+**Divergent.** The recommended strategy from Agent 17 (Competitive Intelligence) is to stop trying to port BlazeCode feature-for-feature and instead exploit Rust's unique advantages:
 - Proc macros for zero-boilerplate tool/plugin definitions (impossible in TypeScript)
 - Single binary distribution (no Bun/Node.js dependency)
 - WASM plugin sandboxing (security moat vs Node.js plugins)
 - Local AI inference via llama.cpp (offline-first, private, cost-free)
 - Compile-time safety for permission-critical operations
 
-If RustCode pivots to these "Rust-native AI terminal" differentiators, it can create value that OpenCode cannot replicate, making the gap irrelevant. If RustCode continues as a line-by-line port, the gap will widen indefinitely.
+If BlazeCode pivots to these "Rust-native AI terminal" differentiators, it can create value that BlazeCode cannot replicate, making the gap irrelevant. If BlazeCode continues as a line-by-line port, the gap will widen indefinitely.
 
 ---
 
@@ -461,55 +461,55 @@ If RustCode pivots to these "Rust-native AI terminal" differentiators, it can cr
 
 ### vs Cursor
 
-| Dimension | RustCode | Cursor | RustCode Advantage |
+| Dimension | BlazeCode | Cursor | BlazeCode Advantage |
 |-----------|----------|--------|-------------------|
 | Architecture | 25 | 90 | None — Cursor is a mature IDE fork |
 | AI Integration | 10 | 85 | None — Cursor has production LLM integration |
-| IDE Integration | 5 | 95 | None — Cursor is an IDE; RustCode is CLI-only |
-| Local-First | 60 | 40 | RustCode is inherently local-first; Cursor has cloud features |
+| IDE Integration | 5 | 95 | None — Cursor is an IDE; BlazeCode is CLI-only |
+| Local-First | 60 | 40 | BlazeCode is inherently local-first; Cursor has cloud features |
 | Extensibility | 25 | 70 | Cursor's extension API is mature |
-| Binary Size | 80 | 30 | RustCode single binary vs Electron app |
+| Binary Size | 80 | 30 | BlazeCode single binary vs Electron app |
 
 ### vs GitHub Copilot
 
-| Dimension | RustCode | Copilot | RustCode Advantage |
+| Dimension | BlazeCode | Copilot | BlazeCode Advantage |
 |-----------|----------|---------|-------------------|
 | Agent Capabilities | 15 | 70 | Copilot has production agent mode |
 | IDE Integration | 5 | 95 | Copilot is deeply integrated into VS Code |
-| Local Models | 60 | 10 | RustCode can leverage llama.cpp for local inference |
-| Offline Support | 70 | 30 | RustCode works fully offline |
+| Local Models | 60 | 10 | BlazeCode can leverage llama.cpp for local inference |
+| Offline Support | 70 | 30 | BlazeCode works fully offline |
 | Code Understanding | 20 | 85 | Copilot has context-aware completions |
-| Cost | 90 | 20 | RustCode uses user's own API keys; Copilot is $10/mo |
+| Cost | 90 | 20 | BlazeCode uses user's own API keys; Copilot is $10/mo |
 
 ### vs Claude Code
 
-| Dimension | RustCode | Claude Code | RustCode Advantage |
+| Dimension | BlazeCode | Claude Code | BlazeCode Advantage |
 |-----------|----------|-------------|-------------------|
 | CLI Experience | 35 | 85 | Claude Code is a mature CLI coding agent |
 | Tool System | 25 | 80 | Claude Code has production tool implementations |
 | Session Management | 20 | 85 | Claude Code sessions are durable and recoverable |
-| Open Source | 100 | 0 | RustCode is fully open source (like OpenCode) |
-| Provider Flexibility | 40 | 20 | RustCode supports any LLM provider vs Claude-only |
-| Customization | 50 | 30 | RustCode plugin system allows deep customization |
+| Open Source | 100 | 0 | BlazeCode is fully open source (like BlazeCode) |
+| Provider Flexibility | 40 | 20 | BlazeCode supports any LLM provider vs Claude-only |
+| Customization | 50 | 30 | BlazeCode plugin system allows deep customization |
 
 ### vs Continue.dev
 
-| Dimension | RustCode | Continue.dev | RustCode Advantage |
+| Dimension | BlazeCode | Continue.dev | BlazeCode Advantage |
 |-----------|----------|-------------|-------------------|
 | IDE Integration | 10 | 85 | Continue.dev is a VS Code / JetBrains extension |
 | Agent Mode | 15 | 60 | Continue.dev has agent mode with tool use |
 | Model Support | 25 | 80 | Continue.dev supports 20+ providers |
 | Open Source | 100 | 100 | Both fully open source |
 | Local-First | 60 | 80 | Both support local models |
-| Terminal-Native | 70 | 20 | RustCode is CLI-first; Continue.dev is IDE-first |
+| Terminal-Native | 70 | 20 | BlazeCode is CLI-first; Continue.dev is IDE-first |
 
 ### Summary
 
-| Competitor | RustCode's Relative Strength | RustCode's Relative Weakness |
+| Competitor | BlazeCode's Relative Strength | BlazeCode's Relative Weakness |
 |-----------|------------------------------|------------------------------|
 | Cursor | Local-first, binary size, open source | Everything (mature product vs scaffold) |
 | GitHub Copilot | Local models, offline, cost | Agent capabilities, IDE integration |
 | Claude Code | Open source, provider flexibility | CLI maturity, session durability |
 | Continue.dev | Terminal-native, open source | IDE integration, model support |
 
-RustCode's competitive position is weakest against Cursor (established IDE) and strongest against Claude Code (where open-source and provider flexibility are differentiators). Against Continue.dev, RustCode trades IDE integration for terminal-native experience. The key insight: RustCode should not compete on parity with any of these — it should exploit Rust's unique advantages (single binary, proc macros, WASM plugins, local AI inference) that none of these competitors can replicate.
+BlazeCode's competitive position is weakest against Cursor (established IDE) and strongest against Claude Code (where open-source and provider flexibility are differentiators). Against Continue.dev, BlazeCode trades IDE integration for terminal-native experience. The key insight: BlazeCode should not compete on parity with any of these — it should exploit Rust's unique advantages (single binary, proc macros, WASM plugins, local AI inference) that none of these competitors can replicate.

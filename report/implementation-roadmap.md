@@ -1,4 +1,4 @@
-# Implementation Roadmap — RustCode Transformation Program
+# Implementation Roadmap — BlazeCode Transformation Program
 
 **Generated:** 2026-06-21  
 **Sources:** Architecture (Agent 02), Feature Gap (Agent 08), Competitive Intelligence (Agent 17), Refactoring (Agent 18), Technical Debt (Agent 19)  
@@ -92,10 +92,10 @@ None — all tasks are self-contained within existing codebase.
 
 | # | Task | Owner/Role | Effort |
 |---|------|------------|--------|
-| 1 | Extract `rustcode-types` crate — IDs (`SessionId`, `MessageId`, `ModelId`, `ProviderId`), core enums (`TurnControl`, `AgentMode`), value objects (`ChatMessage`, `ToolResult`) | Core Team | 5 pd |
-| 2 | Extract `rustcode-error` crate — unified `Error` enum with `#[from]` for all sub-errors; remove `Error::NotImplemented` | Core Team | 2 pd |
-| 3 | Extract `rustcode-config` crate — move config parsing, validation, schema from monolithic `config.rs` | Core Team | 5 pd |
-| 4 | Extract `rustcode-observability` crate — tracing subscriber setup, OTLP exporter, span lifecycle, metric collection | Platform Team | 3 pd |
+| 1 | Extract `blazecode-types` crate — IDs (`SessionId`, `MessageId`, `ModelId`, `ProviderId`), core enums (`TurnControl`, `AgentMode`), value objects (`ChatMessage`, `ToolResult`) | Core Team | 5 pd |
+| 2 | Extract `blazecode-error` crate — unified `Error` enum with `#[from]` for all sub-errors; remove `Error::NotImplemented` | Core Team | 2 pd |
+| 3 | Extract `blazecode-config` crate — move config parsing, validation, schema from monolithic `config.rs` | Core Team | 5 pd |
+| 4 | Extract `blazecode-observability` crate — tracing subscriber setup, OTLP exporter, span lifecycle, metric collection | Platform Team | 3 pd |
 | 5 | Implement structured concurrency — `ScopedFiberSet<T>` with automatic cancel-and-join on drop; replace `DashMap<FiberId, JoinHandle>` with scoped fibers | Core Team | 15 pd |
 | 6 | Replace `String` type aliases with newtypes — `SessionId(String)`, `MessageId(String)`, `ProviderId(String)` with `#[serde(transparent)]`, validation, `Display`, `FromStr` | Core Team | 5 pd |
 | 7 | Add `cargo-semver-checks` to CI — enforce semver compatibility on all public API changes | Platform Team | 1 pd |
@@ -103,7 +103,7 @@ None — all tasks are self-contained within existing codebase.
 
 ### Dependencies
 - Phase 0 must be complete (dead-code detection needed to audit public API surface for newtypes)
-- `rustcode-types` must be extracted before ID newtypes can be implemented
+- `blazecode-types` must be extracted before ID newtypes can be implemented
 
 ### Risks and Mitigations
 | Risk | Likelihood | Impact | Mitigation |
@@ -113,7 +113,7 @@ None — all tasks are self-contained within existing codebase.
 | Crate extraction breaks downstream consumers temporarily | High | Medium | Use workspace `path` dependencies; keep old re-exports during transition with deprecation notices |
 
 ### Success Criteria
-- [ ] `rustcode-types`, `rustcode-error`, `rustcode-config`, `rustcode-observability` publishable as standalone crates
+- [ ] `blazecode-types`, `blazecode-error`, `blazecode-config`, `blazecode-observability` publishable as standalone crates
 - [ ] No crate-wide `#[allow(dead_code)]` anywhere in workspace
 - [ ] `ScopedFiberSet` implemented with unit tests proving cancel-and-join on drop
 - [ ] All `String` ID type aliases replaced with newtypes; compilation fails on type confusion
@@ -124,7 +124,7 @@ None — all tasks are self-contained within existing codebase.
 **8 person-weeks** (37 person-days with some parallellism possible)
 
 ### Key Deliverables
-- `crates/rustcode-types/`, `crates/rustcode-error/`, `crates/rustcode-config/`, `crates/rustcode-observability/`
+- `crates/blazecode-types/`, `crates/blazecode-error/`, `crates/blazecode-config/`, `crates/blazecode-observability/`
 - `ScopedFiberSet` with unit tests
 - ID newtypes across entire codebase
 - CI workflow with coverage + semver checks
@@ -133,12 +133,12 @@ None — all tasks are self-contained within existing codebase.
 
 | Task | Effort (pw) | Dependencies | Risk | Priority |
 |------|------------|-------------|------|----------|
-| Extract `rustcode-types` crate | 1.0 | Phase 0 | Medium | Critical |
-| Extract `rustcode-error` crate | 0.4 | rustcode-types | Medium | Critical |
-| Extract `rustcode-config` crate | 1.0 | rustcode-types, rustcode-error | Medium | High |
-| Extract `rustcode-observability` crate | 0.6 | rustcode-types | Medium | High |
+| Extract `blazecode-types` crate | 1.0 | Phase 0 | Medium | Critical |
+| Extract `blazecode-error` crate | 0.4 | blazecode-types | Medium | Critical |
+| Extract `blazecode-config` crate | 1.0 | blazecode-types, blazecode-error | Medium | High |
+| Extract `blazecode-observability` crate | 0.6 | blazecode-types | Medium | High |
 | Structured concurrency (ScopedFiberSet) | 3.0 | None | High | Critical |
-| Newtype ID replacement | 1.0 | rustcode-types | High | High |
+| Newtype ID replacement | 1.0 | blazecode-types | High | High |
 | `cargo-semver-checks` CI | 0.2 | Phase 0 CI changes | Low | Medium |
 | Coverage reporting CI | 0.2 | None | Low | Medium |
 
@@ -150,7 +150,7 @@ None — all tasks are self-contained within existing codebase.
 8 weeks
 
 ### Objectives
-- Split monolithic `rustcode-core` into domain-specific crates with clear responsibilities
+- Split monolithic `blazecode-core` into domain-specific crates with clear responsibilities
 - Extract infrastructure behind traits (Database, FileSystem, HTTP Client)
 - Enforce module visibility discipline with `pub(crate)` throughout
 - Break up all files >1,000 lines into focused sub-modules
@@ -159,12 +159,12 @@ None — all tasks are self-contained within existing codebase.
 
 | # | Task | Owner/Role | Effort |
 |---|------|------------|--------|
-| 1 | Extract `rustcode-session-core` — `Session`, `Message`, `SessionManager`, session lifecycle types | Session Team | 5 pd |
-| 2 | Extract `rustcode-tool-core` — `Tool` trait, `ToolRegistry`, `ToolContext`, tool result types | Tool Team | 5 pd |
-| 3 | Extract `rustcode-database` trait — `#[async_trait] pub trait Database` with CRUD methods; `MockDatabase` for testing; migrate all consumers to `Arc<dyn Database>` | Core Team | 10 pd |
-| 4 | Extract `rustcode-filesystem` trait — `FileSystem` with `read`, `write`, `exists`, `list`, `search`; `TokioFileSystem` adapter using `tokio::fs` | Platform Team | 8 pd |
-| 5 | Extract `rustcode-provider-core` — `Provider` trait (with GAT `Stream` type), `Model`, `ChatMessage`, `StreamChunk`; route-based architecture foundation | Provider Team | 5 pd |
-| 6 | Extract `rustcode-plugin-core` — `Plugin`, `PluginManager` traits; `ClosureProviderPlugin` refactored into trait-based hook system | Platform Team | 3 pd |
+| 1 | Extract `blazecode-session-core` — `Session`, `Message`, `SessionManager`, session lifecycle types | Session Team | 5 pd |
+| 2 | Extract `blazecode-tool-core` — `Tool` trait, `ToolRegistry`, `ToolContext`, tool result types | Tool Team | 5 pd |
+| 3 | Extract `blazecode-database` trait — `#[async_trait] pub trait Database` with CRUD methods; `MockDatabase` for testing; migrate all consumers to `Arc<dyn Database>` | Core Team | 10 pd |
+| 4 | Extract `blazecode-filesystem` trait — `FileSystem` with `read`, `write`, `exists`, `list`, `search`; `TokioFileSystem` adapter using `tokio::fs` | Platform Team | 8 pd |
+| 5 | Extract `blazecode-provider-core` — `Provider` trait (with GAT `Stream` type), `Model`, `ChatMessage`, `StreamChunk`; route-based architecture foundation | Provider Team | 5 pd |
+| 6 | Extract `blazecode-plugin-core` — `Plugin`, `PluginManager` traits; `ClosureProviderPlugin` refactored into trait-based hook system | Platform Team | 3 pd |
 | 7 | Implement visibility control — audit all 95 modules; mark 70+ as `pub(crate)`, define explicit `pub use` re-exports in `lib.rs` | All Teams | 5 pd |
 | 8 | Split files >2,000 lines — 14 files into directory modules: `session/`, `provider/`, `tool/`, `database/`, `filesystem/`, `config/`, `permission/`, `plugin/` | All Teams | 10 pd |
 
@@ -176,13 +176,13 @@ None — all tasks are self-contained within existing codebase.
 ### Risks and Mitigations
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Splitting core breaks every downstream dependency | High | High | Extract one crate per week; maintain temporary re-exports in `rustcode-core` during transition |
+| Splitting core breaks every downstream dependency | High | High | Extract one crate per week; maintain temporary re-exports in `blazecode-core` during transition |
 | Database trait extraction touches every service | High | High | Define trait in core first; move SQLite adapter to new crate after all consumers compile against the trait |
 | File splits create merge conflicts during parallel work | Medium | Medium | Use task assignments per module; avoid overlapping changes to same directories |
 | `pub(crate)` reveals hidden dependencies between modules | High | Medium | Temporarily promote to `pub` with `#[doc(hidden)]` where needed; schedule re-export cleanup in Phase 4 |
 
 ### Success Criteria
-- [ ] `rustcode-core` split into 5+ domain crates, all compiling independently
+- [ ] `blazecode-core` split into 5+ domain crates, all compiling independently
 - [ ] `Database` trait extracted with `SqliteDatabase` adapter in separate crate
 - [ ] `FileSystem` trait extracted with `TokioFileSystem` adapter
 - [ ] No module exposes all items as `pub` — `pub(crate)` discipline enforced
@@ -194,21 +194,21 @@ None — all tasks are self-contained within existing codebase.
 **10 person-weeks** (51 person-days, significant parallelization across domain teams)
 
 ### Key Deliverables
-- `crates/rustcode-session-core/`, `rustcode-tool-core/`, `rustcode-database/`, `rustcode-filesystem/`, `rustcode-provider-core/`, `rustcode-plugin-core/`
+- `crates/blazecode-session-core/`, `blazecode-tool-core/`, `blazecode-database/`, `blazecode-filesystem/`, `blazecode-provider-core/`, `blazecode-plugin-core/`
 - Directory-based module structure for all previously monolithic files
-- `rustcode-core/src/lib.rs` with explicit `pub use` API surface (<30 re-exports)
+- `blazecode-core/src/lib.rs` with explicit `pub use` API surface (<30 re-exports)
 - `ADAPTERS.md` documenting trait extraction patterns
 
 ### Task Table
 
 | Task | Effort (pw) | Dependencies | Risk | Priority |
 |------|------------|-------------|------|----------|
-| Extract `rustcode-session-core` | 1.0 | Phase 1, Task 7 (visibility) | High | Critical |
-| Extract `rustcode-tool-core` | 1.0 | Phase 1, Task 7 | High | Critical |
-| Extract `rustcode-database` trait | 2.0 | Phase 1, Task 7 | High | Critical |
-| Extract `rustcode-filesystem` trait | 1.6 | Phase 1, Task 7 | High | Critical |
-| Extract `rustcode-provider-core` | 1.0 | Phase 1, Task 7 | Medium | Critical |
-| Extract `rustcode-plugin-core` | 0.6 | Phase 1, Task 7 | Medium | High |
+| Extract `blazecode-session-core` | 1.0 | Phase 1, Task 7 (visibility) | High | Critical |
+| Extract `blazecode-tool-core` | 1.0 | Phase 1, Task 7 | High | Critical |
+| Extract `blazecode-database` trait | 2.0 | Phase 1, Task 7 | High | Critical |
+| Extract `blazecode-filesystem` trait | 1.6 | Phase 1, Task 7 | High | Critical |
+| Extract `blazecode-provider-core` | 1.0 | Phase 1, Task 7 | Medium | Critical |
+| Extract `blazecode-plugin-core` | 0.6 | Phase 1, Task 7 | Medium | High |
 | Visibility control (`pub(crate)`) | 1.0 | Phase 0 (dead-code removal) | Medium | Critical |
 | Split files >2,000 lines | 2.0 | Task 7 (visibility) | Medium | Critical |
 
@@ -221,7 +221,7 @@ None — all tasks are self-contained within existing codebase.
 
 ### Objectives
 - Implement all major LLM provider adapters with streaming support
-- Port the route-based LLM architecture from OpenCode's `packages/llm/src/route/`
+- Port the route-based LLM architecture from BlazeCode's `packages/llm/src/route/`
 - Implement consistent retry, timeout, fallback logic across all providers
 - Support credential management for all provider auth strategies
 
@@ -239,8 +239,8 @@ None — all tasks are self-contained within existing codebase.
 | 8 | Implement provider retry/timeout/fallback — exponential backoff with jitter, circuit breaker, fallback chain | Provider Team | 5 pd |
 
 ### Dependencies
-- Phase 1 must be complete (`rustcode-types`, `rustcode-config`, `rustcode-error` needed by provider trait)
-- Phase 2 Task 5 (`rustcode-provider-core` trait extraction) must be complete
+- Phase 1 must be complete (`blazecode-types`, `blazecode-config`, `blazecode-error` needed by provider trait)
+- Phase 2 Task 5 (`blazecode-provider-core` trait extraction) must be complete
 - Phase 2 Task 4 (HTTP client trait) should be complete for consistent retry/timeout
 
 ### Risks and Mitigations
@@ -263,8 +263,8 @@ None — all tasks are self-contained within existing codebase.
 **16 person-weeks** (60 person-days, high parallelism across providers)
 
 ### Key Deliverables
-- `crates/rustcode-provider-anthropic/`, `rustcode-provider-openai/`, `rustcode-provider-gemini/`, `rustcode-provider-bedrock/`, `rustcode-provider-azure/`
-- `crates/rustcode-provider-route/` with route architecture
+- `crates/blazecode-provider-anthropic/`, `blazecode-provider-openai/`, `blazecode-provider-gemini/`, `blazecode-provider-bedrock/`, `blazecode-provider-azure/`
+- `crates/blazecode-provider-route/` with route architecture
 - Provider integration test suite with HTTP fixtures
 - Provider benchmark: time-to-first-token, tokens-per-second
 
@@ -272,14 +272,14 @@ None — all tasks are self-contained within existing codebase.
 
 | Task | Effort (pw) | Dependencies | Risk | Priority |
 |------|------------|-------------|------|----------|
-| Anthropic provider | 1.6 | rustcode-provider-core, HTTP trait | Medium | Critical |
-| OpenAI provider | 1.6 | rustcode-provider-core, HTTP trait | Medium | Critical |
-| Google Gemini provider | 1.0 | rustcode-provider-core, HTTP trait | Medium | High |
-| AWS Bedrock provider | 1.6 | rustcode-provider-core, HTTP trait, AWS SDK | High | High |
-| Azure OpenAI provider | 0.6 | rustcode-provider-core, HTTP trait | Medium | High |
+| Anthropic provider | 1.6 | blazecode-provider-core, HTTP trait | Medium | Critical |
+| OpenAI provider | 1.6 | blazecode-provider-core, HTTP trait | Medium | Critical |
+| Google Gemini provider | 1.0 | blazecode-provider-core, HTTP trait | Medium | High |
+| AWS Bedrock provider | 1.6 | blazecode-provider-core, HTTP trait, AWS SDK | High | High |
+| Azure OpenAI provider | 0.6 | blazecode-provider-core, HTTP trait | Medium | High |
 | Remaining providers (7+) | 1.6 | OpenAI route architecture | Low | Medium |
-| Route-based LLM architecture | 3.0 | rustcode-provider-core, HTTP trait | High | Critical |
-| Retry/timeout/fallback logic | 1.0 | rustcode-provider-core | Medium | High |
+| Route-based LLM architecture | 3.0 | blazecode-provider-core, HTTP trait | High | Critical |
+| Retry/timeout/fallback logic | 1.0 | blazecode-provider-core | Medium | High |
 
 ---
 
@@ -289,10 +289,10 @@ None — all tasks are self-contained within existing codebase.
 8 weeks
 
 ### Objectives
-- Implement OpenCode's V2 session architecture in Rust: durable prompt admission, algebraic system context, EventV2 event sourcing
+- Implement BlazeCode's V2 session architecture in Rust: durable prompt admission, algebraic system context, EventV2 event sourcing
 - Enable crash-recoverable sessions with replayable event streams
 - Implement context epochs with immutable baselines and mid-conversation system messages
-- Port all 129 rules from `opencode/CONTEXT.md` as test cases
+- Port all 129 rules from `blazecode/CONTEXT.md` as test cases
 
 ### Detailed Tasks
 
@@ -332,9 +332,9 @@ None — all tasks are self-contained within existing codebase.
 **18 person-weeks** (81 person-days, some work parallelizable between event store and system context)
 
 ### Key Deliverables
-- `crates/rustcode-session-event/` with EventV2 implementation
-- `crates/rustcode-system-context/` with algebraic context engine
-- `crates/rustcode-session-projector/` with projector system
+- `crates/blazecode-session-event/` with EventV2 implementation
+- `crates/blazecode-system-context/` with algebraic context engine
+- `crates/blazecode-session-projector/` with projector system
 - `CONTEXT_RULES.md` — all 129 rules with test status
 - Session recovery integration tests
 
@@ -358,7 +358,7 @@ None — all tasks are self-contained within existing codebase.
 8 weeks
 
 ### Objectives
-- Publish `rustcode-sdk` on crates.io for third-party plugin development
+- Publish `blazecode-sdk` on crates.io for third-party plugin development
 - Implement WASM-based plugin sandboxing (Rust's unique security moat)
 - Build plugin discovery, loading, permissions, and lifecycle management
 - Create example plugins and developer guide
@@ -367,9 +367,9 @@ None — all tasks are self-contained within existing codebase.
 
 | # | Task | Owner/Role | Effort |
 |---|------|------------|--------|
-| 1 | Publish `rustcode-sdk` crate to crates.io — core trait definitions (`Plugin`, `ProviderPlugin`, `ToolPlugin`), minimal dependencies, stable API with semver guarantees | Platform Team | 5 pd |
+| 1 | Publish `blazecode-sdk` crate to crates.io — core trait definitions (`Plugin`, `ProviderPlugin`, `ToolPlugin`), minimal dependencies, stable API with semver guarantees | Platform Team | 5 pd |
 | 2 | Implement WASM plugin sandbox — `wasmtime`-based runtime; define WIT interface for plugin ↔ host communication; resource limits (memory, CPU, file system access) | Platform Team | 20 pd |
-| 3 | Add plugin discovery and loading — scan `~/.rustcode/plugins/` for WASM files; load and validate at startup; plugin registry with versioning | Platform Team | 5 pd |
+| 3 | Add plugin discovery and loading — scan `~/.blazecode/plugins/` for WASM files; load and validate at startup; plugin registry with versioning | Platform Team | 5 pd |
 | 4 | Add plugin permissions system — capability-based permissions (read/write/network); user-approval prompts for elevated capabilities; permission cache for session | Platform Team | 8 pd |
 | 5 | Add TUI plugin support — plugin-defined TUI panels; ratatui widget registration; theme extension | TUI Team | 5 pd |
 | 6 | Add tool plugin support — plugin-defined tools with `#[tool]` proc macro; tool discovery from plugin providers | Tool Team | 5 pd |
@@ -390,7 +390,7 @@ None — all tasks are self-contained within existing codebase.
 | Low third-party adoption initially | High | Low | Focus on first-party plugins first; SDK maturity before community outreach |
 
 ### Success Criteria
-- [ ] `rustcode-sdk` published on crates.io with docs.rs documentation
+- [ ] `blazecode-sdk` published on crates.io with docs.rs documentation
 - [ ] WASM plugin loads, executes tool call, returns result within sandbox resource limits
 - [ ] Plugin permissions system blocks unauthorized filesystem/network access
 - [ ] 3 example plugins compile and run
@@ -401,9 +401,9 @@ None — all tasks are self-contained within existing codebase.
 **14 person-weeks** (58 person-days, parallelizable across SDK, WASM, TUI, and tools tracks)
 
 ### Key Deliverables
-- `crates/rustcode-sdk/` published on crates.io
-- `crates/rustcode-plugin-wasm/` with `wasmtime` sandbox
-- `crates/rustcode-plugin-permissions/` with capability-based security
+- `crates/blazecode-sdk/` published on crates.io
+- `crates/blazecode-plugin-wasm/` with `wasmtime` sandbox
+- `crates/blazecode-plugin-permissions/` with capability-based security
 - 3 example plugin repositories
 - Plugin developer guide (`docs/plugin-development.md`)
 
@@ -411,12 +411,12 @@ None — all tasks are self-contained within existing codebase.
 
 | Task | Effort (pw) | Dependencies | Risk | Priority |
 |------|------------|-------------|------|----------|
-| Publish `rustcode-sdk` to crates.io | 1.0 | Phase 2 domain crates | Medium | Critical |
+| Publish `blazecode-sdk` to crates.io | 1.0 | Phase 2 domain crates | Medium | Critical |
 | WASM plugin sandbox | 4.0 | Plugin-core crate | Very High | High |
 | Plugin discovery and loading | 1.0 | Plugin-core crate | Medium | High |
 | Plugin permissions system | 1.6 | Plugin-core, permission modules | High | High |
 | TUI plugin support | 1.0 | TUI crate, plugin-core | Medium | Medium |
-| Tool plugin support (`#[tool]` macro) | 1.0 | Tool-core, rustcode-derive | Medium | High |
+| Tool plugin support (`#[tool]` macro) | 1.0 | Tool-core, blazecode-derive | Medium | High |
 | Plugin developer guide | 1.0 | SDK published | Low | Medium |
 | Example plugins (3) | 1.0 | SDK published | Low | Medium |
 
@@ -474,8 +474,8 @@ None — all tasks are self-contained within existing codebase.
 **18 person-weeks** (72 person-days, parallelizable across backend, DevOps, and infrastructure tracks)
 
 ### Key Deliverables
-- `crates/rustcode-database-postgres/` with PostgreSQL adapter
-- `crates/rustcode-event-bus-nats/` or `rustcode-event-bus-redis/`
+- `crates/blazecode-database-postgres/` with PostgreSQL adapter
+- `crates/blazecode-event-bus-nats/` or `blazecode-event-bus-redis/`
 - `Dockerfile` + `docker-compose.yml` + `kustomize/` directory
 - Deployment CI/CD workflow
 - Operations runbook (`docs/operations.md`)
@@ -501,7 +501,7 @@ None — all tasks are self-contained within existing codebase.
 18 weeks
 
 ### Objectives
-- Extend RustCode to desktop, web, and IDE platforms
+- Extend BlazeCode to desktop, web, and IDE platforms
 - Enable internationalization for global reach
 - Add opt-in analytics and crash reporting for product insights
 
@@ -510,7 +510,7 @@ None — all tasks are self-contained within existing codebase.
 | # | Task | Owner/Role | Effort |
 |---|------|------------|--------|
 | 1 | Build Electron desktop app — Tauri (Rust-native, lighter than Electron) shell; session list UI; settings panel; auto-update via `tauri-updater` | Desktop Team | 20 pd |
-| 2 | Build web interface — SolidJS (matching OpenCode's web stack) or Yew/Leptos (Rust-native WASM); REPL mode, session history, settings | Web Team | 30 pd |
+| 2 | Build web interface — SolidJS (matching BlazeCode's web stack) or Yew/Leptos (Rust-native WASM); REPL mode, session history, settings | Web Team | 30 pd |
 | 3 | Build VS Code extension — LSP-backed extension; inline diff view; AI chat panel; command palette integration | IDE Team | 20 pd |
 | 4 | Add internationalization — `rust-i18n` or `fluent-rs` for CLI/TUI/desktop messages; locale auto-detection; message externalization from all user-facing strings | Platform Team | 10 pd |
 | 5 | Add usage analytics (opt-in) — anonymous event telemetry: session count, provider usage, tool usage, error rates; GDPR-compliant consent flow | Platform Team | 5 pd |
@@ -524,7 +524,7 @@ None — all tasks are self-contained within existing codebase.
 ### Risks and Mitigations
 | Risk | Likelihood | Impact | Mitigation |
 |------|-----------|--------|------------|
-| Web interface significantly expands scope | High | High | Consider SolidJS to reuse OpenCode's web architecture pattern; Yew/Leptos pure-Rust option is riskier; defer web to post-MVP |
+| Web interface significantly expands scope | High | High | Consider SolidJS to reuse BlazeCode's web architecture pattern; Yew/Leptos pure-Rust option is riskier; defer web to post-MVP |
 | Electron/Tauri desktop has high maintenance cost | High | Medium | Tauri is lighter than Electron; focus on CLI-first, desktop as secondary |
 | VS Code extension requires LSP maturity | Medium | High | Ship VS Code extension with MCP integration instead of LSP for faster path to IDE integration |
 | Low engagement with analytics/crash reporting | Medium | Low | Ship opt-in with clear privacy policy; use analytics to prioritize features rather than tracking individuals |
@@ -543,8 +543,8 @@ None — all tasks are self-contained within existing codebase.
 **24 person-weeks** (90 person-days, high parallelism across desktop, web, IDE, i18n tracks)
 
 ### Key Deliverables
-- `crates/rustcode-desktop/` (Tauri app)
-- `crates/rustcode-web/` (SolidJS or Yew frontend)
+- `crates/blazecode-desktop/` (Tauri app)
+- `crates/blazecode-web/` (SolidJS or Yew frontend)
 - `sdks/vscode/` directory with VS Code extension
 - `locales/` directory with `.ftl` (Fluent) translation files
 - Analytics dashboard reference deployment
@@ -599,7 +599,7 @@ None — all tasks are self-contained within existing codebase.
 | Metric | Before | After P0 | After P1 | After P2 | After P3 | After P4 | After P5 | After P6–7 |
 |--------|--------|----------|----------|----------|----------|----------|----------|------------|
 | Architecture Score | 25/100 | 30/100 | 35/100 | 50/100 | 55/100 | 70/100 | 75/100 | 80/100 |
-| Public modules (rustcode-core) | 95 (all pub) | 95 (all pub) | 95 (30 pub, 65 `pub(crate)`) | 8 crates | 10+ crates | 12+ crates | 14+ crates | 16+ crates |
+| Public modules (blazecode-core) | 95 (all pub) | 95 (all pub) | 95 (30 pub, 65 `pub(crate)`) | 8 crates | 10+ crates | 12+ crates | 14+ crates | 16+ crates |
 | Files >2,000 lines | 14 | 14 | 14 | 0 | 0 | 0 | 0 | 0 |
 | `unwrap()` in non-test code | 500+ | ~300 | ~70 | ~5 | ~0 | 0 | 0 | 0 |
 | Test coverage | <2% | <5% | <10% | ~25% | ~35% | ~55% | ~65% | >75% |
@@ -649,7 +649,7 @@ P0 → P1 → P2 → P3 ─┐
 | Phase 3 provider implementation runs partially in parallel with Phase 2 | Providers depend on trait extraction (Phase 2), not on all domain crates | 2026-06-21 |
 | Route architecture port is prioritized over per-provider volume | Correctness and maintenance savings outweigh initial effort; Anthropic+OpenAI shipped first | 2026-06-21 |
 | WASM plugin sandbox deferred to Phase 5 | Plugin SDK on crates.io is higher priority than sandboxing; simple `.so` loading first | 2026-06-21 |
-| Tauri over Electron for desktop | Rust-native, smaller binary, better fit with RustCode's existing Rust stack | 2026-06-21 |
+| Tauri over Electron for desktop | Rust-native, smaller binary, better fit with BlazeCode's existing Rust stack | 2026-06-21 |
 | PostgreSQL in Phase 6 (not Phase 2) | Database trait abstraction allows swapping; PostgreSQL adds operational complexity | 2026-06-21 |
 | i18n deferred to Phase 7 | No internationalized strings exist yet; focus on feature completeness first | 2026-06-21 |
 

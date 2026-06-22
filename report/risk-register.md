@@ -1,7 +1,7 @@
-# Risk Register — RustCode Transformation Program
+# Risk Register — BlazeCode Transformation Program
 
 **Generated:** 2026-06-21  
-**Source:** 20 agent reports across RustCode and OpenCode codebases  
+**Source:** 20 agent reports across BlazeCode and BlazeCode codebases  
 **Total Risks Identified:** 87  
 
 ---
@@ -79,7 +79,7 @@ Impact →
 - **Impact**: 5 (catastrophic — corrupts session data integrity)
 - **Risk Score**: 25
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/session.rs:1208-1209`
+- **Affected Component**: `blazecode-core/src/session.rs:1208-1209`
 - **Agent Source**: Agent 04 — Logic Verification (C-1)
 - **Current Mitigation**: Deserialization `serde_json::from_str::<RevertInfo>("null").ok()` incidentally returns `None`, masking the bug in some code paths
 - **Recommended Mitigation**: Pass `None` instead of `Some("null")` to set the column to SQL `NULL`. Fix the single parameter value.
@@ -98,7 +98,7 @@ Impact →
 - **Impact**: 5 (catastrophic — corrupts epoch snapshot storage)
 - **Risk Score**: 25
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/session_runner.rs:703-717`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:703-717`
 - **Agent Source**: Agent 04 — Logic Verification (C-3)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Replace with `if let Some(ref result) = compact_result { ... result.summary ... }` to avoid double-wrapping. Also fix the `unwrap()` on line 710 and eliminate the `prepare_epoch` double-call.
@@ -117,7 +117,7 @@ Impact →
 - **Impact**: 5 (catastrophic — all in-flight work lost)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs:957-1155`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:957-1155`
 - **Agent Source**: Agent 16 — Reliability (2.2), Agent 07 — Scalability (5)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Persist each tool call result incrementally to the database. Use event sourcing for LLM events as they arrive. Wire EventV2 replay into session initialization.
@@ -136,7 +136,7 @@ Impact →
 - **Impact**: 4 (major — inconsistent projection state)
 - **Risk Score**: 8
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/event_projector.rs:144-221`
+- **Affected Component**: `blazecode-core/src/event_projector.rs:144-221`
 - **Agent Source**: Agent 16 — Reliability (13.1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add a transaction around catch-up projection. If any event fails, roll back to the last known-good checkpoint.
@@ -155,7 +155,7 @@ Impact →
 - **Impact**: 4 (major — data loss for in-flight writes)
 - **Risk Score**: 8
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/storage.rs:454`
+- **Affected Component**: `blazecode-core/src/storage.rs:454`
 - **Agent Source**: Agent 16 — Reliability (6.2)
 - **Current Mitigation**: SQLite WAL mode protects database writes; JSON file storage is unprotected
 - **Recommended Mitigation**: Use `File::create()` + `write_all()` + `sync_all()` for all JSON storage writes.
@@ -172,13 +172,13 @@ Impact →
 ### RISK-SEC-001: No Encryption at Rest for Credentials
 
 - **Title**: All stored credentials and tokens in plaintext SQLite and JSON files
-- **Description**: `account.access_token`, `account.refresh_token`, `credential.value`, `mcp-auth.json`, and `auth.json` are all stored in plaintext. The encryption module (`encryption/hmac.rs`) referenced in OpenCode does not exist in RustCode. Anyone with filesystem access to the SQLite database file can read API tokens, OAuth tokens, and credentials.
+- **Description**: `account.access_token`, `account.refresh_token`, `credential.value`, `mcp-auth.json`, and `auth.json` are all stored in plaintext. The encryption module (`encryption/hmac.rs`) referenced in BlazeCode does not exist in BlazeCode. Anyone with filesystem access to the SQLite database file can read API tokens, OAuth tokens, and credentials.
 - **Category**: Security
 - **Probability**: 3 (possible — filesystem access may be compromised)
 - **Impact**: 5 (catastrophic — full credential exposure)
 - **Risk Score**: 15
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/credential.rs:352-353`, `rustcode-core/src/auth.rs:195-206`, `rustcode-core/src/mcp.rs:2263-2276`
+- **Affected Component**: `blazecode-core/src/credential.rs:352-353`, `blazecode-core/src/auth.rs:195-206`, `blazecode-core/src/mcp.rs:2263-2276`
 - **Agent Source**: Agent 05 — Security (1.1, 3.1, 3.6, 4.1)
 - **Current Mitigation**: File permissions set to `0o600` for auth files
 - **Recommended Mitigation**: Implement credential encryption using platform keychain (macOS Keychain, Linux Secret Service, Windows Credential Manager). At minimum, use AES-256-GCM with a device-derived key.
@@ -197,7 +197,7 @@ Impact →
 - **Impact**: 4 (major — arbitrary file read)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/config.rs:2796-2789`
+- **Affected Component**: `blazecode-core/src/config.rs:2796-2789`
 - **Agent Source**: Agent 05 — Security (12.3, 12.4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Use `std::fs::canonicalize()` and verify the resolved path is within the project directory. Restrict `{file:}` to the project tree.
@@ -210,13 +210,13 @@ Impact →
 ### RISK-SEC-003: MCP Sandbox Escape via Local Server Execution
 
 - **Title**: MCP local servers run with full user privileges — no sandbox
-- **Description**: `McpClient::connect()` at `mcp.rs:1044-1051` spawns subprocesses with the command and args from configuration. MCP servers run with full user permissions. An attacker who can modify config can execute arbitrary commands with the user's privileges. OpenCode's SECURITY.md explicitly states "No Sandbox."
+- **Description**: `McpClient::connect()` at `mcp.rs:1044-1051` spawns subprocesses with the command and args from configuration. MCP servers run with full user permissions. An attacker who can modify config can execute arbitrary commands with the user's privileges. BlazeCode's SECURITY.md explicitly states "No Sandbox."
 - **Category**: Security
 - **Probability**: 3 (possible — requires config modification)
 - **Impact**: 4 (major — arbitrary command execution)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/mcp.rs:1044-1051`
+- **Affected Component**: `blazecode-core/src/mcp.rs:1044-1051`
 - **Agent Source**: Agent 05 — Security (9.1)
 - **Current Mitigation**: Permission system gates tool access but does not sandbox MCP processes
 - **Recommended Mitigation**: Consider running MCP servers in restricted contexts (containers, landlock, seccomp). Validate command paths. Document plugin trust model.
@@ -235,7 +235,7 @@ Impact →
 - **Impact**: 4 (major — LLM can call any tool without permission)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/session_runner.rs:1086-1096`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:1086-1096`
 - **Agent Source**: Agent 04 — Logic Verification (C-2)
 - **Current Mitigation**: None — permission system exists but is intentionally bypassed in V1 paths
 - **Recommended Mitigation**: Wire `ask_fn` from the caller into the V1 `run_loop` path. Switch V1 from `execute_by_name` to `execute_with_pipeline`. Ensure `permission_source` is populated.
@@ -266,14 +266,14 @@ Impact →
 
 ### RISK-SEC-006: No TLS in Server
 
-- **Title**: rustcode-server runs HTTP only — credentials transmitted in plaintext
-- **Description**: Server crate has no TLS support. Authentication credentials (`auth_token` query parameter, `OPENCODE_SERVER_PASSWORD`) are transmitted in plaintext over HTTP. URLs logged by proxies, visible in browser history, leaked via Referer headers.
+- **Title**: blazecode-server runs HTTP only — credentials transmitted in plaintext
+- **Description**: Server crate has no TLS support. Authentication credentials (`auth_token` query parameter, `BLAZECODE_SERVER_PASSWORD`) are transmitted in plaintext over HTTP. URLs logged by proxies, visible in browser history, leaked via Referer headers.
 - **Category**: Security
 - **Probability**: 3 (possible — server mode is used)
 - **Impact**: 4 (major — credential interception)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-server/src/auth.rs:81-87`
+- **Affected Component**: `blazecode-server/src/auth.rs:81-87`
 - **Agent Source**: Agent 05 — Security (1.3), Agent 20 — Production Readiness
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add `--tls-cert` / `--tls-key` CLI flags for HTTPS. Remove query-param auth support or add warning log.
@@ -292,7 +292,7 @@ Impact →
 - **Impact**: 4 (major — unauthorized state changes)
 - **Risk Score**: 8
 - **Risk Level**: High
-- **Affected Component**: `rustcode-server/src/routes/`
+- **Affected Component**: `blazecode-server/src/routes/`
 - **Agent Source**: Agent 20 — Production Readiness
 - **Current Mitigation**: Server is local-only by default
 - **Recommended Mitigation**: Implement CSRF tokens for state-changing endpoints. Add `SameSite` cookie attributes.
@@ -330,7 +330,7 @@ Impact →
 - **Impact**: 3 (moderate — resource exhaustion)
 - **Risk Score**: 9
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-server/src/`
+- **Affected Component**: `blazecode-server/src/`
 - **Agent Source**: Agent 07 — Scalability (14)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Implement token bucket rate limiter. Add per-route rate limiting middleware. Add daily/monthly token usage caps.
@@ -349,7 +349,7 @@ Impact →
 - **Impact**: 4 (major — OAuth token theft)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/mcp.rs:2263-2276`, `rustcode-core/src/mcp_oauth.rs:1003-1013`
+- **Affected Component**: `blazecode-core/src/mcp.rs:2263-2276`, `blazecode-core/src/mcp_oauth.rs:1003-1013`
 - **Agent Source**: Agent 05 — Security (3.1, 3.5)
 - **Current Mitigation**: PKCE verifier deleted after token exchange
 - **Recommended Mitigation**: Encrypt mcp-auth.json at rest. Delete PKCE verifier immediately after token exchange (already done).
@@ -368,7 +368,7 @@ Impact →
 - **Impact**: 3 (moderate — malicious code execution)
 - **Risk Score**: 6
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/config.rs:1836-1886`
+- **Affected Component**: `blazecode-core/src/config.rs:1836-1886`
 - **Agent Source**: Agent 05 — Security (10.1, 10.2)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add package integrity verification (lockfile, hash checking). Validate package names before install.
@@ -387,9 +387,9 @@ Impact →
 - **Impact**: 3 (moderate — scope-of-permission confusion)
 - **Risk Score**: 6
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/permission.rs:1099-1166`
+- **Affected Component**: `blazecode-core/src/permission.rs:1099-1166`
 - **Agent Source**: Agent 05 — Security (7.2, 7.3)
-- **Current Mitigation**: Matches OpenCode behavior (by design)
+- **Current Mitigation**: Matches BlazeCode behavior (by design)
 - **Recommended Mitigation**: Only cascade for same permission+pattern pair. Document the cascade behavior explicitly.
 - **Owner**: Permission Team Lead
 - **Timeline**: 1–2 months
@@ -406,7 +406,7 @@ Impact →
 - **Impact**: 3 (moderate — permission granularity defeated)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/tool.rs:502`
+- **Affected Component**: `blazecode-core/src/tool.rs:502`
 - **Agent Source**: Agent 04 — Logic Verification (H-8)
 - **Current Mitigation**: Permission system exists but resource-level granularity is disabled
 - **Recommended Mitigation**: Extract the resource from tool arguments. For file tools, extract `filePath`/`path` from `args`. For bash, extract the command. Pass the real resource to `ctx.ask()`.
@@ -429,7 +429,7 @@ Impact →
 - **Impact**: 4 (major — blocks async runtime, cascading latency)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/tool_impls.rs:1065-1238`, `rustcode-core/src/filesystem.rs:1281`
+- **Affected Component**: `blazecode-core/src/tool_impls.rs:1065-1238`, `blazecode-core/src/filesystem.rs:1281`
 - **Agent Source**: Agent 06 — Performance (7.3.1), Agent 20 — Production Readiness (3)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Use `tokio::fs` versions or wrap blocking I/O in `tokio::task::spawn_blocking`. Filesystem operations longer than 50µs should be offloaded.
@@ -448,7 +448,7 @@ Impact →
 - **Impact**: 4 (major — 2.5MB+ deep clones per turn)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/session_runner.rs:749`, `rustcode-core/src/tool.rs:47`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:749`, `blazecode-core/src/tool.rs:47`
 - **Agent Source**: Agent 06 — Performance (4.1.2), Agent 03 — Rust Expert (1.4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Store `Arc<Vec<ChatMessage>>` or `Arc<[ChatMessage]>` in `ToolContext` instead of `Vec<ChatMessage>`. Eliminates 2.5MB+ of clones per session.
@@ -467,7 +467,7 @@ Impact →
 - **Impact**: 4 (major — unnecessary copies in hot path)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/event.rs:936,945,1025,1035`
+- **Affected Component**: `blazecode-core/src/event.rs:936,945,1025,1035`
 - **Agent Source**: Agent 06 — Performance (4.1.4)
 - **Current Mitigation**: Some clones are necessary for broadcast channels
 - **Recommended Mitigation**: Pass `&EventPayload` where possible. Use `Arc<EventPayload>` for broadcast paths.
@@ -486,7 +486,7 @@ Impact →
 - **Impact**: 5 (catastrophic — blocks all other DB writers)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/event.rs:899-984`
+- **Affected Component**: `blazecode-core/src/event.rs:899-984`
 - **Agent Source**: Agent 15 — Database (5), Agent 06 — Performance (8.3)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Move projectors and commit hooks outside the transaction. Only the seq UPSERT + event INSERT need to be in a transaction.
@@ -505,7 +505,7 @@ Impact →
 - **Impact**: 3 (moderate — performance degradation under load)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/database.rs:59-66`
+- **Affected Component**: `blazecode-core/src/database.rs:59-66`
 - **Agent Source**: Agent 07 — Scalability (2, 7), Agent 15 — Database (6)
 - **Current Mitigation**: WAL mode, `busy_timeout = 5000`
 - **Recommended Mitigation**: Set max SQLite pool size to 3 connections. Abstract `DatabaseService` behind a trait for future PostgreSQL swap. Use `BEGIN IMMEDIATE` for write transactions.
@@ -524,7 +524,7 @@ Impact →
 - **Impact**: 4 (major — potential OOM on large repos)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/filesystem.rs:1281`
+- **Affected Component**: `blazecode-core/src/filesystem.rs:1281`
 - **Agent Source**: Agent 06 — Performance (2.1, 1.1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Delegate to ripgrep subprocess after initial file listing. Add `regex::Regex` LRU cache for compiled patterns.
@@ -543,7 +543,7 @@ Impact →
 - **Impact**: 4 (major — 500MB read for 50KB output)
 - **Risk Score**: 16
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/tool_impls.rs:1225-1230`
+- **Affected Component**: `blazecode-core/src/tool_impls.rs:1225-1230`
 - **Agent Source**: Agent 06 — Performance (9.2)
 - **Current Mitigation**: 50KB truncation limit exists but after full read
 - **Recommended Mitigation**: Use `tokio::io::AsyncReadExt::take(MAX_READ_BYTES)` on the file handle to cap reads at the limit.
@@ -562,7 +562,7 @@ Impact →
 - **Impact**: 5 (catastrophic — session hangs forever)
 - **Risk Score**: 15
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/session_runner.rs:625-634`, All provider modules
+- **Affected Component**: `blazecode-core/src/session_runner.rs:625-634`, All provider modules
 - **Agent Source**: Agent 16 — Reliability (3.4, 7.1), Agent 06 — Performance (10.3)
 - **Current Mitigation**: Bash tool has explicit timeouts (2 min default, 10 min max)
 - **Recommended Mitigation**: Add mandatory timeouts to all provider calls. Default to 60s for streaming, 30s for completion. Set `reqwest::Client::builder().timeout(Duration::from_secs(120))`.
@@ -581,7 +581,7 @@ Impact →
 - **Impact**: 3 (moderate — 201 queries vs 1)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/database.rs:1728-1744`
+- **Affected Component**: `blazecode-core/src/database.rs:1728-1744`
 - **Agent Source**: Agent 15 — Database (2), Agent 06 — Performance (8.1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Replace with a `LEFT JOIN` query that fetches all messages and their parts in one round trip.
@@ -600,7 +600,7 @@ Impact →
 - **Impact**: 3 (moderate — blocks async runtime for seconds)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/worktree.rs:421-433`, `rustcode-core/src/snapshot.rs:825`
+- **Affected Component**: `blazecode-core/src/worktree.rs:421-433`, `blazecode-core/src/snapshot.rs:825`
 - **Agent Source**: Agent 06 — Performance (7.3.2), Agent 16 — Reliability (1.4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Use `tokio::process::Command` for all git operations. Add configurable timeouts.
@@ -619,7 +619,7 @@ Impact →
 - **Impact**: 2 (minor — microsecond overhead per call)
 - **Risk Score**: 10
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/filesystem.rs:1208`
+- **Affected Component**: `blazecode-core/src/filesystem.rs:1208`
 - **Agent Source**: Agent 06 — Performance (1.1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add `regex::Regex` LRU cache (e.g., `lru` crate) keyed by pattern string. For large files, delegate to ripgrep subprocess.
@@ -638,7 +638,7 @@ Impact →
 - **Impact**: 2 (minor — 500µs-5ms per command)
 - **Risk Score**: 10
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/tool_impls.rs:633-634`
+- **Affected Component**: `blazecode-core/src/tool_impls.rs:633-634`
 - **Agent Source**: Agent 06 — Performance (1.3)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Use a fast regex pre-check for known-dangerous patterns first. Only invoke tree-sitter for commands that pass the regex filter.
@@ -661,10 +661,10 @@ Impact →
 - **Impact**: 5 (catastrophic — every transient error fails the turn)
 - **Risk Score**: 25
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/error.rs:456`, `rustcode-core/src/session_runner.rs:960-1155`
+- **Affected Component**: `blazecode-core/src/error.rs:456`, `blazecode-core/src/session_runner.rs:960-1155`
 - **Agent Source**: Agent 16 — Reliability (3.1, 8.1)
 - **Current Mitigation**: `is_retryable()` method defined but never called
-- **Recommended Mitigation**: Wire `is_retryable()` into the turn execution flow. Add exponential backoff with jitter for retryable provider errors, matching OpenCode's `retryPolicy`.
+- **Recommended Mitigation**: Wire `is_retryable()` into the turn execution flow. Add exponential backoff with jitter for retryable provider errors, matching BlazeCode's `retryPolicy`.
 - **Owner**: Provider Team Lead
 - **Timeline**: 1–2 weeks
 - **Status**: Open
@@ -680,7 +680,7 @@ Impact →
 - **Impact**: 5 (catastrophic — session hangs forever)
 - **Risk Score**: 15
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/session_runner.rs:625-634,990-994`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:625-634,990-994`
 - **Agent Source**: Agent 16 — Reliability (7.1, 3.4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add timeout parameter to `Provider` trait. Default to 60s for streaming, 30s for completion. Make timeouts configurable in provider config.
@@ -712,13 +712,13 @@ Impact →
 ### RISK-REL-004: Sequential Tool Failure Propagation
 
 - **Title**: Sequential tool execution with early exit on first failure — loses partial results
-- **Description**: `session_runner.rs:740` processes tool calls sequentially in a `for` loop. If the third of five tool calls fails, the error is returned immediately and remaining tool calls are never executed. OpenCode uses `Promise.allSettled()` — if one tool fails, others still complete.
+- **Description**: `session_runner.rs:740` processes tool calls sequentially in a `for` loop. If the third of five tool calls fails, the error is returned immediately and remaining tool calls are never executed. BlazeCode uses `Promise.allSettled()` — if one tool fails, others still complete.
 - **Category**: Reliability
 - **Probability**: 3 (possible — tool failures happen)
 - **Impact**: 4 (major — lost potentially successful work)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs:740-797`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:740-797`
 - **Agent Source**: Agent 16 — Reliability (13.2)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Execute independent tool calls concurrently using `FuturesUnordered` or `join_all`. Report partial failures alongside successful results.
@@ -737,7 +737,7 @@ Impact →
 - **Impact**: 5 (catastrophic — concurrent writes, data corruption)
 - **Risk Score**: 15
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/flock.rs:222-227`
+- **Affected Component**: `blazecode-core/src/flock.rs:222-227`
 - **Agent Source**: Agent 16 — Reliability (1.6)
 - **Current Mitigation**: Breaker protocol with heartbeat
 - **Recommended Mitigation**: Use the breaker directory itself as the authoritative lock. Acquire breaker with `mkdir` atomicity; only remove original lock while holding breaker.
@@ -756,7 +756,7 @@ Impact →
 - **Impact**: 4 (major — retry storms, slow degradation)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/` (no circuit breaker found)
+- **Affected Component**: `blazecode-core/src/` (no circuit breaker found)
 - **Agent Source**: Agent 16 — Reliability (3.2)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Implement circuit breaker for provider calls. Track per-provider failure counts with configurable thresholds. Use `tokio::sync::watch` for state notification.
@@ -794,7 +794,7 @@ Impact →
 - **Impact**: 4 (major — overflow recovery silently stops working)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs:928-947`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:928-947`
 - **Agent Source**: Agent 04 — Logic Verification (H-7), Agent 16 — Reliability (1.5)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Use a dedicated `TurnControl` variant in `Error` enum instead of encoding in strings. Add exhaustive test coverage for all turn control paths.
@@ -807,13 +807,13 @@ Impact →
 ### RISK-REL-009: No Provider Fallback Chain
 
 - **Title**: No provider fallback mechanism — single provider of failure
-- **Description**: The `SessionRunner` is initialized with a specific `Arc<dyn Provider>` and `Model`. If this provider fails, the entire session fails. OpenCode implements fallback chains that try the next configured provider on failure.
+- **Description**: The `SessionRunner` is initialized with a specific `Arc<dyn Provider>` and `Model`. If this provider fails, the entire session fails. BlazeCode implements fallback chains that try the next configured provider on failure.
 - **Category**: Reliability
 - **Probability**: 3 (possible — provider outage)
 - **Impact**: 4 (major — session cannot proceed)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs`
+- **Affected Component**: `blazecode-core/src/session_runner.rs`
 - **Agent Source**: Agent 16 — Reliability (5.1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Implement provider fallback chain. On provider error, attempt the fallback provider before failing the turn.
@@ -832,7 +832,7 @@ Impact →
 - **Impact**: 4 (major — session corruption)
 - **Risk Score**: 8
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_revert.rs:244-250`
+- **Affected Component**: `blazecode-core/src/session_revert.rs:244-250`
 - **Agent Source**: Agent 16 — Reliability (1.7)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Wrap all revert cleanup operations in a SQLite transaction.
@@ -851,7 +851,7 @@ Impact →
 - **Impact**: 5 (catastrophic — runtime crash on DB write)
 - **Risk Score**: 15
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/database.rs:1254-1278`
+- **Affected Component**: `blazecode-core/src/database.rs:1254-1278`
 - **Agent Source**: Agent 16 — Reliability (1.1), Agent 15 — Database (1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Use `sqlx::query!` with compile-time checking or add integration tests that verify all hand-written SQL against the actual schema.
@@ -870,7 +870,7 @@ Impact →
 - **Impact**: 4 (major — thread starvation)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/snapshot.rs:138`
+- **Affected Component**: `blazecode-core/src/snapshot.rs:138`
 - **Agent Source**: Agent 16 — Reliability (12.2)
 - **Current Mitigation**: Global `StdMutex<()>` lock serializes all snapshot operations
 - **Recommended Mitigation**: Replace `std::sync::Mutex` with `tokio::sync::Mutex` in all async code paths. The snapshot service lock should be async-compatible.
@@ -889,7 +889,7 @@ Impact →
 - **Impact**: 4 (major — total progress loss on crash)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs:957-1155`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:957-1155`
 - **Agent Source**: Agent 16 — Reliability (2.2), Agent 07 — Scalability (5)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Persist each tool call result incrementally to the database. Use event sourcing for all session state mutations.
@@ -908,7 +908,7 @@ Impact →
 - **Impact**: 3 (moderate — post-shutdown tool execution)
 - **Risk Score**: 9
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_execution.rs:786-821`
+- **Affected Component**: `blazecode-core/src/session_execution.rs:786-821`
 - **Agent Source**: Agent 16 — Reliability (9.2)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add a `shutdown()` method to `RunCoordinator` that interrupts all active lanes and waits for them to settle.
@@ -927,7 +927,7 @@ Impact →
 - **Impact**: 2 (minor — serialization delay)
 - **Risk Score**: 8
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/snapshot.rs:138`
+- **Affected Component**: `blazecode-core/src/snapshot.rs:138`
 - **Agent Source**: Agent 15 — Database (9), Agent 06 — Performance (6.1)
 - **Current Mitigation**: Global mutex prevents concurrent corruption
 - **Recommended Mitigation**: Replace global `Mutex<()>` with per-snapshot-repo locking (keyed by `gitdir` path). Use `tokio::sync::Mutex`.
@@ -943,17 +943,17 @@ Impact →
 
 ### RISK-ARCH-001: Monolithic Core Crate with 95 Flat Public Modules
 
-- **Title**: Single rustcode-core crate with 95 flat public modules — no bounded contexts
-- **Description**: `rustcode-core/src/lib.rs:11-95` — all 95 modules are `pub mod` with no visibility filtering. No sub-module hierarchy. Every module is world-visible. This makes it impossible to distinguish public API from internal implementation details. The crate is a single point of failure for all business logic.
+- **Title**: Single blazecode-core crate with 95 flat public modules — no bounded contexts
+- **Description**: `blazecode-core/src/lib.rs:11-95` — all 95 modules are `pub mod` with no visibility filtering. No sub-module hierarchy. Every module is world-visible. This makes it impossible to distinguish public API from internal implementation details. The crate is a single point of failure for all business logic.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 4 (major — prevents modular development)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/lib.rs:11-95`
+- **Affected Component**: `blazecode-core/src/lib.rs:11-95`
 - **Agent Source**: Agent 02 — Architecture (1, 2), Agent 12 — Maintainability (9)
 - **Current Mitigation**: None
-- **Recommended Mitigation**: Use `pub(crate)` for internal modules. Define a clean `lib.rs` re-export surface. Split into sub-crates (rustcode-session, rustcode-provider, rustcode-config, etc.).
+- **Recommended Mitigation**: Use `pub(crate)` for internal modules. Define a clean `lib.rs` re-export surface. Split into sub-crates (blazecode-session, blazecode-provider, blazecode-config, etc.).
 - **Owner**: Architecture Lead
 - **Timeline**: 2–4 weeks (5 person-days for visibility discipline)
 - **Status**: Open
@@ -963,16 +963,16 @@ Impact →
 ### RISK-ARCH-002: Extreme Coupling Across All Modules
 
 - **Title**: All 95 modules flat-scoped with no dependency inversion — changes ripple everywhere
-- **Description**: All modules in `rustcode-core` import each other directly. No dependency injection pattern. `config.rs` changes can ripple through all 94 other modules. Testing any module in isolation requires importing the entire core crate. The provider module references `database.rs`, `config.rs`, `tool.rs`.
+- **Description**: All modules in `blazecode-core` import each other directly. No dependency injection pattern. `config.rs` changes can ripple through all 94 other modules. Testing any module in isolation requires importing the entire core crate. The provider module references `database.rs`, `config.rs`, `tool.rs`.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 4 (major — brittle, hard to refactor)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/` (all modules)
+- **Affected Component**: `blazecode-core/src/` (all modules)
 - **Agent Source**: Agent 02 — Architecture (3)
 - **Current Mitigation**: None
-- **Recommended Mitigation**: Introduce trait-based dependency inversion within `rustcode-core`. Split into multiple crates. Use constructor injection, not global state.
+- **Recommended Mitigation**: Introduce trait-based dependency inversion within `blazecode-core`. Split into multiple crates. Use constructor injection, not global state.
 - **Owner**: Architecture Lead
 - **Timeline**: 1–2 months
 - **Status**: Open
@@ -988,7 +988,7 @@ Impact →
 - **Impact**: 3 (moderate — heavy cognitive load)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_*.rs`
+- **Affected Component**: `blazecode-core/src/session_*.rs`
 - **Agent Source**: Agent 02 — Architecture (4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Group into `session/` sub-module with `mod.rs` and sub-files. Use `pub(crate)` within groups.
@@ -1001,7 +1001,7 @@ Impact →
 ### RISK-ARCH-004: 8,575-Line main.rs with Business Logic
 
 - **Title**: Binary entry point is a monolith with mixed concerns
-- **Description**: `src/main.rs` at 8,575 lines contains CLI argument parsing, inline business logic, database initialization, SSE handling, provider resolution, permission handling, and command implementations. OpenCode's entry point is ~200 lines of thin CLI dispatch. RustCode's main.rs is a thick monolith.
+- **Description**: `src/main.rs` at 8,575 lines contains CLI argument parsing, inline business logic, database initialization, SSE handling, provider resolution, permission handling, and command implementations. BlazeCode's entry point is ~200 lines of thin CLI dispatch. BlazeCode's main.rs is a thick monolith.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 3 (moderate — hard to test, swap, or parallelize)
@@ -1010,7 +1010,7 @@ Impact →
 - **Affected Component**: `src/main.rs` (8,575 lines)
 - **Agent Source**: Agent 02 — Architecture (1), Agent 18 — Refactoring (AR-2)
 - **Current Mitigation**: None
-- **Recommended Mitigation**: Create `rustcode-cli` library crate. Move all `cmd_*` functions. Reduce `main.rs` to ~30 lines: parse CLI args, call `rustcode_cli::dispatch(cli)`.
+- **Recommended Mitigation**: Create `blazecode-cli` library crate. Move all `cmd_*` functions. Reduce `main.rs` to ~30 lines: parse CLI args, call `blazecode_cli::dispatch(cli)`.
 - **Owner**: CLI Team Lead
 - **Timeline**: 1–2 months
 - **Status**: Open
@@ -1020,16 +1020,16 @@ Impact →
 ### RISK-ARCH-005: Infrastructure Dependency in Core (DIP Violation)
 
 - **Title**: Core code directly imports sqlx, reqwest, axum — violates Dependency Inversion
-- **Description**: `rustcode-core` (inner layer) imports `sqlx`, `reqwest`, `serde_json`, `tracing` — infrastructure concerns. Core has `pub mod database` with SQLite schema definitions and queries inline. Core directly constructs HTTP clients and makes network requests. Clean Architecture dependency rule is violated: dependencies should point inward, but core depends on infrastructure.
+- **Description**: `blazecode-core` (inner layer) imports `sqlx`, `reqwest`, `serde_json`, `tracing` — infrastructure concerns. Core has `pub mod database` with SQLite schema definitions and queries inline. Core directly constructs HTTP clients and makes network requests. Clean Architecture dependency rule is violated: dependencies should point inward, but core depends on infrastructure.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 5 (catastrophic — cannot swap infrastructure without modifying core)
 - **Risk Score**: 25
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/` (all infrastructure imports)
+- **Affected Component**: `blazecode-core/src/` (all infrastructure imports)
 - **Agent Source**: Agent 02 — Architecture (7)
 - **Current Mitigation**: Provider trait is a clean port/adapter; everything else is directly coupled
-- **Recommended Mitigation**: Define `Database` trait in core, implement in `rustcode-database-sqlite`. Define `HttpClient` trait in core, implement with `reqwest` in `rustcode-http`. Define `FileSystem` trait in core.
+- **Recommended Mitigation**: Define `Database` trait in core, implement in `blazecode-database-sqlite`. Define `HttpClient` trait in core, implement with `reqwest` in `blazecode-http`. Define `FileSystem` trait in core.
 - **Owner**: Architecture Lead
 - **Timeline**: 1–3 months
 - **Status**: Open
@@ -1038,8 +1038,8 @@ Impact →
 
 ### RISK-ARCH-006: Insufficient Modularization — 5 Crates vs 26 Packages
 
-- **Title**: Only 5 crates vs OpenCode's 26 packages — insufficient separation
-- **Description**: RustCode has 5 crates in workspace. 4 of 5 are stubs re-exporting from core. No infrastructure crates (database, http, filesystem). No event-store crate. No CLI crate. No plugin SDK crate. Build times degrade as core grows. No reuse path.
+- **Title**: Only 5 crates vs BlazeCode's 26 packages — insufficient separation
+- **Description**: BlazeCode has 5 crates in workspace. 4 of 5 are stubs re-exporting from core. No infrastructure crates (database, http, filesystem). No event-store crate. No CLI crate. No plugin SDK crate. Build times degrade as core grows. No reuse path.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 4 (major — build times, no reuse, hard to contribute)
@@ -1048,7 +1048,7 @@ Impact →
 - **Affected Component**: `Cargo.toml` (workspace), all crate definitions
 - **Agent Source**: Agent 02 — Architecture (8)
 - **Current Mitigation**: Workspace structure exists with 5 crates
-- **Recommended Mitigation**: Extract into more granular crates: `rustcode-core-types`, `rustcode-provider`, `rustcode-session`, `rustcode-database-sqlite`, `rustcode-http`, `rustcode-plugin-sdk`, `rustcode-cli`.
+- **Recommended Mitigation**: Extract into more granular crates: `blazecode-core-types`, `blazecode-provider`, `blazecode-session`, `blazecode-database-sqlite`, `blazecode-http`, `blazecode-plugin-sdk`, `blazecode-cli`.
 - **Owner**: Architecture Lead
 - **Timeline**: 1–3 months (30 person-days)
 - **Status**: Open
@@ -1058,7 +1058,7 @@ Impact →
 ### RISK-ARCH-007: No API Firewall — Everything is pub
 
 - **Title**: Zero API firewall — all 95 modules world-public, no internal module hiding
-- **Description**: Every module in `rustcode-core` is `pub mod`. No `pub(crate)` discipline. Internal implementation details (database, flock, ripgrep) are part of the public API. Impossible to refactor internals without breaking external consumers. Breaking changes can impact downstream consumers of any module.
+- **Description**: Every module in `blazecode-core` is `pub mod`. No `pub(crate)` discipline. Internal implementation details (database, flock, ripgrep) are part of the public API. Impossible to refactor internals without breaking external consumers. Breaking changes can impact downstream consumers of any module.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 4 (major — prevents refactoring, leaks internals)
@@ -1083,7 +1083,7 @@ Impact →
 - **Impact**: 3 (moderate — hard to test, swap infrastructure)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/` (database.rs, filesystem.rs, etc.)
+- **Affected Component**: `blazecode-core/src/` (database.rs, filesystem.rs, etc.)
 - **Agent Source**: Agent 02 — Architecture (6)
 - **Current Mitigation**: Provider trait is clean; everything else is coupled
 - **Recommended Mitigation**: Generalize the port/adapter pattern. Define traits for `Database`, `FileSystem`, `EventStore`, `SessionStore`. Move infrastructure implementations to adapter crates.
@@ -1102,7 +1102,7 @@ Impact →
 - **Impact**: 3 (moderate — infrastructure coupling)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/` (database.rs, filesystem.rs, event.rs)
+- **Affected Component**: `blazecode-core/src/` (database.rs, filesystem.rs, event.rs)
 - **Agent Source**: Agent 02 — Architecture (6, 7), Agent 18 — Refactoring (MR-3, MR-4, MR-6)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Extract `Database`, `FileSystem`, `HttpClient` traits. Implement adapters in separate crates. Move core to depend only on traits.
@@ -1121,7 +1121,7 @@ Impact →
 - **Impact**: 5 (catastrophic — error information loss, impossible to match)
 - **Risk Score**: 25
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/error.rs`, `session.rs`, `database.rs`, `rustcode-lsp/src/lib.rs`
+- **Affected Component**: `blazecode-core/src/error.rs`, `session.rs`, `database.rs`, `blazecode-lsp/src/lib.rs`
 - **Agent Source**: Agent 03 — Rust Expert (7.1), Agent 18 — Refactoring (QW-9)
 - **Current Mitigation**: Some `#[from]` derives exist but are incomplete
 - **Recommended Mitigation**: Merge all into `crate::error::Error` with variant nesting. Add `#[from]` for all sub-error types. Remove `SessionError::Other(String)`.
@@ -1140,7 +1140,7 @@ Impact →
 - **Impact**: 3 (moderate — runtime errors instead of compile-time)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/provider.rs:24-48`, `session.rs:83-90`
+- **Affected Component**: `blazecode-core/src/provider.rs:24-48`, `session.rs:83-90`
 - **Agent Source**: Agent 09 — API (7.1), Agent 03 — Rust Expert (10.3)
 - **Current Mitigation**: `TaggedString` exists but is unused
 - **Recommended Mitigation**: Convert each ID alias to a newtype wrapper: `struct SessionId(String)`, `struct MessageId(String)`, etc. with `new()`, `as_str()`, `Serialize`/`Deserialize`.
@@ -1172,7 +1172,7 @@ Impact →
 ### RISK-ARCH-013: No SDK/Client Crate for Consumers
 
 - **Title**: No programmatic client API — consumers must embed the entire core crate
-- **Description**: OpenCode publishes `@opencode-ai/sdk` with typed client, lifecycle helpers, and server launcher. RustCode has no equivalent SDK crate. Rust consumers must either use the server crate directly (embedding axum state), shell out to the binary, or write their own HTTP client.
+- **Description**: BlazeCode publishes `@blazecode-ai/sdk` with typed client, lifecycle helpers, and server launcher. BlazeCode has no equivalent SDK crate. Rust consumers must either use the server crate directly (embedding axum state), shell out to the binary, or write their own HTTP client.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — gap in API surface)
 - **Impact**: 4 (major — no "nice" programmatic API)
@@ -1181,26 +1181,26 @@ Impact →
 - **Affected Component**: No crate exists (missing)
 - **Agent Source**: Agent 09 — API (14.1)
 - **Current Mitigation**: None
-- **Recommended Mitigation**: Create `rustcode-client` crate with typed async HTTP client for the REST API, similar to `@opencode-ai/sdk/client`.
+- **Recommended Mitigation**: Create `blazecode-client` crate with typed async HTTP client for the REST API, similar to `@blazecode-ai/sdk/client`.
 - **Owner**: SDK Team Lead
 - **Timeline**: 1–2 months
 - **Status**: Open
 
 ---
 
-### RISK-ARCH-014: Hand-Written Types Drift from OpenCode
+### RISK-ARCH-014: Hand-Written Types Drift from BlazeCode
 
 - **Title**: All types are hand-written ports — no code generation — inevitable drift
-- **Description**: OpenCode SDK types and client are auto-generated from OpenAPI spec. RustCode all types are hand-written ports from TypeScript. No code generation. No shared spec. As OpenCode evolves, RustCode types must be manually updated. Type mismatches will accumulate.
+- **Description**: BlazeCode SDK types and client are auto-generated from OpenAPI spec. BlazeCode all types are hand-written ports from TypeScript. No code generation. No shared spec. As BlazeCode evolves, BlazeCode types must be manually updated. Type mismatches will accumulate.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — manual sync will fall behind)
 - **Impact**: 4 (major — type mismatches, silent incompatibility)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: All `rustcode-core/src/*.rs` type definitions
+- **Affected Component**: All `blazecode-core/src/*.rs` type definitions
 - **Agent Source**: Agent 09 — API (14.2)
 - **Current Mitigation**: Pinned to a specific commit (`5d0f866`)
-- **Recommended Mitigation**: Generate Rust types from OpenAPI spec or TypeScript source. At minimum, add a schema validation test that fetches the latest OpenCode SDK types and compares them.
+- **Recommended Mitigation**: Generate Rust types from OpenAPI spec or TypeScript source. At minimum, add a schema validation test that fetches the latest BlazeCode SDK types and compares them.
 - **Owner**: Architecture Lead
 - **Timeline**: 1–3 months
 - **Status**: Open
@@ -1210,13 +1210,13 @@ Impact →
 ### RISK-ARCH-015: Server Route Handlers Are Stubs
 
 - **Title**: Critical server routes return placeholder data — cannot serve as real backend
-- **Description**: `rustcode-server/src/routes/api.rs:116-181` — 25+ routes exist but handlers are stubs or simplified. `api_session_prompt`, `api_session_compact`, `api_session_wait` return minimal placeholder data. No authentication middleware. Session prompt execution is stub-only.
+- **Description**: `blazecode-server/src/routes/api.rs:116-181` — 25+ routes exist but handlers are stubs or simplified. `api_session_prompt`, `api_session_compact`, `api_session_wait` return minimal placeholder data. No authentication middleware. Session prompt execution is stub-only.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — every server request)
 - **Impact**: 4 (major — server cannot serve as real backend)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-server/src/routes/api.rs:116-181`
+- **Affected Component**: `blazecode-server/src/routes/api.rs:116-181`
 - **Agent Source**: Agent 09 — API (10.1)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Document which routes are real vs stubs. Implement session CRUD + prompt execution paths. Add auth middleware.
@@ -1235,7 +1235,7 @@ Impact →
 - **Impact**: 3 (moderate — confusion about where to publish)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/bus.rs`, `rustcode-core/src/event.rs`
+- **Affected Component**: `blazecode-core/src/bus.rs`, `blazecode-core/src/event.rs`
 - **Agent Source**: Agent 07 — Scalability (9)
 - **Current Mitigation**: Both systems exist independently
 - **Recommended Mitigation**: Route all events through `EventV2` with a lightweight in-memory shortcut for ephemeral events. Remove `SharedBus` or make it a thin wrapper over `EventV2`.
@@ -1248,13 +1248,13 @@ Impact →
 ### RISK-ARCH-017: No OpenAPI Specification for Server
 
 - **Title**: No contract-first API documentation — no client SDK generation
-- **Description**: `rustcode-server/` has no OpenAPI spec file. OpenCode has `packages/sdk/openapi.json` that drives SDK generation. RustCode has no spec, no SDK generation, no auto-generated client. Consumers must reverse-engineer the API from handler code.
+- **Description**: `blazecode-server/` has no OpenAPI spec file. BlazeCode has `packages/sdk/openapi.json` that drives SDK generation. BlazeCode has no spec, no SDK generation, no auto-generated client. Consumers must reverse-engineer the API from handler code.
 - **Category**: Architecture
 - **Probability**: 5 (almost certain — gap in tooling)
 - **Impact**: 4 (major — no automated client generation, poor documentation)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-server/src/` (no spec file)
+- **Affected Component**: `blazecode-server/src/` (no spec file)
 - **Agent Source**: Agent 09 — API (10.3), Agent 13 — DevEx (8)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Generate OpenAPI 3.0 spec from axum routes using `utoipa` or `aide`. Generate Rust client types from OpenAPI spec.
@@ -1268,13 +1268,13 @@ Impact →
 
 ---
 
-### RISK-BIZ-001: OpenCode Surpasses RustCode Further
+### RISK-BIZ-001: BlazeCode Surpasses BlazeCode Further
 
-- **Title**: OpenCode continues to evolve — RustCode cannot catch up by porting alone
-- **Description**: OpenCode has 20k+ GitHub stars, 2M+ downloads, 25 packages, active community, and cloud infrastructure. RustCode is in scaffold phase with 5 crates. By the time RustCode reaches current parity, OpenCode will have moved further. Porting alone is a losing strategy.
+- **Title**: BlazeCode continues to evolve — BlazeCode cannot catch up by porting alone
+- **Description**: BlazeCode has 20k+ GitHub stars, 2M+ downloads, 25 packages, active community, and cloud infrastructure. BlazeCode is in scaffold phase with 5 crates. By the time BlazeCode reaches current parity, BlazeCode will have moved further. Porting alone is a losing strategy.
 - **Category**: Business
-- **Probability**: 4 (likely — OpenCode is actively developed)
-- **Impact**: 4 (major — RustCode becomes permanently obsolete)
+- **Probability**: 4 (likely — BlazeCode is actively developed)
+- **Impact**: 4 (major — BlazeCode becomes permanently obsolete)
 - **Risk Score**: 16
 - **Risk Level**: High
 - **Affected Component**: Strategic positioning
@@ -1289,7 +1289,7 @@ Impact →
 
 ### RISK-BIZ-002: Community Fragmentation
 
-- **Title**: RustCode ecosystem splits OpenCode community — dilutes contributions
+- **Title**: BlazeCode ecosystem splits BlazeCode community — dilutes contributions
 - **Description**: Two competing open-source codebases for the same product fragment the community. Contributors must choose between TypeScript and Rust. Bug reports and features must be ported between both. Users are confused about which version to use.
 - **Category**: Business
 - **Probability**: 3 (possible — if both projects are maintained)
@@ -1299,7 +1299,7 @@ Impact →
 - **Affected Component**: Community management
 - **Agent Source**: Agent 17 — Competitive Intelligence
 - **Current Mitigation**: None
-- **Recommended Mitigation**: Establish clear relationship between RustCode and OpenCode. Consider upstream contribution strategy. Document which version is canonical for which use case.
+- **Recommended Mitigation**: Establish clear relationship between BlazeCode and BlazeCode. Consider upstream contribution strategy. Document which version is canonical for which use case.
 - **Owner**: Community Lead
 - **Timeline**: 3–6 months
 - **Status**: Open
@@ -1309,7 +1309,7 @@ Impact →
 ### RISK-BIZ-003: Maintenance Burden of Dual Codebase
 
 - **Title**: Maintaining two codebases (TS + Rust) doubles maintenance cost
-- **Description**: Every feature, bug fix, and API change must be implemented twice (once in TS OpenCode, once in Rust RustCode). Without automated porting or code generation, the maintenance burden is roughly 2x for all changes. Schema drift accumulates.
+- **Description**: Every feature, bug fix, and API change must be implemented twice (once in TS BlazeCode, once in Rust BlazeCode). Without automated porting or code generation, the maintenance burden is roughly 2x for all changes. Schema drift accumulates.
 - **Category**: Business
 - **Probability**: 5 (almost certain — dual maintenance)
 - **Impact**: 3 (moderate — 2x maintenance cost)
@@ -1328,7 +1328,7 @@ Impact →
 ### RISK-BIZ-004: No Open-Source Community
 
 - **Title**: No community to drive adoption, contributions, or bug reports
-- **Description**: RustCode has <10 GitHub stars (internal/pinned fork). No community. No Discord. No release cadence. Without community, RustCode cannot sustain development. No feedback loop. No third-party contributions. No organic growth.
+- **Description**: BlazeCode has <10 GitHub stars (internal/pinned fork). No community. No Discord. No release cadence. Without community, BlazeCode cannot sustain development. No feedback loop. No third-party contributions. No organic growth.
 - **Category**: Business
 - **Probability**: 4 (likely — no community-building effort)
 - **Impact**: 4 (major — development cannot be sustained)
@@ -1347,7 +1347,7 @@ Impact →
 ### RISK-BIZ-005: No Package Manager Presence
 
 - **Title**: No cargo install, Homebrew, or other package manager distribution
-- **Description**: RustCode is not on crates.io. No Homebrew formula. No Scoop manifest. The only install methods are direct GitHub download and the install script. Users cannot `cargo install rustcode` or `brew install rustcode`. Discoverability is severely limited.
+- **Description**: BlazeCode is not on crates.io. No Homebrew formula. No Scoop manifest. The only install methods are direct GitHub download and the install script. Users cannot `cargo install blazecode` or `brew install blazecode`. Discoverability is severely limited.
 - **Category**: Business
 - **Probability**: 4 (likely — not published)
 - **Impact**: 2 (minor — limited distribution)
@@ -1366,7 +1366,7 @@ Impact →
 ### RISK-BIZ-006: No Code Signing — OS Security Warnings
 
 - **Title**: Windows and macOS binaries are not code-signed — OS blocks installation
-- **Description**: RustCode has no Windows Authenticode signing or macOS code signing/notarization. Windows users get "unknown publisher" warnings. macOS Gatekeeper blocks unsigned binaries. This creates installation friction and scares away casual users.
+- **Description**: BlazeCode has no Windows Authenticode signing or macOS code signing/notarization. Windows users get "unknown publisher" warnings. macOS Gatekeeper blocks unsigned binaries. This creates installation friction and scares away casual users.
 - **Category**: Business
 - **Probability**: 4 (likely — every install on Windows/macOS)
 - **Impact**: 3 (moderate — installation friction)
@@ -1433,7 +1433,7 @@ Impact →
 - **Impact**: 4 (major — dead code rots silently, masks real bugs)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/lib.rs:2`, `src/main.rs:2`
+- **Affected Component**: `blazecode-core/src/lib.rs:2`, `src/main.rs:2`
 - **Agent Source**: Agent 19 — Technical Debt (CRIT-2), Agent 12 — Maintainability (1)
 - **Current Mitigation**: `#![allow(dead_code)]` suppresses warnings
 - **Recommended Mitigation**: Remove crate-wide `allow` attributes. Add `#[expect(dead_code)]` on individual items with FIXME comments. Gate scaffold-phase items behind `#[cfg(scaffold)]`.
@@ -1471,7 +1471,7 @@ Impact →
 - **Impact**: 3 (moderate — fragile, error-prone)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/database.rs:1284-1350`
+- **Affected Component**: `blazecode-core/src/database.rs:1284-1350`
 - **Agent Source**: Agent 12 — Maintainability (4), Agent 04 — Logic Verification (L-1), Agent 19 — Technical Debt (MED-5)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Replace with `SessionUpdate` struct with `#[derive(Default)]` and named fields. Use `..Default::default()` at call sites.
@@ -1484,13 +1484,13 @@ Impact →
 ### RISK-DEBT-006: No Provider Protocol Implementations Exist
 
 - **Title**: Provider trait defined but no real LLM provider implementations
-- **Description**: The `Provider` trait is fully defined with `stream()`, `complete()`, `list_models()`, `get_model()` methods, but no real provider implementations exist. The TS source has 20+ `@ai-sdk/*` packages covering Anthropic, OpenAI, Gemini, Bedrock, Azure, etc. RustCode cannot call any LLM.
+- **Description**: The `Provider` trait is fully defined with `stream()`, `complete()`, `list_models()`, `get_model()` methods, but no real provider implementations exist. The TS source has 20+ `@ai-sdk/*` packages covering Anthropic, OpenAI, Gemini, Bedrock, Azure, etc. BlazeCode cannot call any LLM.
 - **Category**: Technical Debt
 - **Probability**: 5 (almost certain — critical missing feature)
 - **Impact**: 5 (catastrophic — agent cannot call any LLM)
 - **Risk Score**: 25
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/provider.rs`, All provider modules
+- **Affected Component**: `blazecode-core/src/provider.rs`, All provider modules
 - **Agent Source**: Agent 19 — Technical Debt (HIGH-2), Agent 08 — Feature Gap
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Implement Anthropic and OpenAI providers first (cover ~80% of users). Use `reqwest` + SSE streaming.
@@ -1509,7 +1509,7 @@ Impact →
 - **Impact**: 4 (major — sessions break after N turns)
 - **Risk Score**: 16
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_compaction.rs`
+- **Affected Component**: `blazecode-core/src/session_compaction.rs`
 - **Agent Source**: Agent 19 — Technical Debt (HIGH-3)
 - **Current Mitigation**: Core types exist, logic is stub
 - **Recommended Mitigation**: Implement `SessionCompactionService` with tail-turns preservation, summary generation, and overflow detection.
@@ -1528,7 +1528,7 @@ Impact →
 - **Impact**: 4 (major — process crash)
 - **Risk Score**: 8
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/config.rs:1166`
+- **Affected Component**: `blazecode-core/src/config.rs:1166`
 - **Agent Source**: Agent 19 — Technical Debt (HIGH-4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Replace `.expect()` with `lock().map_err(|_| Error::Internal(...))?` or use `Mutex` with clear ownership.
@@ -1547,7 +1547,7 @@ Impact →
 - **Impact**: 4 (major — no persistent storage)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/storage.rs`, `database.rs`
+- **Affected Component**: `blazecode-core/src/storage.rs`, `database.rs`
 - **Agent Source**: Agent 19 — Technical Debt (HIGH-5)
 - **Current Mitigation**: JSON file-based storage as fallback
 - **Recommended Mitigation**: Wire up `sqlx::SqlitePool` in `runtime.rs` init, run migrations on startup, switch `DatabaseService` to real pool.
@@ -1579,7 +1579,7 @@ Impact →
 ### RISK-DEBT-011: 14 Files Over 1,000 Lines Each
 
 - **Title**: Monolithic files violate Single Responsibility Principle
-- **Description**: 14 files are >1,000 lines each: `database.rs` (4,758), `config.rs` (4,861), `main.rs` (8,575), `plugin.rs` (6,236), `session.rs` (4,133), `event.rs` (2,905), `provider.rs` (3,018), `tool_impls.rs` (7,235), `filesystem.rs` (2,383), `permission.rs` (2,154), `filesystem.rs` (2,383), `rustcode-lsp/src/lib.rs` (3,099), `rustcode-mcp/src/lib.rs` (1,774), `TuiApp` (1,270). Merge conflicts, cognitive load, hard to navigate.
+- **Description**: 14 files are >1,000 lines each: `database.rs` (4,758), `config.rs` (4,861), `main.rs` (8,575), `plugin.rs` (6,236), `session.rs` (4,133), `event.rs` (2,905), `provider.rs` (3,018), `tool_impls.rs` (7,235), `filesystem.rs` (2,383), `permission.rs` (2,154), `filesystem.rs` (2,383), `blazecode-lsp/src/lib.rs` (3,099), `blazecode-mcp/src/lib.rs` (1,774), `TuiApp` (1,270). Merge conflicts, cognitive load, hard to navigate.
 - **Category**: Technical Debt
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 3 (moderate — hard to navigate, merge conflicts)
@@ -1598,13 +1598,13 @@ Impact →
 ### RISK-DEBT-012: TuiApp God Struct with 50+ Fields
 
 - **Title**: TuiApp struct has ~50 fields — violates Single Responsibility
-- **Description**: `rustcode-tui/src/app.rs:96-200` — `TuiApp` struct with ~50 fields covering component states, app state, backend services, streaming state, toggle flags, overlay states, dialog states, LLM streaming sender, tool definitions, terminal geometry, recent models, pinned sessions, theme, plugins, audio. Knows about everything.
+- **Description**: `blazecode-tui/src/app.rs:96-200` — `TuiApp` struct with ~50 fields covering component states, app state, backend services, streaming state, toggle flags, overlay states, dialog states, LLM streaming sender, tool definitions, terminal geometry, recent models, pinned sessions, theme, plugins, audio. Knows about everything.
 - **Category**: Technical Debt
 - **Probability**: 5 (almost certain — structural property)
 - **Impact**: 4 (major — hard to test, every feature touches TuiApp)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-tui/src/app.rs:96-200`
+- **Affected Component**: `blazecode-tui/src/app.rs:96-200`
 - **Agent Source**: Agent 12 — Maintainability (4)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Split into focused sub-structs (`AppCore`, `StreamingState`, `UIOptions`, `PluginHost`) composed as fields.
@@ -1623,7 +1623,7 @@ Impact →
 - **Impact**: 3 (moderate — bug fixes must be applied twice)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs:578-800, 957-1155`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:578-800, 957-1155`
 - **Agent Source**: Agent 04 — Logic Verification (I-3)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Extract shared stream processing and tool execution pipeline into a shared helper function.
@@ -1642,7 +1642,7 @@ Impact →
 - **Impact**: 2 (minor — boilerplate, silent serialization failures)
 - **Risk Score**: 10
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-server/src/routes/session.rs`
+- **Affected Component**: `blazecode-server/src/routes/session.rs`
 - **Agent Source**: Agent 12 — Maintainability (4), Agent 18 — Refactoring (QW-10)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Extract `fn ok_or_500<T: Serialize>(result: Result<T>) -> impl IntoResponse` helper. Return 500 on serialization failure instead of silent null.
@@ -1661,7 +1661,7 @@ Impact →
 - **Impact**: 2 (minor — ~200 lines of near-identical boilerplate)
 - **Risk Score**: 10
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-core/src/tool_impls.rs:56-430`
+- **Affected Component**: `blazecode-core/src/tool_impls.rs:56-430`
 - **Agent Source**: Agent 12 — Maintainability (2)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Extract `fn find_block_indices()` and `fn extract_span()` helpers. Consider a macro for common line-offset arithmetic pattern.
@@ -1678,7 +1678,7 @@ Impact →
 ### RISK-SCALE-001: No Distributed Infrastructure
 
 - **Title**: Zero distributed infrastructure — single process, single node
-- **Description**: RustCode has no distributed primitives — no service discovery, no leader election, no cross-node coordination. All state lives in one SQLite file. OpenCode runs on Cloudflare Workers (300+ locations) with Durable Objects for distributed coordination. RustCode cannot run as a multi-instance service.
+- **Description**: BlazeCode has no distributed primitives — no service discovery, no leader election, no cross-node coordination. All state lives in one SQLite file. BlazeCode runs on Cloudflare Workers (300+ locations) with Durable Objects for distributed coordination. BlazeCode cannot run as a multi-instance service.
 - **Category**: Scalability
 - **Probability**: 5 (almost certain — structural limitation)
 - **Impact**: 4 (major — cannot scale beyond single node)
@@ -1703,7 +1703,7 @@ Impact →
 - **Impact**: 4 (major — hard write throughput ceiling)
 - **Risk Score**: 20
 - **Risk Level**: Critical
-- **Affected Component**: `rustcode-core/src/database.rs:59-66`
+- **Affected Component**: `blazecode-core/src/database.rs:59-66`
 - **Agent Source**: Agent 07 — Scalability (2, 7)
 - **Current Mitigation**: WAL mode, busy_timeout
 - **Recommended Mitigation**: Keep SQLite for local/dev. Abstract `DatabaseService` behind a trait for future PostgreSQL swap. Add PgBouncer for pooling.
@@ -1741,7 +1741,7 @@ Impact →
 - **Impact**: 4 (major — crashed sessions must fully restart)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/event.rs:1359-1422`, `session_runner.rs`
+- **Affected Component**: `blazecode-core/src/event.rs:1359-1422`, `session_runner.rs`
 - **Agent Source**: Agent 07 — Scalability (5)
 - **Current Mitigation**: EventV2 port exists but not connected
 - **Recommended Mitigation**: Wire EventV2 replay into session initialization. Implement `resume()` function. Persist tool results as events.
@@ -1760,7 +1760,7 @@ Impact →
 - **Impact**: 3 (moderate — event loss for slow consumers)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/bus.rs:208-258`
+- **Affected Component**: `blazecode-core/src/bus.rs:208-258`
 - **Agent Source**: Agent 07 — Scalability (6)
 - **Current Mitigation**: Capacity of 1024 buffers ~1 second of events
 - **Recommended Mitigation**: Replace `broadcast::channel` with per-subscriber `tokio::sync::mpsc` channel for SSE connections. Add per-client flow control using SSE stream buffering.
@@ -1779,7 +1779,7 @@ Impact →
 - **Impact**: 3 (moderate — repeated queries hit DB)
 - **Risk Score**: 15
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/database.rs`
+- **Affected Component**: `blazecode-core/src/database.rs`
 - **Agent Source**: Agent 07 — Scalability (13)
 - **Current Mitigation**: SQLite page cache (64MB)
 - **Recommended Mitigation**: Implement in-memory session cache using `dashmap` with TTL. Cache most recent N sessions. Add `lru` cache for part deserialization.
@@ -1798,7 +1798,7 @@ Impact →
 - **Impact**: 4 (major — memory exhaustion, unbounded costs)
 - **Risk Score**: 12
 - **Risk Level**: High
-- **Affected Component**: `rustcode-core/src/session_runner.rs:37-43`
+- **Affected Component**: `blazecode-core/src/session_runner.rs:37-43`
 - **Agent Source**: Agent 07 — Scalability (11)
 - **Current Mitigation**: Step limit (25) and iteration limit (25)
 - **Recommended Mitigation**: Add per-session token budget with overflow handling. Add memory monitoring. Implement per-session cost tracking with hard limits.
@@ -1836,7 +1836,7 @@ Impact →
 - **Impact**: 2 (minor — resource exhaustion)
 - **Risk Score**: 6
 - **Risk Level**: Medium
-- **Affected Component**: `rustcode-server/src/sse.rs:29-58`
+- **Affected Component**: `blazecode-server/src/sse.rs:29-58`
 - **Agent Source**: Agent 07 — Scalability (15)
 - **Current Mitigation**: None
 - **Recommended Mitigation**: Add configurable `max_sse_connections` to `ServerConfig`. Implement connection counting. Use `tokio::sync::Semaphore` to limit concurrent SSE subscribers.
@@ -1945,4 +1945,4 @@ Impact →
 
 ---
 
-*Generated by Risk Register Writer Agent | 2026-06-21 | Based on 20 agent reports covering RustCode vs OpenCode analysis*
+*Generated by Risk Register Writer Agent | 2026-06-21 | Based on 20 agent reports covering BlazeCode vs BlazeCode analysis*

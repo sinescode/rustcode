@@ -2,13 +2,13 @@
 
 **Date:** 2026-06-21
 **Inputs:** Architecture (Agent 02), Rust Expert (Agent 03), Logic Verification (Agent 04), Performance (Agent 06), Maintainability (Agent 12)
-**Scope:** rustcode workspace — 6 crates, 95 modules, ~46k LOC
+**Scope:** blazecode workspace — 6 crates, 95 modules, ~46k LOC
 
 ---
 
 ## Executive Summary
 
-RustCode is a scaffold-phase Rust port of OpenCode (TypeScript) with an Architecture Score of 25/100 and ~120–180 person-hours of technical debt. The codebase exhibits: a monolithic core crate with 95 flat public modules, a 3,000+ line `main.rs` mixing CLI dispatch and business logic, 5 fragmented error hierarchies, 14 files over 1,000 lines, 100+ `unwrap()` calls in library code, <2% test coverage, and direct infrastructure coupling (sqlx, reqwest, std::fs) in domain code.
+BlazeCode is a scaffold-phase Rust port of OpenCode (TypeScript) with an Architecture Score of 25/100 and ~120–180 person-hours of technical debt. The codebase exhibits: a monolithic core crate with 95 flat public modules, a 3,000+ line `main.rs` mixing CLI dispatch and business logic, 5 fragmented error hierarchies, 14 files over 1,000 lines, 100+ `unwrap()` calls in library code, <2% test coverage, and direct infrastructure coupling (sqlx, reqwest, std::fs) in domain code.
 
 The plan below organizes 27 refactoring opportunities across 4 levels, from quick wins to strategic transformations.
 
@@ -22,7 +22,7 @@ Small, safe, high-impact refactorings.
 
 ### QW-1: Restore Compiler Dead-Code Detection
 
-**Current State:** `#![allow(dead_code, unused_imports, unused_variables)]` in both `rustcode-core/src/lib.rs:2` and `src/main.rs:2`. 15–25 dead items silently accumulate.
+**Current State:** `#![allow(dead_code, unused_imports, unused_variables)]` in both `blazecode-core/src/lib.rs:2` and `src/main.rs:2`. 15–25 dead items silently accumulate.
 
 **Target State:** Crate-wide `allow` removed. Individual `#[expect(dead_code)]` on items kept for TS-source symmetry. `#[cfg(scaffold)]` gate for scaffold-phase items.
 
@@ -281,7 +281,7 @@ Medium-sized structural changes.
 
 ### MR-1: Enforce Module Visibility Discipline — `pub(crate)` + Clean `lib.rs` API Surface
 
-**Current State:** All 95 modules in `rustcode-core/src/lib.rs` are `pub mod` — every module is world-accessible. No `pub(crate)`. No re-export filtering. Internal implementation details are part of the public API.
+**Current State:** All 95 modules in `blazecode-core/src/lib.rs` are `pub mod` — every module is world-accessible. No `pub(crate)`. No re-export filtering. Internal implementation details are part of the public API.
 
 **Target State:** Internal modules use `pub(crate) mod`. `lib.rs` re-exports only the intended public API surface. Consumers depend on the re-export layer, not on internal modules.
 
@@ -292,7 +292,7 @@ Medium-sized structural changes.
 4. Run `cargo check` on all downstream crates to identify breakage
 5. Fix downstream crates to use re-exported types
 
-**Risks:** Medium — downstream crates (`rustcode-server`, `rustcode-tui`, `rustcode-main`) import directly from internal modules. Will break compilation temporarily
+**Risks:** Medium — downstream crates (`blazecode-server`, `blazecode-tui`, `blazecode-main`) import directly from internal modules. Will break compilation temporarily
 **Benefits:** True API boundary. Refactoring internal modules no longer requires checking all consumers. Compiler prevents accidental public API expansion. Architecture score improves from 25 to ~40
 **Dependencies:** QW-1 (remove dead code first to reduce audit surface)
 **Estimated Effort:** 5 person-days
@@ -373,11 +373,11 @@ session/
 
 **Current State:** `database.rs` (4,758 lines) contains SQL constants, migration logic, `DatabaseService` with inline SQL, and direct `sqlx` calls. Core business logic imports `sqlx` types directly. No database trait — swapping from SQLite to PostgreSQL requires editing core code.
 
-**Target State:** `Database` trait in core with async methods. `SqliteDatabase` adapter in `rustcode-database-sqlite` crate. Core code depends only on the trait.
+**Target State:** `Database` trait in core with async methods. `SqliteDatabase` adapter in `blazecode-database-sqlite` crate. Core code depends only on the trait.
 
 **Implementation Plan:**
-1. Define `#[async_trait] pub trait Database` in `rustcode-core/src/database/trait.rs` with core methods: `get_session`, `insert_session`, `update_session`, `get_messages`, etc.
-2. Move `DatabaseService` implementation to new `rustcode-database-sqlite` crate
+1. Define `#[async_trait] pub trait Database` in `blazecode-core/src/database/trait.rs` with core methods: `get_session`, `insert_session`, `update_session`, `get_messages`, etc.
+2. Move `DatabaseService` implementation to new `blazecode-database-sqlite` crate
 3. Change all core code to accept `Arc<dyn Database>` instead of `Arc<DatabaseService>`
 4. Create in-memory mock `MockDatabase` for tests
 5. Update composition root (`main.rs` and `runtime.rs`) to construct the SQLite adapter
@@ -390,7 +390,7 @@ session/
 
 **Code Example:**
 ```rust
-// In rustcode-core:
+// In blazecode-core:
 #[async_trait]
 pub trait Database: Send + Sync {
     async fn get_session(&self, id: &str) -> Result<SessionInfo>;
@@ -400,7 +400,7 @@ pub trait Database: Send + Sync {
     // ...
 }
 
-// In rustcode-database-sqlite:
+// In blazecode-database-sqlite:
 pub struct SqliteDatabase {
     pool: sqlx::SqlitePool,
 }
@@ -432,7 +432,7 @@ pub struct SessionManager {
 **Target State:** `HttpClient` trait in core with `get`, `post`, `stream` methods. `ReqwestHttpClient` adapter. Timeouts configured at construction.
 
 **Implementation Plan:**
-1. Define `HttpClient` trait in `rustcode-core`
+1. Define `HttpClient` trait in `blazecode-core`
 2. Implement `ReqwestHttpClient` adapter
 3. Update `Provider::stream()` signature to accept `&dyn HttpClient` or have providers hold an `Arc<dyn HttpClient>`
 4. Set default 120s timeout on all HTTP requests
@@ -446,21 +446,21 @@ pub struct SessionManager {
 
 ---
 
-### MR-5: Extract `rustcode-plugin-sdk` as Standalone Publishable Crate
+### MR-5: Extract `blazecode-plugin-sdk` as Standalone Publishable Crate
 
-**Current State:** Plugin system is embedded in `rustcode-core/src/plugin.rs` (1,511+ lines). Plugin consumers cannot depend on a lightweight SDK — they must depend on the entire core crate.
+**Current State:** Plugin system is embedded in `blazecode-core/src/plugin.rs` (1,511+ lines). Plugin consumers cannot depend on a lightweight SDK — they must depend on the entire core crate.
 
-**Target State:** `rustcode-plugin-sdk` crate with just the `ProviderPlugin` trait, `PluginManager` trait, and minimal deps. Published separately on crates.io.
+**Target State:** `blazecode-plugin-sdk` crate with just the `ProviderPlugin` trait, `PluginManager` trait, and minimal deps. Published separately on crates.io.
 
 **Implementation Plan:**
-1. Create `crates/rustcode-plugin-sdk/`
+1. Create `crates/blazecode-plugin-sdk/`
 2. Extract minimal types: `ProviderPlugin`, `PluginManager`, `PluginContext`
 3. Make core depend on plugin-sdk (invert dependency direction)
 4. Add `build.rs` for SDK versioning
 5. Write crate docs and publish script
 
 **Risks:** Low — additive; old code still works during transition
-**Benefits:** Third-party plugin authors depend on a lightweight SDK, not the entire core. Follows OpenCode's `@opencode-ai/plugin` pattern
+**Benefits:** Third-party plugin authors depend on a lightweight SDK, not the entire core. Follows BlazeCode's `@blazecode-ai/plugin` pattern
 **Dependencies:** MR-1 (visibility discipline clarifies the public API)
 **Estimated Effort:** 3 person-days
 **Priority:** Medium
@@ -495,7 +495,7 @@ pub struct SessionManager {
 **Target State:** Newtype structs: `struct SessionId(String)`, `struct MessageId(String)`, `struct ModelId(String)`, `struct ProviderId(String)`. Each with `new()`, `as_str()`, `Display`, `FromStr`, `Serialize`/`Deserialize`.
 
 **Implementation Plan:**
-1. Define newtype structs in `rustcode-core/src/id.rs` (or new `types.rs`)
+1. Define newtype structs in `blazecode-core/src/id.rs` (or new `types.rs`)
 2. Implement conversion traits, validation (e.g., `SessionId` validates `ses_` prefix)
 3. Update all function signatures across the codebase
 4. Update `serde` derives to use `#[serde(transparent)]`
@@ -541,29 +541,29 @@ Large-scale structural changes.
 
 ---
 
-### AR-1: Split `rustcode-core` into 5–8 Granular Crates
+### AR-1: Split `blazecode-core` into 5–8 Granular Crates
 
-**Current State:** Monolithic `rustcode-core` with 95 modules and all dependencies (sqlx, reqwest, axum, etc.) in a single crate. Build times degrade as core grows. No reuse path.
+**Current State:** Monolithic `blazecode-core` with 95 modules and all dependencies (sqlx, reqwest, axum, etc.) in a single crate. Build times degrade as core grows. No reuse path.
 
-**Target State:** Workspace with 10–15 crates following OpenCode's 26-package boundaries:
+**Target State:** Workspace with 10–15 crates following BlazeCode's 26-package boundaries:
 
 | New Crate | Responsibility | Dependencies |
 |---|---|---|
-| `rustcode-core-types` | Shared types, traits, newtypes | serde, thiserror |
-| `rustcode-provider` | Provider trait, LLM events, adapters | core-types, http-client trait |
-| `rustcode-session` | Session management, event sourcing | core-types, database trait |
-| `rustcode-tool` | Tool trait, tool implementations | core-types, filesystem trait |
-| `rustcode-config` | Config loading, parsing, validation | core-types |
-| `rustcode-permission` | Permission evaluation, rules | core-types |
-| `rustcode-event-store` | EventV2 pub/sub, replay | core-types, database trait |
-| `rustcode-database-sqlite` | SQLite adapter (implements Database trait) | core-types, sqlx |
-| `rustcode-http-reqwest` | HTTP client adapter | core-types, reqwest |
-| `rustcode-filesystem` | Filesystem adapter | core-types, tokio |
-| `rustcode-cli` | CLI argument parsing + dispatch (library) | clap, all other crates |
-| `rustcode-llm` | LLM protocol adapters (Anthropic, OpenAI, Gemini, etc.) | core-types, provider trait |
+| `blazecode-core-types` | Shared types, traits, newtypes | serde, thiserror |
+| `blazecode-provider` | Provider trait, LLM events, adapters | core-types, http-client trait |
+| `blazecode-session` | Session management, event sourcing | core-types, database trait |
+| `blazecode-tool` | Tool trait, tool implementations | core-types, filesystem trait |
+| `blazecode-config` | Config loading, parsing, validation | core-types |
+| `blazecode-permission` | Permission evaluation, rules | core-types |
+| `blazecode-event-store` | EventV2 pub/sub, replay | core-types, database trait |
+| `blazecode-database-sqlite` | SQLite adapter (implements Database trait) | core-types, sqlx |
+| `blazecode-http-reqwest` | HTTP client adapter | core-types, reqwest |
+| `blazecode-filesystem` | Filesystem adapter | core-types, tokio |
+| `blazecode-cli` | CLI argument parsing + dispatch (library) | clap, all other crates |
+| `blazecode-llm` | LLM protocol adapters (Anthropic, OpenAI, Gemini, etc.) | core-types, provider trait |
 
 **Implementation Plan:**
-1. Create `rustcode-core-types` with shared traits and newtypes — zero implementation
+1. Create `blazecode-core-types` with shared traits and newtypes — zero implementation
 2. Extract one crate at a time, starting with the leaf dependencies (types → config → permission → provider → tool → session)
 3. Move each module group, update imports, add `pub use` re-exports
 4. Update Cargo.toml workspace dependencies
@@ -578,18 +578,18 @@ Large-scale structural changes.
 
 ---
 
-### AR-2: Extract Business Logic from `main.rs` into `rustcode-cli` Library Crate
+### AR-2: Extract Business Logic from `main.rs` into `blazecode-cli` Library Crate
 
 **Current State:** `src/main.rs` is 3,000+ lines containing CLI argument parsing, `cmd_run` (1,500 lines with interactive REPL, SSE attach, provider resolution, permission handling, file resolution), `cmd_tui`, and business logic. The binary is a thick dispatch, not a thin CLI.
 
-**Target State:** `rustcode-cli` library crate with all command handlers as public async functions. `main.rs` becomes ~30 lines: parse CLI args, call `rustcode_cli::run(cli).await`.
+**Target State:** `blazecode-cli` library crate with all command handlers as public async functions. `main.rs` becomes ~30 lines: parse CLI args, call `blazecode_cli::run(cli).await`.
 
 **Implementation Plan:**
-1. Create `crates/rustcode-cli/`
+1. Create `crates/blazecode-cli/`
 2. Move all `cmd_*` functions into the new crate as public API
 3. Move helper functions (`parse_model_spec`, `has_binary`, `print_header`, etc.)
 4. Move `CliErrorFormatter` and formatting utilities
-5. Reduce `main.rs` to: `fn main() { let cli = Cli::parse(); tokio::runtime::new().block_on(rustcode_cli::main(cli)); }`
+5. Reduce `main.rs` to: `fn main() { let cli = Cli::parse(); tokio::runtime::new().block_on(blazecode_cli::main(cli)); }`
 6. Split `cmd_run` (1,500 lines) into focused sub-functions
 
 **Risks:** Medium — import paths change; `cmd_run` is tightly coupled to core types
@@ -614,11 +614,11 @@ fn main() {
         .enable_all()
         .build()
         .expect("runtime")
-        .block_on(rustcode_cli::dispatch(cli));
+        .block_on(blazecode_cli::dispatch(cli));
     std::process::exit(exit_code);
 }
 
-// After (crates/rustcode-cli/src/lib.rs — all command handlers):
+// After (crates/blazecode-cli/src/lib.rs — all command handlers):
 pub async fn dispatch(cli: Cli) -> i32 {
     match cli.command {
         Commands::Run(args) => cmd_run(args).await,
@@ -680,7 +680,7 @@ pub async fn spawn_and_join<F>(&self, future: F) -> Result<T> {
 
 ### AR-4: Group Flat Modules into Domain Directories (session/, provider/, tool/)
 
-**Current State:** 14 `session_*` modules and 8 `provider_*` modules are all flat files in `rustcode-core/src/`. No sub-module hierarchy. Developers scan 95 modules to find what exists.
+**Current State:** 14 `session_*` modules and 8 `provider_*` modules are all flat files in `blazecode-core/src/`. No sub-module hierarchy. Developers scan 95 modules to find what exists.
 
 **Target State:** Directory-based domain modules:
 ```
@@ -873,23 +873,23 @@ impl SessionManager {
 
 ### SR-3: Full V2 Domain Model Implementation (System Context, EventV2, Location)
 
-**Current State:** Missing V2 domain abstractions that OpenCode has: System Context algebra (epoch, baseline, snapshot, mid-conversation messages), EventV2 event sourcing, Location-scoped services. The `system_context` module exists but is a stub. RustCode will diverge as OpenCode's V2 matures.
+**Current State:** Missing V2 domain abstractions that BlazeCode has: System Context algebra (epoch, baseline, snapshot, mid-conversation messages), EventV2 event sourcing, Location-scoped services. The `system_context` module exists but is a stub. BlazeCode will diverge as BlazeCode's V2 matures.
 
 **Target State:** Full V2 domain model:
 - `system_context/` module with epoch, baseline, snapshot, source sub-modules
 - `Location` as a first-class domain concept (workspace-scoped services)
 - EventV2 event sourcing with replayable event streams
-- All 129 rules from `opencode/CONTEXT.md` implemented as test cases
+- All 129 rules from `blazecode/CONTEXT.md` implemented as test cases
 
 **Implementation Plan:**
-1. Study `opencode/CONTEXT.md` as specification document — 129 rules of system context algebra
+1. Study `blazecode/CONTEXT.md` as specification document — 129 rules of system context algebra
 2. Implement `ContextSource`, `ContextEpoch`, `Baseline`, `Snapshot`, `MidConversationSystemMessage` types
 3. Implement `EventV2` event sourcing with append-only event store
 4. Implement `Location` as a first-class value with factory methods
 5. Write one test per CONTEXT.md rule
 
 **Risks:** Very high — large scope; TS reference may evolve during implementation
-**Benefits:** Feature parity with OpenCode V2. Session intelligence (compaction, baseline reconciliation) works correctly. Architecture score improves to ~75
+**Benefits:** Feature parity with BlazeCode V2. Session intelligence (compaction, baseline reconciliation) works correctly. Architecture score improves to ~75
 **Dependencies:** AR-1, AR-4, SR-1, SR-2
 **Estimated Effort:** 60 person-days
 **Priority:** Medium
@@ -919,19 +919,19 @@ impl SessionManager {
 
 ### SR-5: Make Providers Pluggable via Dynamic Loading
 
-**Current State:** All providers are statically compiled into `rustcode-core`. Adding a new provider requires modifying core code and recompiling. No plugin discovery mechanism.
+**Current State:** All providers are statically compiled into `blazecode-core`. Adding a new provider requires modifying core code and recompiling. No plugin discovery mechanism.
 
 **Target State:** Provider implementations can be loaded at runtime via `libloading` dynamic libraries. A `ProviderRegistry` discovers providers from a plugin directory.
 
 **Implementation Plan:**
 1. Define C-ABI interface for provider plugins (since Rust doesn't have stable ABI)
 2. Create `ProviderPlugin` trait with `extern "C"` entry points
-3. Implement `ProviderRegistry` that scans `~/.rustcode/providers/` for `.so`/`.dylib`/`.dll`
+3. Implement `ProviderRegistry` that scans `~/.blazecode/providers/` for `.so`/`.dylib`/`.dll`
 4. Keep existing statically-linked providers as fallback
-5. Add `rustcode plugin install <path>` command
+5. Add `blazecode plugin install <path>` command
 
 **Risks:** Very high — Rust has no stable ABI; dynamic loading is complex. Requires careful safety considerations around `#![forbid(unsafe_code)]` — dynamic loading inherently requires unsafe
-**Benefits:** Third parties can add providers without recompiling rustcode. Follows OpenCode's plugin model. Reduces compile times by moving providers out of core
+**Benefits:** Third parties can add providers without recompiling blazecode. Follows BlazeCode's plugin model. Reduces compile times by moving providers out of core
 **Dependencies:** AR-1, MR-5, SR-1
 **Estimated Effort:** 30 person-days
 **Priority:** Low
@@ -989,7 +989,7 @@ Execute AR-1 (split core into 5-8 crates) and AR-2 (extract CLI crate). This is 
 Execute AR-3 (structured concurrency), AR-5 (async trait hygiene). Improve async safety and performance.
 
 ### Phase 6: Strategic (Months 9-12+)
-Execute SR-1 (DI system), SR-4 (test suite), SR-2 (JSON migration), SR-3 (V2 domain model), SR-5 (dynamic loading). These are the long-term transformational changes that bring RustCode to parity with OpenCode V2.
+Execute SR-1 (DI system), SR-4 (test suite), SR-2 (JSON migration), SR-3 (V2 domain model), SR-5 (dynamic loading). These are the long-term transformational changes that bring BlazeCode to parity with BlazeCode V2.
 
 ---
 

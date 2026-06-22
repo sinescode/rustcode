@@ -1,6 +1,6 @@
 //! CLI error formatting with styled output.
 //!
-//! Ported from: `packages/opencode/src/cli/error.ts` — `FormatError()` function
+//! Ported from: `packages/blazecode/src/cli/error.ts` — `FormatError()` function
 //! handling 12 error types with styled messages.
 
 // ── ANSI style constants ────────────────────────────────────────────────
@@ -19,7 +19,7 @@ const PREFIX: &str = "\x1b[1;31mError:\x1b[0m";
 
 /// Structured error formatter for the CLI.
 ///
-/// Ported from: `packages/opencode/src/cli/error.ts` — `FormatError()`.
+/// Ported from: `packages/blazecode/src/cli/error.ts` — `FormatError()`.
 /// Prints styled error messages to stderr with actionable suggestions.
 pub struct CliErrorFormatter {
     pub has_errors: bool,
@@ -34,12 +34,12 @@ impl CliErrorFormatter {
 
     /// Format and print an error with appropriate styling.
     ///
-    /// Attempts to downcast to known rustcode-core error types. If the
+    /// Attempts to downcast to known blazecode-core error types. If the
     /// error is not a recognized core error, formats it as a generic
     /// CLI error.
     pub fn format_error(&mut self, err: &anyhow::Error, _cmd: &str) {
         self.has_errors = true;
-        if let Some(core_err) = err.downcast_ref::<rustcode_core::error::Error>() {
+        if let Some(core_err) = err.downcast_ref::<blazecode_core::error::Error>() {
             self.format_core_error(core_err);
         } else {
             self.fmt_cli_error(&err.to_string());
@@ -47,8 +47,8 @@ impl CliErrorFormatter {
     }
 
     /// Dispatch a core `Error` variant to the appropriate formatter.
-    fn format_core_error(&self, err: &rustcode_core::error::Error) {
-        use rustcode_core::error::Error;
+    fn format_core_error(&self, err: &blazecode_core::error::Error) {
+        use blazecode_core::error::Error;
         match err {
             Error::Config(msg) => self.fmt_config_error(msg, ""),
             Error::ProviderInit { provider_id, message } => {
@@ -226,7 +226,7 @@ pub fn format_config_remote_auth_error(url: &str) {
     eprintln!("{}Authentication is missing or has expired (the endpoint is likely behind an SSO or identity-aware proxy).{}",
         TEXT_DIM, TEXT_RESET);
     if !url.is_empty() {
-        eprintln!("{}Run `rustcode auth login {url}`{} to re-authenticate.{}",
+        eprintln!("{}Run `blazecode auth login {url}`{} to re-authenticate.{}",
             TEXT_DIM, TEXT_RESET, TEXT_RESET);
     }
 }
@@ -239,7 +239,7 @@ pub fn format_config_invalid_error(key: &str, msg: &str) {
     if !msg.is_empty() {
         eprintln!("{}  {msg}{}", TEXT_DIM, TEXT_RESET);
     }
-    eprintln!("{}Check your opencode.json or opencode.jsonc file for typos.{}", TEXT_DIM, TEXT_RESET);
+    eprintln!("{}Check your blazecode.json or blazecode.jsonc file for typos.{}", TEXT_DIM, TEXT_RESET);
 }
 
 /// Configuration error with optional detail.
@@ -264,9 +264,9 @@ pub fn format_provider_model_not_found(model: &str, provider: &str) {
         eprintln!("{} Model {model}{} not found for provider {provider}{}",
             PREFIX, TEXT_RESET, TEXT_RESET);
     }
-    eprintln!("{}Try: `rustcode models`{} to list available models{}",
+    eprintln!("{}Try: `blazecode models`{} to list available models{}",
         TEXT_DIM, TEXT_RESET, TEXT_RESET);
-    eprintln!("{}Or check your config (opencode.json) provider/model names{}",
+    eprintln!("{}Or check your config (blazecode.json) provider/model names{}",
         TEXT_DIM, TEXT_RESET);
 }
 
@@ -289,7 +289,7 @@ pub fn format_mcp_failed_error(server: &str, msg: &str) {
     if !msg.is_empty() {
         eprintln!("{}  {msg}{}", TEXT_DIM, TEXT_RESET);
     }
-    eprintln!("{}Note: opencode does not support MCP authentication yet.{}", TEXT_DIM, TEXT_RESET);
+    eprintln!("{}Note: blazecode does not support MCP authentication yet.{}", TEXT_DIM, TEXT_RESET);
 }
 
 /// Account service or transport error.

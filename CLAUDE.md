@@ -1,4 +1,4 @@
-# CLAUDE.md — rustcode
+# CLAUDE.md — blazecode
 
 Rust port of [OpenCode](https://github.com/sst/opencode) (TypeScript/Bun AI coding agent).
 OpenCode source pinned at commit `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`.
@@ -16,17 +16,17 @@ OpenCode source pinned at commit `5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b`.
 ## Workspace Layout
 
 ```
-rustcode/                    # workspace root + binary crate
+blazecode/                    # workspace root + binary crate
 ├── Cargo.toml               # workspace manifest + root [package]
 ├── src/main.rs              # CLI entry point (clap: Run, Serve, Session, Version)
 ├── deny.toml                # cargo-deny license/advisory config (v2 format)
 ├── .github/workflows/ci.yml # CI: fmt, clippy -D warnings, test (ubuntu+macos), cargo-deny
 └── crates/
-    ├── rustcode-core/       # core library — config, provider, session, tool, permission, etc.
-    ├── rustcode-server/     # HTTP/SSE server (axum) — stub
-    ├── rustcode-tui/        # terminal UI (ratatui) — stub
-    ├── rustcode-lsp/        # LSP integration — stub
-    └── rustcode-mcp/        # MCP (Model Context Protocol) — stub
+    ├── blazecode-core/       # core library — config, provider, session, tool, permission, etc.
+    ├── blazecode-server/     # HTTP/SSE server (axum) — stub
+    ├── blazecode-tui/        # terminal UI (ratatui) — stub
+    ├── blazecode-lsp/        # LSP integration — stub
+    └── blazecode-mcp/        # MCP (Model Context Protocol) — stub
 ```
 
 ## CI Pipeline (`.github/workflows/ci.yml`)
@@ -41,43 +41,43 @@ rustcode/                    # workspace root + binary crate
 
 Currently in **scaffold phase** — relaxed lints:
 - `#![warn(clippy::all)]` only — pedantic and nursery disabled
-- `#![allow(dead_code, unused_imports, unused_variables)]` in rustcode-core
+- `#![allow(dead_code, unused_imports, unused_variables)]` in blazecode-core
 - Re-enable `clippy::pedantic` and `clippy::nursery` per-module as each reaches production quality
 
-## rustcode-core Modules (20 modules)
+## blazecode-core Modules (20 modules)
 
-All in `crates/rustcode-core/src/`. Current status: scaffold (type skeletons + key traits).
+All in `crates/blazecode-core/src/`. Current status: scaffold (type skeletons + key traits).
 
 | Module | TS Source | Key types |
 |---|---|---|
 | `error.rs` | cross-cutting | `Error` (14 variants), `Result<T>` |
 | `id.rs` | `core/id/` | `ascending()`, `descending()`, `create()` |
-| `env.rs` | `opencode/env/` | `Env` (HashMap wrapper) |
-| `bus.rs` | `opencode/bus/global.ts` | `EventBus`, `SharedBus`, `GlobalEvent` |
-| `config.rs` | `opencode/config/` + `core/config/` | `Config`, `ProviderConfig`, `AgentConfig`, `McpConfig` |
-| `storage.rs` | `opencode/storage/` + `core/database/` | `Storage` (JSON), `Database` (SQLite placeholder) |
-| `permission.rs` | `opencode/permission/` + `core/permission/` | `evaluate()`, `PermissionRule`, wildcard matching, tests |
-| `provider.rs` | `opencode/provider/` + `core/plugin/provider/` | `Provider` trait, `Model`, `StreamChunk`, `ChatMessage` |
-| `tool.rs` | `opencode/tool/` + `core/tool/` | `Tool` trait, `ToolRegistry`, `ToolResult` |
-| `agent.rs` | `opencode/agent/` + `core/agent.ts` | `Agent`, `AgentMode`, permissions |
-| `session.rs` | `opencode/session/` + `core/session/` | `Session`, `Message`, `ToolState`, `SessionProcessor` |
-| `git.rs` | `opencode/git/` + `core/git.ts` | `Git` (status, diff, worktree) |
-| `snapshot.rs` | `opencode/snapshot/` + `core/snapshot.ts` | `Snapshot`, `SnapshotService` |
-| `worktree.rs` | `opencode/worktree/` | Git worktree management |
-| `format.rs` | `opencode/format/` | Token/cost formatting |
-| `image.rs` | `opencode/image/` + `core/image/` | MIME type detection |
-| `plugin.rs` | `opencode/plugin/` + `core/plugin/` | `PluginManager`, `Plugin` |
-| `skill.rs` | `opencode/skill/` + `core/skill/` | `Skill`, `discover()` from `.opencode/skills/*.md` |
-| `question.rs` | `opencode/question/` | User prompt types |
-| `lsp.rs` / `mcp.rs` | `opencode/lsp/` / `opencode/mcp/` | Placeholder — main impl in `rustcode-lsp` / `rustcode-mcp` |
+| `env.rs` | `blazecode/env/` | `Env` (HashMap wrapper) |
+| `bus.rs` | `blazecode/bus/global.ts` | `EventBus`, `SharedBus`, `GlobalEvent` |
+| `config.rs` | `blazecode/config/` + `core/config/` | `Config`, `ProviderConfig`, `AgentConfig`, `McpConfig` |
+| `storage.rs` | `blazecode/storage/` + `core/database/` | `Storage` (JSON), `Database` (SQLite placeholder) |
+| `permission.rs` | `blazecode/permission/` + `core/permission/` | `evaluate()`, `PermissionRule`, wildcard matching, tests |
+| `provider.rs` | `blazecode/provider/` + `core/plugin/provider/` | `Provider` trait, `Model`, `StreamChunk`, `ChatMessage` |
+| `tool.rs` | `blazecode/tool/` + `core/tool/` | `Tool` trait, `ToolRegistry`, `ToolResult` |
+| `agent.rs` | `blazecode/agent/` + `core/agent.ts` | `Agent`, `AgentMode`, permissions |
+| `session.rs` | `blazecode/session/` + `core/session/` | `Session`, `Message`, `ToolState`, `SessionProcessor` |
+| `git.rs` | `blazecode/git/` + `core/git.ts` | `Git` (status, diff, worktree) |
+| `snapshot.rs` | `blazecode/snapshot/` + `core/snapshot.ts` | `Snapshot`, `SnapshotService` |
+| `worktree.rs` | `blazecode/worktree/` | Git worktree management |
+| `format.rs` | `blazecode/format/` | Token/cost formatting |
+| `image.rs` | `blazecode/image/` + `core/image/` | MIME type detection |
+| `plugin.rs` | `blazecode/plugin/` + `core/plugin/` | `PluginManager`, `Plugin` |
+| `skill.rs` | `blazecode/skill/` + `core/skill/` | `Skill`, `discover()` from `.blazecode/skills/*.md` |
+| `question.rs` | `blazecode/question/` | User prompt types |
+| `lsp.rs` / `mcp.rs` | `blazecode/lsp/` / `blazecode/mcp/` | Placeholder — main impl in `blazecode-lsp` / `blazecode-mcp` |
 
-## OpenCode Source Reference
+## BlazeCode Source Reference
 
-The upstream TS source lives at `/home/kali/gitaction/opencodess/opencode/`.
+The upstream TS source lives at `/home/kali/gitaction/blazecodess/blazecode/`.
 
 | Package | Path | Files | Purpose |
 |---|---|---|---|
-| opencode | `packages/opencode/src/` | 355 | CLI, agent, session, provider, tool, permission, config, server |
+| blazecode | `packages/blazecode/src/` | 355 | CLI, agent, session, provider, tool, permission, config, server |
 | core | `packages/core/src/` | 313 | Database (18 SQLite tables, 35 migrations), session runner, tool impl, filesystem |
 | llm | `packages/llm/src/` | 55 | Protocol adapters: Anthropic, OpenAI, Bedrock, Gemini, Azure, XAI |
 | tui | `packages/tui/src/` | 146 | React/Ink terminal UI (maps to ratatui) |

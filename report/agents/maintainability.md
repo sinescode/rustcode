@@ -1,4 +1,4 @@
-# Agent 12: Maintainability Analysis — RustCode vs OpenCode
+# Agent 12: Maintainability Analysis — BlazeCode vs BlazeCode
 
 **Date**: 2026-06-21
 **Analyzed by**: Agent 12 (Maintainability Agent)
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-RustCode is a Rust port of OpenCode (TypeScript) at an early scaffold-to-prototype transition phase. The codebase exhibits **high technical debt** typical of nascent ports: type-heavy scaffolding with skeleton implementations, relaxed lint discipline, heavy open-close duplication against the TS source, and no runtime validation. Estimated **120–180 person-hours of technical debt** before reaching OpenCode parity.
+BlazeCode is a Rust port of OpenCode (TypeScript) at an early scaffold-to-prototype transition phase. The codebase exhibits **high technical debt** typical of nascent ports: type-heavy scaffolding with skeleton implementations, relaxed lint discipline, heavy open-close duplication against the TS source, and no runtime validation. Estimated **120–180 person-hours of technical debt** before reaching BlazeCode parity.
 
 Below is an organized analysis across all 13 dimensions.
 
@@ -18,29 +18,29 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Unimplemented / Stub Code
 
-- **Location**: `crates/rustcode-tui/src/app.rs:1-1270`, `crates/rustcode-lsp/src/lib.rs:1-1383`, `crates/rustcode-mcp/src/lib.rs:1-1443`, `crates/rustcode-server/src/lib.rs:1-33`
-- **OpenCode**: All 5 packages (opencode, core, llm, tui, server) are fully implemented with 355+313+55+146+? TypeScript source files.
-- **RustCode**: LSP, MCP, server, TUI crates are labeled "stub" in CLAUDE.md. Though they contain significant code, the TUI has no actual LLM streaming integration, the server routes return placeholder data, and LSP/MCP lack real process lifecycle management in production scenarios.
-- **Gap**: RustCode has type definitions and trait skeletons but ~70% of runtime logic is missing or simplified.
+- **Location**: `crates/blazecode-tui/src/app.rs:1-1270`, `crates/blazecode-lsp/src/lib.rs:1-1383`, `crates/blazecode-mcp/src/lib.rs:1-1443`, `crates/blazecode-server/src/lib.rs:1-33`
+- **BlazeCode**: All 5 packages (blazecode, core, llm, tui, server) are fully implemented with 355+313+55+146+? TypeScript source files.
+- **BlazeCode**: LSP, MCP, server, TUI crates are labeled "stub" in CLAUDE.md. Though they contain significant code, the TUI has no actual LLM streaming integration, the server routes return placeholder data, and LSP/MCP lack real process lifecycle management in production scenarios.
+- **Gap**: BlazeCode has type definitions and trait skeletons but ~70% of runtime logic is missing or simplified.
 - **Consequence**: False sense of progress. Stubs compile but don't function.
 - **Recommendation**: Remove stub modules from workspace or mark with `#[deprecated]` / feature-gate. Add integration tests that verify real execution paths.
 - **Severity**: **Critical**
 
 ### Relaxed Lints Permitting Dead Code
 
-- **Location**: `crates/rustcode-core/src/lib.rs:2`, `src/main.rs:2`
-- **RustCode**: `#![allow(dead_code, unused_imports, unused_variables)]` on both the core library and the binary crate.
-- **OpenCode**: TypeScript enforces via `strict: true` + `noUnusedLocals` + `noUnusedParameters` in tsconfig.
-- **Gap**: RustCode deliberately suppresses the compiler's strongest quality signals. Dead code cannot be detected.
+- **Location**: `crates/blazecode-core/src/lib.rs:2`, `src/main.rs:2`
+- **BlazeCode**: `#![allow(dead_code, unused_imports, unused_variables)]` on both the core library and the binary crate.
+- **BlazeCode**: TypeScript enforces via `strict: true` + `noUnusedLocals` + `noUnusedParameters` in tsconfig.
+- **Gap**: BlazeCode deliberately suppresses the compiler's strongest quality signals. Dead code cannot be detected.
 - **Consequence**: Unused imports, dead functions, and orphaned types accumulate silently. Currently ~15–25 dead items across the codebase.
 - **Recommendation**: Remove the `allow` attributes. Use `#[expect(dead_code)]` on individual items if truly needed for symmetry with TS source. Gate scaffold-phase allowances behind a `scaffold` cfg flag.
 - **Severity**: **High**
 
 ### TODOs / FIXMEs / HACKs
 
-- **Location**: `crates/rustcode-core/src/event.rs:93` (`TODO: Decide whether a future HTTP / SDK surface should expose an opaque cursor instead.`), `crates/rustcode-tui/src/app.rs:547` (`// Future: push dialogs onto the dialog stack`)
-- **OpenCode**: Minimal TODOs; Effect.ts enforces exhaustive handling.
-- **RustCode**: 4 explicit TODOs found in scanned files. Many more likely in unread modules.
+- **Location**: `crates/blazecode-core/src/event.rs:93` (`TODO: Decide whether a future HTTP / SDK surface should expose an opaque cursor instead.`), `crates/blazecode-tui/src/app.rs:547` (`// Future: push dialogs onto the dialog stack`)
+- **BlazeCode**: Minimal TODOs; Effect.ts enforces exhaustive handling.
+- **BlazeCode**: 4 explicit TODOs found in scanned files. Many more likely in unread modules.
 - **Gap**: Each TODO represents an integration decision deferred.
 - **Consequence**: Design debt accrues. TODOs rarely get resolved without project management tracking.
 - **Recommendation**: Convert TODOs to GitHub Issues. Replace inline TODOs with `todo!()` or `unreachable!()` for must-fix items.
@@ -52,19 +52,19 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Replacer Strategy Duplication in tool_impls.rs
 
-- **Location**: `crates/rustcode-core/src/tool_impls.rs:56-430`
-- **RustCode**: 7+ `Replacer` structs (`SimpleReplacer`, `LineTrimmedReplacer`, `BlockAnchorReplacer`, `WhitespaceNormalizedReplacer`, `IndentationFlexibleReplacer`, `EscapeNormalizedReplacer`, `MultiOccurrenceReplacer`, `TrimmedBoundaryReplacer`, `ContextAwareReplacer`) each implementing `fn search(content, find) -> Vec<String>` with substantial algorithmic overlap.
-- **OpenCode**: Same 9 replacers in TypeScript, but shared utility functions (`levenshtein`, `is_disproportionate_match`) reduce duplication.
-- **Gap**: In RustCode, the candidate-lookup logic (index computation, line-offset arithmetic) is duplicated across every `Replacer`.
+- **Location**: `crates/blazecode-core/src/tool_impls.rs:56-430`
+- **BlazeCode**: 7+ `Replacer` structs (`SimpleReplacer`, `LineTrimmedReplacer`, `BlockAnchorReplacer`, `WhitespaceNormalizedReplacer`, `IndentationFlexibleReplacer`, `EscapeNormalizedReplacer`, `MultiOccurrenceReplacer`, `TrimmedBoundaryReplacer`, `ContextAwareReplacer`) each implementing `fn search(content, find) -> Vec<String>` with substantial algorithmic overlap.
+- **BlazeCode**: Same 9 replacers in TypeScript, but shared utility functions (`levenshtein`, `is_disproportionate_match`) reduce duplication.
+- **Gap**: In BlazeCode, the candidate-lookup logic (index computation, line-offset arithmetic) is duplicated across every `Replacer`.
 - **Consequence**: Bug fixes in one replacer's offset logic must be replicated to all 9. ~200 lines of near-identical pattern-matching boilerplate.
 - **Recommendation**: Extract `fn find_block_indices()` and `fn extract_span()` helpers. Consider a macro for the common line-offset arithmetic pattern.
 - **Severity**: **Medium**
 
 ### TuiApp Constructor Duplication
 
-- **Location**: `crates/rustcode-tui/src/app.rs:204-318` vs `:325-418`
-- **RustCode**: `TuiApp::new()` and `TuiApp::new_remote()` are 80% identical (both initialize 30+ fields, both set up terminal, both create plugin managers, both initialize same state objects).
-- **OpenCode**: React components handle this via props/context.
+- **Location**: `crates/blazecode-tui/src/app.rs:204-318` vs `:325-418`
+- **BlazeCode**: `TuiApp::new()` and `TuiApp::new_remote()` are 80% identical (both initialize 30+ fields, both set up terminal, both create plugin managers, both initialize same state objects).
+- **BlazeCode**: React components handle this via props/context.
 - **Gap**: ~100 lines duplicated between constructors. Adding a new field requires editing both.
 - **Consequence**: Maintenance burden. Bug in one constructor's default will likely be absent in the other.
 - **Recommendation**: Extract common initialization into `fn init_terminal()`, `fn default_states()`, or use a builder pattern.
@@ -72,9 +72,9 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Config Struct Heaviness — Info vs V2ConfigInfo overlap
 
-- **Location**: `crates/rustcode-core/src/config.rs:89-240` vs `:298-350`
-- **RustCode**: `Info` (151 lines, 38 fields) and `V2ConfigInfo` (52 lines, 22 fields) share 15+ fields with identical names and types.
-- **OpenCode**: TS uses discriminated union types with intersection; Effect.Schema enforces structural typing.
+- **Location**: `crates/blazecode-core/src/config.rs:89-240` vs `:298-350`
+- **BlazeCode**: `Info` (151 lines, 38 fields) and `V2ConfigInfo` (52 lines, 22 fields) share 15+ fields with identical names and types.
+- **BlazeCode**: TS uses discriminated union types with intersection; Effect.Schema enforces structural typing.
 - **Gap**: Manual duplication of 15 field definitions across V1 and V2 config schemas.
 - **Consequence**: Adding a field to one requires adding to the other. Bug-prone.
 - **Recommendation**: Use a shared base struct via composition, or generate V2 from V1 via a derive macro.
@@ -82,15 +82,15 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Server Route Error Handling Pattern
 
-- **Location**: `crates/rustcode-server/src/routes/session.rs:311-335`, `:337-381`, `:383-395`, `:397-440`, `:442-466`, etc.
-- **RustCode**: Every handler repeats:
+- **Location**: `crates/blazecode-server/src/routes/session.rs:311-335`, `:337-381`, `:383-395`, `:397-440`, `:442-466`, etc.
+- **BlazeCode**: Every handler repeats:
   ```rust
   match state.sessions.something(...).await {
       Ok(result) => Json(serde_json::to_value(result).unwrap_or_default()).into_response(),
       Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"error": e.to_string()}))).into_response(),
   }
   ```
-- **OpenCode**: Express.js middleware with centralized error handler.
+- **BlazeCode**: Express.js middleware with centralized error handler.
 - **Gap**: ~25 handlers, each with 6–10 lines of identical error wrapping.
 - **Consequence**: ~200 lines of boilerplate. Changing error format requires editing every handler.
 - **Recommendation**: Extract `fn ok_or_500<T: Serialize>(result: Result<T>) -> impl IntoResponse` helper.
@@ -102,27 +102,27 @@ Below is an organized analysis across all 13 dimensions.
 
 ### `edit_replace()` Function
 
-- **Location**: `crates/rustcode-core/src/tool_impls.rs:445-509`
-- **RustCode**: Single function chaining 9 replacer strategies, each with pattern matching, index computation, and 3-branch outcome (found-once, found-multiple, not-found).
-- **OpenCode**: Same logic split across `Replacer.match()` methods with shared state.
+- **Location**: `crates/blazecode-core/src/tool_impls.rs:445-509`
+- **BlazeCode**: Single function chaining 9 replacer strategies, each with pattern matching, index computation, and 3-branch outcome (found-once, found-multiple, not-found).
+- **BlazeCode**: Same logic split across `Replacer.match()` methods with shared state.
 - **Complexity**: McCabe ~15 (count of decision points + 1).
 - **Recommendation**: Extract `fn try_replace()` per strategy. Use `Option` chaining instead of `for`+`continue`.
 - **Severity**: **Medium**
 
 ### `TuiApp::apply_llm_event()` Function
 
-- **Location**: `crates/rustcode-tui/src/app.rs:870-1154`
-- **RustCode**: Single match on `LlmEvent` with 13 arms, each arm containing nested match/if-let chains for message lookup, part iteration, and state mutation.
-- **OpenCode**: React setState pattern with reducers.
+- **Location**: `crates/blazecode-tui/src/app.rs:870-1154`
+- **BlazeCode**: Single match on `LlmEvent` with 13 arms, each arm containing nested match/if-let chains for message lookup, part iteration, and state mutation.
+- **BlazeCode**: React setState pattern with reducers.
 - **Complexity**: McCabe ~25. 285 lines.
 - **Recommendation**: Split into `fn on_text_delta()`, `fn on_tool_call()`, `fn on_finish()`, etc. Pass `&mut ConversationState` instead of `&mut self`.
 - **Severity**: **High**
 
 ### `EventV2::publish()` Function
 
-- **Location**: `crates/rustcode-core/src/event.rs:855-1063`
-- **RustCode**: ~208 lines, one giant method handling both sync and async event publishing paths. Deeply nested: `if let Some(ref sync_config)` → `if let Some(ref pool)` → `let mut tx` → `sqlx::query_as` → `if existing.is_some()` → guards loop → projectors loop → commit hook → UPSERT → INSERT → commit → sync handlers loop → aggregate pubsub loop → notify → typed channel → global channel.
-- **OpenCode**: Effect.ts gen-style with flat `.pipe()` chains.
+- **Location**: `crates/blazecode-core/src/event.rs:855-1063`
+- **BlazeCode**: ~208 lines, one giant method handling both sync and async event publishing paths. Deeply nested: `if let Some(ref sync_config)` → `if let Some(ref pool)` → `let mut tx` → `sqlx::query_as` → `if existing.is_some()` → guards loop → projectors loop → commit hook → UPSERT → INSERT → commit → sync handlers loop → aggregate pubsub loop → notify → typed channel → global channel.
+- **BlazeCode**: Effect.ts gen-style with flat `.pipe()` chains.
 - **Complexity**: McCabe ~20.
 - **Recommendation**: Extract `fn publish_sync()` and `fn publish_ephemeral()` from the if/else branches.
 - **Severity**: **High**
@@ -133,18 +133,18 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Large Struct — `Info` in config.rs
 
-- **Location**: `crates/rustcode-core/src/config.rs:89-240`
-- **RustCode**: 38 fields.
-- **OpenCode**: Same flat struct in TS (Effect.Schema `ConfigV1.Info`) but Effect provides structural typing and partial merge utilities.
+- **Location**: `crates/blazecode-core/src/config.rs:89-240`
+- **BlazeCode**: 38 fields.
+- **BlazeCode**: Same flat struct in TS (Effect.Schema `ConfigV1.Info`) but Effect provides structural typing and partial merge utilities.
 - **Smell**: **Data Clump** — many fields (`disabled_providers`, `enabled_providers`, `model`, `small_model`, `default_agent`, `username`) are almost always set together.
 - **Recommendation**: Group into sub-structs: `ModelConfig`, `ProviderFilters`, `AgentDefaults`.
 - **Severity**: **Medium**
 
 ### Large Struct — `TuiApp`
 
-- **Location**: `crates/rustcode-tui/src/app.rs:96-200`
-- **RustCode**: ~50 fields (component states, app state, backend services, streaming state, toggle flags, overlay states, dialog states, LLM streaming sender, tool definitions, terminal geometry, recent models, pinned sessions, theme, plugins, audio).
-- **OpenCode**: React/Ink uses component composition; each component owns its own state.
+- **Location**: `crates/blazecode-tui/src/app.rs:96-200`
+- **BlazeCode**: ~50 fields (component states, app state, backend services, streaming state, toggle flags, overlay states, dialog states, LLM streaming sender, tool definitions, terminal geometry, recent models, pinned sessions, theme, plugins, audio).
+- **BlazeCode**: React/Ink uses component composition; each component owns its own state.
 - **Smell**: **God Struct** — `TuiApp` knows about everything: rendering, streaming, permissions, plugins, themes, pinning, audio.
 - **Consequence**: Changes to any feature require touching `TuiApp`. Testing is difficult.
 - **Recommendation**: Split into focused sub-structs (`AppCore`, `StreamingState`, `UIOptions`, `PluginHost`) composed as fields. Each with its own impl block.
@@ -152,24 +152,24 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Feature Envy in `session.rs`
 
-- **Location**: `crates/rustcode-core/src/session.rs:1007-1032` — `update_message()` calls `sqlx::query` directly on `self.db.pool()` instead of through a `DatabaseService` method.
-- **RustCode**: Bypasses the `DatabaseService` abstraction for the message update path.
-- **OpenCode**: All DB access goes through the drizzle-orm query layer.
+- **Location**: `crates/blazecode-core/src/session.rs:1007-1032` — `update_message()` calls `sqlx::query` directly on `self.db.pool()` instead of through a `DatabaseService` method.
+- **BlazeCode**: Bypasses the `DatabaseService` abstraction for the message update path.
+- **BlazeCode**: All DB access goes through the drizzle-orm query layer.
 - **Recommendation**: Add `update_message_data()` to `DatabaseService`.
 - **Severity**: **Medium**
 
 ### Primitive Obsession — Session Manager Setters
 
-- **Location**: `crates/rustcode-core/src/session.rs:1106-1262`
-- **RustCode**: 10+ individual setter methods (`touch`, `set_title`, `set_archived`, `set_metadata`, `set_permission`, `set_revert`, `clear_revert`, `set_summary`, `set_share`, `set_workspace`) each calling `self.db.update_session(...)` with 19 parameters and 17 `None`s.
-- **OpenCode**: Effect.gen `Session.update()` with `SessionPatch` (optional fields).
+- **Location**: `crates/blazecode-core/src/session.rs:1106-1262`
+- **BlazeCode**: 10+ individual setter methods (`touch`, `set_title`, `set_archived`, `set_metadata`, `set_permission`, `set_revert`, `clear_revert`, `set_summary`, `set_share`, `set_workspace`) each calling `self.db.update_session(...)` with 19 parameters and 17 `None`s.
+- **BlazeCode**: Effect.gen `Session.update()` with `SessionPatch` (optional fields).
 - **Recommendation**: Each setter passes an explicit `SessionPatch` with only the changed field, and `DatabaseService::update_session` accepts that patch instead of 19 positional args. Switch to a typed builder.
 - **Severity**: **High**
 
 ### Long Parameter List — `DatabaseService::update_session()`
 
-- **Location**: `crates/rustcode-core/src/database.rs:1284-1350`
-- **RustCode**: 19 positional parameters (17 `Option`), all passed at every call site as `None, None, None, ...`.
+- **Location**: `crates/blazecode-core/src/database.rs:1284-1350`
+- **BlazeCode**: 19 positional parameters (17 `Option`), all passed at every call site as `None, None, None, ...`.
 - **Gap**: Every setter in `session.rs` passes 14–17 `None` values.
 - **Consequence**: Adding a new column to the session table requires editing every call site (10+ locations).
 - **Recommendation**: Replace with `SessionUpdate` struct with `#[derive(Default)]`. Use `..Default::default()` at call sites.
@@ -183,23 +183,23 @@ Below is an organized analysis across all 13 dimensions.
 
 | File | Lines | Assessment |
 |------|-------|------------|
-| `crates/rustcode-core/src/tool_impls.rs` | ~1238+ | High — contains 21 tool implementations, 9 replacers, bash tool (889 lines) |
-| `crates/rustcode-core/src/config.rs` | ~1408+ | Very High — 38-field struct + V2 config + 20+ sub-config structs + config loading |
-| `crates/rustcode-core/src/plugin.rs` | ~1511+ | Very High — V1 plugin hooks (28 methods), V2 plugin service, auth plugins, etc. |
-| `crates/rustcode-core/src/database.rs` | ~1445+ | High — SQL constants, service, migration logic |
-| `crates/rustcode-core/src/session.rs` | ~1481+ | Very High — SessionManager + Message types + Part types + 14 setter methods |
-| `crates/rustcode-core/src/event.rs` | ~1422+ | High — EventV2 system, pub/sub, replay |
-| `crates/rustcode-core/src/provider.rs` | ~1511+ | Very High — Types, LLM events, normalizers, transforms |
-| `crates/rustcode-core/src/permission.rs` | ~1382+ | High — Rules, evaluation, permission service |
-| `crates/rustcode-core/src/filesystem.rs` | ~1557+ | Very High — Watcher, read/write, search, ignore |
-| `crates/rustcode-tui/src/app.rs` | ~1270+ | High — TuiApp god struct |
-| `crates/rustcode-lsp/src/lib.rs` | ~1383+ | High — LSP client, server catalog, JSON-RPC |
-| `crates/rustcode-mcp/src/lib.rs` | ~1443+ | High — Transports, discovery, tests |
-| `crates/rustcode-server/src/routes/session.rs` | ~1441+ | High — 25 route handlers |
+| `crates/blazecode-core/src/tool_impls.rs` | ~1238+ | High — contains 21 tool implementations, 9 replacers, bash tool (889 lines) |
+| `crates/blazecode-core/src/config.rs` | ~1408+ | Very High — 38-field struct + V2 config + 20+ sub-config structs + config loading |
+| `crates/blazecode-core/src/plugin.rs` | ~1511+ | Very High — V1 plugin hooks (28 methods), V2 plugin service, auth plugins, etc. |
+| `crates/blazecode-core/src/database.rs` | ~1445+ | High — SQL constants, service, migration logic |
+| `crates/blazecode-core/src/session.rs` | ~1481+ | Very High — SessionManager + Message types + Part types + 14 setter methods |
+| `crates/blazecode-core/src/event.rs` | ~1422+ | High — EventV2 system, pub/sub, replay |
+| `crates/blazecode-core/src/provider.rs` | ~1511+ | Very High — Types, LLM events, normalizers, transforms |
+| `crates/blazecode-core/src/permission.rs` | ~1382+ | High — Rules, evaluation, permission service |
+| `crates/blazecode-core/src/filesystem.rs` | ~1557+ | Very High — Watcher, read/write, search, ignore |
+| `crates/blazecode-tui/src/app.rs` | ~1270+ | High — TuiApp god struct |
+| `crates/blazecode-lsp/src/lib.rs` | ~1383+ | High — LSP client, server catalog, JSON-RPC |
+| `crates/blazecode-mcp/src/lib.rs` | ~1443+ | High — Transports, discovery, tests |
+| `crates/blazecode-server/src/routes/session.rs` | ~1441+ | High — 25 route handlers |
 | `src/main.rs` | ~1532+ | Very High — CLI parsing, 22 subcommands |
 
-- **OpenCode**: TS source split into 668 files across 5 packages. Most files are 50–300 lines.
-- **RustCode**: 14 files contain all logic. The `rustcode-core` crate alone has 13+ files all >1000 lines.
+- **BlazeCode**: TS source split into 668 files across 5 packages. Most files are 50–300 lines.
+- **BlazeCode**: 14 files contain all logic. The `blazecode-core` crate alone has 13+ files all >1000 lines.
 - **Gap**: Monolithic files violate the Single Responsibility Principle.
 - **Consequence**: Merge conflicts on large files; cognitive load; hard to navigate.
 - **Recommendation**: Split each >1000-line file into module directories. E.g., `session/` → `session/mod.rs`, `session/types.rs`, `session/manager.rs`, `session/messages.rs`, `session/prompt.rs`.
@@ -260,11 +260,11 @@ Below is an organized analysis across all 13 dimensions.
 
 ## 8. Dead Code — High (Suppressed by Lint)
 
-- `#![allow(dead_code, unused_imports, unused_variables)]` in `rustcode-core` and `src/main.rs`.
+- `#![allow(dead_code, unused_imports, unused_variables)]` in `blazecode-core` and `src/main.rs`.
 - Specific dead items found:
   - `src/main.rs:28`: `use sqlx::Column;` — imported but likely unused (Column is for dynamic query building).
   - `src/main.rs:29`: `#[allow(unused_imports)] use sqlx::Row as _;` — explicit dead import.
-  - `crates/rustcode-tui/src/app.rs:120`: `#[allow(dead_code)] runner: Option<Arc<SessionRunner>>` — field never used.
+  - `crates/blazecode-tui/src/app.rs:120`: `#[allow(dead_code)] runner: Option<Arc<SessionRunner>>` — field never used.
 - Many types like `PluginSource`, `PluginKind`, `PluginState` in `plugin.rs` are defined but only 1–2 of 12 variants are ever constructed.
 - **Estimated**: 15–25 dead items across the codebase.
 - **Severity**: **High**
@@ -276,9 +276,9 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Issue: Single Giant Core Crate
 
-- **RustCode**: `rustcode-core` has 95 module declarations in `lib.rs` (lines 11–95). Every module becomes a single file in `src/`.
-- **OpenCode**: 2 packages with 668 files. Deep directory trees: `packages/opencode/src/session/` contains 15+ files (compaction, epoch, execution, history, etc.).
-- **Gap**: RustCode puts all session logic into `session.rs` (1400+ lines) and all event logic into `event.rs` (1400+ lines).
+- **BlazeCode**: `blazecode-core` has 95 module declarations in `lib.rs` (lines 11–95). Every module becomes a single file in `src/`.
+- **BlazeCode**: 2 packages with 668 files. Deep directory trees: `packages/blazecode/src/session/` contains 15+ files (compaction, epoch, execution, history, etc.).
+- **Gap**: BlazeCode puts all session logic into `session.rs` (1400+ lines) and all event logic into `event.rs` (1400+ lines).
 - **Consequence**: Modules are too large to navigate. No sub-module hierarchy.
 - **Recommendation**: Use directory-as-module pattern:
   ```
@@ -308,21 +308,21 @@ Below is an organized analysis across all 13 dimensions.
 
 ### Bad: Mixed Approaches in CRUD Code
 
-- **Location**: `crates/rustcode-core/src/database.rs:1233-1278` — `insert_session` returns `Result<(), DatabaseServiceError>`.
-- **Location**: `crates/rustcode-core/src/session.rs:647-666` — callers convert to `SessionError` via `?`.
+- **Location**: `crates/blazecode-core/src/database.rs:1233-1278` — `insert_session` returns `Result<(), DatabaseServiceError>`.
+- **Location**: `crates/blazecode-core/src/session.rs:647-666` — callers convert to `SessionError` via `?`.
 - Some functions return `Result<T, String>` (JSON column helpers), others return typed errors.
 - **Inconsistency**: `DatabaseServiceError` vs `SessionError` vs `Error::Database(String)` — three parallel error types for DB errors.
 
 ### Bad: `.unwrap_or_default()` on serialization
 
-- **Location**: `crates/rustcode-server/src/routes/session.rs:328, 373, 388` — `serde_json::to_value(session).unwrap_or_default()` silently swallows serialization errors.
+- **Location**: `crates/blazecode-server/src/routes/session.rs:328, 373, 388` — `serde_json::to_value(session).unwrap_or_default()` silently swallows serialization errors.
 - If serialization fails (e.g., a field becomes non-serializable), the API returns `null` instead of an error.
 - **Severity**: **High**
 - **Recommendation**: Return `500` on serialization failure; never silently default.
 
 ### Bad: `unwrap_or(command)` on optional arguments
 
-- **Location**: `crates/rustcode-core/src/tool_impls.rs:630` — `args["description"].as_str().unwrap_or(command)`.
+- **Location**: `crates/blazecode-core/src/tool_impls.rs:630` — `args["description"].as_str().unwrap_or(command)`.
 - If the argument is missing, the command string itself is used as the description.
 - **Severity**: **Low**
 - **Recommendation**: Acceptable pattern; no change needed.
@@ -340,15 +340,15 @@ Below is an organized analysis across all 13 dimensions.
 
 - `Info` (38 fields), `V2ConfigInfo` (22 fields), 25+ sub-config structs, 10+ enums.
 - Every field is `Option` → full `skip_serializing_if`.
-- **OpenCode**: Same complexity in TS. Effect.Schema provides codec derivation.
+- **BlazeCode**: Same complexity in TS. Effect.Schema provides codec derivation.
 - **Gap**: No validation layer. `validate_info()` exists but is a stub.
 - **Severity**: **Low** — faithful port, but heavy.
 
 ### Magic Numbers
 
-- `crates/rustcode-core/src/tool_impls.rs:57-58`: `SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65` and `MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65` — used in `BlockAnchorReplacer`. Documented to match TS, but no explanation of why 0.65.
-- `crates/rustcode-core/src/tool_impls.rs:1225`: `const MAX_READ_BYTES: usize = 51_200;` — 50KB limit, hardcoded.
-- `crates/rustcode-lsp/src/lib.rs:151-177`: Multiple timeout constants (45s init, 30s request, 500ms shutdown grace, 3s diagnostics, 150ms debounce, 5s doc wait, 10s full wait).
+- `crates/blazecode-core/src/tool_impls.rs:57-58`: `SINGLE_CANDIDATE_SIMILARITY_THRESHOLD = 0.65` and `MULTIPLE_CANDIDATES_SIMILARITY_THRESHOLD = 0.65` — used in `BlockAnchorReplacer`. Documented to match TS, but no explanation of why 0.65.
+- `crates/blazecode-core/src/tool_impls.rs:1225`: `const MAX_READ_BYTES: usize = 51_200;` — 50KB limit, hardcoded.
+- `crates/blazecode-lsp/src/lib.rs:151-177`: Multiple timeout constants (45s init, 30s request, 500ms shutdown grace, 3s diagnostics, 150ms debounce, 5s doc wait, 10s full wait).
 - **Severity**: **Medium**
 - **Recommendation**: Move magic numbers into `const` with doc comments explaining rationale. Consider `config.tool_output` for tuneable limits.
 
@@ -360,10 +360,10 @@ Below is an organized analysis across all 13 dimensions.
 
 | Crate | Tests | Files tested |
 |-------|-------|-------------|
-| `rustcode-core/error.rs` | ~25 tests | Error types only |
-| `rustcode-core/permission.rs` | 2 doc-tests | Evaluate + wildcard |
-| `rustcode-mcp/lib.rs` | ~25 tests | JSON-RPC framing, MCP discovery utils |
-| `rustcode-lsp/lib.rs` | 2 doc-tests | LSP framing helpers |
+| `blazecode-core/error.rs` | ~25 tests | Error types only |
+| `blazecode-core/permission.rs` | 2 doc-tests | Evaluate + wildcard |
+| `blazecode-mcp/lib.rs` | ~25 tests | JSON-RPC framing, MCP discovery utils |
+| `blazecode-lsp/lib.rs` | 2 doc-tests | LSP framing helpers |
 | **Total** | **~54 tests** | Mostly unit tests on utilities |
 
 ### What's Missing
@@ -378,8 +378,8 @@ Below is an organized analysis across all 13 dimensions.
 | `plugin.rs` | 1511+ | 0 | Plugin hooks, registry, auth plugins |
 | `filesystem.rs` | 1557+ | 0 | Read, write, search, watcher |
 | `database.rs` | 1445+ | 0 | Migration, CRUD (requires sqlite) |
-| `rustcode-tui/app.rs` | 1270+ | 0 | All event handling, rendering |
-| `rustcode-server/routes/session.rs` | 1441+ | 0 | All route handlers |
+| `blazecode-tui/app.rs` | 1270+ | 0 | All event handling, rendering |
+| `blazecode-server/routes/session.rs` | 1441+ | 0 | All route handlers |
 | `src/main.rs` | 1532+ | 0 | CLI parsing, dispatch |
 
 ### Test Smells
@@ -395,10 +395,10 @@ Below is an organized analysis across all 13 dimensions.
 - `SessionManager` requires `Arc<DatabaseService>` which requires a real or in-memory SQLite pool.
 - `FileWatcher::new()` spawns a `tokio::spawn` — no way to isolate.
 
-### Comparison to OpenCode
+### Comparison to BlazeCode
 
-- **OpenCode**: Effect.ts provides built-in testability via `Layer`. Tests use `TestLayer` to mock filesystem, database, and network. 355+313+55+146 = 869 TS source files with corresponding test files.
-- **Gap**: RustCode has no mocking strategy. No test harness for async services.
+- **BlazeCode**: Effect.ts provides built-in testability via `Layer`. Tests use `TestLayer` to mock filesystem, database, and network. 355+313+55+146 = 869 TS source files with corresponding test files.
+- **Gap**: BlazeCode has no mocking strategy. No test harness for async services.
 - **Estimated coverage**: <2% of code paths.
 - **Severity**: **Critical**
 - **Recommendation**: 
@@ -409,9 +409,9 @@ Below is an organized analysis across all 13 dimensions.
 
 ---
 
-## 13. OpenCode Comparison Summary
+## 13. BlazeCode Comparison Summary
 
-| Dimension | OpenCode | RustCode | Gap |
+| Dimension | BlazeCode | BlazeCode | Gap |
 |-----------|----------|----------|-----|
 | **Modularity** | 26 packages, 668 files | 5 crates, ~20 files | **High** — monolithic core crate |
 | **Error Handling** | Effect.ts (typed, composable) | thiserror + mixed String errors | **Medium** — 3 parallel error hierarchies for DB |

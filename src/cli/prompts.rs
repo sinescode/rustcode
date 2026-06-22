@@ -1,6 +1,6 @@
 //! Interactive prompt helpers (select, text, password, confirm, autocomplete, spinner).
 //!
-//! Ported from: `packages/opencode/src/cli/ui.ts` — `@clack/prompts` usage
+//! Ported from: `packages/blazecode/src/cli/ui.ts` — `@clack/prompts` usage
 //!
 //! Uses `dialoguer` for all interactive prompts and `indicatif` for spinners.
 //! Every function writes to stderr so stdout remains clean for piping.
@@ -164,7 +164,7 @@ pub fn show_spinner(message: &str) -> SpinnerGuard {
 
 /// Write a formatted message to stderr followed by a newline and ANSI reset.
 ///
-/// This matches the TS `println()` in `packages/opencode/src/cli/ui.ts`:
+/// This matches the TS `println()` in `packages/blazecode/src/cli/ui.ts`:
 /// it writes to stderr (not stdout) and resets attributes so trailing text
 /// from other tools isn't accidentally styled.
 ///

@@ -2,19 +2,19 @@
 * @sinescode
 
 # Core library
-/crates/rustcode-core/ @sinescode
+/crates/blazecode-core/ @sinescode
 
 # Server
-/crates/rustcode-server/ @sinescode
+/crates/blazecode-server/ @sinescode
 
 # TUI
-/crates/rustcode-tui/ @sinescode
+/crates/blazecode-tui/ @sinescode
 
 # LSP
-/crates/rustcode-lsp/ @sinescode
+/crates/blazecode-lsp/ @sinescode
 
 # MCP
-/crates/rustcode-mcp/ @sinescode
+/crates/blazecode-mcp/ @sinescode
 
 # CI/CD
 /.github/ @sinescode

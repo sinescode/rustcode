@@ -1,7 +1,7 @@
 # Agent 04 — Logic Verification Report
 
 **Agent**: Logic Verification Agent
-**Scope**: Line-by-line reasoning analysis of RustCode's core logic
+**Scope**: Line-by-line reasoning analysis of BlazeCode's core logic
 **Date**: 2026-06-21
 **Files Analyzed**: 16 key source files (46,396 LOC total)
 
@@ -20,8 +20,8 @@ The most significant systemic issue: **~100+ `unwrap()` calls** in library code 
 ### C-1: `clear_revert` writes literal string `"null"` instead of SQL NULL
 
 **Location**: `session.rs:1206-1215`
-**OpenCode equivalent**: `packages/opencode/src/session/session.ts` lines 828–830
-**RustCode flaw**:
+**BlazeCode equivalent**: `packages/blazecode/src/session/session.ts` lines 828–830
+**BlazeCode flaw**:
 ```rust
 // Line 1208-1209
 // To clear revert, we set it to an empty string which will be serialized
@@ -36,8 +36,8 @@ The comment says "empty string" but the code writes the literal **text** `"null"
 ### C-2: V1 `run_loop` bypasses all permission checks
 
 **Location**: `session_runner.rs:1086-1096`
-**OpenCode equivalent**: V1 run loop in `packages/core/src/session/runner/llm.ts`
-**RustCode flaw**:
+**BlazeCode equivalent**: V1 run loop in `packages/core/src/session/runner/llm.ts`
+**BlazeCode flaw**:
 ```rust
 let ctx = ToolContext {
     session_id: input.session_id.clone(),
@@ -60,8 +60,8 @@ The V1 run loop calls `execute_by_name` (line 1097-1099) instead of `execute_wit
 ### C-3: `unwrap()` on `compact_result` despite `is_some()` guard (and redundant logic)
 
 **Location**: `session_runner.rs:703-717`
-**OpenCode equivalent**: `packages/core/src/session/runner/llm.ts` lines 345–357
-**RustCode flaw**:
+**BlazeCode equivalent**: `packages/core/src/session/runner/llm.ts` lines 345–357
+**BlazeCode flaw**:
 ```rust
 if compact_result.is_some() {                          // Line 703
     let snapshot_val = serde_json::json!({             // Line 705
@@ -99,8 +99,8 @@ if let Some(ref result) = compact_result {
 ### C-4: `session_row_to_info` — `cost` field uses `f64` leading to silent precision loss
 
 **Location**: `session.rs:1420`
-**OpenCode equivalent**: `packages/opencode/src/session/session.ts` `fromRow()`
-**RustCode flaw**:
+**BlazeCode equivalent**: `packages/blazecode/src/session/session.ts` `fromRow()`
+**BlazeCode flaw**:
 ```rust
 cost: row.cost,   // row.cost is f64
 ```
@@ -117,7 +117,7 @@ The `cost` field on `SessionInfo` is `f64`, and `row.cost` is also `f64`. The `S
 ### H-1: TOCTOU race in `wake()` — lane read-then-write without atomicity
 
 **Location**: `session_execution.rs:744-755`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 // Line 745 — acquire shared ref
 if let Some(lane) = self.lanes.get(&session_id) {
@@ -149,7 +149,7 @@ self.lanes.alter(&session_id, |_, lane| {
 ### H-2: `fork` loop skips stop message in `id_map` — dangling parent references
 
 **Location**: `session.rs:866-892`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 for msg in &messages {
     if let Some(stop_at) = message_id {
@@ -183,7 +183,7 @@ But since we don't know the new ID for the stop message (we're not creating one)
 ### H-3: `await_idle` — unbounded busy-wait with no timeout
 
 **Location**: `session_execution.rs:827-834`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 pub async fn await_idle(&self, session_id: SessionId) -> Result<(), SessionRunError> {
     loop {
@@ -218,7 +218,7 @@ pub async fn await_idle(&self, session_id: SessionId) -> Result<(), SessionRunEr
 ### H-4: `part_id` generation failure falls back to empty string — DB constraint violation
 
 **Location**: `session.rs:885`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 part.set_id(&id::ascending(id::IdPrefix::Part, None).unwrap_or_default());
 // If ID generation fails, part_id = ""   ← silent data corruption
@@ -236,7 +236,7 @@ part.set_id(&new_part_id);
 ### H-5: `FiberSet::spawn` — results silently dropped if receiver is closed
 
 **Location**: `session_execution.rs:165,168`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 let _ = result_tx.send(FiberResult { id, result: crate::error::Result::Ok(result) });  // Line 165
 let _ = result_tx.send(FiberResult {                          // Line 168
@@ -258,7 +258,7 @@ let _ = result_tx.send(...);
 ### H-6: `check_context_overflow` — naive token estimation causes false overflow
 
 **Location**: `session_runner.rs:1308-1323`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 fn check_context_overflow(messages: &[ChatMessage], model: &Model) -> bool {
     let context_limit = model.limit.context;
@@ -284,7 +284,7 @@ fn check_context_overflow(messages: &[ChatMessage], model: &Model) -> bool {
 ### H-7: `parse_turn_control` — fragile string matching
 
 **Location**: `session_runner.rs:928-947`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 fn parse_turn_control(msg: &str) -> Option<TurnControl> {
     if msg.starts_with("__TURN_CTRL::") {
@@ -309,7 +309,7 @@ enum Error {
 ### H-8: `PermissionDenied` in `execute_with_pipeline` — error passes `"*"` as resource
 
 **Location**: `tool.rs:502`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 let allowed = ctx.ask(name, "*").await?;   // ← hardcoded "*" resource
 ```
@@ -321,7 +321,7 @@ let allowed = ctx.ask(name, "*").await?;   // ← hardcoded "*" resource
 ### H-9: `FiberSet::spawn` — `JoinHandle` never joined, task leaks on drop
 
 **Location**: `session_execution.rs:153-179`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 pub fn spawn<F>(&self, future: F) -> FiberHandle {
     ...
@@ -350,7 +350,7 @@ pub async fn cancel_and_join(&self, id: FiberId) {
 ### H-10: `run_turn_attempt` ignores `StepFinish` events
 
 **Location**: `session_runner.rs:659-661`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 LlmEvent::StepFinish { reason, .. } => {
     let _ = reason;   // ← StepFinish reason discarded
@@ -365,7 +365,7 @@ Both V1 (line 1029-1031) and V2 (line 659-661) modes ignore the `StepFinish` rea
 ### H-11: `build_chat_messages` sends two system messages when `input.system` is set
 
 **Location**: `session_runner.rs:1179-1191`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 if !system_prompt.is_empty() {
     messages.push(ChatMessage::System {    // ← First system message
@@ -392,7 +392,7 @@ if let Some(ref sys) = input.system { if !sys.is_empty() { /* merge or replace *
 ### H-12: `Running` state never set to `Idle` after wake completes
 
 **Location**: `session_execution.rs:726-727, 946-947`
-**RustCode flaw**: In `run()` (line 726-727), state is set to `Idle` after drain. In `wake()` (line 771-775), state is set to `Running` but never explicitly set back to `Idle` after completion. The `settle` function (line 946) sets it to `Idle` on success, but `wake()` is fire-and-forget — it doesn't await the drain.
+**BlazeCode flaw**: In `run()` (line 726-727), state is set to `Idle` after drain. In `wake()` (line 771-775), state is set to `Running` but never explicitly set back to `Idle` after completion. The `settle` function (line 946) sets it to `Idle` on success, but `wake()` is fire-and-forget — it doesn't await the drain.
 **Gap**: `wake()` transitions state to `Running` but returns immediately. The state remains `Running` until the fiber's `settle` runs. If `state()` is polled between `wake()` returning and `settle` completing, it shows `Running` even though the caller considers the wake "submitted".
 **Consequence**: External observers polling `state()` see `Running` when the system considers the wake as "submitted" not "active". The `state` field serves as both "submitted" and "active", conflating two states.
 **Recommendation**: Add a third state `Pending` for "submitted but not yet started", or update documentation to clarify that `Running` includes "submitted".
@@ -405,7 +405,7 @@ if let Some(ref sys) = input.system { if !sys.is_empty() { /* merge or replace *
 ### M-1: `wildcard_match` — regex `s` flag not used, `.` doesn't match `\n`
 
 **Location**: `permission.rs:261`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 match Regex::new(&regex_str) {
     Ok(re) => re.is_match(&normalized),
@@ -418,7 +418,7 @@ match Regex::new(&regex_str) {
 ### M-2: `Lane` holding `DoneChannel` — broadcast capacity 16 may overflow
 
 **Location**: `session_execution.rs:455`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 fn done_channel() -> (DoneChannel, DoneReceiver) {
     broadcast::channel(16)
@@ -435,7 +435,7 @@ Err(TryRecvError::Lagged(n)) => Err(SessionRunError { kind: Internal, message: f
 ### M-3: `coalesce_demand` — redundant re-extraction of `seq`
 
 **Location**: `session_execution.rs:329-340`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 (_, Demand::Wake { seq }) => Demand::Wake {
     seq: match (
@@ -464,7 +464,7 @@ Err(TryRecvError::Lagged(n)) => Err(SessionRunError { kind: Internal, message: f
 ### M-4: `FiberSet::await_empty` — no backoff or cancellation
 
 **Location**: `session_execution.rs:224-228`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 pub async fn await_empty(&self) {
     while !self.handles.is_empty() {
@@ -487,7 +487,7 @@ pub fn new() -> (Self, mpsc::UnboundedReceiver<FiberResult<T>>) {
 ### M-5: `tool.rs:520` — `call_id.clone().unwrap_or_default()` may produce empty string
 
 **Location**: `tool.rs:520`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 let truncated = truncate
     .truncate(&result.output, &ctx.session_id, &ctx.call_id.clone().unwrap_or_default())
@@ -501,7 +501,7 @@ When `ctx.call_id` is `None`, the truncation service receives an empty string as
 ### M-6: `LlmEvent` serialization — `#[serde(tag = "type")]` with conflicting field names
 
 **Location**: `provider.rs:479-480`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 #[serde(tag = "type")]
 pub enum LlmEvent {
@@ -521,7 +521,7 @@ pub enum LlmEvent {
 ### M-7: `ProviderErrorEvent` — retryable always false, classification always Some
 
 **Location**: `session_runner.rs:671-676, 1042-1046`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 all_events.push(LlmEvent::ProviderErrorEvent {
     message: msg,
@@ -547,7 +547,7 @@ let (classification, retryable) = match &e {
 ### M-8: `PermissionRule` — `Pattern` can be empty string
 
 **Location**: `permission.rs:81-89`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 pub struct PermissionRule {
     pub permission: String,
@@ -568,7 +568,7 @@ if rule.pattern.is_empty() {
 ### M-9: `PlannedInterruption` state transition — `Running` → `Interrupted` blocks normal completion
 
 **Location**: `session_execution.rs:819-820`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 let mut state = self.state.write().await;
 *state = CoordinatorState::Interrupted;   // ← Overwrites Running state
@@ -587,7 +587,7 @@ let mut state = self.state.write().await;
 ### M-10: `SessionRunResult.success` — always `true` when `error` is `None`, but `Success` definition is weak
 
 **Location**: `session_runner.rs:443-450`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 Ok(SessionRunResult {
     text: all_text,
@@ -606,7 +606,7 @@ Ok(SessionRunResult {
 ### M-11: `doom_loop` detection doesn't cover V2 mode
 
 **Location**: `session_runner.rs:982-988` (V1 only)
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 // V1 run_loop:
 if let Some((tool, count)) = detect_doom_loop(&tool_calls_made) {
@@ -628,7 +628,7 @@ if let Some((tool, count)) = detect_doom_loop(&tool_calls_made) {
 ### L-1: `update_session` — 19-argument function is error-prone
 
 **Location**: `session.rs` multiple call sites (lines 778, 1114, 1128, 1143, 1158, 1173, 1194, 1209, 1230, 1244)
-**RustCode flaw**: The `update_session` method is called with 19 positional arguments, most of which are `None`. At every call site, it's impossible to verify which field is being updated without counting argument positions.
+**BlazeCode flaw**: The `update_session` method is called with 19 positional arguments, most of which are `None`. At every call site, it's impossible to verify which field is being updated without counting argument positions.
 **Gap**: Positional arguments with 19 parameters are fragile — one-off errors in argument ordering silently update the wrong column. The compiler provides no protection.
 **Consequence**: Bugs in argument ordering (e.g., passing `Some("null")` for `revert` instead of a later parameter) are undetected.
 **Recommendation**: Use a `SessionPatch` struct with named fields and `UPDATE SET ... WHERE ...` builder pattern, or use `sqlx::query!` with named parameters.
@@ -637,7 +637,7 @@ if let Some((tool, count)) = detect_doom_loop(&tool_calls_made) {
 ### L-2: `wildcard_match` — fallback to exact match on regex failure is misleading
 
 **Location**: `permission.rs:266-267`
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 Err(_) => {
     tracing::warn!(%pattern, "failed to compile wildcard regex, falling back to exact match");
@@ -656,7 +656,7 @@ Or better: make the `Regex` construction infallible by using simpler regex const
 ### L-3: `FlatteningJson` — type alias in session summary
 
 **Location**: `session.rs:706-707` (inside json! macro)
-**RustCode flaw**:
+**BlazeCode flaw**:
 ```rust
 let snapshot_val = serde_json::json!({
     "summary": compact_result.as_ref().map(|r| r.summary.clone()),
@@ -728,7 +728,7 @@ pub messages: Arc<Vec<crate::provider::ChatMessage>>,
 ### I-1: 100+ `unwrap()` calls in library code
 
 **Location**: Throughout `took_impls.rs`, `flock.rs`, `event_projector.rs`, `lsp.rs`, `integration.rs`, `ripgrep.rs`, `agent.rs`, `plugin.rs`, `npm.rs`, `account.rs`, etc.
-**RustCode flaw**: Documented project rule #3 states: *"No `.unwrap()` in library code — use `?`, `.ok_or()`, `.unwrap_or()`, or `expect()` with a reason string."*
+**BlazeCode flaw**: Documented project rule #3 states: *"No `.unwrap()` in library code — use `?`, `.ok_or()`, `.unwrap_or()`, or `expect()` with a reason string."*
 Approximately 100+ `unwrap()` calls exist in library (non-test) code. Each one is a potential panic point.
 | File | Unwraps found |
 |---|---|
@@ -746,28 +746,28 @@ Approximately 100+ `unwrap()` calls exist in library (non-test) code. Each one i
 ### I-2: `#[allow(dead_code, unused_imports, unused_variables)]` masks unused code
 
 **Location**: `lib.rs` and `main.rs`
-**RustCode flaw**: Dead code and unused imports/variables are explicitly allowed across the crate. This means the compiler can't detect unused functions, dead code paths, or variables that should be used.
+**BlazeCode flaw**: Dead code and unused imports/variables are explicitly allowed across the crate. This means the compiler can't detect unused functions, dead code paths, or variables that should be used.
 **Recommendation**: Scoped `#[allow(...)]` rather than crate-wide.
 **Severity**: **Info**
 
 ### I-3: V1/V2 code duplication in `run_loop` and `run_turn_attempt`
 
 **Location**: `session_runner.rs:957-1155` (V1) vs `578-800` (V2)
-**RustCode flaw**: The LLM streaming loop, tool call collection, tool execution, and result assembly are duplicated between V1 `run_loop` (~200 lines) and V2 `run_turn_attempt` (~222 lines). Both iterate stream events, accumulate text deltas, collect tool calls, build tool contexts, and execute tools.
+**BlazeCode flaw**: The LLM streaming loop, tool call collection, tool execution, and result assembly are duplicated between V1 `run_loop` (~200 lines) and V2 `run_turn_attempt` (~222 lines). Both iterate stream events, accumulate text deltas, collect tool calls, build tool contexts, and execute tools.
 **Recommendation**: Extract shared logic (stream processing, tool execution pipeline) into a shared helper function.
 **Severity**: **Info**
 
 ### I-4: `ToolCall` `Attachments` field ignored after execution
 
 **Location**: `session_runner.rs:767-771, 1109-1113`
-**RustCode flaw**: Tool results with `attachments` (e.g., image outputs from `webfetch` or `bash`) are serialized as `{"result": output_text}` on lines 770/1112, discarding the `attachments` field entirely. Any file attachments returned by tools are silently dropped.
+**BlazeCode flaw**: Tool results with `attachments` (e.g., image outputs from `webfetch` or `bash`) are serialized as `{"result": output_text}` on lines 770/1112, discarding the `attachments` field entirely. Any file attachments returned by tools are silently dropped.
 **Recommendation**: Include attachments in the tool result payload when serializing back to the LLM.
 **Severity**: **Info**
 
 ### I-5: `InputDelivery::copy` trait not derived
 
 **Location**: `session_runner.rs:1342-1347`
-**RustCode flaw**: The test `test_input_delivery_copy` checks that `InputDelivery` implements `Copy` (since the test assigns `b = a` and then uses `a`). The derive likely exists in `session_history.rs` where `InputDelivery` is defined, but this is being tested as a behavioral contract.
+**BlazeCode flaw**: The test `test_input_delivery_copy` checks that `InputDelivery` implements `Copy` (since the test assigns `b = a` and then uses `a`). The derive likely exists in `session_history.rs` where `InputDelivery` is defined, but this is being tested as a behavioral contract.
 **Severity**: **Info**
 
 ### I-6: `Dashboard` structure — unused `cursor` field in `list_global`
