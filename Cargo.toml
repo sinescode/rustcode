@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = [".", "crates/rustcode-core", "crates/rustcode-server", "crates/rustcode-tui", "crates/rustcode-lsp", "crates/rustcode-mcp", "crates/rustcode-derive"]
+members = [".", "crates/rustcode-core", "crates/rustcode-server", "crates/rustcode-tui", "crates/rustcode-lsp", "crates/rustcode-mcp", "crates/rustcode-derive", "crates/opencode-sandbox"]
 
 [workspace.package]
 version = "0.1.0"
