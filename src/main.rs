@@ -2960,6 +2960,7 @@ fn build_server_state(
     ];
 
     Arc::new(rustcode_server::AppState::new(
+        ctx.db.clone(),
         ctx.bus.clone(),
         ctx.sessions.clone(),
         ctx.tools.clone(),
@@ -3417,6 +3418,9 @@ async fn cmd_stats(args: &StatsArgs) -> i32 {
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/export.ts`
 async fn cmd_export(args: &ExportArgs) -> i32 {
+    use sqlx::Row;
+    use sqlx::Column;
+    use sqlx::TypeInfo;
     let db_path = get_db_path();
     if !db_path.exists() {
         eprintln!("No local session database found at {}", db_path.display());
@@ -3657,6 +3661,7 @@ fn is_sensitive_field(name: &str) -> bool {
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/import.ts`
 async fn cmd_import(args: &ImportArgs) -> i32 {
+    use sqlx::Row;
     let is_url = args.file.starts_with("http://") || args.file.starts_with("https://");
 
     let data: serde_json::Value = if is_url {
@@ -3897,6 +3902,7 @@ fn get_db_path() -> PathBuf {
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/session.ts`
 async fn cmd_session(cmd: &SessionCommand) -> i32 {
+    use sqlx::Row;
     match cmd {
         SessionCommand::List { max_count, format } => {
             let db_path = get_db_path();
@@ -7907,7 +7913,23 @@ async fn cmd_github(cmd: &GithubCommand) -> i32 {
             // `initialize_runtime_with_path()` registers it for interactive
             // sessions.
 
-            let runner = rustcode_core::session_runner::SessionRunner::new(tool_registry);
+            // Build minimal services for the runner
+            let db = Arc::new(rustcode_core::database::DatabaseService::new(
+                sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap()
+            ));
+            let epoch_manager = Arc::new(rustcode_core::session_epoch::EpochManager::new(db.clone()));
+            let input_inbox = Arc::new(rustcode_core::session_input_inbox::SessionInputInbox::new(db.clone()));
+            let agent_service = Arc::new(rustcode_core::agent::AgentService::new(
+                &rustcode_core::config::Config::load().unwrap_or_default(),
+                std::env::current_dir().unwrap_or_default(),
+                std::path::PathBuf::from("/tmp/rustcode-data"),
+                std::env::temp_dir(),
+                Vec::new(),
+            ));
+            let compaction = Arc::new(rustcode_core::session_compaction::SessionCompaction::default());
+            let runner = rustcode_core::session_runner::SessionRunner::new(
+                tool_registry, epoch_manager, input_inbox, agent_service, compaction, db,
+            );
 
             // ── run the agent ────────────────────────────────────────
             eprintln!("Starting agent session {} ...", session_id);
