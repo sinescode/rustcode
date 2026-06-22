@@ -8626,7 +8626,7 @@ async fn cmd_generate() -> i32 {
 /// Ported from: `packages/blazecode/src/index.ts` — `.version("version", ...)`
 fn cmd_version() {
     println!("blazecode {}", env!("CARGO_PKG_VERSION"));
-    println!("Port of BlazeCode (TypeScript/Bun) to Rust");
+    println!("An AI-powered development tool built in Rust");
     println!();
 
     // Show build info
