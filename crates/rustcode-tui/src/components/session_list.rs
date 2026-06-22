@@ -35,7 +35,7 @@ const MAX_DISPLAY: usize = 50;
 ///
 /// # Source
 /// Ported from `packages/tui/src/component/dialog-session-list.tsx`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct SessionEntry {
     /// Unique session ID.
     pub id: String,

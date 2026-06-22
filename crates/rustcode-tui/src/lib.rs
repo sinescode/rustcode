@@ -16,11 +16,14 @@
 //!
 //! Events are received from the server via SSE and dispatched to the UI.
 
+pub mod syntax;
+pub mod which_key;
 pub mod app;
 pub mod clipboard;
 pub mod components;
 pub mod editor;
 pub mod event;
+pub mod home_screen;
 pub mod keymap;
 pub mod plugin;
 pub mod sse_client;

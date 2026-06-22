@@ -2042,7 +2042,7 @@ impl PluginManager {
                         // Session compacting is handled externally
                     }
                     PluginHook::ExperimentalChatMessagesTransform => {
-                        let mut msg = String::new();
+                        let msg = String::new();
                         handler.on_chat_message(msg).await;
                     }
                     PluginHook::ExperimentalChatSystemTransform => {
@@ -4073,7 +4073,7 @@ pub fn initialize_plugin_system(
     }
 
     // Initialize the manager
-    manager.init();
+    let _ = manager.init();
 
     manager
 }

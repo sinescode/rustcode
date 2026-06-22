@@ -297,7 +297,7 @@ impl SessionRunner {
         let tool_defs = self.tool_registry.to_definitions();
         let mut messages = build_chat_messages(input, &system_prompt).await?;
         let input_clone = input.clone();
-        self.run_loop(provider, model, &mut messages, &tool_defs, &input_clone)
+        self.run_loop(provider, model, &mut messages, &tool_defs, &input_clone, None)
             .await
     }
 
@@ -321,7 +321,36 @@ impl SessionRunner {
             variant: None,
             parts: vec![],
         };
-        self.run_loop(provider, model, messages, &tool_defs, &dummy_input)
+        self.run_loop(provider, model, messages, &tool_defs, &dummy_input, None)
+            .await
+    }
+
+    /// Run the tool loop starting from pre-built messages, sending LlmEvents
+    /// through `event_tx` in real-time for streaming display.
+    ///
+    /// The sender receives batched `Vec<LlmEvent>` — typically one event per
+    /// stream chunk. Tool calls, text deltas, and errors are all forwarded.
+    pub async fn run_with_messages_streaming(
+        &self,
+        provider: &dyn Provider,
+        model: &Model,
+        messages: &mut Vec<ChatMessage>,
+        event_tx: tokio::sync::mpsc::UnboundedSender<Vec<LlmEvent>>,
+    ) -> Result<SessionRunResult, Error> {
+        let tool_defs = self.tool_registry.to_definitions();
+        let dummy_input = SessionPromptInput {
+            session_id: String::new(),
+            message_id: None,
+            model: None,
+            agent: None,
+            no_reply: false,
+            tools: None,
+            format: None,
+            system: None,
+            variant: None,
+            parts: vec![],
+        };
+        self.run_loop(provider, model, messages, &tool_defs, &dummy_input, Some(event_tx))
             .await
     }
 
@@ -397,7 +426,7 @@ impl SessionRunner {
         let mut all_events: Vec<LlmEvent> = Vec::new();
         let mut all_tool_calls: Vec<ToolCallRecord> = Vec::new();
         let mut total_iterations: usize = 0;
-        let mut error: Option<String> = None;
+        let error: Option<String> = None;
 
         while open_activity {
             let mut needs_continuation = true;
@@ -437,7 +466,6 @@ impl SessionRunner {
             }
 
             if needs_continuation {
-                error = Some(format!("step limit exceeded ({})", self.max_steps));
                 return Err(Error::StepLimitExceeded {
                     session_id: session_id.to_string(),
                 });
@@ -631,7 +659,7 @@ impl SessionRunner {
             Ok(Err(e)) => {
                 let msg = e.to_string();
                 if crate::error::is_context_overflow(&msg) {
-                    overflow_detected = true;
+                    // overflow_detected flag not yet consumed — placeholder for overflow recovery
                 }
                 return Err(e);
             }
@@ -1013,6 +1041,7 @@ impl SessionRunner {
         messages: &mut Vec<ChatMessage>,
         tool_defs: &[ToolDefinition],
         input: &SessionPromptInput,
+        event_tx: Option<tokio::sync::mpsc::UnboundedSender<Vec<LlmEvent>>>,
     ) -> Result<SessionRunResult, Error> {
         let mut final_text = String::new();
         let mut all_events: Vec<LlmEvent> = Vec::new();
@@ -1063,23 +1092,36 @@ impl SessionRunner {
                         {
                             step_text.push_str(delta);
                             final_text.push_str(delta);
-                        }
-                        if let LlmEvent::ToolCall {
-                            ref id,
-                            ref name,
-                            ref input,
-                            ..
-                        } = &event
-                        {
+                            // Send text delta in real-time if event channel present
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(vec![event.clone()]);
+                            }
+                        } else if let LlmEvent::ToolCall { .. } = &event {
                             has_tool_calls = true;
-                            pending_tool_calls.insert(
-                                id.clone(),
-                                PendingToolCall {
-                                    call_id: id.clone(),
-                                    name: name.clone(),
-                                    input: input.clone(),
-                                },
-                            );
+                            if let LlmEvent::ToolCall {
+                                ref id,
+                                ref name,
+                                ref input,
+                                ..
+                            } = &event
+                            {
+                                pending_tool_calls.insert(
+                                    id.clone(),
+                                    PendingToolCall {
+                                        call_id: id.clone(),
+                                        name: name.clone(),
+                                        input: input.clone(),
+                                    },
+                                );
+                            }
+                            // Send tool call event in real-time
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(vec![event.clone()]);
+                            }
+                        } else {
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(vec![event.clone()]);
+                            }
                         }
                         if let LlmEvent::StepFinish { ref reason, .. } = &event {
                             let _ = reason;
@@ -1115,6 +1157,20 @@ impl SessionRunner {
                                     map
                                 }),
                             });
+                            // Forward error event through the event channel
+                            if let Some(ref tx) = event_tx {
+                                let err_event = LlmEvent::ProviderErrorEvent {
+                                    message: msg.clone(),
+                                    classification: Some(if is_retryable { "retryable-stream-error" } else { "stream-error" }.into()),
+                                    retryable: Some(is_retryable),
+                                    provider_metadata: retry_after.map(|ms| {
+                                        let mut map = std::collections::HashMap::new();
+                                        map.insert("retry_after_ms".to_string(), serde_json::json!(ms));
+                                        map
+                                    }),
+                                };
+                                let _ = tx.send(vec![err_event]);
+                            }
                             stream_error = Some(msg);
                         }
                     }

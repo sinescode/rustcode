@@ -205,7 +205,7 @@ pub fn lower_messages_to_input(messages: &[ChatMessage]) -> Vec<serde_json::Valu
             }
             ChatMessage::Assistant { content } => {
                 let mut text_parts: Vec<String> = Vec::new();
-                let mut tool_calls: Vec<serde_json::Value> = Vec::new();
+                let tool_calls: Vec<serde_json::Value> = Vec::new();
 
                 flush_assistant_text(&mut input, &mut text_parts);
 
@@ -340,7 +340,7 @@ pub fn lower_tools_to_responses(tools: &[ToolDefinition]) -> Vec<serde_json::Val
 
 /// Internal tracked state for a pending tool call during streaming.
 #[derive(Debug, Clone)]
-struct PendingToolCall {
+pub struct PendingToolCall {
     call_id: String,
     name: String,
     arguments: String,

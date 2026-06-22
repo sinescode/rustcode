@@ -99,7 +99,7 @@ pub type PartId = String;
 ///
 /// # Source
 /// `packages/opencode/src/session/session.ts` lines 213–234 `Info`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionInfo {
     pub id: SessionId,
     pub slug: String,
@@ -195,7 +195,7 @@ pub struct CacheUsage {
 ///
 /// # Source
 /// `packages/opencode/src/session/session.ts` lines 191–196.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct SessionTimestamps {
     pub created: u64,
     pub updated: u64,
@@ -1504,7 +1504,7 @@ fn part_id(part: &Part) -> &str {
 // ── Session Manager input types ────────────────────────────────────────────
 
 /// Input for creating a session.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CreateSessionInput {
     pub project_id: String,
     pub workspace_id: Option<String>,

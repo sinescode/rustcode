@@ -885,11 +885,11 @@ mod tests {
         register_lifecycle_events(&registry).unwrap();
 
         // Verify lifecycle events are registered
-        let text_started = registry.get_definition("session.conversation.text.started").unwrap();
+        let text_started = registry.get("session.conversation.text.started").await.unwrap();
         assert_eq!(text_started.event_type, "session.conversation.text.started");
         assert!(text_started.sync.is_some());
 
-        let text_ended = registry.get_definition("session.conversation.text.ended").unwrap();
+        let text_ended = registry.get("session.conversation.text.ended").await.unwrap();
         assert_eq!(text_ended.event_type, "session.conversation.text.ended");
     }
 
@@ -898,6 +898,14 @@ mod tests {
         let mut registry = EventRegistry::new();
         let events = EventV2::new(None, registry.clone());
         register_lifecycle_events(&registry).unwrap();
+
+        // Verify lifecycle events are registered
+        let text_started = registry.get("session.conversation.text.started").await.unwrap();
+        assert_eq!(text_started.event_type, "session.conversation.text.started");
+        assert!(text_started.sync.is_some());
+
+        let text_ended = registry.get("session.conversation.text.ended").await.unwrap();
+        assert_eq!(text_ended.event_type, "session.conversation.text.ended");
 
         // Register a custom projector and verify
         let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));

@@ -553,7 +553,7 @@ impl SessionHistory {
                     let parts = msg.get("parts").and_then(|p| p.as_array()).map(|a| a.to_vec()).unwrap_or_default();
 
                     let mut assistant_parts: Vec<serde_json::Value> = Vec::new();
-                    let mut media: Vec<serde_json::Value> = Vec::new();
+                    let media: Vec<serde_json::Value> = Vec::new();
 
                     for part in &parts {
                         let part_type = part.get("type").and_then(|t| t.as_str()).unwrap_or("");

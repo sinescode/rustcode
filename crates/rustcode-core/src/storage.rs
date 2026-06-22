@@ -53,11 +53,11 @@ impl FileLock {
         Self { inner: StdRwLock::new(()) }
     }
 
-    pub fn read_lock(&self) -> std::sync::LockResult<std::sync::RwLockReadGuard<()>> {
+    pub fn read_lock(&self) -> std::sync::LockResult<std::sync::RwLockReadGuard<'_, ()>> {
         self.inner.read()
     }
 
-    pub fn write_lock(&self) -> std::sync::LockResult<std::sync::RwLockWriteGuard<()>> {
+    pub fn write_lock(&self) -> std::sync::LockResult<std::sync::RwLockWriteGuard<'_, ()>> {
         self.inner.write()
     }
 }

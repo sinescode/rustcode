@@ -140,8 +140,8 @@ fn bench_truncate_small(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let text = "Hello, world!";
     c.bench_function("truncate::small", |b| {
-        b.to_async(&runtime).iter(|| async {
-            svc.truncate(black_box(text), "ses_001", "call_001").await
+        b.iter(|| {
+            runtime.block_on(svc.truncate(black_box(text), "ses_001", "call_001"))
         })
     });
 }
@@ -151,8 +151,8 @@ fn bench_truncate_large(c: &mut Criterion) {
     let runtime = tokio::runtime::Runtime::new().unwrap();
     let text = "line\n".repeat(10_000);
     c.bench_function("truncate::large_10k_lines", |b| {
-        b.to_async(&runtime).iter(|| async {
-            svc.truncate(black_box(&text), "ses_001", "call_002").await
+        b.iter(|| {
+            runtime.block_on(svc.truncate(black_box(&text), "ses_001", "call_002"))
         })
     });
 }

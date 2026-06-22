@@ -146,6 +146,14 @@ impl Default for Flags {
     }
 }
 
+/// Check if a Rustcode feature flag is set from the environment.
+/// "1" or "true" (case-insensitive) → true; everything else → false.
+pub fn is_flag_set(name: &str) -> bool {
+    std::env::var(name)
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

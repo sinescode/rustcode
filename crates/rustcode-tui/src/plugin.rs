@@ -343,7 +343,7 @@ impl TuiPluginManager {
 
         // Drain any themes registered by the plugin
         let themes = api.drain_themes();
-        for (name, theme) in themes {
+        for (name, _theme) in themes {
             tracing::info!(plugin = %id, theme = %name, "plugin registered theme");
         }
 

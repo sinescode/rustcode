@@ -349,10 +349,10 @@ pub async fn acquire(key: &str, options: &FlockOptions) -> Result<FlockLease, St
             return Err(format!("Timed out waiting for lock: {key}"));
         }
 
-        attempt += 1;
+        let _ = attempt += 1;
         let ms = jitter(delay);
         tokio::time::sleep(Duration::from_millis(ms)).await;
-        waited += ms;
+        let _ = waited += ms;
         delay = std::cmp::min(options.max_delay_ms, (delay as f64 * 1.7) as u64);
     }
 }

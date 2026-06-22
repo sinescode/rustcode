@@ -53,7 +53,7 @@ impl SessionReminders {
                 continue;
             }
 
-            let mut entries = tokio::task::spawn_blocking({
+            let entries = tokio::task::spawn_blocking({
                 let dir = dir.clone();
                 move || -> std::io::Result<Vec<std::path::PathBuf>> {
                     let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)?

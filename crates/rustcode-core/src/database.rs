@@ -1474,7 +1474,7 @@ impl DatabaseService {
         }
         if let Some(_s) = search {
             conditions.push(format!("title LIKE ?{next_bind}"));
-            next_bind += 1;
+            let _ = next_bind += 1;
         }
 
         let where_clause = if conditions.is_empty() {
@@ -1507,7 +1507,7 @@ impl DatabaseService {
         let rows = query
             .fetch_all(&self.pool)
             .await
-            .map_err(|e| DatabaseServiceError::Database(format!("list sessions global: {{e}}")))?;
+            .map_err(|e| DatabaseServiceError::Database(format!("list sessions global: {e}")))?;
 
         Ok(rows.into_iter().map(SessionRowRaw::into_row).collect())
     }
@@ -1529,7 +1529,7 @@ impl DatabaseService {
         .bind(parent_id)
         .fetch_all(&self.pool)
         .await
-        .map_err(|e| DatabaseServiceError::Database(format!("list child sessions: {{e}}")))?;
+        .map_err(|e| DatabaseServiceError::Database(format!("list child sessions: {e}")))?;
 
         Ok(rows.into_iter().map(SessionRowRaw::into_row).collect())
     }
@@ -1557,7 +1557,7 @@ impl DatabaseService {
         .bind(part_id)
         .fetch_optional(&self.pool)
         .await
-        .map_err(|e| DatabaseServiceError::Database(format!("get part by id: {{e}}")))?;
+        .map_err(|e| DatabaseServiceError::Database(format!("get part by id: {e}")))?;
 
         Ok(row.map(|r| PartRow {
             id: r.id,
@@ -1583,7 +1583,7 @@ impl DatabaseService {
             .bind(now)
             .execute(&self.pool)
             .await
-            .map_err(|e| DatabaseServiceError::Database(format!("update session workspace: {{e}}")))?;
+            .map_err(|e| DatabaseServiceError::Database(format!("update session workspace: {e}")))?;
 
         Ok(())
     }

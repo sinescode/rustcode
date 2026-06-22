@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all)]
-#![cfg_attr(test, allow(dead_code, unused_imports, unused_variables))]
+#![allow(dead_code, unused_imports, unused_variables, unused_assignments)]
 
 //! Core library for rustcode — AI-powered development tool.
 //!

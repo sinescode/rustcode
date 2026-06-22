@@ -733,7 +733,7 @@ impl Tool for BashTool {
             use tokio::io::AsyncBufReadExt;
             let buf = Arc::clone(&output_buf);
             tokio::spawn(async move {
-                let mut reader = tokio::io::BufReader::new(stdout);
+                let reader = tokio::io::BufReader::new(stdout);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let mut guard = buf.lock().await;
@@ -747,7 +747,7 @@ impl Tool for BashTool {
             use tokio::io::AsyncBufReadExt;
             let buf = Arc::clone(&stderr_buf);
             tokio::spawn(async move {
-                let mut reader = tokio::io::BufReader::new(stderr);
+                let reader = tokio::io::BufReader::new(stderr);
                 let mut lines = reader.lines();
                 while let Ok(Some(line)) = lines.next_line().await {
                     let mut guard = buf.lock().await;
@@ -5784,6 +5784,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         }
     }
 

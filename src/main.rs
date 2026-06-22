@@ -1,6 +1,6 @@
 #![forbid(unsafe_code)]
 #![warn(clippy::all)]
-#![cfg_attr(test, allow(dead_code, unused_imports))]
+#![allow(dead_code, unused_imports, unused_variables)]
 
 //! rustcode — AI-powered development tool.
 //!
@@ -1352,7 +1352,6 @@ async fn async_main(cli: Cli) {
         }
     };
 
-    error_fmt.has_errors |= exit_code != 0;
     if exit_code != 0 {
         std::process::exit(exit_code);
     }

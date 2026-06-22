@@ -174,7 +174,7 @@ impl TimelineState {
 
             let label = format!(
                 "{} {}",
-                Tet::role_icon(&meta.role),
+                TimelineState::role_icon(&meta.role),
                 &meta.preview[..meta.preview.len().min(50)]
             );
 
@@ -347,12 +347,9 @@ impl TimelineState {
             _ => Some(TimelineAction::Navigate),
         }
     }
-}
 
-struct Tet;
-
-impl Tet {
-    fn role_icon(role: &str) -> &'static str {
+    /// Get display icon for a message role.
+    pub fn role_icon(role: &str) -> &'static str {
         match role {
             "user" => "U",
             "assistant" => "A",
@@ -361,7 +358,8 @@ impl Tet {
         }
     }
 
-    fn role_color(role: &str) -> Color {
+    /// Get display color for a message role.
+    pub fn role_color(role: &str) -> Color {
         match role {
             "user" => Color::Green,
             "assistant" => Color::Cyan,
@@ -443,7 +441,7 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
             .enumerate()
             .map(|(i, node)| {
                 let is_selected = i == state.selected;
-                let role_color = Tet::role_color(&node.role);
+                let role_color = TimelineState::role_color(&node.role);
 
                 let row_style = if is_selected {
                     Style::default().fg(Color::Black).bg(role_color)
@@ -481,7 +479,7 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
                     "    "
                 };
 
-                let role_tag = format!("[{}]", Tet::role_icon(&node.role));
+                let role_tag = format!("[{}]", TimelineState::role_icon(&node.role));
                 let preview = &node.preview;
 
                 // Truncate preview to fit
@@ -533,7 +531,7 @@ pub fn render_timeline(f: &mut Frame, area: Rect, state: &TimelineState) {
                 Span::styled(
                     &node.role,
                     Style::default()
-                        .fg(Tet::role_color(&node.role))
+                        .fg(TimelineState::role_color(&node.role))
                         .add_modifier(Modifier::BOLD),
                 ),
             ]));

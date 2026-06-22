@@ -90,12 +90,13 @@ pub enum FinishReason {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/model-status.ts` line 5.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum ModelStatus {
     Alpha,
     Beta,
     Deprecated,
+    #[default]
     Active,
 }
 
@@ -105,7 +106,7 @@ pub enum ModelStatus {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` line 952–956.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ApiInfo {
     /// API model ID
     pub id: String,
@@ -270,7 +271,7 @@ pub struct Cost {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` line 1012–1016.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenLimit {
     pub context: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -290,7 +291,7 @@ pub type Variants = HashMap<String, serde_json::Value>;
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` line 1018–1033.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Model {
     /// Model ID
     pub id: ModelId,

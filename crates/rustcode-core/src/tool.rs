@@ -1420,6 +1420,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
         assert_eq!(ctx.session_id, "ses_1");
         assert!(ctx.call_id.is_none());
@@ -1439,6 +1440,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
         assert_eq!(ctx.call_id, Some("call_abc".into()));
     }
@@ -1455,6 +1457,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
         ctx.update_metadata("foo", serde_json::json!("bar"));
         assert_eq!(ctx.extra.get("foo").and_then(|v| v.as_str()), Some("bar"));
@@ -1472,6 +1475,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
         // Without ask_fn, permission is implicitly granted.
         let allowed = ctx.ask("bash", "*").await.unwrap();
@@ -1503,6 +1507,7 @@ mod tests {
                 message_id: "msg_1".into(),
                 call_id: "call_1".into(),
             }),
+            prompt_ops: None,
         };
 
         assert!(ctx.ask("bash", "*").await.unwrap());
@@ -1542,6 +1547,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
         let result = tool.execute(serde_json::json!({}), &ctx).await.unwrap();
         assert_eq!(result.title, "noop");
@@ -1578,6 +1584,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
 
         let adapter = PluginToolAdapter { def: plugin };
@@ -1681,6 +1688,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
 
         let truncate = TruncateService::new();
@@ -1720,6 +1728,7 @@ mod tests {
                 message_id: "msg_1".into(),
                 call_id: "call_1".into(),
             }),
+            prompt_ops: None,
         };
 
         let truncate = TruncateService::new();
@@ -1748,6 +1757,7 @@ mod tests {
             messages: vec![],
             ask_fn: None,
             permission_source: None,
+            prompt_ops: None,
         };
 
         // Override the NoopTool to produce a lot of output for testing.

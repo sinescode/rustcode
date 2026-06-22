@@ -184,13 +184,7 @@ pub struct PtyAttachInput {
     /// Absolute output cursor to replay from.
     /// -1 tails from current end; omitted replays the full retained buffer.
     pub cursor: Option<i64>,
-    /// Optional callback for incoming data chunks (called synchronously from data path).
-    /// Use this for live streaming; consider keeping this lightweight/non-blocking.
-    #[cfg(feature = "pty_callbacks")]
-    pub on_data: Option<std::sync::Arc<dyn Fn(&str) + Send + Sync>>,
-    /// Optional callback for when the session ends (process exit or teardown).
-    #[cfg(feature = "pty_callbacks")]
-    pub on_end: Option<std::sync::Arc<dyn Fn(Option<u64>) + Send + Sync>>,
+
 }
 
 /// Attachment handle — replay, write, activate, detach.
@@ -2057,7 +2051,8 @@ mod runtime_tests {
         // The process should have written "hello pty\n" to stdout
         let msg = rx.try_recv().ok();
         assert!(msg.is_some(), "expected broadcast output");
-        let text = String::from_utf8_lossy(&msg.unwrap());
+        let binding = msg.unwrap();
+        let text = String::from_utf8_lossy(&binding);
         assert!(text.contains("hello pty"), "expected hello pty, got {text:?}");
 
         runtime.remove(session.id()).await.expect("should remove");

@@ -103,6 +103,8 @@ pub struct TuiApp {
     permission: PermissionState,
     question: QuestionState,
     toast: ToastState,
+    /// Which-key popup (keybinding hints).
+    which_key: crate::which_key::WhichKeyState,
     dialog: DialogState,
     sidebar_state: SidebarState,
     diff: DiffState,
@@ -173,6 +175,9 @@ pub struct TuiApp {
     /// Sender into the main loop's LLM event channel.
     /// Set in run_async() after the channel is created.
     llm_tx: Option<Arc<tokio::sync::mpsc::UnboundedSender<(String, LlmEvent)>>>,
+    /// Notified when the current stream ends (runner task completes).
+    /// Used to trigger finalize_stream() when llm_rx won't naturally close.
+    stream_end: Option<Arc<tokio::sync::Notify>>,
 
     // ── Tool definitions (sent to LLM on each request) ────────────
     tool_definitions: Vec<ToolDefinition>,
@@ -197,13 +202,23 @@ pub struct TuiApp {
     // ── Audio notification ───────────────────────────────────────
     /// Whether to emit the terminal bell on stream completion.
     audio_enabled: bool,
+
+    // ── Home screen state ────────────────────────────────────────
+    /// TUI version string.
+    crate_version: String,
+    /// Whether we're in the initial startup loading phase.
+    loading_session: bool,
+    /// Previous session ID for detecting changes (triggers session load).
+    previous_session_id: Option<String>,
+    /// Spinner animation frame counter.
+    spin_frame: u64,
 }
 
 impl TuiApp {
     /// Create a new TuiApp with backend services.
     pub fn new(
-        _sessions: Arc<SessionManager>,
-        _runner: Arc<rustcode_core::session_runner::SessionRunner>,
+        sessions: Arc<SessionManager>,
+        runner: Arc<rustcode_core::session_runner::SessionRunner>,
         providers: HashMap<String, Arc<dyn Provider>>,
         bus: SharedBus,
         tool_definitions: Vec<ToolDefinition>,
@@ -215,7 +230,7 @@ impl TuiApp {
         let terminal = Terminal::new(backend)?;
 
         let default_provider = providers.keys().next().cloned();
-        let _default_model = default_provider.as_ref().and_then(|pid| {
+        let default_model = default_provider.as_ref().and_then(|pid| {
             providers.get(pid).and_then(|_p| {
                 if pid == "anthropic" {
                     Some(String::from("claude-sonnet-4-6"))
@@ -249,6 +264,7 @@ impl TuiApp {
             permission: PermissionState::new(),
             question: QuestionState::new(),
             toast: ToastState::new(),
+            which_key: crate::which_key::WhichKeyState::new(),
             dialog: DialogState::new(),
             sidebar_state: SidebarState::new(),
             diff: DiffState::new(),
@@ -258,11 +274,11 @@ impl TuiApp {
             leader_active: false,
             session_id: None,
             bus: Some(bus),
-            sessions: None,
-            runner: None,
+            sessions: Some(sessions),
+            runner: Some(runner),
             providers,
-            default_provider: None,
-            default_model: None,
+            default_provider,
+            default_model,
             permission_service: Some(permission_service),
             current_agent: "build".into(),
             current_model_name: String::new(),
@@ -297,6 +313,7 @@ impl TuiApp {
             model_selector: ModelSelectorState::new(),
             // LLM streaming
             llm_tx: None,
+            stream_end: None,
             // Tool definitions
             tool_definitions,
             // Terminal geometry cache
@@ -315,6 +332,11 @@ impl TuiApp {
             },
             // Audio notification
             audio_enabled: true,
+            // Home screen state
+            crate_version: env!("CARGO_PKG_VERSION").into(),
+            loading_session: false,
+            previous_session_id: None,
+            spin_frame: 0,
         })
     }
 
@@ -344,6 +366,7 @@ impl TuiApp {
             permission: PermissionState::new(),
             question: QuestionState::new(),
             toast: ToastState::new(),
+            which_key: crate::which_key::WhichKeyState::new(),
             dialog: DialogState::new(),
             sidebar_state: SidebarState::new(),
             diff: DiffState::new(),
@@ -396,6 +419,7 @@ impl TuiApp {
             model_selector: ModelSelectorState::new(),
             // LLM streaming
             llm_tx: None,
+            stream_end: None,
             // Tool definitions
             tool_definitions: Vec::new(),
             // Terminal geometry cache
@@ -414,6 +438,11 @@ impl TuiApp {
             },
             // Audio notification
             audio_enabled: true,
+            // Home screen state
+            crate_version: env!("CARGO_PKG_VERSION").into(),
+            loading_session: false,
+            previous_session_id: None,
+            spin_frame: 0,
         })
     }
 
@@ -811,6 +840,9 @@ impl TuiApp {
         });
 
         // Spawn the streaming task
+        let stream_end_notify = Arc::new(tokio::sync::Notify::new());
+        self.stream_end = Some(stream_end_notify.clone());
+        let stream_end = Some(stream_end_notify);
         tokio::spawn(async move {
             let model = match provider.get_model(&model_id).await {
                 Ok(m) => m,
@@ -861,6 +893,238 @@ impl TuiApp {
                 if llm_tx.send((assistant_msg_id.clone(), event)).is_err() {
                     break;
                 }
+            }
+            // Signal stream completion
+            if let Some(ref notify) = stream_end {
+                notify.notify_one();
+            }
+        });
+    }
+
+    /// Spawn the SessionRunner::run_with_messages_streaming() call in a tokio task.
+    ///
+    /// Builds chat messages from the user prompt, creates a placeholder
+    /// assistant message, then runs the full session runner tool loop
+    /// through `bridge_tx` → `llm_tx` for real-time display.
+    fn spawn_runner_stream(&mut self, text: String) {
+        let provider_id = self
+            .default_provider
+            .clone()
+            .unwrap_or_else(|| "anthropic".into());
+        let model_id = self
+            .default_model
+            .clone()
+            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+        let agent = self.current_agent.clone();
+        let session_id = self
+            .session_id
+            .clone()
+            .unwrap_or_else(|| format!("ses_tui_{}", chrono::Utc::now().timestamp_millis()));
+
+        self.session_id = Some(session_id.clone());
+        self.is_streaming = true;
+
+        let provider = match self.providers.get(&provider_id) {
+            Some(p) => Arc::clone(p),
+            None => {
+                self.conversation
+                    .add_system_message(format!("Error: provider '{provider_id}' not found"));
+                self.is_streaming = false;
+                self.current_assistant_msg_id = None;
+                self.status.session_status = Some(SessionStatus::Idle);
+                return;
+            }
+        };
+
+        let llm_tx = match self.llm_tx.clone() {
+            Some(tx) => tx,
+            None => {
+                self.conversation
+                    .add_system_message("Error: LLM channel not initialized".into());
+                self.is_streaming = false;
+                self.status.session_status = Some(SessionStatus::Idle);
+                return;
+            }
+        };
+
+        let runner = match self.runner.clone() {
+            Some(r) => r,
+            None => {
+                tracing::warn!("no runner available, falling back to raw stream");
+                self.spawn_llm_stream(text);
+                return;
+            }
+        };
+
+        // Build chat messages from the conversation state plus new user prompt.
+        let instructions = [
+            "You are a helpful coding assistant running in a terminal (rustcode).".to_string(),
+            "You have tools for reading, writing, editing, and searching code.".to_string(),
+            "Use tools when you need to interact with the filesystem.".to_string(),
+            "Keep responses concise. Prefer showing code over describing it.".to_string(),
+        ];
+        let system_prompt = instructions.join("\n");
+
+        let mut chat_messages: Vec<ChatMessage> = vec![ChatMessage::System {
+            content: MessageContent::Text(system_prompt),
+        }];
+
+        // Include recent conversation context (last few messages) for multi-turn
+        for msg in self.conversation.messages.iter().rev().take(6).rev() {
+            match &msg.info {
+                MessageInfo::User(_) => {
+                    let t = msg
+                        .parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let Part::Text(tp) = p {
+                                Some(tp.text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !t.is_empty() {
+                        chat_messages.push(ChatMessage::User {
+                            content: MessageContent::Text(t),
+                        });
+                    }
+                }
+                MessageInfo::Assistant(_) => {
+                    let t = msg
+                        .parts
+                        .iter()
+                        .filter_map(|p| {
+                            if let Part::Text(tp) = p {
+                                Some(tp.text.as_str())
+                            } else {
+                                None
+                            }
+                        })
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    if !t.is_empty() {
+                        chat_messages.push(ChatMessage::Assistant {
+                            content: MessageContent::Text(t),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Ensure the current prompt is the last user message
+        chat_messages.push(ChatMessage::User {
+            content: MessageContent::Text(text.clone()),
+        });
+
+        // Create placeholder assistant message
+        let now = chrono::Utc::now().timestamp_millis() as u64;
+        let assistant_msg_id = format!("msg_asst_{now}");
+        self.current_assistant_msg_id = Some(assistant_msg_id.clone());
+        self.stream_text_buf.clear();
+        self.stream_reasoning_buf.clear();
+
+        self.conversation.messages.push(Message {
+            info: MessageInfo::Assistant(session::AssistantInfo {
+                id: assistant_msg_id.clone(),
+                session_id: session_id.clone(),
+                parent_id: format!("msg_user_{now}"),
+                agent: agent.clone(),
+                model_id: Some(model_id.clone()),
+                provider_id: Some(provider_id.clone()),
+                variant: None,
+                summary: false,
+                cost: 0.0,
+                tokens: Default::default(),
+                finish: None,
+                error: None,
+                time: MessageTime {
+                    created: now,
+                    completed: None,
+                },
+            }),
+            parts: vec![Part::Text(TextPart {
+                id: format!("part_text_{now}"),
+                message_id: assistant_msg_id.clone(),
+                session_id: session_id.clone(),
+                text: String::new(),
+                metadata: None,
+                time: PartTime {
+                    start: Some(now),
+                    end: None,
+                },
+            })],
+        });
+
+
+        // Set stream_end notify so event loop can detect completion
+        let stream_end_signal = {
+            let n = Arc::new(tokio::sync::Notify::new());
+            self.stream_end = Some(n.clone());
+            Some(n)
+        };
+
+        // ── Channel bridge: runner events → display ────────────────────
+        let (bridge_tx, mut bridge_rx) =
+            tokio::sync::mpsc::unbounded_channel::<Vec<LlmEvent>>();
+        let llm_tx_clone = llm_tx.clone();
+        let msg_id = assistant_msg_id.clone();
+        tokio::spawn(async move {
+            while let Some(events) = bridge_rx.recv().await {
+                for event in events {
+                    if llm_tx_clone.send((msg_id.clone(), event)).is_err() {
+                        return;
+                    }
+                }
+            }
+        });
+
+        // ── Runner task ───────────────────────────────────────────────
+        tokio::spawn(async move {
+            let model = match provider.get_model(&model_id).await {
+                Ok(m) => m,
+                Err(e) => {
+                    let _ = llm_tx.send((
+                        assistant_msg_id.clone(),
+                        LlmEvent::ProviderErrorEvent {
+                            message: format!("Failed to get model: {e}"),
+                            classification: Some("model-error".into()),
+                            retryable: Some(false),
+                            provider_metadata: None,
+                        },
+                    ));
+                    return;
+                }
+            };
+
+            let result = runner
+                .run_with_messages_streaming(provider.as_ref(), &model, &mut chat_messages, bridge_tx)
+                .await;
+
+            match result {
+                Ok(run_result) => {
+                    tracing::info!(
+                        "runner completed: {} iterations, {} tool calls",
+                        run_result.iterations,
+                        run_result.tool_calls.len()
+                    );
+                }
+                Err(e) => {
+                    let _ = llm_tx.send((
+                        assistant_msg_id.clone(),
+                        LlmEvent::ProviderErrorEvent {
+                            message: format!("Runner error: {e}"),
+                            classification: Some("runner-error".into()),
+                            retryable: Some(false),
+                            provider_metadata: None,
+                        },
+                    ));
+                }
+            }
+            // Signal stream completion
+            if let Some(ref notify) = stream_end_signal {
+                notify.notify_one();
             }
         });
     }
@@ -1353,6 +1617,16 @@ impl TuiApp {
                 self.input.clear();
             }
 
+            // ── Session list result (from async fetch) ────────
+            "tui.session.list.result" => {
+                if let Some(sessions_val) = payload.get("sessions") {
+                    if let Ok(entries) = serde_json::from_value::<Vec<SessionEntry>>(sessions_val.clone()) {
+                        tracing::info!("session list result: {} entries", entries.len());
+                        self.session_list_state.show(entries);
+                    }
+                }
+            }
+
             // ── Session updated ─────────────────────────────────
             "session.updated" => {
                 let sid = payload
@@ -1417,6 +1691,23 @@ impl TuiApp {
     // ── Rendering ────────────────────────────────────────────────────
 
     fn render(&mut self, f: &mut Frame) {
+        // Advance spinner frame
+        self.spin_frame = self.spin_frame.wrapping_add(1);
+
+        // Detect session loading changes
+        let sid = self.session_id.as_ref().map(|s| s.clone());
+        if sid != self.previous_session_id {
+            self.previous_session_id = sid;
+            if self.session_id.is_some() {
+                self.loading_session = true;
+            } else {
+                self.loading_session = false;
+            }
+        }
+        if self.loading_session && self.spin_frame % 60 == 0 {
+            // Clear loading state after ~3 seconds of spinner frames
+            self.loading_session = false;
+        }
         let area = f.size();
         // Cache terminal size for scroll handlers that need it outside draw
         self.last_term_size = area;
@@ -1459,9 +1750,31 @@ impl TuiApp {
             ])
             .split(main_area);
 
-        render_conversation(f, chunks[0], &self.conversation, self.theme.current());
-        render_input(f, chunks[1], &self.input, self.theme.current());
-        render_status(f, chunks[2], &self.status, self.theme.current());
+        // Home screen vs conversation
+        if self.loading_session {
+            self.render_loading_screen(f, area);
+        } else if self.session_id.is_none() {
+            crate::home_screen::render_home_screen(
+                f,
+                area,
+                self.theme.current(),
+                &self.crate_version,
+                &self.recent_models,
+                self.status.connected,
+                self.is_streaming,
+                self.status.provider_name.as_deref(),
+                self.status.model_name.as_deref(),
+            );
+            // Still render status line at bottom
+            render_status(f, chunks[2], &self.status, self.theme.current());
+        } else {
+            render_conversation(f, chunks[0], &self.conversation, self.theme.current());
+            render_input(f, chunks[1], &self.input, self.theme.current());
+            render_status(f, chunks[2], &self.status, self.theme.current());
+        }
+
+        // Update terminal title
+        self.update_terminal_title();
 
         // Plugin slots (render in order: home logo, prompt, app bottom)
         if self.session_id.is_none() {
@@ -1485,6 +1798,13 @@ impl TuiApp {
         if self.help_visible {
             self.render_help(f, area);
         }
+        // Which-key overlay (keybinding hints) — auto-show when leader key pressed
+        if self.leader_active {
+            self.which_key.show("leader");
+        } else if self.which_key.visible && !self.help_visible {
+            self.which_key.hide();
+        }
+        crate::which_key::render_which_key(f, area, &self.which_key, self.theme.current());
         if self.status_dialog_visible {
             self.render_status_dialog(f, area);
         }
@@ -1610,6 +1930,56 @@ impl TuiApp {
     }
 
     /// Render the legacy simple sidebar (fallback when SidebarState not visible).
+    /// Render a loading screen while a session is being initialized.
+    fn render_loading_screen(&self, f: &mut Frame, area: Rect) {
+        let theme = self.theme.current();
+        let spinner_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let frame_idx = self.spin_frame % spinner_chars.len() as u64;
+        let sp = spinner_chars[frame_idx as usize];
+
+        let lines = vec![
+            Line::from(Span::styled(
+                format!("  {sp}  Loading session..."),
+                Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "  Connecting to provider and loading conversation history.",
+                Style::default().fg(theme.text_muted),
+            )),
+            Line::from(Span::styled(
+                "  This should only take a moment.",
+                Style::default().fg(theme.text_muted),
+            )),
+        ];
+
+        let height = lines.len() as u16;
+        let y = (area.height.saturating_sub(height)) / 2;
+        let paragraph = Paragraph::new(Text::from(lines))
+            .alignment(ratatui::layout::Alignment::Center);
+        f.render_widget(paragraph, Rect::new(area.x, area.y + y, area.width, height));
+    }
+
+    /// Update the terminal title to reflect current state.
+    fn update_terminal_title(&self) {
+        if !self.terminal_title {
+            return;
+        }
+        let title = if self.loading_session {
+            "⟳ rustcode — loading session...".to_string()
+        } else if let Some(ref sid) = self.session_id {
+            let prefix = if self.is_streaming { "⟳ " } else { "" };
+            let model = self.status.model_name.as_deref().unwrap_or("");
+            format!("{prefix}rustcode | {model} | {}", &sid[..sid.len().min(12)])
+        } else {
+            format!("rustcode TUI v{}", self.crate_version)
+        };
+        // Set terminal title via OSC escape sequence
+        print!("\x1B]0;{title}\x07");
+        use std::io::Write;
+        let _ = std::io::stdout().flush();
+    }
+
     fn render_legacy_sidebar(&self, f: &mut Frame, area: Rect) {
         let theme = self.theme.current();
         let block = Block::default()
@@ -3298,23 +3668,69 @@ impl TuiApp {
             }
             TuiAction::SessionListDialog => {
                 // Populate session list from SessionManager
+                let entries: Vec<SessionEntry> = Vec::new();
+                self.session_list_state.show(entries);
+                self.input.focused = false;
+
                 if let Some(ref sessions) = self.sessions {
                     let sessions = sessions.clone();
                     let current_id = self.session_id.clone();
+                    let bus = self.bus.clone();
                     tokio::spawn(async move {
                         match sessions.list(None).await {
                             Ok(list) => {
                                 tracing::info!("session list dialog: {} sessions", list.len());
-                                let _ = current_id;
-                                // In full impl we'd send data back to the TUI
+                                // Convert SessionInfo -> Vec<SessionEntry>
+                                let entries: Vec<SessionEntry> = list
+                                    .into_iter()
+                                    .map(|s| {
+                                        let model_name = s
+                                            .model
+                                            .as_ref()
+                                            .map(|m| format!("{}/{}", m.provider_id, m.id));
+                                        let agent_name = s.agent.clone();
+                                        let is_active = current_id
+                                            .as_deref()
+                                            .map(|id| id == s.id.as_str())
+                                            .unwrap_or(false);
+                                        SessionEntry {
+                                            id: s.id.to_string(),
+                                            title: s.title,
+                                            agent: agent_name,
+                                            model: model_name,
+                                            timestamp: (s.time.updated / 1000) as u64,
+                                            message_count: s.tokens.input as usize,
+                                            pinned: false,
+                                            active: is_active,
+                                        }
+                                    })
+                                    .collect();
+                                if let Some(ref bus) = bus {
+                                    let payload = serde_json::json!({
+                                        "type": "tui.session.list.result",
+                                        "sessions": entries
+                                            .iter()
+                                            .map(|e| serde_json::json!({
+                                                "id": e.id,
+                                                "title": e.title,
+                                                "agent": e.agent,
+                                                "model": e.model,
+                                                "timestamp": e.timestamp,
+                                                "message_count": e.message_count,
+                                                "pinned": e.pinned,
+                                                "active": e.active,
+                                            }))
+                                            .collect::<Vec<_>>(),
+                                    });
+                                    let _ = bus.publish(
+                                        rustcode_core::bus::GlobalEvent::new(payload),
+                                    );
+                                }
                             }
                             Err(e) => tracing::error!("session list failed: {e}"),
                         }
                     });
                 }
-                let entries: Vec<SessionEntry> = Vec::new();
-                self.session_list_state.show(entries);
-                self.input.focused = false;
             }
             TuiAction::DiffView => {
                 self.diff.visible = !self.diff.visible;
@@ -3522,8 +3938,50 @@ impl TuiApp {
             return;
         }
 
-        // Start streaming through the main loop's LLM channel.
-        self.spawn_llm_stream(text);
+        // Create/persist session if not already persisted
+        if let Some(ref sessions) = self.sessions {
+            let sessions = sessions.clone();
+            let sid_clone = sid.clone();
+            let agent = self.current_agent.clone();
+            let model = self
+                .default_model
+                .as_ref()
+                .map(|m| rustcode_core::session::ModelSelection {
+                    id: m.clone(),
+                    provider_id: provider_id.clone(),
+                    variant: None,
+                });
+            tokio::spawn(async move {
+                match sessions
+                    .create(rustcode_core::session::CreateSessionInput {
+                        title: None,
+                        agent: Some(agent),
+                        model: model,
+                        ..Default::default()
+                    })
+                    .await
+                {
+                    Ok(info) => {
+                        tracing::info!(
+                            "session persisted: {} (slug: {})",
+                            info.id,
+                            info.slug
+                        );
+                        let _ = sid_clone; // session id matches
+                    }
+                    Err(e) => {
+                        tracing::warn!("session creation skipped (may already exist): {e}");
+                    }
+                }
+            });
+        }
+
+        // Start streaming through the session runner (with tool loop) or fallback.
+        if self.runner.is_some() {
+            self.spawn_runner_stream(text);
+        } else {
+            self.spawn_llm_stream(text);
+        }
     }
 
     fn handle_permission_reply(&mut self, reply: PermissionReply) {

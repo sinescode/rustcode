@@ -1,7 +1,8 @@
-use sha2::{Sha256, Digest};
+use sha2::Sha256;
 use hmac::{Hmac, Mac};
 use hex;
 use serde::{Deserialize, Serialize};
+use base64::Engine as _;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -68,7 +69,7 @@ impl EncryptionService {
         let tag = mac.finalize().into_bytes();
         // Encode as: hex(tag) + ":" + base64(data)
         let tag_hex = hex::encode(tag);
-        let data_b64 = base64::encode(plaintext);
+        let data_b64 = base64::engine::general_purpose::STANDARD.encode(plaintext);
         Ok(format!("{tag_hex}:{data_b64}"))
     }
 
@@ -77,7 +78,7 @@ impl EncryptionService {
         let (tag_hex, data_b64) = encrypted
             .split_once(':')
             .ok_or_else(|| EncryptionError::Format("missing separator".into()))?;
-        let data = base64::decode(data_b64)
+        let data = base64::engine::general_purpose::STANDARD.decode(data_b64)
             .map_err(|e| EncryptionError::Format(format!("base64 decode: {e}")))?;
         let plaintext = String::from_utf8(data)
             .map_err(|e| EncryptionError::Format(format!("UTF-8 decode: {e}")))?;

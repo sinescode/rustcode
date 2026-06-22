@@ -981,7 +981,7 @@ fn settle(
     match (&result, has_pending) {
         (Ok(()), false) => {
             // Success, no pending — broadcast result, remove lane
-            if let Some(mut l) = lanes.get_mut(&session_id) {
+            if let Some(l) = lanes.get_mut(&session_id) {
                 if let Some(ref tx) = l.done_tx {
                     let _ = tx.send(result);
                 }
@@ -1033,7 +1033,7 @@ fn settle(
             let next_demand = lanes.get_mut(&session_id).and_then(|mut l| l.pending.take());
 
             // Send result to all waiters (even if we're replacing the lane)
-            if let Some(mut l) = lanes.get_mut(&session_id) {
+            if let Some(l) = lanes.get_mut(&session_id) {
                 if let Some(ref tx) = l.done_tx {
                     let _ = tx.send(result.clone());
                 }

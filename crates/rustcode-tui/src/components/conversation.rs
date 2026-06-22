@@ -541,35 +541,67 @@ fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListIte
     items
 }
 
-/// Render text content with basic code block highlighting.
+/// Render text content with code block highlighting (syntect).
 ///
-/// Detects ``` fences and applies a dimmed background to code blocks.
-/// Returns list items suitable for a ratatui `List`.
+/// Detects ```language fences and delegates to the syntax highlighter.
+/// Falls back to dimmed rendering when syntect can't handle the language.
 fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem<'static>> {
     let mut items: Vec<ListItem<'static>> = Vec::new();
     let mut in_code_block = false;
-    let code_style = Style::default().bg(Color::Rgb(30, 30, 40));
+    let mut code_block_lines: Vec<String> = Vec::new();
+    let mut code_block_lang: Option<String> = None;
+    let code_bg = Style::default().bg(Color::Rgb(30, 30, 40));
 
+    // First pass: split into text lines and code block regions
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("```") {
+            if in_code_block {
+                // End of code block — render it
+                let source = code_block_lines.join("\n");
+                if let Some(highlighted) =
+                    crate::syntax::highlight_code(&source, code_block_lang.as_deref())
+                {
+                    // Render syntect-highlighted spans, one Line per source line
+                    for hl_line in split_spans_into_lines(highlighted) {
+                        items.push(ListItem::new(Line::from(
+                            hl_line,
+                        )));
+                    }
+                } else {
+                    // Fallback: plain dimmed rendering
+                    for cline in &code_block_lines {
+                        let wrapped = wrap_text(cline, wrap_width);
+                        for wline in wrapped {
+                            items.push(ListItem::new(Line::from(Span::styled(
+                                format!("  {wline}"),
+                                code_bg.fg(Color::Rgb(180, 190, 200)),
+                            ))));
+                        }
+                    }
+                }
+                code_block_lines.clear();
+                code_block_lang = None;
+            } else {
+                // Start of code block — capture language
+                let rest = trimmed.trim_start_matches("```");
+                let lang = if rest.is_empty() {
+                    None
+                } else {
+                    Some(rest.split_whitespace().next().unwrap_or("").to_string())
+                };
+                code_block_lang = lang;
+            }
             in_code_block = !in_code_block;
-            // Render the fence itself
-            items.push(ListItem::new(Line::from(Span::styled(
-                format!("  {line}"),
-                Style::default().fg(Color::DarkGray),
-            ))));
             continue;
         }
 
-        let wrapped = wrap_text(line, wrap_width);
-        for wline in wrapped {
-            if in_code_block {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("  {wline}"),
-                    code_style.fg(Color::Rgb(180, 190, 200)),
-                ))));
-            } else {
+        if in_code_block {
+            code_block_lines.push(line.to_string());
+        } else {
+            // Normal text line
+            let wrapped = wrap_text(line, wrap_width);
+            for wline in wrapped {
                 items.push(ListItem::new(Line::from(Span::styled(
                     format!("  {wline}"),
                     Style::default().fg(Color::White),
@@ -578,7 +610,46 @@ fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem<'stat
         }
     }
 
+    // Handle unclosed code block at EOF
+    if in_code_block && !code_block_lines.is_empty() {
+        let source = code_block_lines.join("\n");
+        if let Some(highlighted) =
+            crate::syntax::highlight_code(&source, code_block_lang.as_deref())
+        {
+            for hl_line in split_spans_into_lines(highlighted) {
+                items.push(ListItem::new(Line::from(hl_line)));
+            }
+        } else {
+            for cline in &code_block_lines {
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!("  {cline}"),
+                    code_bg.fg(Color::Rgb(180, 190, 200)),
+                ))));
+            }
+        }
+    }
+
     items
+}
+
+/// Split a flat vec of spans into lines separated by newlines.
+fn split_spans_into_lines(spans: Vec<ratatui::text::Span<'static>>) -> Vec<Vec<ratatui::text::Span<'static>>> {
+    let mut lines: Vec<Vec<ratatui::text::Span<'static>>> = Vec::new();
+    let mut current_line: Vec<ratatui::text::Span<'static>> = Vec::new();
+
+    for span in spans {
+        if span.content == "\n" {
+            lines.push(std::mem::take(&mut current_line));
+        } else {
+            current_line.push(span);
+        }
+    }
+
+    if !current_line.is_empty() {
+        lines.push(current_line);
+    }
+
+    lines
 }
 
 /// Word-wrap text to fit within `width` columns.

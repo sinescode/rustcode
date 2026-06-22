@@ -516,7 +516,7 @@ impl ProcessService {
                             }
                         }
                         // Spawn a task to forward remaining chunks
-                        let mut stdin_clone = child.stdin.take();
+                        let stdin_clone = child.stdin.take();
                         if let Some(mut s) = stdin_clone {
                             let rx = std::sync::Arc::clone(rx);
                             tokio::spawn(async move {

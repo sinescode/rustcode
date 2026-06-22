@@ -98,7 +98,7 @@ clap_complete = "4"
 rustcode-tui.workspace = true
 
 [dev-dependencies]
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.5", features = ["html_reports", "async_futures"] }
 
 [[bench]]
 name = "benchmarks"
