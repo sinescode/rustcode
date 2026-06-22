@@ -97,6 +97,16 @@ pub fn initialize_runtime(config: &crate::config::Info) -> anyhow::Result<Runtim
     initialize_runtime_with_path(&default_db_path(), config)
 }
 
+/// Async version of `initialize_runtime` — use from within a tokio runtime.
+pub async fn initialize_runtime_async(config: &crate::config::Info) -> anyhow::Result<RuntimeContext> {
+    let config = config.clone();
+    tokio::task::spawn_blocking(move || {
+        initialize_runtime(&config)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("Runtime init failed: {e}"))?
+}
+
 /// Initialise the runtime with a custom database path.
 ///
 /// Pass `Path::new(":memory:")` for an in-memory database (useful for tests

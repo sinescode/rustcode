@@ -49,7 +49,7 @@ struct Cli {
     ///
     /// Ported from: `packages/opencode/src/index.ts` — `--log-level` choices.
     /// Sets OPENCODE_LOG_LEVEL.
-    #[arg(long, global = true, value_name = "LEVEL", default_value = "INFO")]
+    #[arg(long, global = true, value_name = "LEVEL", default_value = "info")]
     log_level: LogLevel,
 
     /// Run without external plugins.
@@ -1282,7 +1282,8 @@ fn main() {
     //
     // Ported from: `packages/opencode/src/index.ts` — `await cli.parse()`.
     // Each command handler can be async. Use current_thread for a CLI.
-    let rt = tokio::runtime::Builder::new_current_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .expect("Failed to build tokio runtime");
@@ -1290,26 +1291,28 @@ fn main() {
     // Set up Ctrl+C signal handler for graceful shutdown
     let shutdown_token = tokio_util::sync::CancellationToken::new();
     let token = shutdown_token.clone();
-    tokio::spawn(async move {
-        loop {
-            tokio::signal::ctrl_c().await.ok();
-            tracing::info!("Received SIGINT, initiating graceful shutdown...");
-            token.cancel();
-            // Second Ctrl+C forces immediate exit
-            tokio::select! {
-                _ = tokio::signal::ctrl_c() => {
-                    tracing::warn!("Forced shutdown on second SIGINT");
-                    std::process::exit(130);
-                }
-                _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
-                    tracing::warn!("Graceful shutdown timeout, exiting");
-                    std::process::exit(130);
-                }
-            }
-        }
-    });
 
     rt.block_on(async {
+        // Spawn the signal handler within the runtime
+        tokio::spawn(async move {
+            loop {
+                tokio::signal::ctrl_c().await.ok();
+                tracing::info!("Received SIGINT, initiating graceful shutdown...");
+                token.cancel();
+                // Second Ctrl+C forces immediate exit
+                tokio::select! {
+                    _ = tokio::signal::ctrl_c() => {
+                        tracing::warn!("Forced shutdown on second SIGINT");
+                        std::process::exit(130);
+                    }
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {
+                        tracing::warn!("Graceful shutdown timeout, exiting");
+                        std::process::exit(130);
+                    }
+                }
+            }
+        });
+
         tokio::select! {
             _ = async_main(cli) => {},
             _ = shutdown_token.cancelled() => {
@@ -1555,7 +1558,7 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
     let (provider_filter, model_filter) = args.model.as_deref().and_then(parse_model_spec).unzip();
 
     // ── auto-detect providers via shared runtime ────────────────────
-    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
+    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -2686,7 +2689,7 @@ async fn cmd_tui(args: &TuiArgs, print_logs: bool, config: &rustcode_core::confi
     }
 
     // ── Initialize shared runtime ──────────────────────────────────
-    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
+    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -2891,7 +2894,7 @@ async fn cmd_serve(args: &NetworkArgs, config: &rustcode_core::config::Info) -> 
     println!();
 
     // Build the AppState from the shared runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
+    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -3051,7 +3054,7 @@ async fn cmd_web(args: &NetworkArgs, config: &rustcode_core::config::Info) -> i3
     open_url(&server_url);
 
     // Build and start the server from shared runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
+    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
         Ok(c) => c,
         Err(e) => {
             cli_error::format_provider_init_error("runtime", &e.to_string());
@@ -5842,7 +5845,7 @@ async fn cmd_acp(args: &AcpArgs, config: &rustcode_core::config::Info) -> i32 {
     std::env::set_var("OPENCODE_CLIENT", "acp");
 
     // Initialize the runtime
-    let ctx = match rustcode_core::runtime::initialize_runtime(config) {
+    let ctx = match rustcode_core::runtime::initialize_runtime_async(config).await {
         Ok(ctx) => ctx,
         Err(e) => {
             eprintln!("Failed to initialize runtime: {e}");
