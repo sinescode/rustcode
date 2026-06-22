@@ -48,6 +48,10 @@ uuid.workspace = true
 tree-sitter.workspace = true
 tree-sitter-bash.workspace = true
 once_cell.workspace = true
+opencode-sandbox = { path = "../opencode-sandbox" }
+opencode-session-core = { path = "../opencode-session-core" }
+opencode-event = { path = "../opencode-event" }
+opencode-storage = { path = "../opencode-storage" }
 
 [dev-dependencies]
 proptest = "1"
