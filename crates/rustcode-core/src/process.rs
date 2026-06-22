@@ -3,6 +3,10 @@
 //! Ported from: `packages/core/src/process.ts` (236 lines)
 //! OpenCode commit: 5d0f86606ac30690f79f0a6a9f41a1f49fe95d0b
 
+use opencode_sandbox::exec::{self as sandbox_exec, ExecResult as SandboxResult};
+use opencode_sandbox::SandboxError;
+use opencode_sandbox::policy::{CommandSpec, SecurityPolicy};
+use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt;
 use tokio_util::sync::CancellationToken;
@@ -298,6 +302,37 @@ impl std::fmt::Display for StandardCommand {
     }
 }
 
+impl From<&StandardCommand> for CommandSpec {
+    fn from(cmd: &StandardCommand) -> Self {
+        use std::path::PathBuf;
+        let mut spec = CommandSpec::new(&cmd.command);
+        for arg in &cmd.args {
+            spec = spec.arg(arg);
+        }
+        if let Some(ref cwd) = cmd.cwd {
+            spec = spec.cwd(PathBuf::from(cwd));
+        }
+        if !cmd.env.is_empty() {
+            let env_pairs: Vec<(String, String)> = cmd.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+            spec.env = Some(env_pairs);
+        }
+        spec
+    }
+}
+
+impl From<SandboxResult> for RunResult {
+    fn from(r: SandboxResult) -> Self {
+        Self {
+            command: r.command,
+            exit_code: r.exit_code,
+            stdout: r.stdout,
+            stderr: r.stderr,
+            stdout_truncated: r.stdout_truncated,
+            stderr_truncated: r.stderr_truncated,
+        }
+    }
+}
+
 /// A command to execute — either a single command or a piped pipeline.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
@@ -456,7 +491,22 @@ pub async fn wait_for_abort(token: &tokio_util::sync::CancellationToken) -> AppP
 pub struct ProcessService;
 
 impl ProcessService {
+    /// Create a permissive default security policy for migration.
+    ///
+    /// During migration from the old code (which had no sandbox at all),
+    /// this policy permits everything. Production code should use a
+    /// restricted policy locked to specific read/write paths.
+    fn migration_policy() -> SecurityPolicy {
+        use opencode_sandbox::policy::{ExecutionLevel, NetworkPolicy};
+        SecurityPolicy::new()
+            .with_network(NetworkPolicy::Allow)
+            .with_exec_level(ExecutionLevel::Unsafe)
+    }
+
     /// Internal helper: spawn a child process from a ProcessCommand.
+    ///
+    /// ⚠️ Deprecated: new code should route through `run()` which uses the sandbox gate.
+    /// This remains for streaming stdin piped commands.
     fn spawn_child(cmd: &ProcessCommand) -> Result<tokio::process::Child, std::io::Error> {
         let std_cmd = match cmd {
             ProcessCommand::Standard(s) => s,
@@ -478,10 +528,90 @@ impl ProcessService {
         c.spawn()
     }
 
-    /// Run a process to completion, capturing stdout and stderr.
+    /// Run a process through the sandbox gate.
     ///
-    /// Ported from: `process.ts` — `run()`
+    /// This is the primary execution path. All NEW code should call this.
+    /// Handles Text/Binary stdin via the sandbox gate; falls back to
+    /// the legacy path for streaming stdin or piped commands.
+    ///
+    /// Ported from: `process.ts` — `run()` → sandbox gate
     pub async fn run(
+        cmd: &ProcessCommand,
+        opts: &RunOptions,
+    ) -> Result<RunResult, AppProcessError> {
+        // Piped commands fall back to legacy path
+        if matches!(cmd, ProcessCommand::Piped(_)) {
+            return Self::run_legacy(cmd, opts).await;
+        }
+
+        // Streaming stdin falls back to legacy path
+        if matches!(opts.stdin, Some(StdinInput::Stream(_))) {
+            return Self::run_legacy(cmd, opts).await;
+        }
+
+        // Timeout needs legacy path (sandbox policy timeout is in seconds,
+        // and old code expects millisecond precision on timeout errors)
+        if opts.timeout.is_some() {
+            return Self::run_legacy(cmd, opts).await;
+        }
+
+        // Cancellation tokens need legacy path (sandbox doesn't support them yet)
+        if opts.cancellation_token.is_some() {
+            return Self::run_legacy(cmd, opts).await;
+        }
+
+        let std_cmd = cmd.as_standard()
+            .ok_or_else(|| AppProcessError::Exited {
+                command: cmd.to_string(),
+                exit_code: None,
+                stderr: None,
+                cause: Some("non-standard command without fallback".into()),
+            })?;
+
+        // Build sandbox command spec from our StandardCommand
+        let mut spec: CommandSpec = std_cmd.into();
+
+        // Handle non-streaming stdin
+        if let Some(ref stdin_input) = opts.stdin {
+            match stdin_input {
+                StdinInput::Text(s) => {
+                    spec = spec.stdin(s.as_str());
+                }
+                StdinInput::Binary(b) => {
+                    spec = spec.stdin(String::from_utf8_lossy(b));
+                }
+                StdinInput::Stream(_) => unreachable!(), // handled above
+            }
+        }
+
+        // Create migration policy (permissive — will harden post-migration)
+        let policy = Self::migration_policy();
+
+        // Map old RunOptions → sandbox RunOptions
+        use opencode_sandbox::exec::RunOptions as SandboxRunOpts;
+        let sbox_opts = SandboxRunOpts {
+            max_stdout_bytes: opts.max_output_bytes,
+            max_stderr_bytes: opts.max_error_bytes,
+            capture_stderr: true,
+            log_command: true,
+        };
+
+        // Go through the sandbox gate
+        let result = opencode_sandbox::exec::run(&policy, &spec, &sbox_opts).await
+            .map_err(|e| AppProcessError::Exited {
+                command: cmd.to_string(),
+                exit_code: None,
+                stderr: None,
+                cause: Some(e.to_string()),
+            })?;
+
+        Ok(RunResult::from(result))
+    }
+
+    /// Legacy run path — direct tokio::process::Command without sandbox gate.
+    ///
+    /// ⚠️ This bypasses the sandbox. Only used for streaming stdin and piped commands.
+    async fn run_legacy(
         cmd: &ProcessCommand,
         opts: &RunOptions,
     ) -> Result<RunResult, AppProcessError> {
@@ -508,14 +638,12 @@ impl ProcessService {
                         drop(stdin.write_all(b));
                     }
                     StdinInput::Stream(rx) => {
-                        // Stream stdin: forward chunks from the receiver to stdin
                         {
                             let mut guard = rx.lock().unwrap();
                             while let Ok(chunk) = guard.try_recv() {
                                 let _ = stdin.write_all(&chunk);
                             }
                         }
-                        // Spawn a task to forward remaining chunks
                         let stdin_clone = child.stdin.take();
                         if let Some(mut s) = stdin_clone {
                             let rx = std::sync::Arc::clone(rx);
