@@ -26,7 +26,21 @@ use crate::tool_stream::ToolStreamAccumulator;
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 
 /// Default base URL for the Anthropic Messages API.
+/// Can be overridden via the `ANTHROPIC_BASE_URL` environment variable.
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
+
+/// Resolve the base URL — checks `ANTHROPIC_BASE_URL` env var first, falls back to default.
+/// When using OPENMODEL_API_KEY, automatically points to openmodel.
+fn resolve_base_url() -> String {
+    std::env::var("ANTHROPIC_BASE_URL").or_else(|_| {
+        // If using openmodel API key, auto-select openmodel endpoint
+        if std::env::var("OPENMODEL_API_KEY").ok().filter(|k| !k.is_empty()).is_some() {
+            Ok("https://api.openmodel.ai".to_string())
+        } else {
+            Err(std::env::VarError::NotPresent)
+        }
+    }).unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+}
 
 /// Maximum number of cache breakpoints per request.
 const MAX_CACHE_BREAKPOINTS: usize = 4;
@@ -255,12 +269,16 @@ enum AnthropicDelta {
 ///
 /// Checks (in order):
 /// 1. Explicit `ANTHROPIC_API_KEY` environment variable
+/// 2. Fallback to `OPENMODEL_API_KEY` for openmodel-compatible setups
 ///
 /// Returns an error if no key is found.
 fn resolve_api_key() -> Result<String, Error> {
     std::env::var("ANTHROPIC_API_KEY")
         .ok()
         .filter(|k| !k.is_empty())
+        .or_else(|| {
+            std::env::var("OPENMODEL_API_KEY").ok().filter(|k| !k.is_empty())
+        })
         .ok_or_else(|| Error::Auth("ANTHROPIC_API_KEY environment variable not set".into()))
 }
 
@@ -880,7 +898,8 @@ impl AnthropicProvider {
     /// Reads the API key from the `ANTHROPIC_API_KEY` environment variable.
     pub fn new() -> Result<Self, Error> {
         let api_key = resolve_api_key()?;
-        Self::with_api_key(api_key, DEFAULT_BASE_URL.into())
+        let base_url = resolve_base_url();
+        Self::with_api_key(api_key, base_url)
     }
 
     /// Create a new Anthropic provider with an explicit API key.
@@ -1193,7 +1212,7 @@ fn classify_http_error(status: u16, error_type: &str, message: &str) -> LlmError
 
 /// Build the hardcoded model catalog for Anthropic Claude models.
 fn build_model_catalog() -> Vec<Model> {
-    vec![
+    let mut models = vec![
         make_model(
             "claude-opus-4-8",
             "Claude Opus 4.8",
@@ -1249,7 +1268,58 @@ fn build_model_catalog() -> Vec<Model> {
             0.25,
             1.25,
         ),
-    ]
+    ];
+
+    // Add openmodel-provided models when using a custom base URL
+    let base_url = resolve_base_url();
+    if base_url.contains("openmodel") || base_url != "https://api.anthropic.com" {
+        models.push(make_model(
+            "deepseek-v4-flash",
+            "DeepSeek V4 Flash (OpenModel)",
+            "deepseek-v4-flash",
+            200_000,
+            16_000,
+            0.15,
+            0.60,
+            0.075,
+            0.15,
+        ));
+        models.push(make_model(
+            "deepseek-v4-pro",
+            "DeepSeek V4 Pro (OpenModel)",
+            "deepseek-v4-pro",
+            200_000,
+            16_000,
+            2.0,
+            8.0,
+            1.0,
+            2.0,
+        ));
+        models.push(make_model(
+            "gemini-3-flash-preview",
+            "Gemini 3 Flash Preview (OpenModel)",
+            "gemini-3-flash-preview",
+            1_000_000,
+            16_384,
+            0.10,
+            0.40,
+            0.05,
+            0.10,
+        ));
+        models.push(make_model(
+            "gpt-5.4-mini",
+            "GPT-5.4 Mini (OpenModel)",
+            "gpt-5.4-mini",
+            128_000,
+            16_384,
+            0.15,
+            0.60,
+            0.075,
+            0.15,
+        ));
+    }
+
+    models
 }
 
 /// Helper to create a Model with consistent defaults.
@@ -1271,7 +1341,7 @@ fn make_model(
         name: name.into(),
         api: crate::provider::ApiInfo {
             id: api_id.into(),
-            url: DEFAULT_BASE_URL.into(),
+            url: resolve_base_url(),
             npm: "@ai-sdk/anthropic".into(),
         },
         family: Some("claude".into()),
