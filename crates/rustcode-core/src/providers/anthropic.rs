@@ -1058,7 +1058,13 @@ impl Provider for AnthropicProvider {
                                 if sse_event.is_done() || !sse_event.has_data() {
                                     continue;
                                 }
-                                match serde_json::from_str::<AnthropicEvent>(&sse_event.data) {
+                                // Parse SSE data, handling potential extra content after JSON
+                                // Some providers send extra characters after the JSON data
+                                let data = sse_event.data.trim();
+                                let event = data.chars()
+                                    .take_while(|&c| c != '\n' && c != '\r')
+                                    .collect::<String>();
+                                match serde_json::from_str::<AnthropicEvent>(&event) {
                                     Ok(anthropic_event) => {
                                         let llm_events =
                                             map_anthropic_event(anthropic_event, &mut state);
