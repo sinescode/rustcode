@@ -58,11 +58,15 @@ mod tests {
         #[test]
         fn wildcard_question_matches_single_char(mut input: String, ch: char) {
             prop_assume!(!input.contains('\\'));
-            if input.len() >= 2 {
-                let pos = input.len() / 2;
+            let char_count = input.chars().count();
+            if char_count >= 2 {
+                // Find a char boundary near the middle of the string
+                let char_pos = char_count / 2;
+                let byte_pos = input.char_indices().nth(char_pos).map(|(i, _)| i).unwrap_or(0);
+                let next_byte = input[byte_pos..].char_indices().nth(1).map(|(i, _)| byte_pos + i).unwrap_or(input.len());
                 let expected = input.clone();
-                input.replace_range(pos..pos+1, &ch.to_string());
-                let pattern = format!("{}?{}", &expected[..pos], &expected[pos+1..]);
+                input.replace_range(byte_pos..next_byte, &ch.to_string());
+                let pattern = format!("{}?{}", &expected[..byte_pos], &expected[next_byte..]);
                 prop_assert!(wildcard_match(&input, &pattern));
             }
         }

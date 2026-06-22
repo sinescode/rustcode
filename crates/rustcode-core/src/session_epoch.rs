@@ -297,7 +297,7 @@ impl EpochManager {
     pub async fn request_replacement(
         &self,
         session_id: &str,
-    ) -> Result<(), EpochError> {
+    ) -> Result<ContextEpoch, EpochError> {
         let existing = self
             .db
             .get_context_epoch(session_id)
@@ -330,7 +330,16 @@ impl EpochManager {
             )
             .await?;
 
-        Ok(())
+        Ok(ContextEpoch {
+            session_id: session_id.to_string(),
+            baseline: existing.baseline,
+            agent: existing.agent,
+            snapshot: serde_json::from_str(&existing.snapshot)
+                .map_err(|e| EpochError::Other(format!("invalid snapshot JSON: {e}")))?,
+            baseline_seq: existing.baseline_seq as u64,
+            replacement_seq: replacement_seq.map(|s| s as u64),
+            revision: new_revision as u64,
+        })
     }
 
     /// Reset (delete) the epoch for a session.

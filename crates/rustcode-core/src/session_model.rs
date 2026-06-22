@@ -399,11 +399,9 @@ mod tests {
             name: "Claude Sonnet 4".into(),
             family: Some("claude".into()),
             api: crate::provider::ApiInfo {
-                base_url: None,
-                provider: "anthropic".into(),
-                auth: crate::provider::AuthInfo::Header {
-                    name: "x-api-key".into(),
-                },
+                id: "claude-sonnet-4-20250514".into(),
+                url: "https://api.anthropic.com/v1".into(),
+                npm: "@anthropic-ai/sdk".into(),
             },
             capabilities: crate::provider::Capabilities {
                 temperature: true,
@@ -412,7 +410,7 @@ mod tests {
                 toolcall: true,
                 input: crate::provider::Modalities { text: true, ..Default::default() },
                 output: crate::provider::Modalities { text: true, ..Default::default() },
-                interleaved: crate::provider::InterleavedSupport::None,
+                interleaved: crate::provider::InterleavedSupport::Bool(false),
             },
             cost: crate::provider::Cost::default(),
             limit: crate::provider::TokenLimit {
@@ -448,7 +446,7 @@ mod tests {
                 url: None,
                 settings: None,
             }),
-            ..ModelInfo::empty("openai".into(), "gpt-4")
+            ..ModelInfo::empty("openai".into(), "gpt-4".into())
         };
         assert!(is_model_supported(&info));
     }
@@ -462,7 +460,7 @@ mod tests {
                 url: None,
                 settings: None,
             }),
-            ..ModelInfo::empty("anthropic".into(), "claude-sonnet-4")
+            ..ModelInfo::empty("anthropic".into(), "claude-sonnet-4".into())
         };
         assert!(is_model_supported(&info));
     }
@@ -476,7 +474,7 @@ mod tests {
                 url: None,
                 settings: None,
             }),
-            ..ModelInfo::empty("custom".into(), "custom")
+            ..ModelInfo::empty("custom".into(), "custom".into())
         };
         assert!(!is_model_supported(&info));
     }
@@ -490,7 +488,7 @@ mod tests {
                 url: Some("https://api.example.com/v1".into()),
                 settings: None,
             }),
-            ..ModelInfo::empty("custom".into(), "custom")
+            ..ModelInfo::empty("custom".into(), "custom".into())
         };
         assert!(is_model_supported(&info));
     }

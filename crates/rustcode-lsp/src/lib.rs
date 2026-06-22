@@ -174,6 +174,7 @@ const DIAGNOSTICS_DOCUMENT_WAIT_TIMEOUT_MS: u64 = 5_000;
 /// Maximum wait for full diagnostics (workspace + document).
 ///
 /// Ported from `packages/opencode/src/lsp/client.ts` `DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS` (line 15).
+#[allow(dead_code)]
 const DIAGNOSTICS_FULL_WAIT_TIMEOUT_MS: u64 = 10_000;
 
 // =============================================================================

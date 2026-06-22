@@ -1557,7 +1557,7 @@ mod tests {
     #[test]
     fn test_lower_tool_result() {
         let msgs = vec![ChatMessage::Tool {
-            content: vec![super::crate::provider::ToolResultPart::ToolResult {
+            content: vec![crate::provider::ToolResultPart::ToolResult {
                 tool_call_id: "call_1".into(),
                 tool_name: "bash".into(),
                 output: serde_json::json!({"stdout": "hello"}),

@@ -246,6 +246,16 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     // Escape regex-special characters, then convert wildcards to regex.
     // TS lines 6–10.
     let mut escaped = pattern.replace('\\', "/");
+
+    // Trailing " .*" → "( .*)?" (optional suffix match — TS line 11).
+    // Must be detected BEFORE escaping `.`, since `.*` in the original pattern
+    // is a regex-like "any string" match, not a literal dot followed by glob.
+    let trailing_dot_star = escaped.ends_with(" .*");
+    if trailing_dot_star {
+        let len = escaped.len();
+        escaped.replace_range(len - 3.., "");
+    }
+
     // Escape special regex chars: . + ^ $ { } ( ) | [ ] \
     escaped = regex_escape(&escaped);
     // Convert * to .* (match any sequence)
@@ -253,10 +263,8 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     // Convert ? to . (match single char)
     escaped = escaped.replace('?', ".");
 
-    // Trailing " .*" → "( .*)?" (optional suffix match — TS line 11).
-    if escaped.ends_with(" .*") {
-        let len = escaped.len();
-        escaped.replace_range(len - 3.., "( .*)?");
+    if trailing_dot_star {
+        escaped.push_str("( .*)?");
     }
 
     // Anchor to full string (TS line 13).

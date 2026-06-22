@@ -1294,8 +1294,8 @@ mod tests {
 
     // ── discover_and_load integration tests ────────────────────────
 
-    #[test]
-    fn test_discover_and_load_with_valid_skill() {
+    #[tokio::test]
+    async fn test_discover_and_load_with_valid_skill() {
         let tmp = std::env::temp_dir().join("rustcode-skill-integration");
         let _ = std::fs::remove_dir_all(&tmp);
         let skill_dir = tmp.join(".opencode").join("skill").join("integration-test");
@@ -1315,7 +1315,8 @@ mod tests {
                 disable_external: true,
                 ..Default::default()
             },
-        );
+        )
+        .await;
         let _ = std::fs::remove_dir_all(&tmp);
 
         // Should contain the built-in + our test skill
@@ -1328,8 +1329,8 @@ mod tests {
         assert!(skill.content.contains("# Integration"));
     }
 
-    #[test]
-    fn test_discover_and_load_skips_invalid() {
+    #[tokio::test]
+    async fn test_discover_and_load_skips_invalid() {
         let tmp = std::env::temp_dir().join("rustcode-skill-invalid");
         let _ = std::fs::remove_dir_all(&tmp);
         // Create a skill with no frontmatter — should be skipped silently
@@ -1350,7 +1351,8 @@ mod tests {
                 disable_external: true,
                 ..Default::default()
             },
-        );
+        )
+        .await;
         let _ = std::fs::remove_dir_all(&tmp);
 
         // Should still have the built-in skill, but not the invalid one
@@ -1358,8 +1360,8 @@ mod tests {
         assert!(!registry.contains("no-fm"));
     }
 
-    #[test]
-    fn test_discover_and_load_with_external_skills() {
+    #[tokio::test]
+    async fn test_discover_and_load_with_external_skills() {
         let tmp = std::env::temp_dir().join("rustcode-skill-external");
         let _ = std::fs::remove_dir_all(&tmp);
         // Create a .claude/skills/ skill
@@ -1371,15 +1373,15 @@ mod tests {
         )
         .expect("write SKILL.md");
 
-        let registry = discover_and_load(&tmp, &tmp, &tmp, &[], &SkillDiscoveryConfig::default());
+        let registry = discover_and_load(&tmp, &tmp, &tmp, &[], &SkillDiscoveryConfig::default()).await;
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(registry.contains("claude-skill"));
         assert!(registry.contains("customize-opencode"));
     }
 
-    #[test]
-    fn test_discover_and_load_external_disabled() {
+    #[tokio::test]
+    async fn test_discover_and_load_external_disabled() {
         let tmp = std::env::temp_dir().join("rustcode-skill-ext-disabled");
         let _ = std::fs::remove_dir_all(&tmp);
         let skill_dir = tmp.join(".claude").join("skills").join("disabled-skill");
@@ -1400,7 +1402,8 @@ mod tests {
                 disable_external: true,
                 ..Default::default()
             },
-        );
+        )
+        .await;
         let _ = std::fs::remove_dir_all(&tmp);
 
         assert!(!registry.contains("disabled-skill"));

@@ -1714,7 +1714,7 @@ impl Part {
 
 // ── Utilities ─────────────────────────────────────────────────────────────
 
-fn fork_title(title: &str) -> String {
+pub fn fork_title(title: &str) -> String {
     // Check for " (fork #N)" suffix
     if let Some(open_paren) = title.rfind(" (fork #") {
         let after_fork = &title[open_paren + 8..]; // skip " (fork #"

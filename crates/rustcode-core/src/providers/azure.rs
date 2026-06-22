@@ -261,6 +261,7 @@ fn make_model(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::LlmErrorReason;
 
     fn test_base_url() -> String {
         "https://test.openai.azure.com/openai/deployments/gpt-5.2".into()

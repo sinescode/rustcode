@@ -2113,43 +2113,43 @@ mod tests {
         (dir, root)
     }
 
-    #[test]
-    fn test_read_file_utf8() {
+    #[tokio::test]
+    async fn test_read_file_utf8() {
         let (_dir, root) = setup_test_fs();
         let input = ReadInput {
             path: RelativePath::new("README.md"),
         };
-        let content = read_file(&root, &input).expect("read file");
+        let content = read_file(&root, &input).await.expect("read file");
         assert_eq!(content.encoding, ContentEncoding::Utf8);
         assert!(content.content.contains("# Test Project"));
         assert_eq!(content.name.as_deref(), Some("README.md"));
         assert!(content.uri.starts_with("file://"));
     }
 
-    #[test]
-    fn test_read_file_missing() {
+    #[tokio::test]
+    async fn test_read_file_missing() {
         let (_dir, root) = setup_test_fs();
         let input = ReadInput {
             path: RelativePath::new("nonexistent.txt"),
         };
-        let result = read_file(&root, &input);
+        let result = read_file(&root, &input).await;
         assert!(result.is_err());
     }
 
-    #[test]
-    fn test_read_file_not_a_file() {
+    #[tokio::test]
+    async fn test_read_file_not_a_file() {
         let (_dir, root) = setup_test_fs();
         let input = ReadInput {
             path: RelativePath::new("src"),
         };
-        let result = read_file(&root, &input);
+        let result = read_file(&root, &input).await;
         assert!(matches!(result, Err(FileSystemError::NotAFile(_))));
     }
 
-    #[test]
-    fn test_list_directory_root() {
+    #[tokio::test]
+    async fn test_list_directory_root() {
         let (_dir, root) = setup_test_fs();
-        let entries = list_directory(&root, None).expect("list directory");
+        let entries = list_directory(&root, None).await.expect("list directory");
         // Should have README.md, Cargo.toml, src/ (but not node_modules/)
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.contains(&"README.md"));
@@ -2159,26 +2159,26 @@ mod tests {
         assert!(!paths.iter().any(|p| p.contains("node_modules")));
     }
 
-    #[test]
-    fn test_list_directory_subdir() {
+    #[tokio::test]
+    async fn test_list_directory_subdir() {
         let (_dir, root) = setup_test_fs();
         let input = ListInput {
             path: Some(RelativePath::new("src")),
         };
-        let entries = list_directory(&root, Some(&input)).expect("list directory");
+        let entries = list_directory(&root, Some(&input)).await.expect("list directory");
         let paths: Vec<&str> = entries.iter().map(|e| e.path.as_str()).collect();
         assert!(paths.iter().any(|p| p.contains("main.rs")));
         assert!(paths.iter().any(|p| p.contains("lib.rs")));
         assert!(paths.iter().any(|p| p.contains("components")));
     }
 
-    #[test]
-    fn test_list_directory_missing() {
+    #[tokio::test]
+    async fn test_list_directory_missing() {
         let (_dir, root) = setup_test_fs();
         let input = ListInput {
             path: Some(RelativePath::new("nonexistent")),
         };
-        let result = list_directory(&root, Some(&input));
+        let result = list_directory(&root, Some(&input)).await;
         assert!(result.is_err());
     }
 
@@ -2358,13 +2358,13 @@ mod tests {
         assert!(!is_file(&root, &RelativePath::new("src")).unwrap());
     }
 
-    #[test]
-    fn test_path_escape_prevention() {
+    #[tokio::test]
+    async fn test_path_escape_prevention() {
         let (_dir, root) = setup_test_fs();
         let input = ReadInput {
             path: RelativePath::new("../../../etc/passwd"),
         };
-        let result = read_file(&root, &input);
+        let result = read_file(&root, &input).await;
         // Should either fail (PathEscapesRoot) or not actually read the system file
         assert!(result.is_err());
     }
@@ -2382,10 +2382,10 @@ mod tests {
         assert!(fuzzy_match("Button", "button_component.ts"));
     }
 
-    #[test]
-    fn test_list_directory_sorts_dirs_first() {
+    #[tokio::test]
+    async fn test_list_directory_sorts_dirs_first() {
         let (_dir, root) = setup_test_fs();
-        let entries = list_directory(&root, None).expect("list directory");
+        let entries = list_directory(&root, None).await.expect("list directory");
         // First entries should be directories
         let first_dir_idx = entries
             .iter()
@@ -2396,8 +2396,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_read_file_base64_fallback() {
+    #[tokio::test]
+    async fn test_read_file_base64_fallback() {
         let dir = tempfile::tempdir().expect("create temp dir");
         let root = dir.path();
         // Create a file with invalid UTF-8 bytes
@@ -2407,7 +2407,7 @@ mod tests {
         let input = ReadInput {
             path: RelativePath::new("binary.bin"),
         };
-        let content = read_file(root, &input).expect("read binary file");
+        let content = read_file(root, &input).await.expect("read binary file");
         assert_eq!(content.encoding, ContentEncoding::Base64);
         assert!(!content.content.is_empty());
     }

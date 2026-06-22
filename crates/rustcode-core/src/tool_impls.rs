@@ -5770,6 +5770,7 @@ impl ToolRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::question::QuestionAnswer;
     use crate::tool::ToolContext;
     use tokio_util::sync::CancellationToken;
 
@@ -5781,7 +5782,7 @@ mod tests {
             abort: CancellationToken::new(),
             call_id: None,
             extra: HashMap::new(),
-            messages: vec![],
+            messages: vec![].into(),
             ask_fn: None,
             permission_source: None,
             prompt_ops: None,

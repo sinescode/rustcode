@@ -27,6 +27,7 @@ pub struct RevertInput {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RevertState {
     pub message_id: String,
+    pub timestamp: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -152,6 +153,10 @@ impl SessionRevert {
 
                         rev = Some(RevertState {
                             message_id: rev_message_id,
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_millis() as i64,
                             part_id,
                             snapshot: None,
                             diff: None,
@@ -367,8 +372,9 @@ mod tests {
         let state = RevertState {
             message_id: "msg_001".to_string(),
             part_id: None,
-            snapshot: serde_json::json!({"files": {}}),
+            snapshot: Some("{}".to_string()),
             timestamp: 1000,
+            diff: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         let deserialized: RevertState = serde_json::from_str(&json).unwrap();
@@ -381,13 +387,13 @@ mod tests {
         let state = RevertState {
             message_id: "msg_001".to_string(),
             part_id: Some("part_001".to_string()),
-            snapshot: serde_json::json!({"files": {"src/main.rs": "content"}}),
+            snapshot: Some("{}".to_string()),
             timestamp: 2000,
+            diff: None,
         };
         let json = serde_json::to_string(&state).unwrap();
         let deserialized: RevertState = serde_json::from_str(&json).unwrap();
         assert_eq!(deserialized.part_id.unwrap(), "part_001");
-        assert_eq!(deserialized.snapshot["files"]["src/main.rs"], "content");
     }
 
     #[test]

@@ -103,7 +103,7 @@ impl ShellParser {
 
         // Detect pipes and redirections at this node level
         match node.kind() {
-            "pipe_sequence" => result.has_pipe = true,
+            "pipe_sequence" | "pipeline" => result.has_pipe = true,
             "redirected_statement" | "file_redirect" => result.has_redirection = true,
             _ => {}
         }
@@ -133,7 +133,7 @@ impl ShellParser {
                     "command_name" => {
                         cmd_name = self.node_text(child, source);
                     }
-                    "argument" => {
+                    "argument" | "word" => {
                         args.push(self.node_text(child, source));
                     }
                     "file_redirect" | "redirect" => {
@@ -207,7 +207,13 @@ impl ShellParser {
             if a.starts_with('-') {
                 continue;
             }
-            result.file_operations.push(FileOp::new(base, a));
+            // For dd-style commands, extract the path from key=value operands
+            let path = if cmd == "dd" && a.contains('=') {
+                a.split_once('=').map(|(_, v)| v).unwrap_or(a)
+            } else {
+                a
+            };
+            result.file_operations.push(FileOp::new(base, path));
         }
     }
 

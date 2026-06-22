@@ -1075,7 +1075,7 @@ mod tests {
                     provider_executed: Some(false),
                     provider_metadata: None,
                 },
-                &["/tmp/out.txt"],
+                &["/tmp/out.txt".to_string()],
             )
             .await;
 

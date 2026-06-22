@@ -112,6 +112,7 @@ pub struct StdioTransport {
     /// The spawned child process (protected by a mutex for concurrent send calls).
     child: Mutex<Option<tokio::process::Child>>,
     /// Monotonically increasing JSON-RPC request ID counter.
+    #[allow(dead_code)]
     next_id: AtomicU64,
 }
 
@@ -269,6 +270,7 @@ impl StdioTransport {
     }
 
     /// Allocate the next JSON-RPC request ID.
+    #[allow(dead_code)]
     fn next_id(&self) -> u64 {
         self.next_id.fetch_add(1, Ordering::SeqCst)
     }
@@ -1113,6 +1115,7 @@ fn parse_jsonrpc_response(response: &str) -> std::result::Result<serde_json::Val
 /// Splits the input by `Content-Length: N\r\n\r\n` headers and returns
 /// each complete message body as a parsed JSON value. Incomplete trailing
 /// data is silently ignored.
+#[allow(dead_code)]
 fn parse_jsonrpc_stream(data: &str) -> Vec<serde_json::Value> {
     let mut messages = Vec::new();
     let mut remaining = data;

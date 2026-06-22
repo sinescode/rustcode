@@ -3,7 +3,6 @@
 //! Tests that providers can be auto-detected, models resolved, and
 //! the provider trait can be exercised without real API keys.
 
-use rustcode_core::provider::{Provider, Model, ChatMessage, ToolDefinition};
 use rustcode_core::providers;
 
 /// Verify that provider auto-detection returns empty in test environment

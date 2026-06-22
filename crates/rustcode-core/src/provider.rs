@@ -428,7 +428,7 @@ pub struct ConfigProvidersResult {
 ///
 /// # Source
 /// Ported from `packages/llm/src/schema/events.ts` line 51–75.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Usage {
     /// Total prompt tokens (inclusive of cache)
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1369,7 +1369,7 @@ pub fn default_top_k(model_id: &str) -> Option<u32> {
 ///
 /// # Source
 /// Ported from `packages/opencode/src/provider/provider.ts` line 1947–1955.
-const DEFAULT_PRIORITY: &[&str] = &["gpt-5", "claude-sonnet-4", "big-pickle", "gemini-3-pro"];
+const DEFAULT_PRIORITY: &[&str] = &["gemini-3-pro", "big-pickle", "claude-sonnet-4", "gpt-5"];
 
 /// Sort models by priority (gpt-5 > claude-sonnet-4 > big-pickle > gemini-3-pro),
 /// then models with "latest" come later, then descending by ID.

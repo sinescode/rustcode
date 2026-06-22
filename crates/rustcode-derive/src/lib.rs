@@ -24,7 +24,7 @@
 
 use proc_macro::TokenStream;
 use quote::quote;
-use syn::{parse_macro_input, DeriveInput, Fields, Meta, Expr, Lit};
+use syn::{parse_macro_input, DeriveInput, Expr, Lit};
 
 /// Derive the `Tool` trait for a struct.
 ///
@@ -157,7 +157,8 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
     }
 
     // Build the final implementation
-    let schema_properties = param_fields.iter().map(|(name, json_type, desc, default)| {
+    // Collect into Vec first so it can be used multiple times in quote!
+    let schema_properties: Vec<_> = param_fields.iter().map(|(name, json_type, desc, default)| {
         let desc_lit = if desc.is_empty() {
             quote! { None }
         } else {
@@ -178,7 +179,7 @@ pub fn derive_tool(input: TokenStream) -> TokenStream {
                 })
             );
         }
-    });
+    }).collect();
 
     let expanded = quote! {
         impl rustcode_core::tool::Tool for #name {

@@ -9,31 +9,31 @@ use rustcode_core::config::{
     self, discover_config_files, discover_opencode_dirs, merge_info, normalize_config,
     parse_jsonc, substitute_variables, validate_info, writable, Info, LogLevel, PermissionConfig,
     PermissionRule as ConfigPermissionRule, PermissionAction as ConfigPermissionAction,
-    ProviderConfig, AgentConfig, AgentMode, ShareMode,
+    ShareMode,
 };
 use rustcode_core::database::DatabaseServiceError;
 use rustcode_core::encryption::hmac::{EncryptionError, EncryptionService, KEY_LENGTH};
 use rustcode_core::error::{Error, PermissionError};
 use rustcode_core::event::{
-    EventCursor, EventDefinition, EventError, EventId, EventPayload, EventPubSub, EventRegistry,
-    EventV2, SyncConfig,
+    EventCursor, EventDefinition, EventId, EventPayload, EventPubSub, EventRegistry,
+    SyncConfig,
 };
-use rustcode_core::id::{self, ascending, create, descending, timestamp, Direction, IdError, IdPrefix};
+use rustcode_core::id::{ascending, create, descending, timestamp, Direction, IdError, IdPrefix};
 use rustcode_core::permission::{
     bash_arity_prefix, disabled_tools, evaluate, merge_rulesets, wildcard_match, PermissionAction,
     PermissionRule, PermissionRuleset, rules_from_config,
 };
 use rustcode_core::provider::{
-    ai_sdk_namespace, default_temperature, default_top_p, default_top_k, is_bundled_provider,
+    default_temperature, default_top_p, default_top_k, is_bundled_provider,
     parse_model, sanitize_surrogates, sdk_key, sort_models, FinishReason, LlmEvent, LlmResponse,
     Model, Usage,
 };
 use rustcode_core::model::{
-    parse_model_ref, well_known_providers, ModelInfo, ModelV2Id, ProviderV2Id,
+    ai_sdk_namespace, parse_model_ref, well_known_providers, ModelInfo,
 };
 use rustcode_core::session::{
     fork_title, is_retryable, retry_delay, retry_delay_with_headers, usable, check_overflow,
-    SessionError, SessionInfo, SessionTimestamps, TokenUsage, CacheUsage, Message, MessageInfo,
+    SessionError, SessionInfo, SessionTimestamps, TokenUsage, CacheUsage, MessageInfo,
     UserInfo, AssistantInfo, CreateSessionInput,
 };
 use rustcode_core::shell_parser::{FileOp, ShellParser};
@@ -1097,7 +1097,7 @@ fn test_event_pub_sub_publish_and_subscribe() {
     let sent = pubsub.publish(payload.clone()).unwrap();
     assert!(sent > 0);
 
-    let received = sub.recv().await;
+    let received = tokio::runtime::Runtime::new().unwrap().block_on(sub.recv());
     let received = received.expect("should receive event");
     assert_eq!(received.event_type, "test.event");
     assert_eq!(received.data["msg"], "hi");
@@ -1151,6 +1151,8 @@ fn test_event_registry_sync_definitions() {
 #[test]
 fn test_event_pub_sub_channel_publish_without_subscribers() {
     let pubsub = EventPubSub::new(4);
+    // tokio broadcast requires at least one active receiver for send to succeed.
+    let _sub = pubsub.subscribe();
     let payload = EventPayload::new(EventId::create(), "test", serde_json::json!({}));
     let result = pubsub.publish(payload);
     assert!(result.is_ok());

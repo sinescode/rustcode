@@ -397,6 +397,7 @@ pub async fn find_model(catalog: &ProviderCatalog, model_id: &str) -> Option<(St
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProviderOptions;
 
     #[test]
     fn test_provider_catalog_default() {

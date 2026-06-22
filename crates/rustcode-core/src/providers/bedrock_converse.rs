@@ -1940,7 +1940,7 @@ mod tests {
     #[test]
     fn test_events_from_converse_tool_use_stop() {
         let mut state = ConverseStreamState::new();
-        state.tool_stream.start(0, "get_weather", "toolu_01");
+        state.tool_stream.start(0, "get_weather".to_string(), "toolu_01".to_string());
         state.tool_stream.append(0, r#"{"city":"London"}"#);
 
         let payload = serde_json::json!({"contentBlockIndex": 0});
