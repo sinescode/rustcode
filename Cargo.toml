@@ -90,6 +90,7 @@ chrono.workspace = true
 uuid.workspace = true
 reqwest.workspace = true
 futures.workspace = true
+tokio-util.workspace = true
 sqlx.workspace = true
 dialoguer.workspace = true
 indicatif.workspace = true

@@ -508,11 +508,11 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
             if i == state.cursor {
                 line.push_span(Span::styled(ch.to_string(), cursor_style));
             } else if *ch == '\n' {
-                line.push_span(Span::styled("↵ ", Style::default().fg(theme.dim)));
+                line.push_span(Span::styled("↵ ", Style::default().fg(theme.text_muted)));
             } else {
                 line.push_span(Span::styled(
                     ch.to_string(),
-                    Style::default().fg(theme.foreground),
+                    Style::default().fg(theme.text),
                 ));
             }
         }
@@ -526,12 +526,12 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
     } else if display_text.is_empty() {
         Line::from(Span::styled(
             &state.placeholder,
-            Style::default().fg(theme.dim),
+            Style::default().fg(theme.text_muted),
         ))
     } else {
         // Replace newlines with visible markers when not focused
         let visible = display_text.replace('\n', "↵ ");
-        Line::from(Span::styled(visible, Style::default().fg(theme.foreground)))
+        Line::from(Span::styled(visible, Style::default().fg(theme.text)))
     };
 
     let input_widget =
@@ -539,7 +539,7 @@ pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme
             if state.focused {
                 Style::default().fg(theme.accent)
             } else {
-                Style::default().fg(theme.dim)
+                Style::default().fg(theme.text_muted)
             },
         ));
 

@@ -1588,16 +1588,18 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
             }
         }
     } else {
-        let id = providers.keys().next()
-            .ok_or_else(|| {
-                error_fmt.format_error("No providers configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.");
-                1
-            })?;
+        let id = match providers.keys().next() {
+            Some(id) => id.clone(),
+            None => {
+                cli_error::format_cli_error("No providers configured. Set ANTHROPIC_API_KEY or OPENAI_API_KEY.");
+                return 1;
+            }
+        };
         let id = id.clone();
         let p = match providers.get(&id) {
             Some(p) => Arc::clone(p),
             None => {
-                error_fmt.format_error(&format!("Provider '{id}' disappeared from registry"));
+                cli_error::format_cli_error(&format!("Provider '{id}' disappeared from registry"));
                 return 1;
             }
         };
@@ -2003,10 +2005,10 @@ async fn cmd_run(args: &RunArgs, config: &rustcode_core::config::Info) -> i32 {
 /// Ported from: `packages/opencode/src/cli/cmd/run.ts` — interactive slash commands.
 fn handle_slash_command(
     line: &str,
-    messages: &mut Vec<ChatMessage>,
+    messages: &mut Vec<rustcode_core::provider::ChatMessage>,
     _args: &RunArgs,
 ) -> (bool, bool) {
-    use rustcode_core::provider::MessageContent;
+    use rustcode_core::provider::{ChatMessage, MessageContent};
     let trimmed = line.trim().to_lowercase();
     match trimmed.as_str() {
         "/exit" | "/quit" | "exit" | "quit" | "/q" => return (true, false),
@@ -2269,7 +2271,8 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
     let abort_client = client.clone();
 
     // ── Stream SSE events ──────────────────────────────────────────
-    let mut stream = sse_response.bytes_stream();
+    use futures::StreamExt;
+    let mut stream = Box::pin(sse_response.bytes_stream());
     let mut buffer = String::new();
     let mut current_event: Option<String> = None;
     let mut current_data = String::new();
@@ -2286,7 +2289,7 @@ async fn cmd_run_attach(args: &RunArgs, attach_url: &str, msg: &str) -> i32 {
     while running {
         tokio::select! {
             // ── SSE chunk ───────────────────────────────────────────
-            chunk_opt = stream.next() => {
+            chunk_opt = futures::StreamExt::next(&mut stream) => {
                 match chunk_opt {
                     Some(Ok(chunk)) => {
                         buffer.push_str(&String::from_utf8_lossy(&chunk));
@@ -3197,6 +3200,7 @@ fn provider_priority(id: &str) -> u8 {
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/stats.ts`
 async fn cmd_stats(args: &StatsArgs) -> i32 {
+    use sqlx::Row;
     let days_label = args.days.map_or("all time".to_string(), |d| {
         if d == 0 {
             "today".to_string()
@@ -4697,6 +4701,34 @@ fn list_all_mcp_servers() -> Vec<(String, String, String)> {
     servers
 }
 
+// ═════════════════════════════════════════════════════════════════════════════
+// completion
+// ═════════════════════════════════════════════════════════════════════════════
+
+/// `completion` — Generate shell completion scripts.
+///
+/// Ported from: standard `clap_complete` convention.
+/// Supports bash, fish, zsh, and powershell.
+fn cmd_completion(args: &CompletionArgs) -> i32 {
+    use clap::CommandFactory;
+    use clap_complete::{generate, Shell};
+    let shell = match args.shell.as_str() {
+        "bash" => Shell::Bash,
+        "fish" => Shell::Fish,
+        "zsh" => Shell::Zsh,
+        "powershell" => Shell::PowerShell,
+        other => {
+            eprintln!("Unsupported shell: {other}");
+            eprintln!("Supported shells: bash, fish, zsh, powershell");
+            return 1;
+        }
+    };
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    generate(shell, &mut cmd, name, &mut std::io::stdout());
+    0
+}
+
 /// `mcp` — Manage MCP servers.
 ///
 /// Ported from: `packages/opencode/src/cli/cmd/mcp.ts`
@@ -5664,35 +5696,8 @@ async fn cmd_mcp(cmd: &McpCommand) -> i32 {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// completion
-// ═════════════════════════════════════════════════════════════════════════════
-
-/// `completion` — Generate shell completion scripts.
-///
-/// Ported from: standard `clap_complete` convention.
-/// Supports bash, fish, zsh, and powershell.
-async fn cmd_completion(args: &CompletionArgs) -> i32 {
-    use clap::CommandFactory;
-    use clap_complete::{generate, Shell};
-    let shell = match args.shell.as_str() {
-        "bash" => Shell::Bash,
-        "fish" => Shell::Fish,
-        "zsh" => Shell::Zsh,
-        "powershell" => Shell::PowerShell,
-        other => {
-            eprintln!("Unsupported shell: {other}");
-            eprintln!("Supported shells: bash, fish, zsh, powershell");
-            return 1;
-        }
-    };
-    let mut cmd = Cli::command();
-    let name = cmd.get_name().to_string();
-    generate(shell, &mut cmd, name, &mut std::io::stdout());
-    0
-}
-
-                                        }
-                                    } else if let Some(result) = json_body.get("result") {
+                                    }
+                                } else if let Some(result) = json_body.get("result") {
                                         eprintln!("  ✓ Initialize succeeded!");
                                         if let Some(si) = result.get("serverInfo") {
                                             let sname = si

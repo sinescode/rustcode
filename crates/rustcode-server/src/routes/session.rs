@@ -1246,6 +1246,7 @@ async fn post_command(
                 permission_source: Some(rustcode_core::permission::PermissionSource::Session {
                     session_id: session_id.clone(),
                 }),
+                prompt_ops: None,
             };
             let tool = tool_def.tool;
             match tool.execute(args, &ctx).await {

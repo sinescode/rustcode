@@ -56,7 +56,7 @@ async fn list_skills(State(_state): State<Arc<AppState>>) -> impl IntoResponse {
 
     let mut skills: Vec<serde_json::Value> = Vec::new();
     for file_path in &files {
-        match rustcode_core::skill::parse_skill_file(file_path) {
+        match rustcode_core::skill::parse_skill_file(file_path).await {
             Ok(Some(skill)) => {
                 skills.push(serde_json::json!({
                     "name": skill.name,

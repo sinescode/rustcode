@@ -13,6 +13,10 @@ use axum::extract::Request;
 use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
+use std::sync::OnceLock;
+
+/// Cached auth config loaded once at first request.
+static AUTH_CONFIG: OnceLock<AuthConfig> = OnceLock::new();
 
 /// Set of public path prefixes that bypass auth.
 const PUBLIC_PATH_PREFIXES: &[&str] = &["/health", "/version", "/global/health"];

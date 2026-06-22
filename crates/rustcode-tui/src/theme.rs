@@ -288,6 +288,12 @@ impl Theme {
         self
     }
 
+    /// Override the border color.
+    pub const fn with_border(mut self, color: Color) -> Self {
+        self.border = color;
+        self
+    }
+
     /// Override the border active color.
     pub const fn with_border_active(mut self, color: Color) -> Self {
         self.border_active = color;
@@ -1340,7 +1346,7 @@ impl ThemeCollection {
         let mut builtins = HashMap::new();
         let mut names_order = Vec::new();
         for theme in ALL_THEMES {
-            builtins.insert(theme.name, theme);
+            builtins.insert(theme.name, *theme);
             names_order.push(theme.name.to_string());
         }
         Self {
@@ -1418,7 +1424,8 @@ pub fn load_custom_themes() -> Vec<(String, Theme)> {
             if path.extension().and_then(|e| e.to_str()) != Some("json") {
                 continue;
             }
-            match load_theme_from_file(&path) {
+            let path_str = path.to_string_lossy().to_string();
+            match load_theme_from_file(std::path::Path::new(&path_str)) {
                 Ok(Some(theme)) => {
                     let name = path
                         .file_stem()
@@ -1429,7 +1436,7 @@ pub fn load_custom_themes() -> Vec<(String, Theme)> {
                 }
                 Ok(None) => {} // skipped
                 Err(e) => {
-                    tracing::warn!("failed to load custom theme {:?}: {e}", path);
+                    tracing::warn!("failed to load custom theme {path_str}: {e}");
                 }
             }
         }
@@ -1476,7 +1483,9 @@ fn load_theme_from_file(path: &std::path::Path) -> Result<Option<Theme>, Box<dyn
     let name = path
         .file_stem()
         .and_then(|s| s.to_str())
-        .unwrap_or("custom");
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "custom".to_string());
+    let name: &'static str = Box::leak(name.into_boxed_str());
     let bg = resolve("background").unwrap_or(rgb(0x1a, 0x1b, 0x26));
     let fg = resolve("text").or_else(|| resolve("foreground")).unwrap_or(rgb(0xc0, 0xca, 0xf5));
     let accent = resolve("accent").unwrap_or(rgb(0x7a, 0xa2, 0xf7));

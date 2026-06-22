@@ -112,7 +112,7 @@ pub fn render_status(f: &mut Frame, area: Rect, state: &StatusState, theme: &The
         dir_display
     };
 
-    left_spans.push(Span::styled(&dir_display, Style::default().fg(theme.dim)));
+    left_spans.push(Span::styled(&dir_display, Style::default().fg(theme.text_muted)));
 
     // Git branch
     if let Some(ref branch) = state.git_branch {

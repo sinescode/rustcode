@@ -177,7 +177,7 @@ pub async fn proxy_websocket(
                         if let Ok(msg) = msg {
                             let ws_msg = match msg {
                                 tokio_tungstenite::tungstenite::Message::Text(t) => {
-                                    Message::Text(t)
+                                    Message::Text(t.into())
                                 }
                                 tokio_tungstenite::tungstenite::Message::Binary(b) => {
                                     Message::Binary(b.into())
@@ -198,7 +198,7 @@ pub async fn proxy_websocket(
                         if let Ok(msg) = msg {
                             let data = match msg {
                                 Message::Text(t) => {
-                                    tokio_tungstenite::tungstenite::Message::Text(t)
+                                    tokio_tungstenite::tungstenite::Message::Text(t.to_string())
                                 }
                                 Message::Binary(b) => {
                                     tokio_tungstenite::tungstenite::Message::Binary(b.to_vec())

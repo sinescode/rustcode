@@ -4,10 +4,11 @@ use crate::AppState;
 use axum::{extract::State, http::StatusCode, Json, Router};
 use std::sync::Arc;
 
-/// Build health check routes.
-pub fn health_routes() -> Router<Arc<AppState>> {
+/// Build health check routes with shared state.
+pub fn health_routes(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", axum::routing::get(health_check))
+        .with_state(state)
 }
 
 /// `GET /health` — returns server health status.

@@ -47,7 +47,7 @@ use crate::components::sidebar::{render_sidebar, SidebarState};
 use crate::components::status::{render_status, StatusState};
 use crate::components::subagent::{render_subagent_dialog, SubagentAction, SubagentState};
 use crate::components::timeline::{render_timeline, TimelineAction, TimelineState};
-use crate::components::toast::{render_toast, ToastState};
+use crate::components::toast::{render_toast, ToastState, ToastVariant};
 use crate::editor::open_in_editor;
 use crate::event::{QuestionItem, TuiEvent};
 use crate::keymap::{
@@ -534,7 +534,6 @@ impl TuiApp {
             // Process pending plugin actions (toasts, dialogs)
             let pending = self.plugin_manager.process_pending();
             for (message, variant) in pending.toasts {
-                use crate::components::toast::ToastVariant;
                 let v = match variant.as_str() {
                     "error" => ToastVariant::Error,
                     "warning" => ToastVariant::Warning,
@@ -1630,12 +1629,12 @@ impl TuiApp {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             self.session_id.as_deref().unwrap_or("(new)"),
-            Style::default().fg(theme.foreground),
+            Style::default().fg(theme.text),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
             format!("Agent: {}", self.current_agent),
-            Style::default().fg(theme.dim),
+            Style::default().fg(theme.text_muted),
         )));
 
         let text = Text::from(lines);
@@ -1694,18 +1693,18 @@ impl TuiApp {
                 let style = if i == self.command_palette_selection {
                     Style::default().fg(theme.background).bg(theme.accent)
                 } else {
-                    Style::default().fg(theme.foreground)
+                    Style::default().fg(theme.text)
                 };
                 ListItem::new(Line::from(vec![
                     Span::styled(format!(" {name} "), style),
-                    Span::styled(format!("  {desc}"), Style::default().fg(theme.dim)),
+                    Span::styled(format!("  {desc}"), Style::default().fg(theme.text_muted)),
                 ]))
             })
             .collect();
 
         if items.is_empty() {
             let no_results =
-                Paragraph::new("No matching commands").style(Style::default().fg(theme.dim));
+                Paragraph::new("No matching commands").style(Style::default().fg(theme.text_muted));
             f.render_widget(no_results, inner);
         } else {
             let list = List::new(items);
@@ -1796,7 +1795,7 @@ impl TuiApp {
                     format!("  {key_str:<20}"),
                     Style::default().fg(theme.warning),
                 ),
-                Span::styled(binding.description, Style::default().fg(theme.dim)),
+                Span::styled(binding.description, Style::default().fg(theme.text_muted)),
             ]));
         }
 
@@ -1815,7 +1814,7 @@ impl TuiApp {
                     format!("  C-x {key_str:<17}"),
                     Style::default().fg(theme.warning),
                 ),
-                Span::styled(binding.description, Style::default().fg(theme.dim)),
+                Span::styled(binding.description, Style::default().fg(theme.text_muted)),
             ]));
         }
 
@@ -1845,7 +1844,7 @@ impl TuiApp {
             let color = if *state { theme.success } else { theme.error };
             lines.push(Line::from(vec![
                 Span::styled(format!("  [{icon}] "), Style::default().fg(color)),
-                Span::styled(*name, Style::default().fg(theme.dim)),
+                Span::styled(*name, Style::default().fg(theme.text_muted)),
             ]));
         }
 
@@ -1891,11 +1890,11 @@ impl TuiApp {
                 "  ID:    {}",
                 self.session_id.as_deref().unwrap_or("(none)")
             ),
-            Style::default().fg(theme.foreground),
+            Style::default().fg(theme.text),
         )));
         lines.push(Line::from(Span::styled(
             format!("  Agent: {}", self.current_agent),
-            Style::default().fg(theme.foreground),
+            Style::default().fg(theme.text),
         )));
 
         lines.push(Line::from(""));
@@ -1910,14 +1909,14 @@ impl TuiApp {
                 "  Name:  {}",
                 self.status.provider_name.as_deref().unwrap_or("none")
             ),
-            Style::default().fg(theme.foreground),
+            Style::default().fg(theme.text),
         )));
         lines.push(Line::from(Span::styled(
             format!(
                 "  Model: {}",
                 self.status.model_name.as_deref().unwrap_or("none")
             ),
-            Style::default().fg(theme.foreground),
+            Style::default().fg(theme.text),
         )));
         if self.status.cost > 0.0 {
             lines.push(Line::from(Span::styled(
@@ -1928,7 +1927,7 @@ impl TuiApp {
         if let Some(tokens) = self.status.token_count {
             lines.push(Line::from(Span::styled(
                 format!("  Tokens: {tokens}"),
-                Style::default().fg(theme.foreground),
+                Style::default().fg(theme.text),
             )));
         }
 
@@ -1939,7 +1938,7 @@ impl TuiApp {
                 self.theme.name(),
                 self.theme.mode().as_str()
             ),
-            Style::default().fg(theme.foreground),
+            Style::default().fg(theme.text),
         )));
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
@@ -2963,7 +2962,8 @@ impl TuiApp {
 
             // ── Theme ────────────────────────────────────────────
             TuiAction::ThemeSwitch => {
-                if let Some(name) = self.theme.cycle_theme(1) {
+                let new_name = self.theme.cycle_theme(1).map(|s| s.to_string());
+                if let Some(ref name) = new_name {
                     self.add_system_message(&format!("Theme: {name}"));
                     tracing::info!(name, "theme switched");
                 } else {
@@ -2971,7 +2971,8 @@ impl TuiApp {
                 }
             }
             TuiAction::ThemeSwitchMode => {
-                if let Some(name) = self.theme.toggle_mode() {
+                let new_name = self.theme.toggle_mode().map(|s| s.to_string());
+                if let Some(ref name) = new_name {
                     let mode = self.theme.mode().as_str();
                     self.add_system_message(&format!("Theme: {name} ({mode} mode)"));
                     tracing::info!(name, mode, "theme mode toggled");

@@ -111,6 +111,15 @@ pub fn workspace_proxy_url(target: &str, request_path: &str, request_query: &str
     url
 }
 
+/// Log a schema rejection with the given kind and reason.
+///
+/// # Source
+/// Ported from `packages/opencode/src/server/routes/instance/httpapi/middleware/schema-error.ts`
+/// `logSchemaRejection()`.
+pub fn log_schema_rejection(kind: &str, reason: &str) {
+    tracing::warn!(kind, reason, "schema validation rejected");
+}
+
 /// Simple URL-decode for query param values.
 fn urldecode(input: &str) -> String {
     let mut result = String::with_capacity(input.len());

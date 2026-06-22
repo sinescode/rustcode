@@ -108,11 +108,11 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
             Line::from(""),
             Line::from(Span::styled(
                 "Type a message below to get started.",
-                Style::default().fg(theme.foreground),
+                Style::default().fg(theme.text),
             )),
             Line::from(Span::styled(
                 "Ctrl+C to exit, Ctrl+P for commands.",
-                Style::default().fg(theme.dim),
+                Style::default().fg(theme.text_muted),
             )),
         ]))
         .block(Block::default().borders(Borders::NONE))
@@ -131,7 +131,7 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
     for sys_msg in system_msgs {
         items.push(ListItem::new(Line::from(Span::styled(
             sys_msg.as_str(),
-            Style::default().fg(theme.dim),
+            Style::default().fg(theme.text_muted),
         ))));
     }
 

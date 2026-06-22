@@ -20,6 +20,9 @@ use crate::routes;
 /// Ported from `packages/opencode/src/server/routes/instance/httpapi/server.ts`
 /// (the `context` and `Layer.buildLayer(app)` pattern).
 pub struct AppState {
+    /// Database service for SQLite connectivity.
+    pub db: Arc<rustcode_core::database::DatabaseService>,
+
     /// The global event bus for broadcasting events to SSE subscribers.
     pub bus: rustcode_core::bus::SharedBus,
 
@@ -68,6 +71,7 @@ impl AppState {
     /// Create a new `AppState` with the given components.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
+        db: Arc<rustcode_core::database::DatabaseService>,
         bus: rustcode_core::bus::SharedBus,
         sessions: Arc<rustcode_core::session::SessionManager>,
         tools: Arc<rustcode_core::tool::ToolRegistry>,
@@ -82,6 +86,7 @@ impl AppState {
         server_features: Vec<String>,
     ) -> Self {
         Self {
+            db,
             bus,
             sessions,
             tools,
