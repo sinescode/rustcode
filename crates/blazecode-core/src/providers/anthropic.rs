@@ -10,7 +10,7 @@
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::error::{Error, LlmErrorReason};
 use crate::provider::{
@@ -30,16 +30,9 @@ const ANTHROPIC_VERSION: &str = "2023-06-01";
 const DEFAULT_BASE_URL: &str = "https://api.anthropic.com";
 
 /// Resolve the base URL — checks `ANTHROPIC_BASE_URL` env var first, falls back to default.
-/// When using OPENMODEL_API_KEY, automatically points to openmodel.
 fn resolve_base_url() -> String {
-    std::env::var("ANTHROPIC_BASE_URL").or_else(|_| {
-        // If using openmodel API key, auto-select openmodel endpoint
-        if std::env::var("OPENMODEL_API_KEY").ok().filter(|k| !k.is_empty()).is_some() {
-            Ok("https://api.openmodel.ai".to_string())
-        } else {
-            Err(std::env::VarError::NotPresent)
-        }
-    }).unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
+    std::env::var("ANTHROPIC_BASE_URL")
+        .unwrap_or_else(|_| DEFAULT_BASE_URL.to_string())
 }
 
 /// Maximum number of cache breakpoints per request.
@@ -267,18 +260,13 @@ enum AnthropicDelta {
 
 /// Resolve the API key for a provider.
 ///
-/// Checks (in order):
-/// 1. Explicit `ANTHROPIC_API_KEY` environment variable
-/// 2. Fallback to `OPENMODEL_API_KEY` for openmodel-compatible setups
+/// Reads the `ANTHROPIC_API_KEY` environment variable.
 ///
 /// Returns an error if no key is found.
 fn resolve_api_key() -> Result<String, Error> {
     std::env::var("ANTHROPIC_API_KEY")
         .ok()
         .filter(|k| !k.is_empty())
-        .or_else(|| {
-            std::env::var("OPENMODEL_API_KEY").ok().filter(|k| !k.is_empty())
-        })
         .ok_or_else(|| Error::Auth("ANTHROPIC_API_KEY environment variable not set".into()))
 }
 
@@ -369,7 +357,7 @@ fn build_anthropic_messages(
                 .map(|t| AnthropicTool {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    input_schema: t.parameters.clone(),
+                    input_schema: crate::tool::normalize_json_schema(&t.parameters),
                 })
                 .collect(),
         )
@@ -563,6 +551,8 @@ struct AnthropicStreamState {
     pending_stop_reason: Option<String>,
     /// Pending usage from message_delta
     pending_usage: Option<AnthropicUsage>,
+    /// Content block index → whether it's a thinking/reasoning block
+    thinking_blocks: HashSet<u64>,
     /// Has the stream finished?
     finished: bool,
     /// Accumulated reasoning signature
@@ -579,6 +569,7 @@ impl AnthropicStreamState {
             block_ids: HashMap::new(),
             pending_stop_reason: None,
             pending_usage: None,
+            thinking_blocks: HashSet::new(),
             finished: false,
             reasoning_signature: None,
             step_started: false,
@@ -640,6 +631,7 @@ fn map_anthropic_event(event: AnthropicEvent, state: &mut AnthropicStreamState) 
                     });
                 }
                 AnthropicContentBlock::Thinking { .. } => {
+                    state.thinking_blocks.insert(index);
                     events.push(LlmEvent::ReasoningStart {
                         id: block_id,
                         provider_metadata: None,
@@ -709,14 +701,12 @@ fn map_anthropic_event(event: AnthropicEvent, state: &mut AnthropicStreamState) 
                     events.push(acc);
                 }
             } else if let Some(id) = block_id {
-                // Check if this was a text block (has a block_id but wasn't a tool)
-                let is_reasoning = state.reasoning_signature.is_some();
-                if is_reasoning {
+                // Check if this was a thinking block
+                if state.thinking_blocks.remove(&index) {
                     events.push(LlmEvent::ReasoningEnd {
                         id,
                         provider_metadata: None,
                     });
-                    state.reasoning_signature = None;
                 } else {
                     events.push(LlmEvent::TextEnd {
                         id,
@@ -884,40 +874,102 @@ fn get_thinking_config(model: &Model) -> Option<ThinkingConfig> {
 /// Anthropic Messages API provider.
 ///
 /// Implements the [`Provider`] trait for Anthropic's Claude models.
+/// Pre-defined model for an Anthropic-compatible provider profile.
+#[derive(Debug, Clone)]
+pub struct ModelSpec {
+    pub id: &'static str,
+    pub name: &'static str,
+    pub ctx: u64,
+    pub out: u64,
+    pub family: Option<&'static str>,
+    pub input_price: f64,
+    pub output_price: f64,
+    pub cache_write_price: f64,
+    pub cache_read_price: f64,
+}
+
+/// Profile configuration for an Anthropic-compatible provider.
+#[derive(Debug, Clone)]
+pub struct AnthropicProfile {
+    pub provider_id: &'static str,
+    pub name: &'static str,
+    pub npm: &'static str,
+    pub base_url: &'static str,
+    pub env_var: &'static str,
+    pub models: &'static [ModelSpec],
+    pub extra_headers: &'static [(&'static str, &'static str)],
+}
+
+/// Official Anthropic profile.
+pub static ANTHROPIC_PROFILE: AnthropicProfile = AnthropicProfile {
+    provider_id: "anthropic",
+    name: "Anthropic",
+    npm: "@ai-sdk/anthropic",
+    base_url: "https://api.anthropic.com",
+    env_var: "ANTHROPIC_API_KEY",
+    models: &ANTHROPIC_MODELS,
+    extra_headers: &[],
+};
+
+/// Official Anthropic model catalog.
+pub static ANTHROPIC_MODELS: &[ModelSpec] = &[
+    ModelSpec { id: "claude-opus-4-8", name: "Claude Opus 4.8", ctx: 200_000, out: 32_000, family: Some("claude"), input_price: 15.0, output_price: 75.0, cache_write_price: 3.75, cache_read_price: 15.0 },
+    ModelSpec { id: "claude-opus-4-5", name: "Claude Opus 4.5", ctx: 200_000, out: 32_000, family: Some("claude"), input_price: 15.0, output_price: 75.0, cache_write_price: 3.75, cache_read_price: 15.0 },
+    ModelSpec { id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", ctx: 200_000, out: 8_192, family: Some("claude"), input_price: 3.0, output_price: 15.0, cache_write_price: 0.75, cache_read_price: 3.75 },
+    ModelSpec { id: "claude-sonnet-4-5", name: "Claude Sonnet 4.5", ctx: 200_000, out: 8_192, family: Some("claude"), input_price: 3.0, output_price: 15.0, cache_write_price: 0.75, cache_read_price: 3.75 },
+    ModelSpec { id: "claude-haiku-4-5", name: "Claude Haiku 4.5", ctx: 200_000, out: 8_192, family: Some("claude"), input_price: 1.0, output_price: 5.0, cache_write_price: 0.25, cache_read_price: 1.25 },
+];
+
 pub struct AnthropicProvider {
+    profile: &'static AnthropicProfile,
     api_key: String,
     base_url: String,
     http_client: reqwest::Client,
-    /// Hardcoded model catalog
     pub(crate) models: Vec<Model>,
 }
 
 impl AnthropicProvider {
-    /// Create a new Anthropic provider.
+    /// Create a new Anthropic provider using the official Anthropic profile.
     ///
-    /// Reads the API key from the `ANTHROPIC_API_KEY` environment variable.
+    /// Reads the API key from `ANTHROPIC_API_KEY` (with `OPENMODEL_API_KEY` fallback).
     pub fn new() -> Result<Self, Error> {
         let api_key = resolve_api_key()?;
         let base_url = resolve_base_url();
-        Self::with_api_key(api_key, base_url)
+        Self::with_config(&ANTHROPIC_PROFILE, api_key, base_url)
     }
 
-    /// Create a new Anthropic provider with an explicit API key.
-    pub fn with_api_key(api_key: String, base_url: String) -> Result<Self, Error> {
+    /// Create from a profile config, reading the API key from the profile's env var.
+    pub fn from_profile(profile: &'static AnthropicProfile) -> Result<Self, Error> {
+        let api_key = std::env::var(profile.env_var)
+            .ok()
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| Error::Auth(format!("{} not set", profile.env_var)))?;
+        let base_url = profile.base_url.trim_end_matches('/').to_string();
+        Self::with_config(profile, api_key, base_url)
+    }
+
+    /// Create with an explicit profile, API key, and base URL.
+    pub fn with_config(profile: &'static AnthropicProfile, api_key: String, base_url: String) -> Result<Self, Error> {
         let http_client = reqwest::Client::builder()
             .user_agent(format!("blazecode/{}", env!("CARGO_PKG_VERSION")))
             .timeout(std::time::Duration::from_secs(300))
             .build()
             .map_err(|e| Error::Network(format!("failed to create HTTP client: {e}")))?;
 
-        let models = build_model_catalog();
+        let models = build_model_catalog(profile);
 
         Ok(Self {
+            profile,
             api_key,
             base_url,
             http_client,
             models,
         })
+    }
+
+    /// Create a new Anthropic provider with an explicit API key (backwards compat).
+    pub fn with_api_key(api_key: String, base_url: String) -> Result<Self, Error> {
+        Self::with_config(&ANTHROPIC_PROFILE, api_key, base_url)
     }
 
     /// Create the endpoint URL for the messages API.
@@ -929,11 +981,11 @@ impl AnthropicProvider {
 #[async_trait]
 impl Provider for AnthropicProvider {
     fn provider_id(&self) -> &str {
-        "anthropic"
+        self.profile.provider_id
     }
 
     fn npm(&self) -> &str {
-        "@ai-sdk/anthropic"
+        self.profile.npm
     }
 
     async fn list_models(&self) -> crate::error::Result<Vec<Model>> {
@@ -946,7 +998,7 @@ impl Provider for AnthropicProvider {
             .find(|m| m.id == model_id)
             .cloned()
             .ok_or_else(|| Error::ModelNotFound {
-                provider_id: "anthropic".into(),
+                provider_id: self.profile.provider_id.into(),
                 model_id: model_id.into(),
             })
     }
@@ -980,7 +1032,7 @@ impl Provider for AnthropicProvider {
                         .map(|t| AnthropicTool {
                             name: t.name.clone(),
                             description: t.description.clone(),
-                            input_schema: t.parameters.clone(),
+                            input_schema: crate::tool::normalize_json_schema(&t.parameters),
                         })
                         .collect(),
                 )
@@ -996,9 +1048,11 @@ impl Provider for AnthropicProvider {
         };
 
         // Make the HTTP request
+        let url = self.messages_url();
+        let module_id = self.profile.provider_id.to_string();
         let response = self
             .http_client
-            .post(self.messages_url())
+            .post(&url)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
             .header("content-type", "application/json")
@@ -1006,12 +1060,12 @@ impl Provider for AnthropicProvider {
             .send()
             .await
             .map_err(|e| Error::Llm { http_context: None, 
-                module: "anthropic".into(),
+                module: module_id.clone(),
                 method: "stream".into(),
                 reason: Box::new(LlmErrorReason::Transport {
                     message: e.to_string(),
                     kind: Some("connect".into()),
-                    url: Some(self.messages_url()),
+                    url: Some(url.clone()),
                 }),
             })?;
 
@@ -1027,7 +1081,7 @@ impl Provider for AnthropicProvider {
                     let message = err_obj["message"].as_str().unwrap_or(&error_body);
 
                     return Err(Error::Llm { http_context: None, 
-                        module: "anthropic".into(),
+                        module: module_id.clone(),
                         method: "stream".into(),
                         reason: Box::new(classify_http_error(status, error_type, message)),
                     });
@@ -1035,7 +1089,7 @@ impl Provider for AnthropicProvider {
             }
 
             return Err(Error::Llm { http_context: None, 
-                module: "anthropic".into(),
+                module: module_id.clone(),
                 method: "stream".into(),
                 reason: Box::new(LlmErrorReason::UnknownProvider {
                     message: format!("HTTP {status}: {error_body}"),
@@ -1044,6 +1098,11 @@ impl Provider for AnthropicProvider {
             });
         }
 
+        // Debug: dump raw HTTP status for verification
+        if !response.status().is_success() {
+            // already handled above
+        }
+        
         // Parse the SSE stream into LlmEvents.
         // Use a VecDeque buffer so that when map_anthropic_event produces
         // multiple LlmEvents from a single SSE event, they all get emitted.
@@ -1063,7 +1122,8 @@ impl Provider for AnthropicProvider {
                 AnthropicStreamState::new(),
                 VecDeque::<crate::error::Result<LlmEvent>>::new(),
             ),
-            |(mut sse, mut state, mut buffer)| {
+            move |(mut sse, mut state, mut buffer)| {
+                let module_id = module_id.clone();
                 Box::pin(async move {
                     loop {
                         if let Some(event) = buffer.pop_front() {
@@ -1085,6 +1145,7 @@ impl Provider for AnthropicProvider {
                                     .collect::<String>();
                                 match serde_json::from_str::<AnthropicEvent>(&event) {
                                     Ok(anthropic_event) => {
+                                        // Debug: log all SSE events
                                         let llm_events =
                                             map_anthropic_event(anthropic_event, &mut state);
                                         for ev in llm_events {
@@ -1097,7 +1158,7 @@ impl Provider for AnthropicProvider {
                                     Err(e) => {
                                         return Some((
                                             Err(Error::Llm { http_context: None, 
-                                                module: "anthropic".into(),
+                                                module: module_id.clone(),
                                                 method: "stream.event_parse".into(),
                                                 reason: Box::new(
                                                     LlmErrorReason::InvalidProviderOutput {
@@ -1211,118 +1272,65 @@ fn classify_http_error(status: u16, error_type: &str, message: &str) -> LlmError
 // ── Model catalog ──────────────────────────────────────────────────────
 
 /// Build the hardcoded model catalog for Anthropic Claude models.
-fn build_model_catalog() -> Vec<Model> {
-    let mut models = vec![
-        make_model(
-            "claude-opus-4-8",
-            "Claude Opus 4.8",
-            "claude-opus-4-8",
-            200_000,
-            32_000,
-            15.0,
-            75.0,
-            3.75,
-            15.0,
-        ),
-        make_model(
-            "claude-opus-4-5",
-            "Claude Opus 4.5",
-            "claude-opus-4-5",
-            200_000,
-            32_000,
-            15.0,
-            75.0,
-            3.75,
-            15.0,
-        ),
-        make_model(
-            "claude-sonnet-4-6",
-            "Claude Sonnet 4.6",
-            "claude-sonnet-4-6",
-            200_000,
-            8_192,
-            3.0,
-            15.0,
-            0.75,
-            3.75,
-        ),
-        make_model(
-            "claude-sonnet-4-5",
-            "Claude Sonnet 4.5",
-            "claude-sonnet-4-5",
-            200_000,
-            8_192,
-            3.0,
-            15.0,
-            0.75,
-            3.75,
-        ),
-        make_model(
-            "claude-haiku-4-5",
-            "Claude Haiku 4.5",
-            "claude-haiku-4-5",
-            200_000,
-            8_192,
-            1.0,
-            5.0,
-            0.25,
-            1.25,
-        ),
-    ];
-
-    // Add openmodel-provided models when using a custom base URL
-    let base_url = resolve_base_url();
-    if base_url.contains("openmodel") || base_url != "https://api.anthropic.com" {
-        models.push(make_model(
-            "deepseek-v4-flash",
-            "DeepSeek V4 Flash (OpenModel)",
-            "deepseek-v4-flash",
-            200_000,
-            16_000,
-            0.15,
-            0.60,
-            0.075,
-            0.15,
-        ));
-        models.push(make_model(
-            "deepseek-v4-pro",
-            "DeepSeek V4 Pro (OpenModel)",
-            "deepseek-v4-pro",
-            200_000,
-            16_000,
-            2.0,
-            8.0,
-            1.0,
-            2.0,
-        ));
-        models.push(make_model(
-            "gemini-3-flash-preview",
-            "Gemini 3 Flash Preview (OpenModel)",
-            "gemini-3-flash-preview",
-            1_000_000,
-            16_384,
-            0.10,
-            0.40,
-            0.05,
-            0.10,
-        ));
-        models.push(make_model(
-            "gpt-5.4-mini",
-            "GPT-5.4 Mini (OpenModel)",
-            "gpt-5.4-mini",
-            128_000,
-            16_384,
-            0.15,
-            0.60,
-            0.075,
-            0.15,
-        ));
-    }
-
-    models
+fn build_model_catalog(profile: &AnthropicProfile) -> Vec<Model> {
+    profile
+        .models
+        .iter()
+        .map(|spec| make_model_from_spec(spec, profile))
+        .collect()
 }
 
-/// Helper to create a Model with consistent defaults.
+/// Helper to create a Model from a ModelSpec and profile.
+fn make_model_from_spec(spec: &ModelSpec, profile: &AnthropicProfile) -> Model {
+    Model {
+        id: spec.id.into(),
+        provider_id: profile.provider_id.into(),
+        name: spec.name.into(),
+        api: crate::provider::ApiInfo {
+            id: spec.id.into(),
+            url: profile.base_url.trim_end_matches('/').to_string(),
+            npm: profile.npm.into(),
+        },
+        family: spec.family.map(|f| f.into()),
+        capabilities: crate::provider::Capabilities {
+            temperature: true,
+            reasoning: true,
+            attachment: true,
+            toolcall: true,
+            input: crate::provider::Modalities {
+                text: true,
+                image: true,
+                ..Default::default()
+            },
+            output: crate::provider::Modalities {
+                text: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        cost: crate::provider::Cost {
+            input: spec.input_price,
+            output: spec.output_price,
+            cache: crate::provider::CacheCost {
+                read: spec.cache_read_price,
+                write: spec.cache_write_price,
+            },
+            ..Default::default()
+        },
+        limit: crate::provider::TokenLimit {
+            context: spec.ctx,
+            input: None,
+            output: spec.out,
+        },
+        status: crate::provider::ModelStatus::Active,
+        options: std::collections::HashMap::new(),
+        headers: std::collections::HashMap::new(),
+        release_date: String::new(),
+        variants: None,
+    }
+}
+
+/// Helper to create a Model with consistent defaults (backwards compat).
 #[allow(clippy::too_many_arguments)]
 fn make_model(
     id: &str,

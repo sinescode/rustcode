@@ -12,6 +12,7 @@
 
 use bytes::Bytes;
 use futures::{Stream, StreamExt};
+use std::collections::VecDeque;
 use tokio_util::io::StreamReader;
 
 /// An SSE event parsed from the stream.
@@ -89,6 +90,7 @@ pub fn parse_sse_stream(
         current_retry: None,
         data_size: 0,
         done: false,
+        pending: VecDeque::new(),
     }
 }
 
@@ -102,6 +104,11 @@ struct SseEventStream<S> {
     current_retry: Option<u64>,
     data_size: usize,
     done: bool,
+    /// Buffer of fully-parsed events ready to yield (framing workaround).
+    /// When a single HTTP chunk contains multiple SSE events, we parse
+    /// them all at once and buffer them here to avoid losing events on
+    /// stream-end flush.
+    pending: VecDeque<Result<SseEvent, SseError>>,
 }
 
 impl<S> Stream for SseEventStream<S>
@@ -114,6 +121,11 @@ where
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
+        // Drain pending events from previous chunk processing first
+        if let Some(event) = self.pending.pop_front() {
+            return std::task::Poll::Ready(Some(event));
+        }
+
         loop {
             if self.done {
                 return std::task::Poll::Ready(None);
@@ -124,35 +136,40 @@ where
                 std::task::Poll::Ready(Some(Ok(bytes))) => {
                     self.buffer.extend_from_slice(&bytes);
 
-                    // Check for SSE event boundary: a double newline
-                    // SSE events are separated by "\n\n"
-                    if let Some(pos) = find_double_newline(&self.buffer) {
-                        let block_bytes = self.buffer[..pos].to_vec();
-                        let remainder = self.buffer[pos + 2..].to_vec();
+                    // Process ALL complete event boundaries in the buffer
+                    loop {
+                        if let Some(pos) = find_double_newline(&self.buffer) {
+                            let block_bytes = self.buffer[..pos].to_vec();
+                            let remainder = self.buffer[pos + 2..].to_vec();
 
-                        // Parse the event block (lines joined by \n)
-                        if let Ok(block_str) = std::str::from_utf8(&block_bytes) {
-                            self.parse_event_block(block_str);
-                        }
+                            // Parse the event block (lines joined by \n)
+                            if let Ok(block_str) = std::str::from_utf8(&block_bytes) {
+                                self.parse_event_block(block_str);
+                            }
 
-                        self.buffer = remainder;
+                            self.buffer = remainder;
 
-                        // Check if we have a complete event to yield
-                        if let Some(event) = self.take_event() {
-                            return std::task::Poll::Ready(Some(Ok(event)));
-                        }
+                            // Check for done sentinel
+                            if self.current_data.trim().eq_ignore_ascii_case("[DONE]") {
+                                self.done = true;
+                                let event = self.take_event().unwrap_or(SseEvent {
+                                    event_type: None,
+                                    data: "[DONE]".into(),
+                                    id: None,
+                                    retry_ms: None,
+                                });
+                                self.pending.push_back(Ok(event));
+                                break;
+                            }
 
-                        // Check for done sentinel
-                        if self.current_data.trim().eq_ignore_ascii_case("[DONE]") {
-                            self.done = true;
-                            // Yield the done event
-                            let event = self.take_event().unwrap_or(SseEvent {
-                                event_type: None,
-                                data: "[DONE]".into(),
-                                id: None,
-                                retry_ms: None,
-                            });
-                            return std::task::Poll::Ready(Some(Ok(event)));
+                            // Yield complete event or continue to next boundary
+                            if let Some(event) = self.take_event() {
+                                self.pending.push_back(Ok(event));
+                            } else {
+                                continue;
+                            }
+                        } else {
+                            break;
                         }
                     }
 
@@ -162,22 +179,58 @@ where
                             self.buffer.len(),
                         ))));
                     }
+
+                    // Yield pending events (at least one should exist from the loop above)
+                    if let Some(event) = self.pending.pop_front() {
+                        return std::task::Poll::Ready(Some(event));
+                    }
                 }
                 std::task::Poll::Ready(Some(Err(e))) => {
                     return std::task::Poll::Ready(Some(Err(SseError::Io(e))));
                 }
                 std::task::Poll::Ready(None) => {
-                    // Stream ended — flush any remaining event
+                    // Stream ended — flush remaining buffer, processing all boundaries
                     if !self.buffer.is_empty() || !self.current_data.is_empty() {
-                        let block_bytes = self.buffer.clone();
-                        if let Ok(block_str) = std::str::from_utf8(&block_bytes) {
-                            if !block_str.trim().is_empty() {
-                                self.parse_event_block(block_str);
+                        let remaining = std::mem::take(&mut self.buffer);
+                        let mut pos = 0usize;
+
+                        // Walk through remaining bytes, splitting on \n\n
+                        loop {
+                            let sub = &remaining[pos..];
+                            if let Some(dnl) = sub.windows(2).position(|w| w == b"\n\n") {
+                                let block_end = pos + dnl;
+                                if block_end > pos {
+                                    let block_bytes = &remaining[pos..block_end];
+                                    if let Ok(block_str) = std::str::from_utf8(block_bytes) {
+                                        if !block_str.trim().is_empty() {
+                                            self.parse_event_block(block_str);
+                                            if let Some(event) = self.take_event() {
+                                                self.pending.push_back(Ok(event));
+                                            }
+                                        }
+                                    }
+                                }
+                                pos = block_end + 2;
+                            } else {
+                                // No more \n\n — treat remaining as one block
+                                let block_bytes = &remaining[pos..];
+                                if !block_bytes.is_empty() {
+                                    if let Ok(block_str) = std::str::from_utf8(block_bytes) {
+                                        if !block_str.trim().is_empty() {
+                                            self.parse_event_block(block_str);
+                                            if let Some(event) = self.take_event() {
+                                                self.pending.push_back(Ok(event));
+                                            }
+                                        }
+                                    }
+                                }
+                                break;
                             }
                         }
-                        self.buffer.clear();
-                        if let Some(event) = self.take_event() {
-                            return std::task::Poll::Ready(Some(Ok(event)));
+
+                        if let Some(event) = self.pending.pop_front() {
+                            self.done = true;
+                            return std::task::Poll::Ready(Some(event));
                         }
                     }
                     self.done = true;
