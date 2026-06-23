@@ -229,20 +229,35 @@ impl TuiApp {
         let backend = ratatui::backend::CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
 
-        let default_provider = providers.keys().next().cloned();
-        let default_model = default_provider.as_ref().and_then(|pid| {
-            providers.get(pid).and_then(|_p| {
-                if pid == "anthropic" {
-                    Some(String::from("claude-sonnet-4-6"))
-                } else if pid == "openai" {
-                    Some(String::from("gpt-5.2"))
-                } else if pid == "google" {
-                    Some(String::from("gemini-3.0-flash"))
-                } else {
-                    None
+        let (default_provider, default_model_raw) = blazecode_core::config::Config::load_global()
+            .ok()
+            .and_then(|cfg| cfg.model)
+            .or_else(|| std::env::var("BLAZECODE_MODEL").ok())
+            .and_then(|s| {
+                // "openmodel/deepseek-v4-flash" → (Some("openmodel"), Some("deepseek-v4-flash"))
+                if let Some((p, m)) = s.split_once('/') {
+                    if providers.contains_key(p) && !m.is_empty() {
+                        return Some((Some(p.to_string()), Some(m.to_string())));
+                    }
                 }
+                // No slash or unknown prefix — use as bare model name
+                Some((None, Some(s)))
             })
-        });
+            .or_else(|| {
+                // Fallback: first provider + hardcoded model map
+                let provider = providers.keys().next()?.clone();
+                let model = match provider.as_str() {
+                    "anthropic" => "deepseek-v4-flash",
+                    "openmodel" => "deepseek-v4-flash",
+                    "openai" => "gpt-5.2",
+                    "google" => "gemini-3.0-flash",
+                    _ => return None,
+                };
+                Some((Some(provider), Some(model.to_string())))
+            })
+            .unwrap_or((None, None));
+        let default_provider = default_provider;
+        let default_model = default_model_raw;
 
         // Detect git branch
         let git_branch = std::env::current_dir().ok().and_then(|dir| {
@@ -706,7 +721,7 @@ impl TuiApp {
         let model_id = self
             .default_model
             .clone()
-            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+            .unwrap_or_else(|| "deepseek-v4-flash".into());
         let agent = self.current_agent.clone();
         let session_id = self
             .session_id
@@ -931,7 +946,7 @@ impl TuiApp {
         let model_id = self
             .default_model
             .clone()
-            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+            .unwrap_or_else(|| "deepseek-v4-flash".into());
         let agent = self.current_agent.clone();
         let session_id = self
             .session_id
@@ -3235,7 +3250,7 @@ impl TuiApp {
 
                     // Reset model to default for this provider
                     self.default_model = if next_provider == "anthropic" {
-                        Some("claude-sonnet-4-6".into())
+                        Some("deepseek-v4-flash".into())
                     } else if next_provider == "openai" {
                         Some("gpt-5.2".into())
                     } else if next_provider == "google" {
@@ -3288,7 +3303,7 @@ impl TuiApp {
                     self.status.provider_name = Some(prev_provider.clone());
 
                     self.default_model = if prev_provider == "anthropic" {
-                        Some("claude-sonnet-4-6".into())
+                        Some("deepseek-v4-flash".into())
                     } else if prev_provider == "openai" {
                         Some("gpt-5.2".into())
                     } else if prev_provider == "google" {
