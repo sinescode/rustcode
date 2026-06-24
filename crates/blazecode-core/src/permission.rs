@@ -237,23 +237,22 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     // Normalize backslashes to forward slashes (TS line 4).
     let normalized = input.replace('\\', "/");
 
-    // Treat empty pattern as "*" (match everything) to prevent silent
-    // misconfiguration.
+    // Empty pattern only matches empty input.
     if pattern.is_empty() {
-        return true;
+        return input.is_empty();
     }
 
     // Escape regex-special characters, then convert wildcards to regex.
     // TS lines 6–10.
     let mut escaped = pattern.replace('\\', "/");
 
-    // Trailing " .*" → "( .*)?" (optional suffix match — TS line 11).
-    // Must be detected BEFORE escaping `.`, since `.*` in the original pattern
-    // is a regex-like "any string" match, not a literal dot followed by glob.
-    let trailing_dot_star = escaped.ends_with(" .*");
-    if trailing_dot_star {
+    // Trailing " *" → "( .*)?" (optional suffix match — TS line 11).
+    // Must be detected BEFORE converting `*` → `.*`, since the original pattern
+    // has a literal ` *` (space star) which means optional " space+anything".
+    let trailing_space_star = escaped.ends_with(" *");
+    if trailing_space_star {
         let len = escaped.len();
-        escaped.replace_range(len - 3.., "");
+        escaped.replace_range(len - 2.., "");
     }
 
     // Escape special regex chars: . + ^ $ { } ( ) | [ ] \
@@ -263,7 +262,7 @@ pub fn wildcard_match(input: &str, pattern: &str) -> bool {
     // Convert ? to . (match single char)
     escaped = escaped.replace('?', ".");
 
-    if trailing_dot_star {
+    if trailing_space_star {
         escaped.push_str("( .*)?");
     }
 

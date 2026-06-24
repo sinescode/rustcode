@@ -1467,7 +1467,7 @@ mod tests {
 
     #[test]
     fn test_build_model_catalog() {
-        let models = build_model_catalog();
+        let models = build_model_catalog(&ANTHROPIC_PROFILE);
         assert!(models.len() >= 5);
         let opus = models.iter().find(|m| m.id == "claude-opus-4-8").unwrap();
         assert_eq!(opus.provider_id, "anthropic");

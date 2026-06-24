@@ -24,6 +24,7 @@
 //! Fireworks, AI21, Cohere, Perplexity, DeepInfra, Alibaba, Vercel Gateway.
 
 pub mod anthropic;
+pub mod anthropic_compatible;
 pub mod azure;
 pub mod bedrock;
 pub mod bedrock_converse;
@@ -106,6 +107,14 @@ pub fn auto_detect_all() -> Vec<Box<dyn crate::provider::Provider>> {
         if let Ok(p) = openai_compatible::OpenAICompatibleProvider::from_config(config) {
             tracing::info!("Detected {} provider ({})", config.name, config.env_var);
             providers.push(Box::new(p));
+        }
+    }
+
+    // All Anthropic-compatible providers (profile-based)
+    for profile in anthropic_compatible::PROFILES {
+        if let Ok(p) = anthropic_compatible::from_profile(profile) {
+            tracing::info!("Detected Anthropic-compatible provider '{}' ({})", profile.name, profile.env_var);
+            providers.push(p);
         }
     }
 

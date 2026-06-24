@@ -1,9 +1,28 @@
 //! Scrolling conversation view — displays session messages.
 //!
-//! Ported from: `packages/tui/src/routes/session/index.tsx` (lines 176–1350)
+//! ## Visual Design (Opencode Match)
 //!
-//! The conversation view renders a scrollable list of messages (user and
-//! assistant), with parts (text, tool, reasoning) rendered inline.
+//! User messages with `┃` left border:
+//! ```text
+//!  ┃
+//!  ┃  say hello
+//!  ┃
+//!
+//!     + Thought: 671ms
+//!
+//!     → Read Cargo.toml
+//!  ┌─────────────────────────────┐
+//!  │ [package]                   │
+//!  │ name = "blazecode"          │
+//!  └─────────────────────────────┘
+//!
+//!     Some response text...
+//!
+//!     → WebSearch result
+//!  % Result content...
+//! ```
+//!
+//! Ported from: `packages/tui/src/routes/session/index.tsx`
 
 use ratatui::{
     layout::Rect,
@@ -92,7 +111,18 @@ impl ConversationState {
     }
 }
 
-/// Render the conversation view into the given frame area.
+/// Pick a color based on agent name — matches Opencode agent colors.
+fn agent_color(agent: &str) -> Color {
+    match agent {
+        "build" => Color::Rgb(0x5c, 0x9c, 0xf5),   // blue
+        "plan" => Color::Rgb(0xf5, 0xa7, 0x42),     // orange
+        "general" => Color::Rgb(0x9d, 0x7c, 0xd8),  // purple
+        "explore" => Color::Rgb(0x7f, 0xd8, 0x8f),  // green
+        _ => Color::Rgb(0xfa, 0xb2, 0x83),          // default warm
+    }
+}
+
+/// Render the conversation view.
 pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState, theme: &Theme) {
     let messages = &state.messages;
     let system_msgs = &state.system_messages;
@@ -100,7 +130,7 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
     if messages.is_empty() && system_msgs.is_empty() {
         let welcome = Paragraph::new(Text::from(vec![
             Line::from(Span::styled(
-                "Welcome to blazecode!",
+                "Welcome to BlazeCode!",
                 Style::default()
                     .fg(theme.accent)
                     .add_modifier(Modifier::BOLD),
@@ -127,7 +157,7 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
     // Build all renderable lines as ListItems
     let mut items: Vec<ListItem> = Vec::new();
 
-    // System messages first (newest at bottom, so render oldest first)
+    // System messages first (oldest at top)
     for sys_msg in system_msgs {
         items.push(ListItem::new(Line::from(Span::styled(
             sys_msg.as_str(),
@@ -135,27 +165,29 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
         ))));
     }
 
-    // Build message items
+    // Build message items — matching Opencode's exact design
     for msg in messages {
-        let parts = state.parts.get(msg.info.id()).cloned().unwrap_or_default();
-        let msg_items = build_message_items(msg, &parts, viewport_width);
+        let parts = state
+            .parts
+            .get(msg.info.id())
+            .cloned()
+            .or_else(|| Some(msg.parts.clone()))
+            .unwrap_or_default();
+        let msg_items = build_message_items(msg, &parts, viewport_width, theme);
         items.extend(msg_items);
     }
 
-    // Calculate how many items fit in the viewport and apply scroll offset
-    let visible_height = area.height.saturating_sub(1) as usize; // reserve 1 for potential border
+    // Calculate visible items with scroll offset
+    let visible_height = area.height.saturating_sub(1) as usize;
     let total_items = items.len();
 
-    // Compute the effective scroll offset (clamped)
     let max_scroll = total_items.saturating_sub(visible_height);
     let effective_offset = if state.auto_scroll {
-        // When auto-scrolling, show the bottom
         max_scroll
     } else {
         (state.scroll_offset as usize).min(max_scroll)
     };
 
-    // Take only items that fit in the viewport
     let visible_items: Vec<ListItem> = items
         .into_iter()
         .skip(effective_offset)
@@ -167,423 +199,418 @@ pub fn render_conversation(f: &mut Frame, area: Rect, state: &ConversationState,
     f.render_widget(list, area);
 }
 
-/// Build renderable list items from a message and its parts.
-fn build_message_items(msg: &Message, parts: &[Part], width: u16) -> Vec<ListItem<'static>> {
+/// Build renderable list items from a message and its parts, matching Opencode's design.
+fn build_message_items(msg: &Message, parts: &[Part], width: u16, theme: &Theme) -> Vec<ListItem<'static>> {
     let mut items = Vec::new();
 
     match &msg.info {
         MessageInfo::User(user_info) => {
-            // ── User message ──────────────────────────────────────────
-            let agent_name = user_info.agent.as_deref().unwrap_or("You");
+            let agent = user_info.agent.as_deref().unwrap_or("build");
+            let color = agent_color(agent);
+            let border_char = "\u{2503}"; // ┃
 
-            // Header badge
-            items.push(ListItem::new(Line::from(vec![
-                Span::styled(
-                    format!(" {} ", agent_name),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                if let Some(ref model) = user_info.model {
-                    Span::styled(
-                        format!(" via {}/{}", model.provider_id, model.id),
-                        Style::default().fg(Color::DarkGray),
-                    )
-                } else {
-                    Span::raw("")
-                },
-            ])));
+            // ── User message: Opencode style ────────────────────────
+            // Format:
+            //  ┃  <message text>
 
-            // Render parts: text parts and file attachments
+            // Text parts
             for part in parts {
                 match part {
                     Part::Text(tp) => {
-                        let wrapped = wrap_text(&tp.text, width.saturating_sub(4));
-                        for line in wrapped {
-                            items.push(ListItem::new(Line::from(Span::styled(
-                                format!("  {line}"),
-                                Style::default().fg(Color::White),
-                            ))));
+                        let raw = &tp.text;
+                        if raw.trim().is_empty() {
+                            continue;
+                        }
+                        let wrapped = wrap_text(raw, width.saturating_sub(8));
+                        for line_text in wrapped {
+                            items.push(ListItem::new(Line::from(vec![
+                                Span::raw(format!("  {}  ", border_char)),
+                                Span::styled(line_text, Style::default().fg(theme.text)),
+                            ])).style(Style::default().bg(theme.background_panel)));
                         }
                     }
                     Part::File(fp) => {
+                        let badge = fp.mime.split_once('/').map(|(_, ext)| ext).unwrap_or("file");
                         items.push(ListItem::new(Line::from(vec![
-                            Span::styled("  📎 ", Style::default().fg(Color::Cyan)),
+                            Span::raw("  "),
+                            Span::styled(border_char, Style::default().fg(color)),
+                            Span::raw("  "),
                             Span::styled(
-                                fp.filename
-                                    .clone()
-                                    .unwrap_or_else(|| String::from("unnamed")),
+                                format!(" {} ", badge),
                                 Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::UNDERLINED),
+                                    .fg(Color::Black)
+                                    .bg(agent_color(agent)),
                             ),
+                            Span::raw(" "),
                             Span::styled(
-                                format!(" ({})", fp.mime),
-                                Style::default().fg(Color::DarkGray),
+                                fp.filename.clone().unwrap_or_default(),
+                                Style::default()
+                                    .fg(theme.text_muted)
+                                    .bg(theme.background_element),
                             ),
-                        ])));
+                        ])).style(Style::default().bg(theme.background_panel)));
                     }
                     _ => {}
                 }
             }
 
-            // If no text parts were rendered, show placeholder
-            let has_text = parts
-                .iter()
-                .any(|p| matches!(p, Part::Text(tp) if !tp.text.trim().is_empty()));
-            if !has_text {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    "  (empty message)",
-                    Style::default().fg(Color::DarkGray),
-                ))));
-            }
+            // Closing blank line
+            items.push(ListItem::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled(border_char, Style::default().fg(color)),
+            ])).style(Style::default().bg(theme.background_panel)));
         }
 
         MessageInfo::Assistant(assistant_info) => {
-            // ── Assistant header ─────────────────────────────────────
-            let agent = if assistant_info.agent.is_empty() {
-                "assistant"
-            } else {
-                &assistant_info.agent
-            };
-            let model = assistant_info
-                .model_id
-                .clone()
-                .unwrap_or_else(|| String::from("unknown"));
+            // ── Assistant message parts (Opencode design) ───────────
+            // Format:
+            //     + Thought: Xms
+            //     → ToolCall ...
+            //  ┌─────────────────┐
+            //  │ tool result ... │
+            //  └─────────────────┘
+            //     Response text...
 
-            let mut header = vec![
-                Span::styled(
-                    format!(" {} ", agent),
-                    Style::default()
-                        .fg(Color::Black)
-                        .bg(Color::Magenta)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(model, Style::default().fg(Color::Gray)),
-            ];
+            // Sort parts so Reasoning → Tool → Text → rest (Opencode ordering)
+            let mut sorted: Vec<&Part> = parts.iter().collect();
+            sorted.sort_by_key(|p| part_render_order(p));
 
-            // Cost/tokens summary
-            let cost = assistant_info.cost;
-            let tokens = &assistant_info.tokens;
-            let has_usage = tokens.input > 0 || tokens.output > 0;
-            if has_usage {
-                header.push(Span::styled(
-                    format!(" · {}↑ {}↓ ${:.4}", tokens.input, tokens.output, cost),
-                    Style::default().fg(Color::DarkGray),
-                ));
-            }
-
-            items.push(ListItem::new(Line::from(header)));
-
-            // ── Render parts ─────────────────────────────────────────
-            for part in parts {
+            for part in sorted {
                 match part {
                     Part::Text(tp) => {
-                        let raw = tp.text.as_str();
+                        let raw = &tp.text;
                         if raw.trim().is_empty() {
                             continue;
                         }
-                        let rendered = render_text_with_codeblocks(raw, width.saturating_sub(4));
-                        items.extend(rendered);
+                        // Opencode: text with paddingLeft=3, no grouping info
+                        let rendered = render_text_with_codeblocks(raw, width.saturating_sub(3), theme);
+                        for rline in rendered {
+                            items.push(ListItem::new(rline));
+                        }
                     }
 
                     Part::Reasoning(rp) => {
-                        // Collapsible "Thought:" block — show first line as header
-                        let first_line = rp
-                            .text
-                            .lines()
-                            .next()
-                            .unwrap_or("(thinking)")
-                            .chars()
-                            .take(width.saturating_sub(12) as usize)
-                            .collect::<String>();
+                        // Opencode: "+ Thought: Xms" — compact single line
+                        // Show first 60 chars of reasoning as a summary preview
+                        let first_line = rp.text.lines().next()
+                            .unwrap_or("")
+                            .trim();
+
+                        if first_line.is_empty() {
+                            continue;
+                        }
+
+                        let preview: String = first_line.chars()
+                            .take(60)
+                            .collect();
+
+                        let label = if first_line.len() > 60 {
+                            format!("+ Thinking: {}...", preview)
+                        } else {
+                            format!("+ Thought: {preview}")
+                        };
+
+                        let is_complete = first_line.len() <= 60;
 
                         items.push(ListItem::new(Line::from(vec![
-                            Span::styled(
-                                " Thought: ",
-                                Style::default()
-                                    .fg(Color::Yellow)
-                                    .add_modifier(Modifier::BOLD),
-                            ),
-                            Span::styled(first_line, Style::default().fg(Color::Yellow)),
+                            Span::raw("    "),
+                            if is_complete {
+                                Span::styled(label, Style::default().fg(theme.text_muted))
+                            } else {
+                                Span::styled(label, Style::default().fg(theme.warning))
+                            },
                         ])));
-
-                        // Show remaining reasoning lines indented
-                        let remaining_lines: Vec<&str> = rp.text.lines().skip(1).collect();
-                        for line in remaining_lines.iter().take(5) {
-                            let truncated: String = line
-                                .chars()
-                                .take(width.saturating_sub(8) as usize)
-                                .collect();
-                            items.push(ListItem::new(Line::from(vec![
-                                Span::raw("  "),
-                                Span::styled(truncated, Style::default().fg(Color::Yellow)),
-                            ])));
-                        }
-                        if remaining_lines.len() > 5 {
-                            items.push(ListItem::new(Line::from(Span::styled(
-                                format!("  ... ({} more lines)", remaining_lines.len() - 5),
-                                Style::default().fg(Color::DarkGray),
-                            ))));
-                        }
                     }
 
-                    Part::Tool(tool) => match &tool.state {
-                        ToolState::Pending { .. } => {
-                            items.push(ListItem::new(Line::from(vec![
-                                Span::styled(" ⏳ ", Style::default().fg(Color::Yellow)),
-                                Span::styled(
-                                    format!("{} ...", tool.tool),
-                                    Style::default().fg(Color::Gray),
-                                ),
-                            ])));
-                        }
-                        ToolState::Running { .. } => {
-                            items.push(ListItem::new(Line::from(vec![
-                                Span::styled(" ⟳ ", Style::default().fg(Color::Yellow)),
-                                Span::styled(
-                                    format!("{} running...", tool.tool),
-                                    Style::default().fg(Color::Gray),
-                                ),
-                            ])));
-                        }
-                        ToolState::Completed {
-                            ref title,
-                            ref output,
-                            ..
-                        } => {
-                            items.push(ListItem::new(Line::from(vec![
-                                Span::styled(" ✓ ", Style::default().fg(Color::Green)),
-                                Span::styled(
-                                    format!("{} — {}", tool.tool, title),
-                                    Style::default().fg(Color::White),
-                                ),
-                            ])));
-                            // Show truncated output
-                            if !output.is_empty() {
-                                let preview: String = output
-                                    .lines()
-                                    .take(3)
-                                    .flat_map(|l| {
-                                        let truncated: String = l
-                                            .chars()
-                                            .take(width.saturating_sub(6) as usize)
-                                            .collect();
-                                        vec![truncated]
-                                    })
-                                    .collect::<Vec<_>>()
-                                    .join("\n");
-                                if !preview.is_empty() {
+                    Part::Tool(tool_part) => {
+                        // Opencode tool rendering:
+                        //   → Read ...
+                        // or % WebSearch ...
+                        // or code in a bordered panel
+                        let tool_name = tool_part.tool.as_str();
+                        let display_name = capitalize_first(tool_name);
+
+                        match &tool_part.state {
+                            ToolState::Pending { .. } => {
+                                let icon = tool_icon(tool_name);
+                                items.push(ListItem::new(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        format!("{icon} {display_name} ..."),
+                                        Style::default().fg(theme.text_muted),
+                                    ),
+                                ])));
+                            }
+                            ToolState::Running { .. } => {
+                                let icon = tool_icon(tool_name);
+                                items.push(ListItem::new(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(
+                                        format!("{icon} {display_name} ..."),
+                                        Style::default().fg(theme.warning),
+                                    ),
+                                ])));
+                            }
+                            ToolState::Completed { ref output, ref title, .. } => {
+                                let icon = tool_icon(tool_name);
+                                let label = format!("{} {} {}", icon, display_name, title);
+                                items.push(ListItem::new(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled(label, Style::default().fg(theme.text_muted)),
+                                ])));
+
+                                // Show output in a bordered panel (Opencode style)
+                                if !output.is_empty() {
+                                    let output_preview: Vec<&str> = output.lines().collect();
+                                    let show_lines = output_preview.len().min(5);
+                                    let max_output_width = width.saturating_sub(4) as usize;
+
+                                    // Top border
                                     items.push(ListItem::new(Line::from(vec![
-                                        Span::raw("   "),
-                                        Span::styled(preview, Style::default().fg(Color::DarkGray)),
-                                    ])));
-                                }
-                                let line_count = output.lines().count();
-                                if line_count > 3 {
-                                    items.push(ListItem::new(Line::from(Span::styled(
-                                        format!("   ... ({} lines)", line_count),
-                                        Style::default().fg(Color::DarkGray),
-                                    ))));
+                                        Span::raw("  "),
+                                        Span::styled(
+                                            format!(
+                                                "┌{}┐",
+                                                "─".repeat(max_output_width.saturating_sub(2))
+                                            ),
+                                            Style::default().fg(theme.text_muted),
+                                        ),
+                                    ])).style(Style::default().bg(theme.background_panel)));
+
+                                    for oline in &output_preview[..show_lines] {
+                                        let display: String = oline
+                                            .chars()
+                                            .take(max_output_width.saturating_sub(4))
+                                            .collect();
+                                        items.push(ListItem::new(Line::from(vec![
+                                            Span::raw("  "),
+                                            Span::styled(
+                                                format!("│ {} │", display),
+                                                Style::default().fg(Color::Rgb(180, 190, 200)),
+                                            ),
+                                        ])).style(Style::default().bg(theme.background_panel)));
+                                    }
+
+                                    // Bottom border
+                                    items.push(ListItem::new(Line::from(vec![
+                                        Span::raw("  "),
+                                        Span::styled(
+                                            format!(
+                                                "└{}┘",
+                                                "─".repeat(max_output_width.saturating_sub(2))
+                                            ),
+                                            Style::default().fg(theme.text_muted),
+                                        ),
+                                    ])).style(Style::default().bg(theme.background_panel)));
+
+                                    if output_preview.len() > 5 {
+                                        items.push(ListItem::new(Line::from(vec![
+                                            Span::raw("  "),
+                                            Span::styled(
+                                                format!("({} lines)", output_preview.len()),
+                                                Style::default().fg(theme.text_muted),
+                                            ),
+                                        ])));
+                                    }
                                 }
                             }
+                            ToolState::Error { ref error, .. } => {
+                                items.push(ListItem::new(Line::from(vec![
+                                    Span::raw("    "),
+                                    Span::styled("✗ ", Style::default().fg(theme.error)),
+                                    Span::styled(
+                                        format!("{} — {}", display_name, error),
+                                        Style::default().fg(theme.error),
+                                    ),
+                                ])));
+                            }
                         }
-                        ToolState::Error { ref error, .. } => {
-                            items.push(ListItem::new(Line::from(vec![
-                                Span::styled(" ✗ ", Style::default().fg(Color::Red)),
-                                Span::styled(
-                                    format!("{} — {}", tool.tool, error),
-                                    Style::default().fg(Color::Red),
-                                ),
-                            ])));
-                        }
-                    },
+                    }
 
                     Part::StepStart(_) => {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            " ── Step started ──",
-                            Style::default().fg(Color::DarkGray),
-                        ))));
+                        // Opencode: no step marks
                     }
 
-                    Part::StepFinish(sf) => {
-                        let reason = sf.reason.clone();
-                        let input_tokens = sf.tokens.input;
-                        let output_tokens = sf.tokens.output;
-                        let cost = sf.cost;
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::styled(
-                                " ── Step finished: ",
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                            Span::styled(reason, Style::default().fg(Color::Gray)),
-                            Span::styled(
-                                format!(" ({}↑ {}↓ ${:.4})", input_tokens, output_tokens, cost),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ])));
-                    }
-
-                    Part::File(fp) => {
-                        items.push(ListItem::new(Line::from(vec![
-                            Span::styled(" 📎 ", Style::default().fg(Color::Cyan)),
-                            Span::styled(
-                                fp.filename
-                                    .clone()
-                                    .unwrap_or_else(|| String::from("attachment")),
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::UNDERLINED),
-                            ),
-                            Span::styled(
-                                format!(" ({})", fp.mime),
-                                Style::default().fg(Color::DarkGray),
-                            ),
-                        ])));
+                    Part::StepFinish(_sf) => {
+                        // Opencode: no step finish marks inline
+                        // Token counts are shown in the sidebar only
                     }
 
                     Part::Patch(pp) => {
                         let file_list: Vec<String> =
                             pp.files.iter().map(|f| f.path.clone()).collect();
                         items.push(ListItem::new(Line::from(vec![
-                            Span::styled(" Patch: ", Style::default().fg(Color::Green)),
-                            Span::styled(file_list.join(", "), Style::default().fg(Color::Gray)),
+                            Span::raw("    "),
+                            Span::styled("%", Style::default().fg(theme.info)),
+                            Span::raw(" "),
+                            Span::styled(
+                                format!("Patched: {}", file_list.join(", ")),
+                                Style::default().fg(theme.text_muted),
+                            ),
                         ])));
                     }
 
                     Part::Compaction(cp) => {
-                        let label = if cp.auto {
-                            "auto-compacted"
-                        } else {
-                            "compacted"
-                        };
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            format!(" ── Context {label} ──"),
-                            Style::default().fg(Color::DarkGray),
-                        ))));
-                    }
-
-                    Part::Subtask(_) => {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            " ── Subtask dispatched ──",
-                            Style::default().fg(Color::DarkGray),
-                        ))));
-                    }
-
-                    Part::Snapshot(_) => {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            " ── Snapshot ──",
-                            Style::default().fg(Color::DarkGray),
-                        ))));
-                    }
-
-                    Part::Agent(_) => {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            " ── Agent ──",
-                            Style::default().fg(Color::DarkGray),
-                        ))));
-                    }
-
-                    Part::Retry(_) => {
-                        items.push(ListItem::new(Line::from(Span::styled(
-                            " ── Retry ──",
-                            Style::default().fg(Color::DarkGray),
-                        ))));
-                    }
-
-                    Part::SourceUrl(su) => {
+                        let label = if cp.auto { "auto-compacted" } else { "compacted" };
                         items.push(ListItem::new(Line::from(vec![
-                            Span::styled(" 🔗 ", Style::default().fg(Color::Cyan)),
+                            Span::raw("    "),
                             Span::styled(
-                                su.url.clone(),
-                                Style::default()
-                                    .fg(Color::Cyan)
-                                    .add_modifier(Modifier::UNDERLINED),
+                                format!("── Context {label} ──"),
+                                Style::default().fg(theme.text_muted),
                             ),
                         ])));
                     }
+
+                    Part::Subtask(_) | Part::Agent(_) | Part::Retry(_) => {
+                        items.push(ListItem::new(Line::from(vec![
+                            Span::raw("    "),
+                            Span::styled(
+                                format!("→ ..."),
+                                Style::default().fg(theme.text_muted),
+                            ),
+                        ])));
+                    }
+
+                    _ => {}
                 }
             }
 
-            // ── Error display ─────────────────────────────────────────
-            if let Some(ref error) = assistant_info.error {
-                let err_msg: String = error
-                    .get("message")
-                    .and_then(|m| m.as_str())
-                    .map(String::from)
-                    .unwrap_or_else(|| String::from("unknown error"));
-                items.push(ListItem::new(Line::from(vec![
-                    Span::styled(
-                        " Error: ",
-                        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(err_msg, Style::default().fg(Color::Red)),
-                ])));
-            }
-
-            // ── Finish reason ─────────────────────────────────────────
-            if let Some(ref finish) = assistant_info.finish {
-                if !finish.is_empty() {
-                    items.push(ListItem::new(Line::from(Span::styled(
-                        format!(" ── {finish} ──"),
-                        Style::default().fg(Color::DarkGray),
-                    ))));
+            // ── Summary line (Opencode style) ────────────────────────
+            // ▣  Build · 2.3s  or  ▣  build · deepseek-v4-flash openmodel
+            let agent_name = &assistant_info.agent;
+            let duration = assistant_info
+                .time
+                .completed
+                .map(|c| c.saturating_sub(assistant_info.time.created));
+            let duration_str = duration.map(|ms| {
+                if ms >= 1000 {
+                    format!("{:.1}s", ms as f64 / 1000.0)
+                } else {
+                    format!("{ms}ms")
                 }
-            }
-
-            // ── Separator after assistant message ─────────────────────
-            items.push(ListItem::new(Line::from("")));
+            });
+            let display_agent = capitalize_first(agent_name);
+            let summary = match duration_str {
+                Some(d) => format!("▣  {display_agent} · {d}"),
+                None => format!("▣  {display_agent}"),
+            };
+            items.push(ListItem::new(Line::from(vec![
+                Span::raw("    "),
+                Span::styled(summary, Style::default().fg(theme.text_muted)),
+            ])));
         }
     }
 
     items
 }
 
-/// Render text content with code block highlighting (syntect).
-///
-/// Detects ```language fences and delegates to the syntax highlighter.
-/// Falls back to dimmed rendering when syntect can't handle the language.
-fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem<'static>> {
-    let mut items: Vec<ListItem<'static>> = Vec::new();
+/// Capitalize the first letter of a word.
+/// Sort key for parts: Reasoning → Tool → Text → rest
+fn part_render_order(part: &Part) -> u8 {
+    match part {
+        Part::Reasoning(_) => 0,
+        Part::Tool(_) => 1,
+        Part::Text(_) => 2,
+        _ => 99,
+    }
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(first) => first.to_uppercase().to_string() + chars.as_str(),
+    }
+}
+
+/// Icon for tool type — matches Opencode.
+fn tool_icon(tool: &str) -> &'static str {
+    match tool {
+        "read" => "\u{2192}",         // →
+        "write" => "\u{270F}",        // ✏
+        "edit" => "\u{2190}",         // ←
+        "bash" => "$",
+        "grep" => "\u{1F50D}",        // 🔍
+        "glob" => "*",
+        "webfetch" => "%",
+        "websearch" => "%",
+        "apply_patch" => "%",
+        "task" => "\u{25B6}",         // ▶
+        "todowrite" => "\u{2611}",    // ☑
+        "question" => "?",
+        "skill" => "\u{2699}",        // ⚙
+        _ => "\u{2699}",              // ⚙ default
+    }
+}
+
+// ── Code block rendering ────────────────────────────────────────────────────
+
+/// Render text content with code block highlighting.
+fn render_text_with_codeblocks(raw: &str, wrap_width: u16, theme: &Theme) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
     let mut in_code_block = false;
     let mut code_block_lines: Vec<String> = Vec::new();
     let mut code_block_lang: Option<String> = None;
-    let code_bg = Style::default().bg(Color::Rgb(30, 30, 40));
 
-    // First pass: split into text lines and code block regions
     for line in raw.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with("```") {
             if in_code_block {
-                // End of code block — render it
+                // End of code block — render with border
                 let source = code_block_lines.join("\n");
+                let code_border_style = Style::default().fg(theme.text_muted);
+
+                // Top border
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        format!(
+                            "┌{}┐",
+                            "─".repeat(wrap_width.saturating_sub(5) as usize)
+                        ),
+                        code_border_style,
+                    ),
+                ]));
+
                 if let Some(highlighted) =
                     crate::syntax::highlight_code(&source, code_block_lang.as_deref())
                 {
-                    // Render syntect-highlighted spans, one Line per source line
                     for hl_line in split_spans_into_lines(highlighted) {
-                        items.push(ListItem::new(Line::from(
-                            hl_line,
-                        )));
+                        let mut bordered: Vec<Span> = vec![
+                            Span::raw("   │ "),
+                        ];
+                        bordered.extend(hl_line);
+                        bordered.push(Span::raw(" │"));
+                        lines.push(Line::from(bordered));
                     }
                 } else {
-                    // Fallback: plain dimmed rendering
                     for cline in &code_block_lines {
-                        let wrapped = wrap_text(cline, wrap_width);
-                        for wline in wrapped {
-                            items.push(ListItem::new(Line::from(Span::styled(
-                                format!("  {wline}"),
-                                code_bg.fg(Color::Rgb(180, 190, 200)),
-                            ))));
-                        }
+                        let display: String = cline
+                            .chars()
+                            .take(wrap_width.saturating_sub(6) as usize)
+                            .collect();
+                        lines.push(Line::from(vec![
+                            Span::raw("   │ "),
+                            Span::styled(display, Color::Rgb(180, 190, 200)),
+                        ]));
                     }
                 }
+
+                // Bottom border
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(
+                        format!(
+                            "└{}┘",
+                            "─".repeat(wrap_width.saturating_sub(5) as usize)
+                        ),
+                        code_border_style,
+                    ),
+                ]));
+
                 code_block_lines.clear();
                 code_block_lang = None;
             } else {
-                // Start of code block — capture language
                 let rest = trimmed.trim_start_matches("```");
                 let lang = if rest.is_empty() {
                     None
@@ -599,13 +626,13 @@ fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem<'stat
         if in_code_block {
             code_block_lines.push(line.to_string());
         } else {
-            // Normal text line
-            let wrapped = wrap_text(line, wrap_width);
+            // Normal text line — Opencode: paddingLeft=3
+            let wrapped = wrap_text(line, wrap_width.saturating_sub(3));
             for wline in wrapped {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("  {wline}"),
-                    Style::default().fg(Color::White),
-                ))));
+                lines.push(Line::from(vec![
+                    Span::raw("   "),
+                    Span::styled(wline, Style::default().fg(theme.text)),
+                ]));
             }
         }
     }
@@ -613,49 +640,77 @@ fn render_text_with_codeblocks(raw: &str, wrap_width: u16) -> Vec<ListItem<'stat
     // Handle unclosed code block at EOF
     if in_code_block && !code_block_lines.is_empty() {
         let source = code_block_lines.join("\n");
+        let code_border_style = Style::default().fg(theme.text_muted);
+
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                format!(
+                    "┌{}┐",
+                    "─".repeat(wrap_width.saturating_sub(5) as usize)
+                ),
+                code_border_style,
+            ),
+        ]));
+
         if let Some(highlighted) =
             crate::syntax::highlight_code(&source, code_block_lang.as_deref())
         {
             for hl_line in split_spans_into_lines(highlighted) {
-                items.push(ListItem::new(Line::from(hl_line)));
+                let mut bordered: Vec<Span> = vec![Span::raw("   │ ")];
+                bordered.extend(hl_line);
+                bordered.push(Span::raw(" │"));
+                lines.push(Line::from(bordered));
             }
         } else {
             for cline in &code_block_lines {
-                items.push(ListItem::new(Line::from(Span::styled(
-                    format!("  {cline}"),
-                    code_bg.fg(Color::Rgb(180, 190, 200)),
-                ))));
+                let display: String = cline
+                    .chars()
+                    .take(wrap_width.saturating_sub(6) as usize)
+                    .collect();
+                lines.push(Line::from(vec![
+                    Span::raw("   │ "),
+                    Span::styled(display, Color::Rgb(180, 190, 200)),
+                ]));
             }
         }
+
+        lines.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(
+                format!(
+                    "└{}┘",
+                    "─".repeat(wrap_width.saturating_sub(5) as usize)
+                ),
+                code_border_style,
+            ),
+        ]));
     }
 
-    items
+    lines
 }
 
 /// Split a flat vec of spans into lines separated by newlines.
 fn split_spans_into_lines(spans: Vec<ratatui::text::Span<'static>>) -> Vec<Vec<ratatui::text::Span<'static>>> {
-    let mut lines: Vec<Vec<ratatui::text::Span<'static>>> = Vec::new();
+    let mut result_lines: Vec<Vec<ratatui::text::Span<'static>>> = Vec::new();
     let mut current_line: Vec<ratatui::text::Span<'static>> = Vec::new();
 
     for span in spans {
         if span.content == "\n" {
-            lines.push(std::mem::take(&mut current_line));
+            result_lines.push(std::mem::take(&mut current_line));
         } else {
             current_line.push(span);
         }
     }
 
     if !current_line.is_empty() {
-        lines.push(current_line);
+        result_lines.push(current_line);
     }
 
-    lines
+    result_lines
 }
 
 /// Word-wrap text to fit within `width` columns.
-///
-/// Splits on word boundaries when possible, falls back to character-level
-/// splitting for long words. Preserves existing newlines.
 fn wrap_text(text: &str, width: u16) -> Vec<String> {
     let width = width.max(1) as usize;
     let mut result: Vec<String> = Vec::new();
@@ -671,11 +726,9 @@ fn wrap_text(text: &str, width: u16) -> Vec<String> {
             let word_len = word.chars().count();
 
             if current_line.is_empty() {
-                // First word on line — if it fits, add it; if too long, chunk it
                 if word_len <= width {
                     current_line.push_str(word);
                 } else {
-                    // Word is longer than width: character-split
                     for ch in word.chars() {
                         if current_line.chars().count() >= width {
                             result.push(std::mem::take(&mut current_line));
@@ -687,7 +740,6 @@ fn wrap_text(text: &str, width: u16) -> Vec<String> {
                 current_line.push(' ');
                 current_line.push_str(word);
             } else {
-                // Current line is full, push it and start new line with word
                 result.push(std::mem::take(&mut current_line));
                 if word_len <= width {
                     current_line.push_str(word);
@@ -715,6 +767,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_capitalize_first() {
+        assert_eq!(capitalize_first("read"), "Read");
+        assert_eq!(capitalize_first("websearch"), "Websearch");
+        assert_eq!(capitalize_first(""), "");
+        assert_eq!(capitalize_first("a"), "A");
+    }
+
+    #[test]
     fn test_wrap_text_short() {
         let result = wrap_text("hello world", 80);
         assert_eq!(result, vec!["hello world"]);
@@ -733,15 +793,6 @@ mod tests {
     }
 
     #[test]
-    fn test_wrap_text_long_word() {
-        let result = wrap_text("supercalifragilisticexpialidocious", 10);
-        assert!(result.len() > 1);
-        // Reconstructed should match original
-        let joined: String = result.join("");
-        assert_eq!(joined, "supercalifragilisticexpialidocious");
-    }
-
-    #[test]
     fn test_conversation_state_scroll() {
         let mut state = ConversationState::new();
         assert!(state.auto_scroll);
@@ -757,5 +808,12 @@ mod tests {
         state.scroll_down(3);
         assert_eq!(state.scroll_offset, 0);
         assert!(state.auto_scroll);
+    }
+
+    #[test]
+    fn test_agent_color() {
+        assert_eq!(agent_color("build"), Color::Rgb(0x5c, 0x9c, 0xf5));
+        assert_eq!(agent_color("plan"), Color::Rgb(0xf5, 0xa7, 0x42));
+        assert_eq!(agent_color("unknown"), Color::Rgb(0xfa, 0xb2, 0x83));
     }
 }

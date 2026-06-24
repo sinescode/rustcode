@@ -1,0 +1,199 @@
+[2026-06-23 18:20:03] ==============================================
+[2026-06-23 18:20:03]   BLAZECODE CI LOOP STARTED
+[2026-06-23 18:20:03]   Tue Jun 23 18:20:03 UTC 2026
+[2026-06-23 18:20:03]   PID: 3004220
+[2026-06-23 18:20:03] ==============================================
+[2026-06-23 18:20:03] 
+[2026-06-23 18:20:03] ━━━━━ Iteration #1 ━━━━━
+[2026-06-23 18:20:03] → cargo build --workspace --all-targets...
+[2026-06-23 18:20:03]   BUILD FAILED!
+[2026-06-23 18:20:03] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:20:03]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:20:03] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:20:03] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:20:03] → cargo test --workspace...
+[2026-06-23 18:20:03] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:20:03]   Failed tests:  out of 
+[2026-06-23 18:20:03] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:20:03]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:20:03] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:20:03] → Detailed fix report written
+[2026-06-23 18:20:34] 
+[2026-06-23 18:20:34] ━━━━━ Iteration #2 ━━━━━
+[2026-06-23 18:20:34] → cargo build --workspace --all-targets...
+[2026-06-23 18:20:34]   BUILD FAILED!
+[2026-06-23 18:20:34] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:20:34]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:20:34] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:20:34] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:20:34] → cargo test --workspace...
+[2026-06-23 18:20:34] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:20:34]   Failed tests:  out of 
+[2026-06-23 18:20:34] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:20:34]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:20:34] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:20:34] → Detailed fix report written
+[2026-06-23 18:21:04] 
+[2026-06-23 18:21:04] ━━━━━ Iteration #3 ━━━━━
+[2026-06-23 18:21:04] → cargo build --workspace --all-targets...
+[2026-06-23 18:21:04]   BUILD FAILED!
+[2026-06-23 18:21:04] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:21:04]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:21:04] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:21:04] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:21:04] → cargo test --workspace...
+[2026-06-23 18:21:04] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:21:04]   Failed tests:  out of 
+[2026-06-23 18:21:04] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:21:04]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:21:04] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:21:04] → Detailed fix report written
+[2026-06-23 18:21:34] 
+[2026-06-23 18:21:34] ━━━━━ Iteration #4 ━━━━━
+[2026-06-23 18:21:34] → cargo build --workspace --all-targets...
+[2026-06-23 18:21:34]   BUILD FAILED!
+[2026-06-23 18:21:34] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:21:34]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:21:34] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:21:34] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:21:34] → cargo test --workspace...
+[2026-06-23 18:21:34] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:21:34]   Failed tests:  out of 
+[2026-06-23 18:21:34] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:21:34]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:21:34] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:21:34] → Detailed fix report written
+[2026-06-23 18:22:04] 
+[2026-06-23 18:22:04] ━━━━━ Iteration #5 ━━━━━
+[2026-06-23 18:22:04] → cargo build --workspace --all-targets...
+[2026-06-23 18:22:04]   BUILD FAILED!
+[2026-06-23 18:22:04] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:22:04]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:22:04] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:22:04] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:22:04] → cargo test --workspace...
+[2026-06-23 18:22:04] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:22:04]   Failed tests:  out of 
+[2026-06-23 18:22:04] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:22:04]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:22:04] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:22:05] → Detailed fix report written
+[2026-06-23 18:22:35] 
+[2026-06-23 18:22:35] ━━━━━ Iteration #6 ━━━━━
+[2026-06-23 18:22:35] → cargo build --workspace --all-targets...
+[2026-06-23 18:22:35]   BUILD FAILED!
+[2026-06-23 18:22:35] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:22:35]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:22:35] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:22:35] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:22:35] → cargo test --workspace...
+[2026-06-23 18:22:35] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:22:35]   Failed tests:  out of 
+[2026-06-23 18:22:35] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:22:35]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:22:35] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:22:35] → Detailed fix report written
+[2026-06-23 18:23:05] 
+[2026-06-23 18:23:05] ━━━━━ Iteration #7 ━━━━━
+[2026-06-23 18:23:05] → cargo build --workspace --all-targets...
+[2026-06-23 18:23:05]   BUILD FAILED!
+[2026-06-23 18:23:05] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:23:05]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:23:05] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:23:05] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:23:05] → cargo test --workspace...
+[2026-06-23 18:23:05] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:23:05]   Failed tests:  out of 
+[2026-06-23 18:23:05] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:23:05]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:23:05] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:23:05] → Detailed fix report written
+[2026-06-23 18:23:35] 
+[2026-06-23 18:23:35] ━━━━━ Iteration #8 ━━━━━
+[2026-06-23 18:23:35] → cargo build --workspace --all-targets...
+[2026-06-23 18:23:35]   BUILD FAILED!
+[2026-06-23 18:23:35] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:23:35]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:23:35] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:23:35] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:23:35] → cargo test --workspace...
+[2026-06-23 18:23:35] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:23:35]   Failed tests:  out of 
+[2026-06-23 18:23:35] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:23:35]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:23:35] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:23:35] → Detailed fix report written
+[2026-06-23 18:24:05] 
+[2026-06-23 18:24:05] ━━━━━ Iteration #9 ━━━━━
+[2026-06-23 18:24:05] → cargo build --workspace --all-targets...
+[2026-06-23 18:24:05]   BUILD FAILED!
+[2026-06-23 18:24:06] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:24:06]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:24:06] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:24:06] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:24:06] → cargo test --workspace...
+[2026-06-23 18:24:06] ERROR:   ❌ TESTS FAILED!
+[2026-06-23 18:24:06]   Failed tests:  out of 
+[2026-06-23 18:24:06] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 81: cargo: command not found
+[2026-06-23 18:24:06]   cargo fix completed with warnings (rc=127)
+[2026-06-23 18:24:06] ERROR: Tests still failing after auto-fix.
+[2026-06-23 18:24:06] → Detailed fix report written
+[2026-06-23 18:24:29] ==============================================
+[2026-06-23 18:24:29]   BLAZECODE CI LOOP STARTED
+[2026-06-23 18:24:29]   Tue Jun 23 18:24:29 UTC 2026
+[2026-06-23 18:24:29]   PID: 3009399
+[2026-06-23 18:24:29] ==============================================
+[2026-06-23 18:24:29] 
+[2026-06-23 18:24:29] ━━━━━ Iteration #1 ━━━━━
+[2026-06-23 18:24:29] → cargo build --workspace --all-targets...
+[2026-06-23 18:24:29]   BUILD FAILED! Trying auto-fix...
+[2026-06-23 18:24:29] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 55: cargo: command not found
+[2026-06-23 18:24:29]   cargo fix rc=127
+[2026-06-23 18:24:29] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:24:29] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:24:59] 
+[2026-06-23 18:24:59] ━━━━━ Iteration #2 ━━━━━
+[2026-06-23 18:24:59] → cargo build --workspace --all-targets...
+[2026-06-23 18:24:59]   BUILD FAILED! Trying auto-fix...
+[2026-06-23 18:24:59] → Attempting auto-fix with cargo fix...
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 55: cargo: command not found
+[2026-06-23 18:24:59]   cargo fix rc=127
+[2026-06-23 18:24:59] ERROR: Build still failing after auto-fix.
+[2026-06-23 18:24:59] → Fix report written to /root/opencodesport/blazecode/logs/fix-report.json
+[2026-06-23 18:25:17] ==============================================
+[2026-06-23 18:25:17]   BLAZECODE CI LOOP STARTED
+[2026-06-23 18:25:17]   Tue Jun 23 18:25:17 UTC 2026
+[2026-06-23 18:25:17]   PID: 3009670
+[2026-06-23 18:25:17] ==============================================
+[2026-06-23 18:25:17] 
+[2026-06-23 18:25:17] ━━━━━ Iteration #1 ━━━━━
+[2026-06-23 18:25:17] → cargo build --workspace --all-targets...
+[2026-06-23 18:25:23] → cargo test --workspace...
+[2026-06-24 01:30:48] ==============================================
+[2026-06-24 01:30:48]   BLAZECODE CI LOOP STARTED
+[2026-06-24 01:30:48]   Wed Jun 24 01:30:48 UTC 2026
+[2026-06-24 01:30:48]   PID: 3025588
+[2026-06-24 01:30:48] ==============================================
+[2026-06-24 01:30:48] 
+[2026-06-24 01:30:48] ━━━━━ Iteration #1 ━━━━━
+[2026-06-24 01:30:48] → cargo build --workspace --all-targets...
+[2026-06-24 01:33:00] → cargo test --workspace...

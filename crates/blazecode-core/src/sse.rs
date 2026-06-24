@@ -338,6 +338,7 @@ mod tests {
             current_retry: None,
             data_size: 0,
             done: false,
+            pending: VecDeque::new(),
         };
 
         let events: Vec<SseEvent> =
@@ -365,6 +366,7 @@ mod tests {
             current_retry: None,
             data_size: 0,
             done: false,
+            pending: VecDeque::new(),
         };
 
         let events: Vec<SseEvent> =
@@ -393,6 +395,7 @@ mod tests {
             current_retry: None,
             data_size: 0,
             done: false,
+            pending: VecDeque::new(),
         };
 
         let events: Vec<SseEvent> =

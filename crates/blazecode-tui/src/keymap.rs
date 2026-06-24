@@ -197,6 +197,13 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::Quit),
 
+        // ── Ctrl+Q → quit (alternative, Opencode match)
+        KeyEvent {
+            code: KeyCode::Char('q'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::Quit),
+
         // ── Escape → interrupt ────────────────────────────────────
         KeyEvent {
             code: KeyCode::Esc, ..
@@ -215,10 +222,16 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             modifiers: KeyModifiers::CONTROL,
             ..
         } if false => None, // Ctrl+H is used for backspace in terminals
-        // Help is accessed via leader+h or F1
+        // Help via F1, leader+h, or Ctrl+/
         KeyEvent {
             code: KeyCode::F(1),
             modifiers: KeyModifiers::NONE,
+            ..
+        } => Some(TuiAction::Help),
+        // Ctrl+/ as alternative help shortcut (Opencode match)
+        KeyEvent {
+            code: KeyCode::Char('/'),
+            modifiers: KeyModifiers::CONTROL,
             ..
         } => Some(TuiAction::Help),
 
@@ -235,6 +248,21 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             modifiers: KeyModifiers::CONTROL,
             ..
         } => Some(TuiAction::SessionBackground),
+
+        // ── Model/Provider shortcuts (Opencode match) ─────────────
+        // Ctrl+L → cycle model
+        KeyEvent {
+            code: KeyCode::Char('l'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::ModelCycleRecent),
+
+        // Ctrl+O → open in editor
+        KeyEvent {
+            code: KeyCode::Char('o'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::OpenInEditor),
 
         // ── Agent cycle ───────────────────────────────────────────
         KeyEvent {
@@ -355,19 +383,8 @@ pub fn key_to_action(key: KeyEvent) -> Option<TuiAction> {
             ..
         } => Some(TuiAction::ToggleSidebar),
 
-        // ── Diff viewer ───────────────────────────────────────────
-        KeyEvent {
-            code: KeyCode::Char('o'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } => Some(TuiAction::DiffView),
-
-        // ── Session list dialog ────────────────────────────────────
-        KeyEvent {
-            code: KeyCode::Char('l'),
-            modifiers: KeyModifiers::CONTROL,
-            ..
-        } => Some(TuiAction::SessionListDialog),
+        // Diff viewer is accessed via the command palette (leader+p)
+        // Session list is accessed via leader+l (Opencode match)
 
         _ => None,
     }
@@ -551,6 +568,12 @@ pub fn leader_chord_to_action(chord: KeyEvent) -> Option<TuiAction> {
             modifiers: KeyModifiers::SHIFT,
             ..
         } => Some(TuiAction::Help),
+        // Ctrl+/ as alternative help shortcut (Opencode match)
+        KeyEvent {
+            code: KeyCode::Char('/'),
+            modifiers: KeyModifiers::CONTROL,
+            ..
+        } => Some(TuiAction::Help),
 
         // <leader> + j → toggle animations
         KeyEvent {
@@ -689,6 +712,27 @@ pub fn all_bindings() -> Vec<KeyBinding> {
         KeyBinding {
             key: KeyEvent::new(KeyCode::Char('z'), KeyModifiers::CONTROL),
             description: "Suspend",
+            group: "App",
+        },
+        // Model/Provider shortcuts
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL),
+            description: "Cycle recent model",
+            group: "Agent",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+            description: "Open in editor",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('/'), KeyModifiers::CONTROL),
+            description: "Help",
+            group: "App",
+        },
+        KeyBinding {
+            key: KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            description: "Quit",
             group: "App",
         },
         // Session

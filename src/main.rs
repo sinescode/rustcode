@@ -1554,7 +1554,11 @@ async fn cmd_run(args: &RunArgs, config: &blazecode_core::config::Info) -> i32 {
     }
 
     // ── resolve model spec ──────────────────────────────────────────
-    let (provider_filter, model_filter) = args.model.as_deref().and_then(parse_model_spec).unzip();
+    let (provider_filter, model_filter) = args.model
+        .as_deref()
+        .or_else(|| config.model.as_deref())
+        .and_then(parse_model_spec)
+        .unzip();
 
     // ── auto-detect providers via shared runtime ────────────────────
     let ctx = match blazecode_core::runtime::initialize_runtime_async(config).await {

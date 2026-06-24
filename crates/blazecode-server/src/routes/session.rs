@@ -641,7 +641,7 @@ async fn post_prompt(
 ) -> impl IntoResponse {
     // Resolve the model — default to Anthropic's claude-sonnet-4-6
     let model_selection = payload.model.unwrap_or_else(|| ModelSelectionPayload {
-        id: "claude-sonnet-4-6".into(),
+        id: "deepseek-v4-flash".into(),
         provider_id: "anthropic".into(),
         variant: None,
     });
@@ -1169,7 +1169,7 @@ async fn prompt_async(
     tokio::spawn(async move {
         info!("Async prompt started for session {sid}");
         let model_selection = mdl.unwrap_or_else(|| ModelSelectionPayload {
-            id: "claude-sonnet-4-6".into(),
+            id: "deepseek-v4-flash".into(),
             provider_id: "anthropic".into(),
             variant: None,
         });

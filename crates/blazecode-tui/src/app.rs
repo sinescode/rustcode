@@ -479,6 +479,7 @@ impl TuiApp {
             self.status.model_name = Some(model.clone());
         }
         self.input.agent_name = self.current_agent.clone();
+        self.input.session_active = self.session_id.is_some();
 
         // ── Channel for crossterm events ──────────────────────────
         let (event_tx, mut event_rx) =
@@ -1278,12 +1279,11 @@ impl TuiApp {
                 {
                     msg.parts.push(tool_part);
                 }
-                self.conversation
-                    .add_system_message(format!("Tool call: {name}"));
+                // Opencode doesn't show tool call system messages
             }
 
             LlmEvent::ToolResult {
-                id, name, result, ..
+                id, name, result: tool_result_val, ..
             } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 if let Some(msg) = self
@@ -1296,11 +1296,19 @@ impl TuiApp {
                     for part in &mut msg.parts {
                         if let Part::Tool(ref mut tp) = part {
                             if tp.call_id == id {
-                                let output = result
-                                    .as_str()
+                                // Unwrap {"result": <text>} wrapper from session_runner
+                                let output = tool_result_val
+                                    .get("result")
+                                    .and_then(|r| r.as_str())
                                     .map(|s| s.to_string())
-                                    .unwrap_or_else(|| result.to_string());
-                                let title = result
+                                    .or_else(|| {
+                                        tool_result_val.as_str().map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| {
+                                        serde_json::to_string_pretty(&tool_result_val)
+                                            .unwrap_or_else(|_| tool_result_val.to_string())
+                                    });
+                                let title = tool_result_val
                                     .get("title")
                                     .and_then(|t| t.as_str())
                                     .unwrap_or(&name)
@@ -1424,6 +1432,7 @@ impl TuiApp {
                         info.finish = Some(format!("{reason:?}"));
                         info.time.completed = Some(now);
                         if let Some(ref u) = usage {
+                            let total = u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);
                             info.tokens = session::TokenUsage {
                                 input: u.input_tokens.unwrap_or(0),
                                 output: u.output_tokens.unwrap_or(0),
@@ -1433,6 +1442,8 @@ impl TuiApp {
                                     write: u.cache_write_input_tokens.unwrap_or(0),
                                 },
                             };
+                            self.input.token_count = Some(total);
+                            self.status.token_count = Some(total);
                         }
                     }
                 }
@@ -1776,6 +1787,14 @@ impl TuiApp {
     fn render(&mut self, f: &mut Frame) {
         // Advance spinner frame
         self.spin_frame = self.spin_frame.wrapping_add(1);
+        // Sync input state from app state
+        self.input.model_name = self.status.model_name.clone();
+        self.input.provider_name = self.status.provider_name.clone();
+        self.input.is_streaming = self.is_streaming;
+        self.input.session_active = self.session_id.is_some();
+        self.input.agent_name = self.current_agent.clone();
+        self.input.token_count = self.status.token_count;
+        self.input.cost = self.status.cost;
 
         // Detect session loading changes
         let sid = self.session_id.as_ref().map(|s| s.clone());
@@ -1828,18 +1847,20 @@ impl TuiApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(4),
                 Constraint::Length(1),
             ])
             .split(main_area);
 
-        // Home screen vs conversation
+        // Opencode-style layout: input bar is ALWAYS visible
+        // Home screen → content in chunks[0], input in chunks[1], status in chunks[2]
+        // Session view → conversation in chunks[0], input in chunks[1], status in chunks[2]
         if self.loading_session {
             self.render_loading_screen(f, area);
         } else if self.session_id.is_none() {
             crate::home_screen::render_home_screen(
                 f,
-                area,
+                chunks[0],
                 self.theme.current(),
                 &self.crate_version,
                 &self.recent_models,
@@ -1848,13 +1869,14 @@ impl TuiApp {
                 self.status.provider_name.as_deref(),
                 self.status.model_name.as_deref(),
             );
-            // Still render status line at bottom
-            render_status(f, chunks[2], &self.status, self.theme.current());
         } else {
             render_conversation(f, chunks[0], &self.conversation, self.theme.current());
-            render_input(f, chunks[1], &self.input, self.theme.current());
-            render_status(f, chunks[2], &self.status, self.theme.current());
         }
+
+        // Always render input area (Opencode style)
+        render_input(f, chunks[1], &self.input, self.theme.current());
+        // Always render status line
+        render_status(f, chunks[2], &self.status, self.theme.current());
 
         // Update terminal title
         self.update_terminal_title();

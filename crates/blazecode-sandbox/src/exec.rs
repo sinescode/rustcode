@@ -283,7 +283,7 @@ pub async fn run(
                 result = stdout.read_buf(&mut stdout_buf) => {
                     match result {
                         Ok(0) => break,
-                        Ok(n) => {
+                        Ok(_n) => {
                             if stdout_buf.len() > max_out {
                                 stdout_truncated = true;
                                 stdout_buf.truncate(max_out);
@@ -307,7 +307,7 @@ pub async fn run(
                 } => {
                     match result {
                         Ok(0) => {}
-                        Ok(n) => {
+                        Ok(_n) => {
                             if stderr_buf.len() > max_err {
                                 stderr_truncated = true;
                                 stderr_buf.truncate(max_err);
@@ -367,7 +367,7 @@ pub async fn run_stream(
     policy.validate()?;
 
     let (tx, rx) = tokio::sync::mpsc::channel(128);
-    let policy = policy.clone();
+    let _policy = policy.clone();
     let spec = spec.clone();
 
     tokio::spawn(async move {

@@ -1241,7 +1241,18 @@ impl SessionRunner {
                             tool_name: tc.name.clone(),
                             output: serde_json::json!({"result": exec_result.output}),
                             is_error: false,
-                        });
+                        });                        {
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(vec![LlmEvent::ToolResult {
+                                    id: tc.call_id.clone(),
+                                    name: tc.name.clone(),
+                                    result: serde_json::json!({"result": exec_result.output}),
+                                    output: None,
+                                    provider_executed: None,
+                                    provider_metadata: None,
+                                }]);
+                            }
+                        }
                     }
                     Err(e) => {
                         let err_msg = e.to_string();
@@ -1256,7 +1267,18 @@ impl SessionRunner {
                             tool_name: tc.name.clone(),
                             output: serde_json::json!({"error": err_msg}),
                             is_error: true,
-                        });
+                        });                        {
+                            if let Some(ref tx) = event_tx {
+                                let _ = tx.send(vec![LlmEvent::ToolResult {
+                                    id: tc.call_id.clone(),
+                                    name: tc.name.clone(),
+                                    result: serde_json::json!({"error": err_msg}),
+                                    output: None,
+                                    provider_executed: None,
+                                    provider_metadata: None,
+                                }]);
+                            }
+                        }
                     }
                 }
             }
