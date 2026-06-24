@@ -1,0 +1,63 @@
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:20:03] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:20:03] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:20:34] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:20:34] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:21:04] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:21:04] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:21:34] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:21:34] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:22:04] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:22:04] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:22:35] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:22:35] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:23:05] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:23:05] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:23:35] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:23:35] Exit code: 127
+─────────────────────────────────────────────────────────────────
+[2026-06-23 18:24:05] Starting: cargo-build
+Command: cargo build --workspace --all-targets 2>&1
+
+/root/opencodesport/blazecode/scripts/ci-loop.sh: line 68: cargo: command not found
+
+[2026-06-23 18:24:05] Exit code: 127

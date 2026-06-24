@@ -144,11 +144,11 @@ pub struct Info {
     pub autoupdate: Option<AutoUpdate>,
 
     /// Providers to disable
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "disabledProviders")]
     pub disabled_providers: Vec<String>,
 
     /// When set, ONLY these providers are enabled
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty", rename = "enabledProviders")]
     pub enabled_providers: Vec<String>,
 
     /// Default model in `provider/model` format

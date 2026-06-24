@@ -1,53 +1,34 @@
-//! Status line — displays busy/idle/retry state, LSP/MCP counts, directory.
+//! Status line — footer bar with directory, MCP status, and version.
 //!
-//! Ported from: `packages/tui/src/routes/session/footer.tsx`
+//! Ported from: `packages/tui/src/feature-plugins/home/footer.tsx`
 //!
-//! ## Status indicators
+//! ## Visual Design (Opencode Match)
 //!
-//! | State | Display |
-//! |-------|---------|
-//! | idle  | `• idle` in green |
-//! | busy  | `⟳ busy` in yellow with spinner |
-//! | retry | `△ retry (attempt N)` in red |
-//!
-//! Additional indicators:
-//! - LSP count (e.g. `• 2 LSP`)
-//! - MCP count (e.g. `⊙ 3 MCP`), red if any failed
-//! - Permission count (e.g. `△ 1 Permission`), warning color
-//! - Working directory + git branch
-//! - Provider + model name + token count + cost
+//! ```text
+//! ~/.openclaw/workspace:master  ⊙ 0 MCP  /status  ←→  0.3.0
+//! ```
 
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Rect},
     style::{Color, Style},
     text::{Line, Span},
     widgets::Paragraph,
     Frame,
 };
-use blazecode_core::format::{format_cost, format_tokens};
-use blazecode_core::session::SessionStatus;
-
 use crate::theme::Theme;
+use blazecode_core::session::SessionStatus;
 
 /// State for the status line.
 #[derive(Debug, Default, Clone)]
 pub struct StatusState {
-    /// Current session status.
-    pub session_status: Option<SessionStatus>,
-    /// Whether connected to a provider.
-    pub connected: bool,
-    /// Number of active LSP servers.
-    pub lsp_count: usize,
-    /// Number of connected MCP servers.
-    pub mcp_count: usize,
-    /// Whether any MCP server has failed.
-    pub mcp_error: bool,
-    /// Number of pending permissions.
-    pub permission_count: usize,
     /// Working directory.
     pub directory: String,
     /// Git branch name, if in a repo.
     pub git_branch: Option<String>,
+    /// Number of connected MCP servers.
+    pub mcp_count: usize,
+    /// Whether any MCP server has failed.
+    pub mcp_error: bool,
     /// Current provider name.
     pub provider_name: Option<String>,
     /// Current model name.
@@ -56,8 +37,16 @@ pub struct StatusState {
     pub token_count: Option<u64>,
     /// Total cost in USD.
     pub cost: f64,
-    /// Whether to show the "welcome" message.
+    /// Whether connected to a provider.
+    pub connected: bool,
+    /// Whether to show a welcome message.
     pub show_welcome: bool,
+    /// Number of pending permission requests.
+    pub permission_count: usize,
+    /// Number of connected LSP servers.
+    pub lsp_count: usize,
+    /// Current session status.
+    pub session_status: Option<SessionStatus>,
 }
 
 impl StatusState {
@@ -66,210 +55,99 @@ impl StatusState {
             directory: std::env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
                 .unwrap_or_else(|_| "/".to_string()),
-            connected: false,
-            show_welcome: true,
             ..Default::default()
         }
     }
 }
 
-/// Render the status line at the bottom of the screen.
-///
-/// Three-column layout:
-/// - Left: directory + git branch
-/// - Center: session status indicator
-/// - Right: provider/model + tokens + cost + permission badge
+/// Render the status line — three zones: directory:branch, MCP, version
 pub fn render_status(f: &mut Frame, area: Rect, state: &StatusState, theme: &Theme) {
     if area.width < 20 {
-        // Too narrow for a meaningful status line
         return;
     }
 
-    // ── Left column: directory + git branch ─────────────────────────────
-    let mut left_spans: Vec<Span> = Vec::new();
-
-    // Directory (truncated to fit ~40% of width)
+    // ── Left: directory + git branch ─────────────────────────────────
     let max_dir_len = (area.width as usize / 3).max(10);
-    let dir_display = if state.directory.len() > max_dir_len {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if !home.is_empty() && state.directory.starts_with(&home) {
-            format!(
-                "~/{}",
-                &state.directory[home.len()..].trim_start_matches('/')
-            )
-        } else {
-            state.directory.clone()
-        }
-    } else {
-        state.directory.clone()
-    };
-    let dir_display = if dir_display.len() > max_dir_len {
-        format!(
-            "...{}",
-            &dir_display[dir_display.len().saturating_sub(max_dir_len - 3)..]
-        )
-    } else {
-        dir_display
-    };
+    let dir_display = abbreviate_home(&state.directory, max_dir_len);
 
+    let mut left_spans: Vec<Span> = Vec::new();
     left_spans.push(Span::styled(&dir_display, Style::default().fg(theme.text_muted)));
 
-    // Git branch
     if let Some(ref branch) = state.git_branch {
-        left_spans.push(Span::raw(" "));
-        left_spans.push(Span::styled(
-            format!("({branch})"),
-            Style::default().fg(theme.accent),
-        ));
+        left_spans.push(Span::styled(":", Style::default().fg(theme.text_muted)));
+        left_spans.push(Span::styled(branch.clone(), Style::default().fg(theme.text_muted)));
     }
 
-    let left_line = Line::from(left_spans);
-
-    // ── Center column: session status ──────────────────────────────────
-    let mut center_spans: Vec<Span> = Vec::new();
-
-    if state.show_welcome && !state.connected {
-        center_spans.push(Span::styled(
-            "Get started /connect",
-            Style::default().fg(Color::DarkGray),
-        ));
-    } else if state.connected {
-        // LSP count
-        center_spans.push(Span::styled(
-            if state.lsp_count > 0 { "•" } else { "·" },
-            if state.lsp_count > 0 {
-                Style::default().fg(Color::Green)
-            } else {
-                Style::default().fg(Color::DarkGray)
-            },
-        ));
-        center_spans.push(Span::styled(
-            format!(" {} LSP", state.lsp_count),
-            Style::default().fg(Color::White),
-        ));
-        center_spans.push(Span::raw("  "));
-
-        // MCP count
-        if state.mcp_count > 0 {
-            center_spans.push(Span::styled(
-                "⊙ ",
-                if state.mcp_error {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::Green)
-                },
-            ));
-            center_spans.push(Span::styled(
-                format!("{} MCP", state.mcp_count),
-                Style::default().fg(Color::White),
-            ));
-            center_spans.push(Span::raw("  "));
-        }
-
-        // Permission count badge
-        if state.permission_count > 0 {
-            center_spans.push(Span::styled("△ ", Style::default().fg(Color::Yellow)));
-            center_spans.push(Span::styled(
-                format!(
-                    "{} Permission{}",
-                    state.permission_count,
-                    if state.permission_count > 1 { "s" } else { "" }
-                ),
-                Style::default().fg(Color::Yellow),
-            ));
-            center_spans.push(Span::raw("  "));
-        }
-
-        // Status indicator
-        if let Some(ref status) = state.session_status {
-            match status {
-                SessionStatus::Idle => {
-                    center_spans.push(Span::styled("• idle", Style::default().fg(Color::Green)));
-                }
-                SessionStatus::Busy => {
-                    center_spans.push(Span::styled("⟳ busy", Style::default().fg(Color::Yellow)));
-                }
-                SessionStatus::Retry {
-                    attempt, message, ..
-                } => {
-                    center_spans.push(Span::styled(
-                        format!("△ retry (attempt {attempt}) — {message}"),
-                        Style::default().fg(Color::Red),
-                    ));
-                }
-            }
-        }
-    }
-
-    let center_line = Line::from(center_spans);
-
-    // ── Right column: provider/model + tokens + cost ───────────────────
+    // ── Right: pure version only (Opencode match) ───────────────────
+    // Opencode shows: ~/dir  ←→  v1.17.9
     let mut right_spans: Vec<Span> = Vec::new();
 
-    if state.connected {
-        // Provider + model
-        if let Some(ref provider) = state.provider_name {
-            let model_display = state.model_name.as_deref().unwrap_or("auto");
-            right_spans.push(Span::styled(
-                format!("{provider}/{model_display}"),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-
-        // Token count
-        if let Some(tokens) = state.token_count {
-            if !right_spans.is_empty() {
-                right_spans.push(Span::raw(" · "));
-            }
-            right_spans.push(Span::styled(
-                format_tokens(tokens),
-                Style::default().fg(Color::DarkGray),
-            ));
-        }
-
-        // Cost
-        if state.cost > 0.0 {
-            if !right_spans.is_empty() {
-                right_spans.push(Span::raw(" · "));
-            }
-            right_spans.push(Span::styled(
-                format_cost(state.cost),
-                Style::default().fg(if state.cost > 0.50 {
-                    Color::Yellow
-                } else {
-                    Color::DarkGray
-                }),
-            ));
-        }
-
-        // Status shortcut hint
-        if !right_spans.is_empty() {
-            right_spans.push(Span::raw("  "));
-        }
+    if state.mcp_count > 0 {
         right_spans.push(Span::styled(
-            "/status",
-            Style::default().fg(Color::DarkGray),
+            if state.mcp_error { "⊙" } else { "●" },
+            if state.mcp_error {
+                Style::default().fg(Color::Red)
+            } else {
+                Style::default().fg(Color::Green)
+            },
         ));
+        right_spans.push(Span::raw(format!(" {}  ", state.mcp_count)));
     }
 
+    // Version only — Opencode doesn't show /status hint
+    right_spans.push(Span::styled(
+        env!("CARGO_PKG_VERSION"),
+        Style::default().fg(theme.text_muted),
+    ));
+
+    // ── Assemble ─────────────────────────────────────────────────────
+    let left_line = Line::from(left_spans);
+    let right_is_empty = right_spans.is_empty();
     let right_line = Line::from(right_spans);
 
-    // Assemble: use ratatui layout for left/center/right
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(34),
-            Constraint::Percentage(33),
-            Constraint::Percentage(33),
-        ])
-        .split(area);
-
+    // Use flex-like layout: left text, push right
     let left_widget = Paragraph::new(left_line);
-    f.render_widget(left_widget, columns[0]);
+    f.render_widget(left_widget, area);
 
-    let center_widget = Paragraph::new(center_line);
-    f.render_widget(center_widget, columns[1]);
+    if !right_is_empty {
+        let right_widget = Paragraph::new(right_line).alignment(Alignment::Right);
+        f.render_widget(right_widget, area);
+    }
+}
 
-    let right_widget = Paragraph::new(right_line).alignment(Alignment::Right);
-    f.render_widget(right_widget, columns[2]);
+/// Abbreviate home directory to ~/ and truncate.
+fn abbreviate_home(dir: &str, max_len: usize) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    let abbreviated = if !home.is_empty() && dir.starts_with(&home) {
+        format!("~{}", &dir[home.len()..])
+    } else {
+        dir.to_string()
+    };
+
+    if abbreviated.len() > max_len {
+        format!(
+            "...{}",
+            &abbreviated[abbreviated.len().saturating_sub(max_len - 3)..]
+        )
+    } else {
+        abbreviated
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_abbreviate_home_works() {
+        let result = abbreviate_home("/home/user/projects/myapp", "/home/user".len() + 10);
+        assert!(result.starts_with("~"));
+        assert!(result.len() <= "/home/user".len() + 10);
+    }
+
+    #[test]
+    fn test_abbreviate_short_dir() {
+        let result = abbreviate_home("/tmp", 50);
+        assert_eq!(result, "/tmp");
+    }
 }

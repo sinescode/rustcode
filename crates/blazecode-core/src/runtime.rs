@@ -258,7 +258,8 @@ impl RuntimeContext {
     /// Get the default model for a given provider ID.
     pub fn default_model_for(&self, provider_id: &str) -> Option<&'static str> {
         match provider_id {
-            "anthropic" => Some("claude-sonnet-4-20250514"),
+            "anthropic" => Some("deepseek-v4-flash"),
+            "openmodel" => Some("deepseek-v4-flash"),
             "openai" => Some("gpt-5.2"),
             "google" => Some("gemini-3.0-flash"),
             "openrouter" => Some("anthropic/claude-sonnet-4-20250514"),

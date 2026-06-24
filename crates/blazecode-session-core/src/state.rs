@@ -164,7 +164,7 @@ impl SessionState {
             // Error → Idle (recoverable)
             (Error { recoverable: true, .. }, Idle) => Ok(()),
 
-            _ => Err(StateTransitionError::Invalid(self.clone(), next.clone())),
+            _ => Err(StateTransitionError::invalid(self.clone(), next.clone())),
         }
     }
 

@@ -229,20 +229,35 @@ impl TuiApp {
         let backend = ratatui::backend::CrosstermBackend::new(stdout);
         let terminal = Terminal::new(backend)?;
 
-        let default_provider = providers.keys().next().cloned();
-        let default_model = default_provider.as_ref().and_then(|pid| {
-            providers.get(pid).and_then(|_p| {
-                if pid == "anthropic" {
-                    Some(String::from("claude-sonnet-4-6"))
-                } else if pid == "openai" {
-                    Some(String::from("gpt-5.2"))
-                } else if pid == "google" {
-                    Some(String::from("gemini-3.0-flash"))
-                } else {
-                    None
+        let (default_provider, default_model_raw) = blazecode_core::config::Config::load_global()
+            .ok()
+            .and_then(|cfg| cfg.model)
+            .or_else(|| std::env::var("BLAZECODE_MODEL").ok())
+            .and_then(|s| {
+                // "openmodel/deepseek-v4-flash" → (Some("openmodel"), Some("deepseek-v4-flash"))
+                if let Some((p, m)) = s.split_once('/') {
+                    if providers.contains_key(p) && !m.is_empty() {
+                        return Some((Some(p.to_string()), Some(m.to_string())));
+                    }
                 }
+                // No slash or unknown prefix — use as bare model name
+                Some((None, Some(s)))
             })
-        });
+            .or_else(|| {
+                // Fallback: first provider + hardcoded model map
+                let provider = providers.keys().next()?.clone();
+                let model = match provider.as_str() {
+                    "anthropic" => "deepseek-v4-flash",
+                    "openmodel" => "deepseek-v4-flash",
+                    "openai" => "gpt-5.2",
+                    "google" => "gemini-3.0-flash",
+                    _ => return None,
+                };
+                Some((Some(provider), Some(model.to_string())))
+            })
+            .unwrap_or((None, None));
+        let default_provider = default_provider;
+        let default_model = default_model_raw;
 
         // Detect git branch
         let git_branch = std::env::current_dir().ok().and_then(|dir| {
@@ -464,6 +479,7 @@ impl TuiApp {
             self.status.model_name = Some(model.clone());
         }
         self.input.agent_name = self.current_agent.clone();
+        self.input.session_active = self.session_id.is_some();
 
         // ── Channel for crossterm events ──────────────────────────
         let (event_tx, mut event_rx) =
@@ -706,7 +722,7 @@ impl TuiApp {
         let model_id = self
             .default_model
             .clone()
-            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+            .unwrap_or_else(|| "deepseek-v4-flash".into());
         let agent = self.current_agent.clone();
         let session_id = self
             .session_id
@@ -931,7 +947,7 @@ impl TuiApp {
         let model_id = self
             .default_model
             .clone()
-            .unwrap_or_else(|| "claude-sonnet-4-20250514".into());
+            .unwrap_or_else(|| "deepseek-v4-flash".into());
         let agent = self.current_agent.clone();
         let session_id = self
             .session_id
@@ -1263,12 +1279,11 @@ impl TuiApp {
                 {
                     msg.parts.push(tool_part);
                 }
-                self.conversation
-                    .add_system_message(format!("Tool call: {name}"));
+                // Opencode doesn't show tool call system messages
             }
 
             LlmEvent::ToolResult {
-                id, name, result, ..
+                id, name, result: tool_result_val, ..
             } => {
                 let now = chrono::Utc::now().timestamp_millis() as u64;
                 if let Some(msg) = self
@@ -1281,11 +1296,19 @@ impl TuiApp {
                     for part in &mut msg.parts {
                         if let Part::Tool(ref mut tp) = part {
                             if tp.call_id == id {
-                                let output = result
-                                    .as_str()
+                                // Unwrap {"result": <text>} wrapper from session_runner
+                                let output = tool_result_val
+                                    .get("result")
+                                    .and_then(|r| r.as_str())
                                     .map(|s| s.to_string())
-                                    .unwrap_or_else(|| result.to_string());
-                                let title = result
+                                    .or_else(|| {
+                                        tool_result_val.as_str().map(|s| s.to_string())
+                                    })
+                                    .unwrap_or_else(|| {
+                                        serde_json::to_string_pretty(&tool_result_val)
+                                            .unwrap_or_else(|_| tool_result_val.to_string())
+                                    });
+                                let title = tool_result_val
                                     .get("title")
                                     .and_then(|t| t.as_str())
                                     .unwrap_or(&name)
@@ -1409,6 +1432,7 @@ impl TuiApp {
                         info.finish = Some(format!("{reason:?}"));
                         info.time.completed = Some(now);
                         if let Some(ref u) = usage {
+                            let total = u.input_tokens.unwrap_or(0) + u.output_tokens.unwrap_or(0);
                             info.tokens = session::TokenUsage {
                                 input: u.input_tokens.unwrap_or(0),
                                 output: u.output_tokens.unwrap_or(0),
@@ -1418,6 +1442,8 @@ impl TuiApp {
                                     write: u.cache_write_input_tokens.unwrap_or(0),
                                 },
                             };
+                            self.input.token_count = Some(total);
+                            self.status.token_count = Some(total);
                         }
                     }
                 }
@@ -1761,6 +1787,14 @@ impl TuiApp {
     fn render(&mut self, f: &mut Frame) {
         // Advance spinner frame
         self.spin_frame = self.spin_frame.wrapping_add(1);
+        // Sync input state from app state
+        self.input.model_name = self.status.model_name.clone();
+        self.input.provider_name = self.status.provider_name.clone();
+        self.input.is_streaming = self.is_streaming;
+        self.input.session_active = self.session_id.is_some();
+        self.input.agent_name = self.current_agent.clone();
+        self.input.token_count = self.status.token_count;
+        self.input.cost = self.status.cost;
 
         // Detect session loading changes
         let sid = self.session_id.as_ref().map(|s| s.clone());
@@ -1813,18 +1847,20 @@ impl TuiApp {
             .direction(Direction::Vertical)
             .constraints([
                 Constraint::Min(0),
-                Constraint::Length(3),
+                Constraint::Length(4),
                 Constraint::Length(1),
             ])
             .split(main_area);
 
-        // Home screen vs conversation
+        // Opencode-style layout: input bar is ALWAYS visible
+        // Home screen → content in chunks[0], input in chunks[1], status in chunks[2]
+        // Session view → conversation in chunks[0], input in chunks[1], status in chunks[2]
         if self.loading_session {
             self.render_loading_screen(f, area);
         } else if self.session_id.is_none() {
             crate::home_screen::render_home_screen(
                 f,
-                area,
+                chunks[0],
                 self.theme.current(),
                 &self.crate_version,
                 &self.recent_models,
@@ -1833,13 +1869,14 @@ impl TuiApp {
                 self.status.provider_name.as_deref(),
                 self.status.model_name.as_deref(),
             );
-            // Still render status line at bottom
-            render_status(f, chunks[2], &self.status, self.theme.current());
         } else {
             render_conversation(f, chunks[0], &self.conversation, self.theme.current());
-            render_input(f, chunks[1], &self.input, self.theme.current());
-            render_status(f, chunks[2], &self.status, self.theme.current());
         }
+
+        // Always render input area (Opencode style)
+        render_input(f, chunks[1], &self.input, self.theme.current());
+        // Always render status line
+        render_status(f, chunks[2], &self.status, self.theme.current());
 
         // Update terminal title
         self.update_terminal_title();
@@ -3235,7 +3272,7 @@ impl TuiApp {
 
                     // Reset model to default for this provider
                     self.default_model = if next_provider == "anthropic" {
-                        Some("claude-sonnet-4-6".into())
+                        Some("deepseek-v4-flash".into())
                     } else if next_provider == "openai" {
                         Some("gpt-5.2".into())
                     } else if next_provider == "google" {
@@ -3288,7 +3325,7 @@ impl TuiApp {
                     self.status.provider_name = Some(prev_provider.clone());
 
                     self.default_model = if prev_provider == "anthropic" {
-                        Some("claude-sonnet-4-6".into())
+                        Some("deepseek-v4-flash".into())
                     } else if prev_provider == "openai" {
                         Some("gpt-5.2".into())
                     } else if prev_provider == "google" {

@@ -1241,6 +1241,11 @@ fn scrub_tool_call_ids<F: Fn(&str) -> String>(msg: ChatMessage, scrub: &F) -> Ch
 }
 
 /// Ensure DeepSeek assistant messages contain a reasoning content part.
+///
+/// Skips messages that contain `tool_use` blocks because the Anthropic/OpenModel
+/// API requires `tool_use` → `tool_result` adjacency without intervening content.
+/// Adding a `Reasoning` block between `tool_use` and the next user `tool_result`
+/// message breaks this requirement, causing the API to reject the request.
 fn ensure_deepseek_reasoning(msg: ChatMessage) -> ChatMessage {
     match msg {
         ChatMessage::Assistant { content } => match content {
@@ -1248,7 +1253,15 @@ fn ensure_deepseek_reasoning(msg: ChatMessage) -> ChatMessage {
                 let has_reasoning = parts
                     .iter()
                     .any(|p| matches!(p, ContentPart::Reasoning { .. }));
-                if has_reasoning {
+                // ANTHROPIC-FORMAT FIX: If there are any tool_use blocks,
+                // do NOT add a Reasoning block. The API requires that
+                // tool_use in an assistant message is immediately followed
+                // by a user message with tool_result for each call_id.
+                // Adding anything between breaks the adjacency requirement.
+                let has_tool_use = parts
+                    .iter()
+                    .any(|p| matches!(p, ContentPart::ToolCallPart { .. }));
+                if has_reasoning || has_tool_use {
                     ChatMessage::Assistant {
                         content: MessageContent::Parts(parts),
                     }

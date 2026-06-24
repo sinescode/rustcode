@@ -200,6 +200,7 @@ impl Default for EventBus {
 #[derive(Debug, Clone)]
 pub struct EventV2 {
     /// The bus capacity.
+    #[allow(dead_code)]
     capacity: usize,
     /// Shared event bus.
     pub bus: Arc<RwLock<EventBus>>,

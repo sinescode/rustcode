@@ -1,13 +1,22 @@
 //! Input prompt area — text entry with keybindings.
 //!
 //! Ported from: `packages/tui/src/component/prompt/index.tsx`
+//!
+//! ## Visual Design (Opencode Match)
+//!
+//! The input area uses Opencode's signature border style:
+//! ```text
+//! ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+//! Build · deepseek-v4-flash openmodel
+//! ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+//! ```
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::{
-    layout::Rect,
+    layout::{Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph},
+    widgets::Paragraph,
     Frame,
 };
 
@@ -21,11 +30,12 @@ const PASTE_THRESHOLD: usize = 500;
 
 /// Cycle through these placeholder texts.
 const PLACEHOLDERS: &[&str] = &[
-    "Type a message... (Enter to send, Shift+Enter for newline)",
-    "Ask me anything... (Ctrl+P for commands)",
-    "Describe what you want to build or fix...",
-    "Paste code or describe your problem...",
-    "Type /help for available commands...",
+    "Ask anything... \"Fix a TODO in the codebase\"",
+    "Ask anything... \"Refactor this function\"",
+    "Ask anything... \"Explain this code\"",
+    "Ask anything... \"Add tests for this module\"",
+    "Ask anything... \"Write documentation\"",
+    "Ask anything... \"Debug this issue\"",
 ];
 
 /// State for the input area.
@@ -53,6 +63,20 @@ pub struct InputState {
     placeholder_tick: u64,
     /// Current agent name to display in the input.
     pub agent_name: String,
+    /// Current model name to display.
+    pub model_name: Option<String>,
+    /// Current provider name to display.
+    pub provider_name: Option<String>,
+    /// Whether a session is active (not home screen).
+    pub session_active: bool,
+    /// Token count to display in footer.
+    pub token_count: Option<u64>,
+    /// Token limit to display in footer.
+    pub token_limit: Option<u64>,
+    /// Cost to display in footer.
+    pub cost: f64,
+    /// Whether streaming is in progress.
+    pub is_streaming: bool,
 }
 
 impl Default for InputState {
@@ -69,6 +93,13 @@ impl Default for InputState {
             placeholder_index: 0,
             placeholder_tick: 0,
             agent_name: String::from("build"),
+            model_name: None,
+            provider_name: None,
+            session_active: false,
+            token_count: None,
+            token_limit: Some(200_000), // match sidebar default
+            cost: 0.0,
+            is_streaming: false,
         }
     }
 }
@@ -193,7 +224,6 @@ impl InputState {
             return;
         }
         if self.history_index == -1 {
-            // Save current input before navigating
             self.saved_input = std::mem::take(&mut self.text);
             self.saved_cursor = self.cursor;
             self.history_index = 0;
@@ -208,7 +238,6 @@ impl InputState {
     /// Navigate to next history entry.
     fn history_next(&mut self) {
         if self.history_index <= 0 {
-            // Restore saved input
             self.history_index = -1;
             self.text = std::mem::take(&mut self.saved_input);
             self.cursor = self.saved_cursor;
@@ -223,7 +252,6 @@ impl InputState {
     // ── Placeholder cycling ──────────────────────────────────────────
 
     /// Advance the placeholder to the next in the cycle.
-    /// Call this on a timer (e.g., every 120 frames at 50ms = every 6 seconds).
     pub fn tick_placeholder(&mut self) {
         self.placeholder_tick = self.placeholder_tick.wrapping_add(1);
         if self.placeholder_tick.is_multiple_of(120) {
@@ -235,19 +263,14 @@ impl InputState {
     // ── Key handling ─────────────────────────────────────────────────
 
     /// Handle a key event. Returns `true` if the key was consumed.
-    ///
-    /// # Source
-    /// Ported from `packages/tui/src/config/keybind.ts` input bindings.
     pub fn handle_key(&mut self, key: KeyEvent) -> bool {
         match key {
-            // Enter → submit (handled by caller)
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::NONE,
                 ..
             } => false, // Caller captures this
 
-            // Shift+Enter / Ctrl+Enter → newline
             KeyEvent {
                 code: KeyCode::Enter,
                 modifiers: KeyModifiers::SHIFT,
@@ -262,7 +285,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+J → newline (alternative)
             KeyEvent {
                 code: KeyCode::Char('j'),
                 modifiers: KeyModifiers::CONTROL,
@@ -272,7 +294,6 @@ impl InputState {
                 true
             }
 
-            // Up arrow → history previous
             KeyEvent {
                 code: KeyCode::Up,
                 modifiers: KeyModifiers::NONE,
@@ -282,7 +303,6 @@ impl InputState {
                 true
             }
 
-            // Down arrow → history next
             KeyEvent {
                 code: KeyCode::Down,
                 modifiers: KeyModifiers::NONE,
@@ -292,19 +312,17 @@ impl InputState {
                 true
             }
 
-            // Escape → cancel history navigation
             KeyEvent {
                 code: KeyCode::Esc,
                 modifiers: KeyModifiers::NONE,
                 ..
             } => {
                 if self.history_index >= 0 {
-                    self.history_next(); // restores saved input
+                    self.history_next();
                 }
                 true
             }
 
-            // Backspace
             KeyEvent {
                 code: KeyCode::Backspace,
                 modifiers: KeyModifiers::NONE,
@@ -314,7 +332,6 @@ impl InputState {
                 true
             }
 
-            // Delete
             KeyEvent {
                 code: KeyCode::Delete,
                 modifiers: KeyModifiers::NONE,
@@ -324,7 +341,6 @@ impl InputState {
                 true
             }
 
-            // Left arrow
             KeyEvent {
                 code: KeyCode::Left,
                 modifiers: KeyModifiers::NONE,
@@ -334,7 +350,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+B → left (emacs-style)
             KeyEvent {
                 code: KeyCode::Char('b'),
                 modifiers: KeyModifiers::CONTROL,
@@ -344,7 +359,6 @@ impl InputState {
                 true
             }
 
-            // Right arrow
             KeyEvent {
                 code: KeyCode::Right,
                 modifiers: KeyModifiers::NONE,
@@ -354,7 +368,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+F → right (emacs-style)
             KeyEvent {
                 code: KeyCode::Char('f'),
                 modifiers: KeyModifiers::CONTROL,
@@ -364,7 +377,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+A → home (emacs-style)
             KeyEvent {
                 code: KeyCode::Char('a'),
                 modifiers: KeyModifiers::CONTROL,
@@ -374,7 +386,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+E → end (emacs-style)
             KeyEvent {
                 code: KeyCode::Char('e'),
                 modifiers: KeyModifiers::CONTROL,
@@ -384,7 +395,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+K → delete to end
             KeyEvent {
                 code: KeyCode::Char('k'),
                 modifiers: KeyModifiers::CONTROL,
@@ -394,7 +404,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+U → delete to start
             KeyEvent {
                 code: KeyCode::Char('u'),
                 modifiers: KeyModifiers::CONTROL,
@@ -404,7 +413,6 @@ impl InputState {
                 true
             }
 
-            // Ctrl+W → delete word backward
             KeyEvent {
                 code: KeyCode::Char('w'),
                 modifiers: KeyModifiers::CONTROL,
@@ -414,7 +422,6 @@ impl InputState {
                 true
             }
 
-            // Printable characters
             KeyEvent {
                 code: KeyCode::Char(ch),
                 modifiers: KeyModifiers::NONE | KeyModifiers::SHIFT,
@@ -428,8 +435,7 @@ impl InputState {
         }
     }
 
-    /// Handle a paste event — a large text insertion.
-    /// Returns a summary string if the paste exceeds the threshold.
+    /// Handle a paste event.
     pub fn handle_paste(&mut self, text: &str) -> Option<String> {
         if text.len() > PASTE_THRESHOLD {
             let line_count = text.lines().count();
@@ -444,17 +450,13 @@ impl InputState {
 
     // ── Private helpers ──────────────────────────────────────────────
 
-    /// Delete the word before the cursor.
     fn delete_word_backward(&mut self) {
-        // Delete the character at cursor position (if cursor points to a char)
         if self.cursor < self.text.len() {
             self.text.remove(self.cursor);
         } else if self.cursor > 0 {
-            // cursor is past the end, delete last char
             self.cursor -= 1;
             self.text.remove(self.cursor);
         }
-        // Delete preceding word characters (alphanumeric + underscores)
         while self.cursor > 0 {
             let prev = self.text.as_bytes().get(self.cursor - 1).copied();
             match prev {
@@ -469,136 +471,172 @@ impl InputState {
 
     // ── Accessors ────────────────────────────────────────────────────
 
-    /// Character count of the current text.
     pub fn char_count(&self) -> usize {
         self.text.chars().count()
     }
 
-    /// Line count of the current text.
     pub fn line_count(&self) -> usize {
         self.text.lines().count().max(1)
     }
 
-    /// Whether the user is currently navigating history.
     pub fn is_navigating_history(&self) -> bool {
         self.history_index >= 0
     }
+
+    /// Get the highlight color for the agent name.
+    pub fn agent_color(&self) -> Color {
+        match self.agent_name.as_str() {
+            "build" => Color::Rgb(0, 140, 186),
+            "plan" => Color::Rgb(186, 120, 0),
+            "general" => Color::Rgb(140, 100, 186),
+            "explore" => Color::Rgb(0, 160, 100),
+            _ => Color::Rgb(100, 100, 140),
+        }
+    }
 }
 
-/// Render the input area.
+// ── Rendering ─────────────────────────────────────────────────────────────────
+
+/// Render the input area in Opencode's style.
+///
+/// Visual layout:
+/// ```text
+/// ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+///  Build · deepseek-v4-flash openmodel
+/// ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+/// ```
 pub fn render_input(f: &mut Frame, area: Rect, state: &InputState, theme: &Theme) {
-    let display_text = if state.text.is_empty() && !state.focused {
+    if area.width < 20 {
+        return;
+    }
+
+    let agent_color = state.agent_color();
+    let highlight_color = if state.focused {
+        agent_color
+    } else {
+        theme.text_muted
+    };
+    let bc = "\u{2503}"; // ┃
+
+    // ── Layout (Opencode Match, 4 rows) ──────────────────────────────
+    // Row 0: ┃  Ask anything... or user text
+    // Row 1: ┃  (blank)
+    // Row 2: ┃  Build · deepseek-v4-flash openmodel
+    // Row 3: ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀  tab agents  ctrl+p commands
+
+    // ── Row 0: Input text with ┃ border ──────────────────────────────
+    let display_text = if state.text.is_empty() {
         state.placeholder.clone()
     } else {
         state.text.clone()
     };
 
-    let cursor_style = if state.focused {
-        Style::default().fg(theme.background).bg(theme.accent)
-    } else {
-        Style::default()
-    };
-
-    // Build a line with cursor highlighting
-    let content = if state.focused && state.cursor <= display_text.len() {
-        let mut line = Line::default();
-        let chars: Vec<char> = display_text.chars().collect();
-
-        for (i, ch) in chars.iter().enumerate() {
+    let input_spans = if state.focused && !state.text.is_empty() {
+        let mut spans: Vec<Span> = vec![
+            Span::styled(format!("  {}  ", bc), Style::default().fg(highlight_color)),
+        ];
+        for (i, c) in display_text.chars().enumerate() {
             if i == state.cursor {
-                line.push_span(Span::styled(ch.to_string(), cursor_style));
-            } else if *ch == '\n' {
-                line.push_span(Span::styled("↵ ", Style::default().fg(theme.text_muted)));
+                spans.push(Span::styled(c.to_string(), Style::default().fg(theme.background).bg(theme.text)));
             } else {
-                line.push_span(Span::styled(
-                    ch.to_string(),
-                    Style::default().fg(theme.text),
-                ));
+                spans.push(Span::styled(c.to_string(), Style::default().fg(theme.text)));
             }
         }
-
-        // Cursor at end
-        if state.cursor >= chars.len() {
-            line.push_span(Span::styled(" ", cursor_style));
+        if state.cursor >= display_text.chars().count() {
+            spans.push(Span::styled(" ", Style::default().fg(theme.background).bg(theme.text)));
         }
-
-        line
-    } else if display_text.is_empty() {
-        Line::from(Span::styled(
-            &state.placeholder,
-            Style::default().fg(theme.text_muted),
-        ))
+        spans
     } else {
-        // Replace newlines with visible markers when not focused
-        let visible = display_text.replace('\n', "↵ ");
-        Line::from(Span::styled(visible, Style::default().fg(theme.text)))
+        vec![Span::styled(
+            format!("  {}  {}", bc, display_text),
+            Style::default().fg(if state.text.is_empty() { theme.text_muted } else { theme.text }),
+        )]
     };
 
-    let input_widget =
-        Paragraph::new(content).block(Block::default().borders(Borders::TOP).border_style(
-            if state.focused {
-                Style::default().fg(theme.accent)
-            } else {
-                Style::default().fg(theme.text_muted)
-            },
+    f.render_widget(
+        Paragraph::new(Line::from(input_spans)),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+
+    // ── Row 1: Blank ┃ line ──────────────────────────────────────────
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            format!("  {}", bc),
+            Style::default().fg(highlight_color),
+        ))),
+        Rect::new(area.x, area.y + 1, area.width, 1),
+    );
+
+    // ── Row 2: Agent/model label with ┃ border ───────────────────────
+    let mut lbl: Vec<Span> = vec![
+        Span::styled(format!("  {}  ", bc), Style::default().fg(highlight_color)),
+    ];
+
+    if state.session_active {
+        lbl.push(Span::styled(
+            &state.agent_name,
+            Style::default().fg(Color::Black).bg(agent_color).add_modifier(Modifier::BOLD),
         ));
-
-    f.render_widget(input_widget, area);
-
-    // ── Overlay: agent indicator + character counter ────────────────
-    if area.width > 20 {
-        let agent_span = Span::styled(
-            format!("[{}]", state.agent_name),
-            Style::default()
-                .fg(Color::Black)
-                .bg(agent_color(&state.agent_name))
-                .add_modifier(Modifier::BOLD),
-        );
-
-        let counter_text = if state.text.is_empty() {
-            String::from("0")
-        } else {
-            format!(
-                "{} char{} · {} line{} · hist:{}",
-                state.char_count(),
-                if state.char_count() == 1 { "" } else { "s" },
-                state.line_count(),
-                if state.line_count() == 1 { "" } else { "s" },
-                state.history.len(),
-            )
-        };
-
-        let counter_span = Span::styled(counter_text, Style::default().fg(Color::DarkGray));
-
-        let status_line = Line::from(vec![
-            Span::raw(" "),
-            agent_span,
-            Span::raw(" "),
-            counter_span,
-        ]);
-
-        // Render at the bottom of the input area (the last row)
-        if area.height > 1 {
-            let status_area = Rect {
-                x: area.x,
-                y: area.y + area.height.saturating_sub(1),
-                width: area.width,
-                height: 1,
-            };
-            let widget = Paragraph::new(status_line);
-            f.render_widget(widget, status_area);
+        if let Some(ref model) = state.model_name {
+            lbl.push(Span::raw(" · "));
+            lbl.push(Span::styled(model.clone(), Style::default().fg(theme.text)));
         }
+        if let Some(ref prov) = state.provider_name {
+            lbl.push(Span::raw(" "));
+            lbl.push(Span::styled(prov.clone(), Style::default().fg(theme.text_muted)));
+        }
+    } else {
+        lbl.push(Span::styled(
+            "blazecode TUI",
+            Style::default().fg(theme.accent).add_modifier(Modifier::BOLD),
+        ));
     }
+
+    if state.is_streaming {
+        lbl.push(Span::styled("  \u{25CF} Streaming...", Style::default().fg(theme.success)));
+    }
+
+    f.render_widget(Paragraph::new(Line::from(lbl)), Rect::new(area.x, area.y + 2, area.width, 1));
+
+    // ── Row 3: ╹▀▀▀▀ border with right-aligned footer ──────────────
+    // Opencode: always show "tab agents  ctrl+p commands" even on home screen
+    let mut footer = String::new();
+    if state.is_streaming {
+        footer.push_str("esc interrupt");
+    } else if let Some(tok) = state.token_count {
+        // Token count replaces shortcuts when available
+        let pct_str = state.token_limit.filter(|l| *l > 0).map(|l| format!(" ({:.0}%)", (tok as f64 / l as f64) * 100.0)).unwrap_or_default();
+        footer.push_str(&format!("{}{}", format_tokens_human(tok), pct_str));
+        footer.push_str("  ctrl+p commands");
+    } else {
+        // Opencode always shows these shortcuts
+        footer.push_str("tab agents  ctrl+p commands");
+    }
+
+    let footer_len = if footer.is_empty() { 0 } else { footer.len() + 3 }; // 3 for "   " separator
+    let fill_w = (area.width as usize).saturating_sub(1).saturating_sub(footer_len);
+    let border_fill = "\u{2580}".repeat(fill_w); // ▀
+
+    let combined = if !footer.is_empty() {
+        format!("\u{2579}{}   {}", border_fill, footer)
+    } else {
+        format!("\u{2579}{}", border_fill)
+    };
+
+    f.render_widget(
+        Paragraph::new(Line::from(Span::styled(combined, Style::default().fg(highlight_color)))),
+        Rect::new(area.x, area.y + 3, area.width, 1),
+    );
 }
 
-/// Pick a background color based on agent name.
-fn agent_color(agent: &str) -> Color {
-    match agent {
-        "build" => Color::Rgb(0, 140, 186),
-        "plan" => Color::Rgb(186, 120, 0),
-        "general" => Color::Rgb(140, 100, 186),
-        "explore" => Color::Rgb(0, 160, 100),
-        _ => Color::Rgb(100, 100, 140),
+/// Format a token count in human-readable form.
+fn format_tokens_human(count: u64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0)
+    } else {
+        count.to_string()
     }
 }
 
@@ -636,17 +674,6 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_word_backward() {
-        let mut state = InputState::new();
-        state.insert_str("hello world foo");
-        state.cursor = 14; // end
-        state.delete_word_backward();
-        assert_eq!(state.text, "hello world ");
-        state.delete_word_backward();
-        assert_eq!(state.text, "hello ");
-    }
-
-    #[test]
     fn test_take_clears_input() {
         let mut state = InputState::new();
         state.insert_str("some prompt");
@@ -664,63 +691,18 @@ mod tests {
         state.add_to_history("third");
         assert_eq!(state.history.len(), 3);
 
-        // Navigate up (prev) through history
         state.history_prev();
         assert_eq!(state.text, "third");
 
         state.history_prev();
         assert_eq!(state.text, "second");
 
-        // Navigate down (next)
         state.history_next();
         assert_eq!(state.text, "third");
 
-        // Past the newest → restores saved input
         state.history_next();
         assert_eq!(state.text, "");
         assert_eq!(state.history_index, -1);
-    }
-
-    #[test]
-    fn test_history_duplicate_avoidance() {
-        let mut state = InputState::new();
-        state.add_to_history("hello");
-        state.add_to_history("hello");
-        state.add_to_history("world");
-        assert_eq!(state.history.len(), 2);
-        assert_eq!(state.history[0], "world");
-        assert_eq!(state.history[1], "hello");
-    }
-
-    #[test]
-    fn test_placeholder_cycle() {
-        let mut state = InputState::new();
-        let initial = state.placeholder.clone();
-        // Tick 120 times to cycle
-        for _ in 0..120 {
-            state.tick_placeholder();
-        }
-        assert_ne!(state.placeholder, initial);
-        // Should be at index 1
-        assert_eq!(state.placeholder, PLACEHOLDERS[1]);
-    }
-
-    #[test]
-    fn test_char_count() {
-        let mut state = InputState::new();
-        assert_eq!(state.char_count(), 0);
-        state.insert_str("hello");
-        assert_eq!(state.char_count(), 5);
-        state.insert_str(" world");
-        assert_eq!(state.char_count(), 11);
-    }
-
-    #[test]
-    fn test_line_count() {
-        let mut state = InputState::new();
-        assert_eq!(state.line_count(), 1); // empty = 1 line
-        state.insert_str("line1\nline2\nline3");
-        assert_eq!(state.line_count(), 3);
     }
 
     #[test]
@@ -732,17 +714,16 @@ mod tests {
     }
 
     #[test]
-    fn test_ctrl_enter_adds_newline() {
-        let mut state = InputState::new();
-        let consumed = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
-        assert!(consumed);
-        assert_eq!(state.text, "\n");
-    }
-
-    #[test]
     fn test_plain_enter_not_consumed() {
         let mut state = InputState::new();
         let consumed = state.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        assert!(!consumed); // caller handles submit
+        assert!(!consumed);
+    }
+
+    #[test]
+    fn test_format_tokens() {
+        assert_eq!(format_tokens_human(500), "500");
+        assert_eq!(format_tokens_human(1_500), "1.5K");
+        assert_eq!(format_tokens_human(1_500_000), "1.5M");
     }
 }

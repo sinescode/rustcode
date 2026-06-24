@@ -40,9 +40,6 @@
 #![deny(missing_docs)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 
-use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
-use std::path::{Path, PathBuf};
 use std::time::Duration;
 use thiserror::Error;
 

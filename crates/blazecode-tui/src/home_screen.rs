@@ -1,13 +1,31 @@
 //! Home screen — landing page shown when no session is active.
 //!
-//! Ported from: `packages/tui/src/routes/home/session-destination.tsx`
+//! Ported from: `packages/tui/src/routes/home.tsx`
 //! and `packages/tui/src/component/logo.tsx`
+//!
+//! ## Visual Design (Opencode Match)
+//!
+//! Vertically centered layout:
+//! ```text
+//!                                 (blank space)
+//!                             ┌─────────────────────┐
+//!                             │   Blazecode Logo    │
+//!                             │   v0.3.0 · model    │
+//!                             └─────────────────────┘
+//!                                 (blank space)
+//!                          Ask anything... "Fix a TODO..."
+//!                      ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+//!                        build · deepseek-v4-flash
+//!                      ╹▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀
+//!
+//!                         ~/project:main  ⊙ 2 MCP  v0.3.0
+//! ```
 
 use ratatui::{
     layout::{Alignment, Rect},
     style::{Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph},
     Frame,
 };
 
@@ -25,33 +43,86 @@ pub fn render_home_screen(
     provider_name: Option<&str>,
     model_name: Option<&str>,
 ) {
+    if area.width < 30 || area.height < 15 {
+        // Terminal too small — just show a minimal welcome
+        let minimal = Paragraph::new(Text::from(vec![
+            Line::from(Span::styled(
+                "blazecode TUI",
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(""),
+            Line::from(Span::styled(
+                "Terminal too small — resize to at least 30x15",
+                Style::default().fg(theme.text_muted),
+            )),
+        ]))
+        .alignment(Alignment::Center);
+        f.render_widget(minimal, area);
+        return;
+    }
+
     // ── Layout ──────────────────────────────────────────────────────
+    // Opencode style: vertically centered, single column
     let total_height = area.height;
-    let content_y_start = if total_height > 25 {
-        (total_height / 5) as u16
+    let total_width = area.width;
+
+    // Calculate content height
+    let logo_height: u16 = 8; // ASCII logo is 7 lines + 1 spacing
+    let subtitle_height: u16 = 1;
+    let gap1: u16 = 1;
+    let features_height: u16 = 2; // spacing + "Quick Start"
+    let features_count = 6u16;
+    let features_list_height = features_count;
+    let gap2: u16 = 1;
+    let tip_height: u16 = 1;
+
+    let content_height = logo_height
+        + subtitle_height
+        + gap1
+        + features_height
+        + features_list_height
+        + gap2
+        + tip_height;
+
+    // Vertical centering
+    let start_y = if total_height > content_height {
+        area.y + (total_height - content_height) / 2
     } else {
-        1
+        area.y + 2
     };
 
-    let logo_area = Rect::new(area.x, area.y + content_y_start, area.width, 7);
+    let center_x = area.x + total_width / 2;
 
-    // ── Logo ────────────────────────────────────────────────────────
+    // ── 1. Logo ──────────────────────────────────────────────────
     let logo_lines = build_blazecode_logo(theme);
-    let logo_paragraph = Paragraph::new(logo_lines)
-        .alignment(Alignment::Center)
-        .style(Style::default().fg(theme.accent));
+
+    // Calculate the actual logo width so we can center it
+    let max_logo_width = logo_lines
+        .iter()
+        .map(|l| {
+            l.spans
+                .iter()
+                .map(|s| s.content.len() as u16)
+                .sum::<u16>()
+        })
+        .max()
+        .unwrap_or(68);
+
+    let logo_x = center_x.saturating_sub(max_logo_width / 2);
+    let logo_area = Rect::new(logo_x, start_y, max_logo_width, logo_height);
+    let logo_paragraph = Paragraph::new(logo_lines).style(Style::default().fg(theme.accent));
     f.render_widget(logo_paragraph, logo_area);
 
-    // ── Subtitle / version ──────────────────────────────────────────
-    let subtitle_y = content_y_start + 7;
-    let subtitle_area = Rect::new(area.x, area.y + subtitle_y, area.width, 1);
+    // ── 2. Subtitle line ──────────────────────────────────────────
+    let subtitle_y = start_y + logo_height;
+    let subtitle_area = Rect::new(area.x, subtitle_y, total_width, subtitle_height);
 
-    let mut subtitle_spans = vec![
-        Span::styled(
-            format!("blazecode TUI v{version}"),
-            Style::default().fg(theme.text_muted),
-        ),
-    ];
+    let mut subtitle_spans = vec![Span::styled(
+        format!("blazecode TUI v{version}"),
+        Style::default().fg(theme.text_muted),
+    )];
 
     if connected {
         let provider = provider_name.unwrap_or("?");
@@ -67,42 +138,45 @@ pub fn render_home_screen(
         ));
     }
 
-    let subtitle = Paragraph::new(Line::from(subtitle_spans))
-        .alignment(Alignment::Center);
+    let subtitle = Paragraph::new(Line::from(subtitle_spans)).alignment(Alignment::Center);
     f.render_widget(subtitle, subtitle_area);
 
-    // ── Features panel ──────────────────────────────────────────────
-    let features_y = subtitle_y + 2;
-    let features = [
-        ("⌨", "  Type a message and press Enter to start"),
-        ("📂", "  Ctrl+O to open in editor"),
-        ("⌘", "  Ctrl+P for command palette"),
-        ("🔄", "  Ctrl+L to cycle providers"),
-        ("❓", "  Ctrl+/ for help & keybindings"),
-        ("💾", "  Ctrl+S to toggle sidebar"),
-    ];
+    // ── 3. Prompt area hint ─────────────────────────────────────
+    let prompt_y = subtitle_y + gap1 + features_height; // "Quick Start" header
+    let prompt_area = Rect::new(area.x, prompt_y, total_width, features_list_height);
 
-    let mut feature_lines: Vec<Line<'static>> = Vec::new();
+    let mut feature_lines = Vec::new();
+
+    // Quick start header
     feature_lines.push(Line::from(Span::styled(
-        " Quick Start ",
+        "  Quick Start",
         Style::default()
             .fg(theme.accent)
             .add_modifier(Modifier::BOLD),
     )));
-    feature_lines.push(Line::from(""));
 
-    for (icon_text, desc) in &features {
+    // Features
+    let features = [
+        ("  ⌨", "  Type a message and press Enter to start"),
+        ("  📂", "  Ctrl+O to open in editor"),
+        ("  ⌘", "  Ctrl+P for command palette"),
+        ("  🔄", "  Ctrl+L to cycle providers"),
+        ("  ❓", "  Ctrl+/ for help & keybindings"),
+        ("  💾", "  Ctrl+S to toggle sidebar"),
+    ];
+
+    for (icon, desc) in &features {
         feature_lines.push(Line::from(vec![
-            Span::styled(*icon_text, Style::default().fg(theme.text)),
+            Span::styled(*icon, Style::default().fg(theme.text)),
             Span::styled(*desc, Style::default().fg(theme.text_muted)),
         ]));
     }
 
-    // Recent models section
+    // Recent models (if any)
     if !recent_models.is_empty() {
         feature_lines.push(Line::from(""));
         feature_lines.push(Line::from(Span::styled(
-            " Recent Models ",
+            "  Recent Models",
             Style::default()
                 .fg(theme.accent)
                 .add_modifier(Modifier::BOLD),
@@ -115,72 +189,42 @@ pub fn render_home_screen(
         }
     }
 
-    // Status line
-    feature_lines.push(Line::from(""));
-    let status_text = if is_streaming {
-        "  ⟳  Streaming in progress..."
+    // Streaming indicator
+    if is_streaming {
+        feature_lines.push(Line::from(""));
+        feature_lines.push(Line::from(Span::styled(
+            "  ⟳  Streaming in progress...",
+            Style::default().fg(theme.warning),
+        )));
     } else if connected {
-        "  ●  Connected — ready to code"
-    } else {
-        "  ○  Disconnected — type a message to start in local mode"
-    };
-    let status_color = if is_streaming {
-        theme.accent
-    } else if connected {
-        theme.success
-    } else {
-        theme.warning
-    };
+        feature_lines.push(Line::from(""));
+        feature_lines.push(Line::from(Span::styled(
+            "  ●  Connected & ready",
+            Style::default().fg(theme.success),
+        )));
+    }
 
-    feature_lines.push(Line::from(Span::styled(
-        status_text,
-        Style::default().fg(status_color),
-    )));
+    let features_widget = Paragraph::new(Text::from(feature_lines));
+    f.render_widget(features_widget, prompt_area);
 
-    let panel_width = 50u16.min(area.width.saturating_sub(4));
-    let features_area = Rect::new(
-        area.x + (area.width.saturating_sub(panel_width)) / 2,
-        area.y + features_y,
-        panel_width,
-        feature_lines.len() as u16 + 1,
-    );
+    // ── 4. Tip at bottom (rotating, Opencode style) ──────────────
+    let tip_y = prompt_y + features_list_height + gap2;
+    let tip_area = Rect::new(area.x, tip_y, total_width, tip_height + 1);
 
-    let features_paragraph = Paragraph::new(Text::from(feature_lines))
-        .block(Block::default().borders(Borders::NONE))
-        .alignment(Alignment::Left)
-        .wrap(Wrap { trim: false });
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(theme.border));
-    let block_area = features_area;
-    let inner = block.inner(block_area);
-    f.render_widget(block, block_area);
-    f.render_widget(features_paragraph, inner);
-
-    // ── Bottom tip ──────────────────────────────────────────────────
-    let tip_y = area.height.saturating_sub(2);
-    let tip_area = Rect::new(area.x, area.y + tip_y, area.width, 1);
-    let tip_text = Line::from(vec![
-        Span::styled(
-            " Ctrl+P commands · ",
-            Style::default().fg(theme.text_muted),
-        ),
-        Span::styled(
-            "Ctrl+/ help · ",
-            Style::default().fg(theme.text_muted),
-        ),
-        Span::styled(
-            "Type /help in chat · ",
-            Style::default().fg(theme.text_muted),
-        ),
-        Span::styled(
-            "Ctrl+Q / :q to quit",
-            Style::default().fg(theme.text_muted),
-        ),
+    const TIPS: &[&str] = &[
+        "  Set \"formatter\": true for auto-formatting",
+        "  Ctrl+Q / :q to quit  |  Ctrl+P for commands",
+        "  Ctrl+X then S for status  |  Alt+B for sidebar",
+        "  Ctrl+L to cycle providers  |  Ctrl+O for editor",
+        "  Ask anything and press Enter to start",
+        "  Type /help in chat for more info",
+    ];
+    let tip_idx = (area.height as usize) % TIPS.len();
+    let tip_text = Text::from(vec![
+        Line::from(Span::styled(TIPS[tip_idx], Style::default().fg(theme.text_muted))),
     ]);
-    let tip = Paragraph::new(tip_text).alignment(Alignment::Center);
-    f.render_widget(tip, tip_area);
+    let tip_widget = Paragraph::new(tip_text).alignment(Alignment::Center);
+    f.render_widget(tip_widget, tip_area);
 }
 
 /// Build the ASCII art logo — blazecode with a crab.
@@ -190,22 +234,40 @@ fn build_blazecode_logo(theme: &Theme) -> Vec<Line<'static>> {
 
     vec![
         Line::from(vec![
-            Span::styled("  ██████╗ ██╗   ██╗███████╗████████╗ ██████╗ ██████╗ ██████╗ ███████╗", Style::default().fg(color)),
+            Span::styled(
+                "  ██████╗ ██╗   ██╗███████╗████████╗ ██████╗ ██████╗ ██████╗ ███████╗",
+                Style::default().fg(color),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  ██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝██╔═══██╗██╔══██╗██╔════╝", Style::default().fg(color)),
+            Span::styled(
+                "  ██╔══██╗██║   ██║██╔════╝╚══██╔══╝██╔════╝██╔═══██╗██╔══██╗██╔════╝",
+                Style::default().fg(color),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  ██████╔╝██║   ██║███████╗   ██║   ██║     ██║   ██║██║  ██║█████╗  ", Style::default().fg(color)),
+            Span::styled(
+                "  ██████╔╝██║   ██║███████╗   ██║   ██║     ██║   ██║██║  ██║█████╗  ",
+                Style::default().fg(color),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  ██╔══██╗██║   ██║╚════██║   ██║   ██║     ██║   ██║██║  ██║██╔══╝  ", Style::default().fg(color)),
+            Span::styled(
+                "  ██╔══██╗██║   ██║╚════██║   ██║   ██║     ██║   ██║██║  ██║██╔══╝  ",
+                Style::default().fg(color),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  ██║  ██║╚██████╔╝███████║   ██║   ╚██████╗╚██████╔╝██████╔╝███████╗", Style::default().fg(color)),
+            Span::styled(
+                "  ██║  ██║╚██████╔╝███████║   ██║   ╚██████╗╚██████╔╝██████╔╝███████╗",
+                Style::default().fg(color),
+            ),
         ]),
         Line::from(vec![
-            Span::styled("  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝", Style::default().fg(color)),
+            Span::styled(
+                "  ╚═╝  ╚═╝ ╚═════╝ ╚══════╝   ╚═╝    ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝",
+                Style::default().fg(color),
+            ),
         ]),
         Line::from(vec![
             Span::styled("                                                                   🦀", Style::default().fg(muted)),

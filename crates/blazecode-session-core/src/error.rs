@@ -15,7 +15,7 @@ pub struct StateTransitionError {
 
 impl StateTransitionError {
     /// Create a new transition error.
-    pub fn Invalid(from: SessionState, to: SessionState) -> Self {
+    pub fn invalid(from: SessionState, to: SessionState) -> Self {
         Self { from, to }
     }
 }
